@@ -1,0 +1,8 @@
+{
+  "name": "file",
+  "version": "0.1.0",
+  "description": "Local file export tool plugin",
+  "entry": "./index.ts",
+  "capabilities": ["tool"],
+  "enabled": true
+}
