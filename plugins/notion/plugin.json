@@ -1,0 +1,8 @@
+{
+  "name": "notion",
+  "version": "0.1.0",
+  "description": "Notion notes tool plugin",
+  "entry": "./index.ts",
+  "capabilities": ["tool"],
+  "enabled": true
+}
