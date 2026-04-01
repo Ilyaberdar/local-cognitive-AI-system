@@ -24,19 +24,19 @@ The goal is simple: one personal system you can use every day for research, codi
 
 ### Chat Workspace
 
-![Chat Workspace](screenshots/tg_image_2595655779.tiff)
+![Chat Workspace](screenshots/tg_image_2595655779.png)
 
 ### Models
 
-![Models](screenshots/tg_image_2374501082.tiff)
+![Models](screenshots/tg_image_2374501082.png)
 
 ### Plugins
 
-![Plugins](screenshots/tg_image_1835418318.tiff)
+![Plugins](screenshots/tg_image_1835418318.png)
 
 ### Cloud Provider Settings
 
-![Provider Settings](screenshots/tg_image_1625341737.tiff)
+![Provider Settings](screenshots/tg_image_1625341737.png)
 
 ## Quick Start
 
@@ -239,7 +239,7 @@ Click `Test`.
 Then in chat you can say:
 
 ```text
-сохрани это в ноушен
+save this to Notion
 ```
 
 ## Filesystem Plugin
@@ -277,7 +277,7 @@ Use `general` mode when you just want one model to answer.
 Example:
 
 ```text
-объясни кратко как работает этот модуль
+briefly explain how this module works
 ```
 
 ### 2. Debate mode
@@ -287,7 +287,7 @@ Use `hypothesis` mode when you want support / attack / judge behavior.
 Example:
 
 ```text
-проверь гипотезу что теория игр подходит как основной слой анализа новостей для telegram-паблика
+test the hypothesis that game theory is a good primary layer for analyzing news in a Telegram channel
 ```
 
 ### 3. Code mode
@@ -297,11 +297,11 @@ Use `code` mode when you want implementation output.
 Example:
 
 ```text
-создай простой express typescript api проект в `demo-api`
+create a simple Express TypeScript API project in `demo-api`
 ```
 
 ```text
-создай файл `demo-api/src/index.ts` и добавь healthcheck route
+create `demo-api/src/index.ts` and add a healthcheck route
 ```
 
 ### 4. Save result to Notion
@@ -309,7 +309,7 @@ Example:
 Example:
 
 ```text
-сохрани это в ноушен
+save this to Notion
 ```
 
 ### 5. Write files locally
@@ -317,7 +317,7 @@ Example:
 Example:
 
 ```text
-создай файл `notes/summary.md` и запиши туда краткий вывод
+create `notes/summary.md` and write a short summary into it
 ```
 
 ## Architecture
