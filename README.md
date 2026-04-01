@@ -71,7 +71,24 @@ http://127.0.0.1:3000
 
 If you want the system working as fast as possible, use LM Studio.
 
-### 1. Load a few local models in LM Studio
+### 1. Load local models in LM Studio first
+
+The engine does not download or load your local models by itself.
+
+The correct order is:
+
+1. load the models in LM Studio
+2. start the LM Studio local server
+3. open this dashboard
+4. assign those already loaded models inside `Chat Workspace` or `Settings`
+
+#### LM Studio model loader
+
+![LM Studio Catalog](screenshots/tg_image_3993820814.png)
+
+#### Loaded model in LM Studio server
+
+![LM Studio Loaded Model](screenshots/tg_image_2481713676.png)
 
 Example roles:
 
@@ -117,6 +134,18 @@ Go to:
   - mode
   - debate on/off
   - support / attack / judge providers and models
+
+#### Session setup with local / cloud role routing
+
+![Session Setup Roles](screenshots/tg_image_2185449697.png)
+
+That means a normal working flow looks like this:
+
+1. load models in LM Studio
+2. confirm them in `Models -> Loaded Local Models`
+3. go to `Chat Workspace`
+4. assign roles in `Session Setup`
+5. start chatting or run a debate
 
 ## Cloud Providers
 
