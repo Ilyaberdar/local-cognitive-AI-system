@@ -6,6 +6,7 @@ import test from "node:test";
 import { buildRuntime } from "../src/app/buildRuntime";
 import { AppConfig } from "../src/config/config";
 import { OutputSanitizer } from "../src/llm/OutputSanitizer";
+import { FileTool } from "../src/tools/FileTool";
 import { Logger } from "../src/utils/Logger";
 
 const createTestConfig = (root: string): AppConfig => ({
@@ -77,6 +78,10 @@ const createTestConfig = (root: string): AppConfig => ({
     enabled: false,
     botToken: undefined,
     pollTimeoutSec: 1
+  },
+  filesystem: {
+    accessMode: "restricted",
+    allowedDirectories: [path.join(root, "output"), root]
   },
   outputDir: path.join(root, "output"),
   appDataDir: path.join(root, "app"),
@@ -206,4 +211,213 @@ test("output sanitizer keeps only final answer when reasoning noise is present",
   ].join("\n"));
 
   assert.equal(sanitized, "Qwen3.5");
+});
+
+test("file tool can write scaffold files inside allowed directories", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-files-"));
+  const targetDir = path.join(tmpDir, "workspace");
+  const tool = new FileTool({
+    outputDir: targetDir,
+    accessMode: "restricted",
+    allowedDirectories: [targetDir]
+  });
+
+  const result = await tool.execute({
+    rawInput: "Create a simple project in `demo-app`",
+    title: "demo app",
+    content: "scaffold",
+    context: {
+      actor: {
+        sessionId: "file-session",
+        channel: "http"
+      },
+      memory: [],
+      conversation: [],
+      providerId: "lmstudio",
+      activeTarget: {
+        providerId: "lmstudio",
+        model: "qwen/qwen3.5-9b"
+      },
+      sessionSettings: {
+        mode: "code",
+        language: "en",
+        defaultTarget: {
+          providerId: "lmstudio",
+          model: "qwen/qwen3.5-9b"
+        },
+        codeAgents: [
+          {
+            id: "agent-1",
+            name: "Agent1",
+            providerId: "lmstudio",
+            model: "qwen/qwen3.5-9b"
+          }
+        ],
+        debate: {
+          enabled: false,
+          profile: "general",
+          support: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+          attack: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+          judge: { providerId: "local" }
+        }
+      }
+    },
+    result: {
+      response: [
+        "<<<FILE:package.json>>>",
+        '{ "name": "demo-app" }',
+        "<<<END FILE>>>",
+        "<<<FILE:src/index.ts>>>",
+        'console.log("hello");',
+        "<<<END FILE>>>"
+      ].join("\n"),
+      provider: "lmstudio",
+      model: "qwen/qwen3.5-9b"
+    }
+  });
+
+  assert.equal(result.ok, true);
+  await fs.access(path.join(targetDir, "demo-app", "package.json"));
+  await fs.access(path.join(targetDir, "demo-app", "src", "index.ts"));
+});
+
+test("file tool can overwrite and append files inside allowed directories", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-file-edit-"));
+  const targetDir = path.join(tmpDir, "workspace");
+  const tool = new FileTool({
+    outputDir: targetDir,
+    accessMode: "restricted",
+    allowedDirectories: [targetDir]
+  });
+
+  const context = {
+    actor: {
+      sessionId: "file-session",
+      channel: "http" as const
+    },
+    memory: [],
+    conversation: [],
+    providerId: "lmstudio",
+    activeTarget: {
+      providerId: "lmstudio",
+      model: "qwen/qwen3.5-9b"
+    },
+    sessionSettings: {
+      mode: "code" as const,
+      language: "en" as const,
+      defaultTarget: {
+        providerId: "lmstudio",
+        model: "qwen/qwen3.5-9b"
+      },
+      codeAgents: [
+        {
+          id: "agent-1",
+          name: "Agent1",
+          providerId: "lmstudio",
+          model: "qwen/qwen3.5-9b"
+        }
+      ],
+      debate: {
+        enabled: false,
+        profile: "general" as const,
+        support: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+        attack: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+        judge: { providerId: "local" }
+      }
+    }
+  };
+
+  await tool.execute({
+    rawInput: "Write file `notes/todo.txt`",
+    title: "todo",
+    content: "todo content",
+    context,
+    result: {
+      response: "first line",
+      provider: "lmstudio",
+      model: "qwen/qwen3.5-9b"
+    }
+  });
+
+  await tool.execute({
+    rawInput: "Append to file `notes/todo.txt`",
+    title: "todo",
+    content: "todo content",
+    context,
+    result: {
+      response: "second line",
+      provider: "lmstudio",
+      model: "qwen/qwen3.5-9b"
+    }
+  });
+
+  const fileContent = await fs.readFile(path.join(targetDir, "notes", "todo.txt"), "utf8");
+  assert.equal(fileContent, "first line\nsecond line\n");
+});
+
+test("session settings preserve explicitly empty code agent list", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-code-agents-"));
+  const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+
+  await runtime.sessionSettingsStore.update("code-session", {
+    codeAgents: []
+  });
+
+  const settings = await runtime.sessionSettingsStore.get("code-session");
+  assert.deepEqual(settings.codeAgents, []);
+});
+
+test("file tool refuses to write files from fallback model output", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-file-fallback-"));
+  const targetDir = path.join(tmpDir, "workspace");
+  const tool = new FileTool({
+    outputDir: targetDir,
+    accessMode: "restricted",
+    allowedDirectories: [targetDir]
+  });
+
+  const context = {
+    actor: {
+      sessionId: "file-session",
+      channel: "http" as const
+    },
+    memory: [],
+    conversation: [],
+    providerId: "lmstudio",
+    activeTarget: {
+      providerId: "lmstudio",
+      model: "qwen/qwen3.5-9b"
+    },
+    sessionSettings: {
+      mode: "code" as const,
+      language: "en" as const,
+      defaultTarget: {
+        providerId: "lmstudio",
+        model: "qwen/qwen3.5-9b"
+      },
+      codeAgents: [],
+      debate: {
+        enabled: false,
+        profile: "general" as const,
+        support: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+        attack: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+        judge: { providerId: "local" }
+      }
+    }
+  };
+
+  await assert.rejects(
+    tool.execute({
+      rawInput: "Write file `notes/todo.txt`",
+      title: "todo",
+      content: "todo content",
+      context,
+      result: {
+        response: "Mock response from lmstudio. Model: qwen/qwen3.5-9b. Prompt digest: test",
+        provider: "lmstudio",
+        model: "qwen/qwen3.5-9b"
+      }
+    }),
+    /Refusing to write files from fallback model output/
+  );
 });

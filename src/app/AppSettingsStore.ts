@@ -141,7 +141,9 @@ export class AppSettingsStore {
         file: {
           enabled: true,
           values: {
-            outputDir: this.baseConfig.outputDir
+            outputDir: this.baseConfig.outputDir,
+            accessMode: this.baseConfig.filesystem.accessMode,
+            allowedDirectories: this.baseConfig.filesystem.allowedDirectories.join("\n")
           }
         },
         notion: {
@@ -158,6 +160,8 @@ export class AppSettingsStore {
           enabled: false,
           values: {
             workspaceRoot: process.cwd(),
+            accessMode: this.baseConfig.filesystem.accessMode,
+            allowedDirectories: this.baseConfig.filesystem.allowedDirectories.join("\n"),
             bridgeCommand: "",
             notes: "Reserved for future editor bridge."
           }

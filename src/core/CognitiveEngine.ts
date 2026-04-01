@@ -75,6 +75,7 @@ export class CognitiveEngine {
       tags: [mode, "processed"],
       metadata: {
         toolCount: tools.length,
+        tools,
         providerId,
         model: activeTarget.model,
         metrics: "metrics" in finalizedResult ? finalizedResult.metrics : undefined,

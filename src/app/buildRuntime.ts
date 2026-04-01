@@ -27,7 +27,13 @@ import { PluginLoader } from "../plugins/PluginLoader";
 import { LoadedPlugin } from "../plugins/types";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { ToolRegistry } from "../tools/ToolRegistry";
-import { ProviderDescriptor, ToolDescriptor } from "../types";
+import {
+  CodeAgentTarget,
+  ExecutionContext,
+  LLMResponse,
+  ProviderDescriptor,
+  ToolDescriptor
+} from "../types";
 import { Logger } from "../utils/Logger";
 import { ModelCatalogService } from "../llm/ModelCatalogService";
 
@@ -64,6 +70,36 @@ const buildLanguageInstruction = (language: "auto" | "ru" | "en"): string => {
   }
 };
 
+const wantsFilesystemScaffold = (input: string): boolean =>
+  /(?:create|build|make).*(?:project|app|api|service|bot|scaffold|files)|создай.*(?:проект|приложение|api|сервис|бот|структур)/i.test(
+    input
+  );
+
+const wantsSingleFileWrite = (input: string): boolean =>
+  /(?:write|save|overwrite|update|edit|rewrite|append).*(?:file)|(?:запиши|сохрани|перепиши|обнови|измени|добавь|допиши).*(?:файл)/i.test(
+    input
+  );
+
+const buildFilesystemInstruction = (input: string): string =>
+  wantsFilesystemScaffold(input)
+    ? [
+        "The user wants real files or a project scaffold.",
+        "Return one or more file blocks using this exact format and nothing else outside those blocks for file contents:",
+        "<<<FILE:relative/path.ext>>>",
+        "file content",
+        "<<<END FILE>>>",
+        "Use relative paths only.",
+        "Include all required files for a minimal working scaffold."
+      ].join("\n")
+    : wantsSingleFileWrite(input)
+      ? [
+          "The user wants a real file to be written or updated.",
+          "Return only the exact file content that should be written.",
+          "Do not add explanations, markdown fences, or commentary.",
+          "Do not include file markers unless the user explicitly requests multiple files."
+        ].join("\n")
+    : "";
+
 const buildTextPrompt = (
   mode: "code" | "general",
   input: string,
@@ -78,9 +114,211 @@ const buildTextPrompt = (
     `User input: ${input}`,
     "",
     buildLanguageInstruction(language),
+    ...(buildFilesystemInstruction(input) ? ["", buildFilesystemInstruction(input)] : []),
     "",
     "Respond concisely. Prefer practical steps over theory."
   ].join("\n");
+
+const sumUsage = (
+  usages: Array<{
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  } | undefined>
+) => ({
+  inputTokens: usages.reduce((sum, usage) => sum + (usage?.inputTokens ?? 0), 0) || undefined,
+  outputTokens: usages.reduce((sum, usage) => sum + (usage?.outputTokens ?? 0), 0) || undefined,
+  totalTokens: usages.reduce((sum, usage) => sum + (usage?.totalTokens ?? 0), 0) || undefined
+});
+
+const isDegradedResponse = (response: LLMResponse): boolean =>
+  Boolean(response.error) || /^Mock response from /i.test(response.text.trim());
+
+const buildCodeAdvisorPrompt = (
+  input: string,
+  memory: string,
+  language: "auto" | "ru" | "en"
+): string =>
+  [
+    "Mode: code",
+    "Relevant memory:",
+    memory,
+    "",
+    `User input: ${input}`,
+    "",
+    buildLanguageInstruction(language),
+    "",
+    "You are one of several advisor agents.",
+    "Do not emit file blocks, final file contents, markdown fences, or full project scaffolds.",
+    "Return only concise implementation guidance: architecture, file plan, risks, and concrete suggestions."
+  ].join("\n");
+
+const buildCodeWriterPrompt = (
+  input: string,
+  memory: string,
+  language: "auto" | "ru" | "en",
+  advisorRuns: Array<{ agent: CodeAgentTarget; normalized: string; degraded: boolean }>
+): string => {
+  const healthyAdvisorNotes = advisorRuns
+    .filter((item) => !item.degraded)
+    .map((item) => [`${item.agent.name}:`, item.normalized].join("\n"))
+    .join("\n\n");
+  const degradedAdvisorNames = advisorRuns
+    .filter((item) => item.degraded)
+    .map((item) => item.agent.name);
+
+  return [
+    buildTextPrompt("code", input, memory, language),
+    "",
+    "Advisor notes from other coding agents:",
+    healthyAdvisorNotes || "No reliable advisor notes were available.",
+    ...(degradedAdvisorNames.length
+      ? [
+          "",
+          `Unavailable advisors: ${degradedAdvisorNames.join(", ")}. Ignore any missing advisor output and continue.`
+        ]
+      : []),
+    "",
+    "You are the final writer for this code swarm.",
+    "Produce one final implementation-ready answer.",
+    "If the user asked for file edits or project scaffolding, return only the final write-safe output in the requested format.",
+    "Do not include per-agent headings, comparisons, or swarm commentary in the final output."
+  ].join("\n");
+};
+
+const runCodeAgent = async (
+  agent: CodeAgentTarget,
+  prompt: string,
+  llmService: LLMService,
+  languageEnforcer: LanguageEnforcer,
+  language: "auto" | "ru" | "en",
+  systemPrompt: string
+) => {
+  const response = await llmService.generateText(
+    {
+      model: agent.model,
+      systemPrompt,
+      prompt
+    },
+    agent.providerId
+  );
+
+  const normalized = await languageEnforcer.normalizeText(response.text, language, {
+    providerId: agent.providerId,
+    model: agent.model
+  });
+
+  return {
+    agent,
+    response,
+    normalized,
+    degraded: isDegradedResponse(response)
+  };
+};
+
+const runCodeSwarm = async (
+  input: string,
+  context: ExecutionContext,
+  llmService: LLMService,
+  languageEnforcer: LanguageEnforcer
+) => {
+  const memorySummary =
+    context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
+    "- No relevant memory found.";
+  const configuredAgents =
+    context.sessionSettings.codeAgents.length > 0
+      ? context.sessionSettings.codeAgents.slice(0, 5)
+      : [
+          {
+            id: "agent-1",
+            name: "Agent1",
+            providerId: context.activeTarget.providerId,
+            model: context.activeTarget.model
+          } satisfies CodeAgentTarget
+        ];
+
+  if (configuredAgents.length === 1) {
+    const writerRun = await runCodeAgent(
+      configuredAgents[0],
+      buildTextPrompt("code", input, memorySummary, context.sessionSettings.language),
+      llmService,
+      languageEnforcer,
+      context.sessionSettings.language,
+      [
+        `You are ${configuredAgents[0].name}, a focused coding agent.`,
+        "Provide a practical implementation-oriented answer.",
+        "Be concise, concrete, and useful for project execution."
+      ].join("\n")
+    );
+
+    return {
+      response: writerRun.normalized,
+      provider: writerRun.response.provider,
+      model: writerRun.response.model,
+      metrics: {
+        startedAt: new Date(0).toISOString(),
+        completedAt: new Date(0).toISOString(),
+        durationMs: 0,
+        usage: writerRun.response.usage
+      }
+    };
+  }
+
+  const writerAgent = configuredAgents[0];
+  const advisorAgents = configuredAgents.slice(1);
+  const advisorRuns = await Promise.all(
+    advisorAgents.map((agent) =>
+      runCodeAgent(
+        agent,
+        buildCodeAdvisorPrompt(input, memorySummary, context.sessionSettings.language),
+        llmService,
+        languageEnforcer,
+        context.sessionSettings.language,
+        [
+          `You are ${agent.name}, an advisor in a multi-agent code swarm.`,
+          "Provide concise implementation guidance only.",
+          "Do not produce final deliverable files or scaffolds."
+        ].join("\n")
+      )
+    )
+  );
+  const writerRun = await runCodeAgent(
+    writerAgent,
+    buildCodeWriterPrompt(
+      input,
+      memorySummary,
+      context.sessionSettings.language,
+      advisorRuns.map((item) => ({
+        agent: item.agent,
+        normalized: item.normalized,
+        degraded: item.degraded
+      }))
+    ),
+    llmService,
+    languageEnforcer,
+    context.sessionSettings.language,
+    [
+      `You are ${writerAgent.name}, the final writer in a multi-agent code swarm.`,
+      "Synthesize advisor guidance into one implementation-ready answer.",
+      "When file output is requested, produce only the final write-safe output."
+    ].join("\n")
+  );
+  const firstHealthyAdvisor = advisorRuns.find((item) => !item.degraded);
+  const chosenRun =
+    !writerRun.degraded || !firstHealthyAdvisor ? writerRun : firstHealthyAdvisor;
+
+  return {
+    response: chosenRun.normalized,
+    provider: chosenRun.response.provider,
+    model: chosenRun.response.model,
+    metrics: {
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(0).toISOString(),
+      durationMs: 0,
+      usage: sumUsage([writerRun.response.usage, ...advisorRuns.map((item) => item.response.usage)])
+    }
+  };
+};
 
 export const buildRuntime = async (
   config: AppConfig,
@@ -162,36 +400,7 @@ export const buildRuntime = async (
   });
 
   router.register("code", async (input, context) => {
-    const response = await llmService.generateText(
-      {
-        model: context.activeTarget.model,
-        prompt: buildTextPrompt(
-          "code",
-          input,
-          context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
-            "- No relevant memory found.",
-          context.sessionSettings.language
-        )
-      },
-      context.providerId
-    );
-    const normalized = await languageEnforcer.normalizeText(
-      response.text,
-      context.sessionSettings.language,
-      context.activeTarget
-    );
-
-    return {
-      response: normalized,
-      provider: response.provider,
-      model: response.model,
-      metrics: {
-        startedAt: new Date(0).toISOString(),
-        completedAt: new Date(0).toISOString(),
-        durationMs: 0,
-        usage: response.usage
-      }
-    };
+    return runCodeSwarm(input, context, llmService, languageEnforcer);
   });
 
   router.register("general", async (input, context) => {

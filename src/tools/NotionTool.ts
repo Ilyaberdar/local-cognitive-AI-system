@@ -66,7 +66,8 @@ export class NotionTool implements Tool {
   }
 
   private buildPayload(input: ToolExecutionRequest): Record<string, unknown> {
-    const title = input.title.slice(0, 100);
+    const title = String(input.metadata?.noteTitle ?? input.title).slice(0, 100);
+    const markdown = String(input.metadata?.noteContent ?? input.content);
 
     if (this.options.dataSourceId) {
       return {
@@ -84,7 +85,7 @@ export class NotionTool implements Tool {
             ]
           }
         },
-        markdown: input.content
+        markdown
       };
     }
 
@@ -103,7 +104,7 @@ export class NotionTool implements Tool {
           ]
         }
       },
-      markdown: input.content
+      markdown
     };
   }
 }

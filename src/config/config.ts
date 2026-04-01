@@ -59,6 +59,10 @@ export interface AppConfig {
     botToken?: string;
     pollTimeoutSec: number;
   };
+  filesystem: {
+    accessMode: "restricted" | "full";
+    allowedDirectories: string[];
+  };
   outputDir: string;
   appDataDir: string;
   ui: {
@@ -155,6 +159,14 @@ export const config: AppConfig = {
     enabled: toBoolean(process.env.TELEGRAM_ENABLED, false),
     botToken: toOptional(process.env.TELEGRAM_BOT_TOKEN),
     pollTimeoutSec: Number(process.env.TELEGRAM_POLL_TIMEOUT_SEC ?? 25)
+  },
+  filesystem: {
+    accessMode:
+      process.env.FILESYSTEM_ACCESS_MODE === "full" ? "full" : "restricted",
+    allowedDirectories: [
+      resolveDir(process.env.OUTPUT_DIR ?? "./data/output", "./data/output"),
+      process.cwd()
+    ]
   },
   outputDir: resolveDir(process.env.OUTPUT_DIR ?? "./data/output", "./data/output"),
   appDataDir: resolveDir(process.env.APP_DATA_DIR ?? "./data/app", "./data/app"),

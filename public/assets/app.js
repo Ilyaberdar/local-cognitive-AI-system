@@ -6,6 +6,7 @@ const state = {
   chatSubmitting: false,
   notice: "",
   error: "",
+  toasts: [],
   bootstrap: null,
   activeSessionId: null,
   sessionSettings: null,
@@ -13,7 +14,8 @@ const state = {
   drafts: {},
   pendingRequest: null,
   pluginTestResults: {},
-  providerTestResults: {}
+  providerTestResults: {},
+  savedButtons: {}
 };
 
 const api = {
@@ -82,7 +84,7 @@ const api = {
 };
 
 init().catch((error) => {
-  state.error = error instanceof Error ? error.message : "Failed to initialize UI";
+  pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
   render();
 });
 
@@ -199,9 +201,6 @@ function render() {
       ${renderSidebar()}
       <main class="main">
         <div class="content-shell">
-          ${renderTopbar()}
-          ${state.notice ? `<div class="notice">${escapeHtml(state.notice)}</div>` : ""}
-          ${state.error ? `<div class="notice">${escapeHtml(state.error)}</div>` : ""}
           <section class="route route--chat ${state.route === "chat" ? "active" : ""}">
             ${renderChatRoute()}
           </section>
@@ -215,11 +214,25 @@ function render() {
             ${renderSettingsRoute()}
           </section>
         </div>
+        ${renderToasts()}
       </main>
     </div>
   `;
 
   bindEvents();
+}
+
+function getSaveButtonLabel(key, fallback) {
+  return state.savedButtons[key] ? "Saved" : fallback;
+}
+
+function flashSavedButton(key) {
+  state.savedButtons[key] = true;
+  render();
+  window.setTimeout(() => {
+    state.savedButtons[key] = false;
+    render();
+  }, 1000);
 }
 
 function renderSidebar() {
@@ -282,30 +295,67 @@ function renderSidebar() {
   `;
 }
 
+function captureScrollState() {
+  const activeRoute = document.querySelector(".route.active");
+  const messageStream = document.querySelector(".message-stream");
+
+  return {
+    activeRouteScrollTop: activeRoute?.scrollTop ?? 0,
+    messageStreamScrollTop: messageStream?.scrollTop ?? 0
+  };
+}
+
+function restoreScrollState(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    const activeRoute = document.querySelector(".route.active");
+    const messageStream = document.querySelector(".message-stream");
+
+    if (activeRoute && typeof snapshot.activeRouteScrollTop === "number") {
+      activeRoute.scrollTop = snapshot.activeRouteScrollTop;
+    }
+
+    if (messageStream && typeof snapshot.messageStreamScrollTop === "number") {
+      messageStream.scrollTop = snapshot.messageStreamScrollTop;
+    }
+  });
+}
+
+function renderToasts() {
+  if (!state.toasts.length) {
+    return "";
+  }
+
+  return `
+    <div class="toast-stack">
+      ${state.toasts
+        .map(
+          (toast) => `
+            <aside class="toast toast--${escapeAttr(toast.tone)}" data-toast-id="${escapeAttr(toast.id)}">
+              <div class="toast__body">
+                <div class="toast__label">${toast.tone === "danger" ? "Error" : "Notice"}</div>
+                <div class="toast__message">${escapeHtml(toast.message)}</div>
+              </div>
+              <div class="toast__actions">
+                <button class="toast__button" type="button" data-action="copy-toast" data-toast-id="${escapeAttr(toast.id)}">Copy</button>
+                <button class="toast__button" type="button" data-action="dismiss-toast" data-toast-id="${escapeAttr(toast.id)}">Close</button>
+              </div>
+            </aside>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderNavButton(route, label, icon) {
   return `
     <button class="nav-button ${state.route === route ? "active" : ""}" data-action="route" data-route="${route}">
       <span class="nav-label"><span>${icon}</span><span>${label}</span></span>
     </button>
-  `;
-}
-
-function renderTopbar() {
-  return `
-    <header class="topbar">
-      <div class="hero">
-        <strong>Browser Control Surface</strong>
-        <h1>${state.routeTitle ?? routeTitle(state.route)}</h1>
-        <p>
-          Localhost dashboard for multi-model chat, debate routing, provider setup, plugin configuration,
-          and LM Studio model management.
-        </p>
-      </div>
-      <div class="utility-bar">
-        <span class="pill">Default: ${escapeHtml(state.bootstrap?.appSettings?.llm?.defaultProvider ?? "n/a")}</span>
-        <span class="pill">${(state.bootstrap?.loadedModels ?? []).length} loaded</span>
-      </div>
-    </header>
   `;
 }
 
@@ -322,6 +372,7 @@ function renderChatRoute() {
   const judgeModelOptions = getSelectableSessionModels(settings.debate.judge.providerId, settings.debate.judge.model);
   const providerOptions = getProviderOptions();
   const judgeOptions = [...providerOptions, { id: "local", name: "local" }];
+  const codeAgents = settings.codeAgents ?? [];
   const messages = [
     ...state.messages,
     ...(state.pendingRequest
@@ -379,7 +430,7 @@ function renderChatRoute() {
             <h3>Session Setup</h3>
             <div class="subtle">Pinned controls for mode, language, debate, and model routing.</div>
           </div>
-          <button class="primary-button" type="submit">Save setup</button>
+          <button class="primary-button" type="submit">${getSaveButtonLabel("session-setup", "Save setup")}</button>
         </div>
 
         <div class="chat-settings__grid">
@@ -410,6 +461,15 @@ function renderChatRoute() {
           <div class="field">
             <label>Default model</label>
             ${renderSessionModelControl("defaultModel", settings.defaultTarget.providerId, settings.defaultTarget.model ?? "", defaultModelOptions, "default-model-options")}
+          </div>
+          <div class="field field--full">
+            <div class="row-between">
+              <label>Code agents</label>
+              <button class="ghost-button" type="button" data-action="add-code-agent" ${codeAgents.length >= 5 ? "disabled" : ""}>+</button>
+            </div>
+            <div class="code-agents">
+              ${codeAgents.map((agent, index) => renderCodeAgentCard(agent, index, providerOptions)).join("")}
+            </div>
           </div>
           <div class="field">
             <label>Support provider</label>
@@ -450,7 +510,7 @@ function renderModelsRoute() {
 
     return (left.displayName || left.id).localeCompare(right.displayName || right.id);
   });
-  const providerDefaults = state.bootstrap?.appSettings?.providers ?? {};
+      const providerDefaults = state.bootstrap?.appSettings?.providers ?? {};
 
   return `
     <div class="grid">
@@ -478,6 +538,7 @@ function renderModelsRoute() {
                   <span class="runtime-provider-separator">•</span>
                   <span class="mono">${escapeHtml(providerDefaults[provider.id]?.baseUrl ?? "n/a")}</span>
                 </div>
+                ${renderRuntimeProviderQuota(provider.id, status.label)}
               </article>
             `;
             }
@@ -566,23 +627,27 @@ function renderPluginsRoute() {
             <h2>Plugin Surface</h2>
             <div class="subtle">Configure tool integrations and future bridges without editing source files.</div>
           </div>
-          <button class="primary-button" type="submit">Save plugin settings</button>
+          <button class="primary-button" type="submit">${getSaveButtonLabel("plugin-settings", "Save plugin settings")}</button>
         </div>
       </section>
 
       <div class="plugin-grid">
         ${renderPluginCard("notion", pluginSettings.notion, statusByName.notion, [
           ["apiKey", "API key"],
-          ["parentPageId", "Parent page ID"],
-          ["dataSourceId", "Data source ID"],
+          ["parentPageUrl", "Parent page URL"],
+          ["dataSourceUrl", "Data source URL"],
           ["titleProperty", "Title property"],
           ["version", "Notion version"]
         ])}
         ${renderPluginCard("file", pluginSettings.file, statusByName.file, [
-          ["outputDir", "Output directory"]
+          ["outputDir", "Output directory"],
+          ["accessMode", "Access mode"],
+          ["allowedDirectories", "Allowed directories", true]
         ])}
         ${renderPluginCard("vscode", pluginSettings.vscode, statusByName.vscode, [
           ["workspaceRoot", "Workspace root"],
+          ["accessMode", "Access mode"],
+          ["allowedDirectories", "Allowed directories", true],
           ["bridgeCommand", "Bridge command"],
           ["notes", "Notes", true]
         ])}
@@ -595,6 +660,7 @@ function renderPluginCard(name, plugin, status, fields) {
   const loaded = status?.loaded ?? false;
   const configured = status?.configured ?? false;
   const testResult = state.pluginTestResults[name];
+  const testTone = testResult ? (testResult.ok ? "success" : "danger") : "";
   return `
     <section class="card">
       <div class="card-header">
@@ -610,7 +676,12 @@ function renderPluginCard(name, plugin, status, fields) {
       </div>
       ${
         testResult
-          ? `<div class="notice">${escapeHtml(`${testResult.ok ? "OK" : "Issue"}: ${testResult.message}`)}</div>`
+          ? `
+            <div class="status-block ${testTone}">
+              <div class="status-block__label">${testResult.ok ? "Test passed" : "Test failed"}</div>
+              <div class="status-block__text">${escapeHtml(testResult.message)}</div>
+            </div>
+          `
           : ""
       }
       <div class="field">
@@ -623,17 +694,30 @@ function renderPluginCard(name, plugin, status, fields) {
         ${fields
           .map(([key, label, multiline]) => {
             const value = plugin?.values?.[key] ?? "";
+            if (key === "accessMode") {
+              return `
+                <div class="field">
+                  <label>${escapeHtml(label)}</label>
+                  <select name="plugin.${name}.${key}">
+                    ${["restricted", "full"]
+                      .map((mode) => option(mode, String(value || "restricted"), mode))
+                      .join("")}
+                  </select>
+                </div>
+              `;
+            }
+
             return multiline
               ? `
                 <div class="field">
                   <label>${escapeHtml(label)}</label>
-                  <textarea name="plugin.${name}.${key}">${escapeHtml(String(value))}</textarea>
+                  <textarea name="plugin.${name}.${key}" placeholder="${escapeAttr(pluginFieldPlaceholder(name, key))}">${escapeHtml(String(value))}</textarea>
                 </div>
               `
               : `
                 <div class="field">
                   <label>${escapeHtml(label)}</label>
-                  <input name="plugin.${name}.${key}" value="${escapeAttr(String(value))}" />
+                  <input name="plugin.${name}.${key}" value="${escapeAttr(String(value))}" placeholder="${escapeAttr(pluginFieldPlaceholder(name, key))}" />
                 </div>
               `;
           })
@@ -660,7 +744,7 @@ function renderSettingsRoute() {
           </div>
           <div class="utility-bar">
             <button class="ghost-button" type="button" data-action="reload-runtime">Reload runtime</button>
-            <button class="primary-button" type="submit">Save settings</button>
+            <button class="primary-button" type="submit">${getSaveButtonLabel("app-settings", "Save settings")}</button>
           </div>
         </div>
       </section>
@@ -762,16 +846,8 @@ function renderSettingsRoute() {
                   </div>
                   <div class="field">
                     <label>Default model</label>
-                    <input
-                      name="provider.${providerId}.model"
-                      list="${providerId}-models-list"
-                      value="${escapeAttr(provider.model || "")}"
-                      placeholder="${escapeAttr(providerModelPlaceholder(providerId))}"
-                    />
+                    ${renderProviderSettingsModelControl(providerId, provider.model || "")}
                     <div class="subtle">${escapeHtml(providerModelHelp(providerId))}</div>
-                    <datalist id="${providerId}-models-list">
-                      ${getProviderSuggestedModels(providerId).map((item) => `<option value="${escapeAttr(item)}"></option>`).join("")}
-                    </datalist>
                   </div>
                   <div class="field">
                     <label>Timeout (ms)</label>
@@ -791,15 +867,19 @@ function renderSettingsRoute() {
                     : ""}
                 </div>
                 <div class="footer-row">
-                  <span class="subtle">
-                    ${
-                      state.providerTestResults[providerId]
-                        ? escapeHtml(formatProviderTestResult(state.providerTestResults[providerId]))
-                        : "Check auth, base URL, and model access before assigning this provider to a role."
-                    }
-                  </span>
+                  <span class="subtle">Check auth, base URL, and model access before assigning this provider to a role.</span>
                   <button class="ghost-button" type="button" data-action="test-provider" data-provider-id="${escapeAttr(providerId)}">Test provider</button>
                 </div>
+                ${
+                  state.providerTestResults[providerId]
+                    ? `
+                      <div class="status-block ${providerTestTone(state.providerTestResults[providerId])}">
+                        <div class="status-block__label">${state.providerTestResults[providerId].ok ? "Provider ready" : "Provider issue"}</div>
+                        <div class="status-block__text">${escapeHtml(formatProviderTestResult(state.providerTestResults[providerId]))}</div>
+                      </div>
+                    `
+                    : ""
+                }
               </section>
             `
           )
@@ -852,7 +932,8 @@ function bindEvents() {
   document.querySelectorAll("[data-action='new-session']").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAction(async () => {
-        const currentSettings = state.sessionSettings ? sessionSettingsToPatch(state.sessionSettings) : null;
+        const snapshot = readSessionSetupSnapshot();
+        const currentSettings = snapshot ? sessionSettingsToPatch(snapshot.settings) : null;
         const session = await api.createSession("New task");
         if (currentSettings) {
           await api.updateSessionSettings(session.id, currentSettings);
@@ -880,6 +961,7 @@ function bindEvents() {
   document.querySelectorAll("[data-action='open-session']").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAction(async () => {
+        await persistActiveSessionSetup({ refreshBootstrap: false });
         state.activeSessionId = button.dataset.sessionId;
         await loadActiveSession();
       });
@@ -896,6 +978,48 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll("[data-action='add-code-agent']").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.sessionSettings) {
+        return;
+      }
+
+      const snapshot = readSessionSetupSnapshot();
+      const baseSettings = snapshot?.settings ?? state.sessionSettings;
+      const nextIndex = (baseSettings.codeAgents?.length ?? 0) + 1;
+      state.sessionSettings = {
+        ...baseSettings,
+        codeAgents: [
+          ...(baseSettings.codeAgents ?? []),
+          {
+            id: `agent-${Date.now()}`,
+            name: `Agent${nextIndex}`,
+            providerId: baseSettings.defaultTarget.providerId,
+            model: baseSettings.defaultTarget.model
+          }
+        ].slice(0, 5)
+      };
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-code-agent']").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.sessionSettings) {
+        return;
+      }
+
+      const snapshot = readSessionSetupSnapshot();
+      const baseSettings = snapshot?.settings ?? state.sessionSettings;
+      const index = Number(button.dataset.codeAgentIndex);
+      state.sessionSettings = {
+        ...baseSettings,
+        codeAgents: (baseSettings.codeAgents ?? []).filter((_, itemIndex) => itemIndex !== index)
+      };
+      render();
+    });
+  });
+
   document.querySelector("#chat-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -905,21 +1029,21 @@ function bindEvents() {
       return;
     }
 
-    state.route = "chat";
-    window.location.hash = "/chat";
-    state.pendingRequest = {
-      input,
-      startedAt: new Date().toISOString()
-    };
-    state.chatSubmitting = true;
-    if (state.activeSessionId) {
-      state.drafts[state.activeSessionId] = "";
-    }
-    state.error = "";
-    render();
-    requestAnimationFrame(() => scrollChatToBottom("smooth"));
-
     try {
+      await persistActiveSessionSetup({ refreshBootstrap: false });
+      state.route = "chat";
+      window.location.hash = "/chat";
+      state.pendingRequest = {
+        input,
+        startedAt: new Date().toISOString()
+      };
+      state.chatSubmitting = true;
+      if (state.activeSessionId) {
+        state.drafts[state.activeSessionId] = "";
+      }
+      render();
+      requestAnimationFrame(() => scrollChatToBottom("smooth"));
+
       const response = await api.sendChat({
         input,
         sessionId: state.activeSessionId
@@ -928,7 +1052,7 @@ function bindEvents() {
       await refreshBootstrap();
       await loadActiveSession();
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Action failed";
+      pushToast(error instanceof Error ? error.message : "Action failed", "danger");
       state.pendingRequest = null;
     } finally {
       state.chatSubmitting = false;
@@ -947,52 +1071,23 @@ function bindEvents() {
 
   document.querySelector("#session-settings-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const sessionTitle = String(form.get("sessionTitle") || "").trim();
-    const resolveModelValue = (providerFieldName, modelFieldName) => {
-      const providerId = String(form.get(providerFieldName) || "").trim();
-
-      if (!providerId || providerId === "local") {
-        return undefined;
-      }
-
-      return (
-        String(form.get(modelFieldName) || "").trim() || getProviderConfiguredModel(providerId) || undefined
-      );
-    };
-    const payload = {
-      mode: form.get("mode"),
-      language: form.get("language"),
-      defaultTarget: {
-        providerId: form.get("defaultProvider"),
-        model: resolveModelValue("defaultProvider", "defaultModel")
-      },
-      debate: {
-        enabled: form.get("debateEnabled") === "on",
-        profile: form.get("debateProfile"),
-        support: {
-          providerId: form.get("supportProvider"),
-          model: resolveModelValue("supportProvider", "supportModel")
-        },
-        attack: {
-          providerId: form.get("attackProvider"),
-          model: resolveModelValue("attackProvider", "attackModel")
-        },
-        judge: {
-          providerId: form.get("judgeProvider"),
-          model: resolveModelValue("judgeProvider", "judgeModel")
-        }
-      }
-    };
+    const snapshot = readSessionSetupSnapshot();
+    if (!snapshot) {
+      return;
+    }
 
     await runAction(async () => {
-      if (sessionTitle) {
-        await api.renameSession(state.activeSessionId, sessionTitle);
+      if (snapshot.title) {
+        await api.renameSession(state.activeSessionId, snapshot.title);
       }
-      state.sessionSettings = await api.updateSessionSettings(state.activeSessionId, payload);
+      state.sessionSettings = await api.updateSessionSettings(
+        state.activeSessionId,
+        sessionSettingsToPatch(snapshot.settings)
+      );
       await refreshBootstrap();
       state.notice = "";
     });
+    flashSavedButton("session-setup");
   });
 
   bindSessionSetupFieldSync();
@@ -1010,6 +1105,7 @@ function bindEvents() {
       state.bootstrap.pluginStatuses = await request("/plugins/status");
       state.notice = "";
     });
+    flashSavedButton("plugin-settings");
   });
 
   document.querySelector("#app-settings-form")?.addEventListener("submit", async (event) => {
@@ -1026,6 +1122,7 @@ function bindEvents() {
       state.bootstrap.pluginStatuses = await request("/plugins/status");
       state.notice = "";
     });
+    flashSavedButton("app-settings");
   });
 
   document.querySelector("[data-action='reload-runtime']")?.addEventListener("click", async () => {
@@ -1092,14 +1189,12 @@ function bindEvents() {
       const kind = button.dataset.chipKind;
       const value = button.dataset.chipValue;
       await runAction(async () => {
-        const nextSettings = buildNextSessionSettings(state.sessionSettings, kind, value);
-        if (kind === "mode") {
-          state.sessionSettings = nextSettings;
-        } else if (kind === "language") {
-          state.sessionSettings = nextSettings;
-        } else if (kind === "debate") {
-          state.sessionSettings = nextSettings;
+        const snapshot = readSessionSetupSnapshot();
+        if (snapshot?.title) {
+          await api.renameSession(state.activeSessionId, snapshot.title);
         }
+        const baseSettings = snapshot?.settings ?? state.sessionSettings;
+        const nextSettings = buildNextSessionSettings(baseSettings, kind, value);
         state.sessionSettings = await api.updateSessionSettings(
           state.activeSessionId,
           sessionSettingsToPatch(nextSettings)
@@ -1126,7 +1221,35 @@ function bindEvents() {
           button.textContent = original;
         }, 1000);
       } catch (error) {
-        state.error = error instanceof Error ? error.message : "Copy failed";
+        pushToast(error instanceof Error ? error.message : "Copy failed", "danger");
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='dismiss-toast']").forEach((button) => {
+    button.addEventListener("click", () => {
+      dismissToast(button.dataset.toastId);
+    });
+  });
+
+  document.querySelectorAll("[data-action='copy-toast']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const toast = state.toasts.find((item) => item.id === button.dataset.toastId);
+
+      if (!toast) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(toast.message);
+        const original = button.textContent;
+        button.textContent = "Copied";
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1000);
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Copy failed", "danger");
         render();
       }
     });
@@ -1138,7 +1261,7 @@ async function refreshModelCollections() {
     const managed = await api.refreshManagedModels();
     state.bootstrap.loadedModels = managed.loadedModels;
     state.bootstrap.allManagedModels = managed.allManagedModels;
-    state.notice = "Model catalog refreshed.";
+    pushToast("Model catalog refreshed.", "info");
   });
 }
 
@@ -1205,16 +1328,44 @@ function buildAppSettingsPayload(form, pluginsOnly) {
 }
 
 async function runAction(fn) {
+  const scrollSnapshot = captureScrollState();
   state.loading = true;
-  state.error = "";
   render();
+  restoreScrollState(scrollSnapshot);
 
   try {
     await fn();
   } catch (error) {
-    state.error = error instanceof Error ? error.message : "Action failed";
+    pushToast(error instanceof Error ? error.message : "Action failed", "danger");
   } finally {
     state.loading = false;
+    render();
+    restoreScrollState(scrollSnapshot);
+  }
+}
+
+function pushToast(message, tone = "danger") {
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  state.toasts = [
+    ...state.toasts,
+    {
+      id,
+      message,
+      tone
+    }
+  ].slice(-5);
+  window.setTimeout(() => {
+    dismissToast(id, false);
+  }, 5000);
+}
+
+function dismissToast(id, rerender = true) {
+  if (!id) {
+    return;
+  }
+
+  state.toasts = state.toasts.filter((toast) => toast.id !== id);
+  if (rerender) {
     render();
   }
 }
@@ -1405,20 +1556,75 @@ function providerModelHelp(providerId) {
 
 function getSelectableSessionModels(providerId, ...selected) {
   const providerModel = providerId ? state.bootstrap?.appSettings?.providers?.[providerId]?.model : undefined;
-  const models =
-    providerId === "lmstudio" || providerId === "ollama"
-      ? [...getLoadedModelOptions(), ...selected]
-      : [
-          providerModel,
-          ...Object.values(state.bootstrap?.appSettings?.providers ?? {}).map((provider) => provider.model),
-          ...selected
-        ];
+  const normalizedSelected = selected.filter(Boolean);
+  const models = isLocalProvider(providerId)
+    ? [...getLoadedModelOptions(), ...normalizedSelected]
+    : [
+        !isLocalCatalogModel(providerModel) ? providerModel : undefined,
+        ...getProviderSuggestedModels(providerId),
+        ...normalizedSelected.filter((modelId) => !isLocalCatalogModel(modelId))
+      ];
 
   return [...new Set(models.filter(Boolean))].sort();
 }
 
+function renderRuntimeProviderQuota(providerId, statusLabel) {
+  const result = state.providerTestResults?.[providerId];
+
+  if (result?.rateLimit && (result.rateLimit.remainingRequests || result.rateLimit.remainingTokens)) {
+    return `
+      <div class="subtle runtime-provider-quota">
+        ${escapeHtml(formatRuntimeQuota(result.rateLimit))}
+      </div>
+    `;
+  }
+
+  if (["openai", "anthropic"].includes(providerId) && statusLabel !== "not configured") {
+    return `<div class="subtle runtime-provider-quota">Run Test provider to fetch current rate-limit window.</div>`;
+  }
+
+  return "";
+}
+
+function formatRuntimeQuota(rateLimit) {
+  const parts = [];
+
+  if (rateLimit.remainingRequests) {
+    parts.push(`requests left: ${rateLimit.remainingRequests}`);
+  }
+
+  if (rateLimit.remainingTokens) {
+    parts.push(`tokens left: ${rateLimit.remainingTokens}`);
+  }
+
+  if (rateLimit.resetRequests) {
+    parts.push(`req reset: ${rateLimit.resetRequests}`);
+  }
+
+  if (rateLimit.resetTokens) {
+    parts.push(`tok reset: ${rateLimit.resetTokens}`);
+  }
+
+  return parts.join(" · ");
+}
+
 function getProviderConfiguredModel(providerId) {
   return state.bootstrap?.appSettings?.providers?.[providerId]?.model || "";
+}
+
+function getProviderSettingsModelOptions(providerId, currentValue = "") {
+  return [...new Set([currentValue, ...getProviderSuggestedModels(providerId)].filter(Boolean))];
+}
+
+function renderProviderSettingsModelControl(providerId, value) {
+  const options = getProviderSettingsModelOptions(providerId, value || getProviderConfiguredModel(providerId));
+  const selectedValue = value || getProviderConfiguredModel(providerId) || "";
+
+  return `
+    <select name="provider.${escapeAttr(providerId)}.model">
+      ${renderModelSelectOptions(options, selectedValue, "Select model")}
+    </select>
+  `;
 }
 
 function renderChip(kind, value, active) {
@@ -1441,6 +1647,18 @@ function renderChipGroup(label, chips) {
 
 function renderDatalistOptions(values) {
   return values.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("");
+}
+
+function pluginFieldPlaceholder(pluginName, key) {
+  if (pluginName === "notion" && key === "parentPageUrl") {
+    return "https://www.notion.so/... paste page URL";
+  }
+
+  if (pluginName === "notion" && key === "dataSourceUrl") {
+    return "https://www.notion.so/... paste data source URL";
+  }
+
+  return "";
 }
 
 function formatProviderTestResult(result) {
@@ -1469,12 +1687,130 @@ function formatProviderTestResult(result) {
   return `${result?.ok ? "OK" : "Issue"}: ${message}`;
 }
 
+function providerTestTone(result) {
+  return result?.ok ? "success" : "danger";
+}
+
 function getActiveDraft() {
   if (!state.activeSessionId) {
     return "";
   }
 
   return state.drafts[state.activeSessionId] ?? "";
+}
+
+function cloneSessionSettings(settings) {
+  return JSON.parse(JSON.stringify(settings));
+}
+
+function getCurrentSessionSummary() {
+  return (state.bootstrap?.sessions ?? []).find((session) => session.id === state.activeSessionId);
+}
+
+function readSessionSetupSnapshot() {
+  if (!state.sessionSettings) {
+    return null;
+  }
+
+  const fallbackSettings = cloneSessionSettings(state.sessionSettings);
+  const fallbackTitle = getCurrentSessionSummary()?.title ?? "New task";
+  const form = document.querySelector("#session-settings-form");
+
+  if (!form) {
+    return {
+      title: fallbackTitle,
+      settings: fallbackSettings
+    };
+  }
+
+  const formData = new FormData(form);
+  const resolveModelValue = (providerFieldName, modelFieldName, fallbackModel) => {
+    const providerId = String(formData.get(providerFieldName) || "").trim();
+
+    if (!providerId || providerId === "local") {
+      return undefined;
+    }
+
+    return String(formData.get(modelFieldName) || "").trim() || fallbackModel || getProviderConfiguredModel(providerId) || undefined;
+  };
+  const codeAgentCards = [...form.querySelectorAll(".code-agent-card")];
+  const codeAgents = codeAgentCards.map((card, index) => {
+    const agentIndex = card.dataset.codeAgentIndex ?? String(index);
+    const existingAgent = fallbackSettings.codeAgents?.[index];
+    const providerId =
+      String(formData.get(`codeAgentProvider:${agentIndex}`) || existingAgent?.providerId || fallbackSettings.defaultTarget.providerId).trim() ||
+      fallbackSettings.defaultTarget.providerId;
+
+    return {
+      id: String(formData.get(`codeAgentId:${agentIndex}`) || existingAgent?.id || `agent-${index + 1}`).trim(),
+      name: String(formData.get(`codeAgentName:${agentIndex}`) || existingAgent?.name || `Agent${index + 1}`).trim() || `Agent${index + 1}`,
+      providerId,
+      model:
+        resolveModelValue(`codeAgentProvider:${agentIndex}`, `codeAgentModel:${agentIndex}`, existingAgent?.model) ||
+        existingAgent?.model ||
+        getProviderConfiguredModel(providerId)
+    };
+  });
+
+  return {
+    title: String(formData.get("sessionTitle") || fallbackTitle).trim() || fallbackTitle,
+    settings: {
+      mode: String(formData.get("mode") || fallbackSettings.mode),
+      language: String(formData.get("language") || fallbackSettings.language),
+      defaultTarget: {
+        providerId: String(formData.get("defaultProvider") || fallbackSettings.defaultTarget.providerId).trim() || fallbackSettings.defaultTarget.providerId,
+        model: resolveModelValue("defaultProvider", "defaultModel", fallbackSettings.defaultTarget.model)
+      },
+      codeAgents,
+      debate: {
+        enabled: formData.get("debateEnabled") === "on",
+        profile: String(formData.get("debateProfile") || fallbackSettings.debate.profile),
+        support: {
+          providerId: String(formData.get("supportProvider") || fallbackSettings.debate.support.providerId).trim() || fallbackSettings.debate.support.providerId,
+          model: resolveModelValue("supportProvider", "supportModel", fallbackSettings.debate.support.model)
+        },
+        attack: {
+          providerId: String(formData.get("attackProvider") || fallbackSettings.debate.attack.providerId).trim() || fallbackSettings.debate.attack.providerId,
+          model: resolveModelValue("attackProvider", "attackModel", fallbackSettings.debate.attack.model)
+        },
+        judge: {
+          providerId: String(formData.get("judgeProvider") || fallbackSettings.debate.judge.providerId).trim() || fallbackSettings.debate.judge.providerId,
+          model: resolveModelValue("judgeProvider", "judgeModel", fallbackSettings.debate.judge.model)
+        }
+      }
+    }
+  };
+}
+
+async function persistActiveSessionSetup(options = {}) {
+  if (!state.activeSessionId || !state.sessionSettings) {
+    return null;
+  }
+
+  const snapshot = readSessionSetupSnapshot();
+  if (!snapshot) {
+    return null;
+  }
+
+  const currentSession = getCurrentSessionSummary();
+  if (options.renameSession !== false && snapshot.title && snapshot.title !== currentSession?.title) {
+    await api.renameSession(state.activeSessionId, snapshot.title);
+    if (currentSession) {
+      currentSession.title = snapshot.title;
+      currentSession.updatedAt = new Date().toISOString();
+    }
+  }
+
+  state.sessionSettings = await api.updateSessionSettings(
+    state.activeSessionId,
+    sessionSettingsToPatch(snapshot.settings)
+  );
+
+  if (options.refreshBootstrap) {
+    await refreshBootstrap();
+  }
+
+  return snapshot;
 }
 
 function scrollChatToBottom(behavior = "auto") {
@@ -1512,6 +1848,34 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
       placeholder="${escapeAttr(providerModelPlaceholder(providerId))}"
     />
     <datalist id="${escapeAttr(datalistId)}">${renderDatalistOptions(options)}</datalist>
+  `;
+}
+
+function renderCodeAgentCard(agent, index, providerOptions) {
+  const modelOptions = getSelectableSessionModels(agent.providerId, agent.model);
+
+  return `
+    <div class="code-agent-card" data-code-agent-index="${index}">
+      <input type="hidden" name="codeAgentId:${index}" value="${escapeAttr(agent.id)}" />
+      <div class="field">
+        <label>Name</label>
+        <input name="codeAgentName:${index}" value="${escapeAttr(agent.name)}" />
+      </div>
+      <div class="field">
+        <label>Provider</label>
+        <select name="codeAgentProvider:${index}">
+          ${providerOptions.map((item) => option(item.id, agent.providerId, item.name)).join("")}
+        </select>
+      </div>
+      <div class="field code-agent-model-field" data-code-agent-model-index="${index}">
+        <label>Model</label>
+        ${renderSessionModelControl(`codeAgentModel:${index}`, agent.providerId, agent.model ?? "", modelOptions, `code-agent-model-options-${index}`)}
+      </div>
+      <div class="field code-agent-delete">
+        <label>&nbsp;</label>
+        <button class="ghost-button" type="button" data-action="delete-code-agent" data-code-agent-index="${index}">Delete</button>
+      </div>
+    </div>
   `;
 }
 
@@ -1562,20 +1926,23 @@ function buildNextSessionSettings(current, kind, value) {
   if (kind === "mode") {
     return {
       ...current,
-      mode: value
+      mode: value,
+      codeAgents: current.codeAgents ?? []
     };
   }
 
   if (kind === "language") {
     return {
       ...current,
-      language: value
+      language: value,
+      codeAgents: current.codeAgents ?? []
     };
   }
 
   if (kind === "debate") {
     return {
       ...current,
+      codeAgents: current.codeAgents ?? [],
       debate: {
         ...current.debate,
         enabled: value === "debate:on"
@@ -1591,6 +1958,7 @@ function sessionSettingsToPatch(settings) {
     mode: settings.mode,
     language: settings.language,
     defaultTarget: { ...settings.defaultTarget },
+    codeAgents: (settings.codeAgents ?? []).map((agent) => ({ ...agent })),
     debate: {
       enabled: settings.debate.enabled,
       profile: settings.debate.profile,
@@ -1644,6 +2012,31 @@ function bindSessionSetupFieldSync() {
 
     syncField(providerFieldName, modelFieldName, datalistId);
     providerField.addEventListener("change", () => syncField(providerFieldName, modelFieldName, datalistId));
+  });
+
+  form.querySelectorAll("[name^='codeAgentProvider:']").forEach((providerField) => {
+    providerField.addEventListener("change", () => {
+      const index = providerField.getAttribute("name")?.split(":")[1];
+
+      if (!index) {
+        return;
+      }
+
+      const providerId = providerField.value;
+      const modelField = form.querySelector(`[name="codeAgentModel:${index}"]`);
+      const currentValue = modelField?.value ?? "";
+      const options = getSelectableSessionModels(providerId, currentValue);
+      const field = form.querySelector(`[data-code-agent-model-index="${index}"]`);
+
+      if (!field) {
+        return;
+      }
+
+      field.innerHTML = `
+        <label>Model</label>
+        ${renderSessionModelControl(`codeAgentModel:${index}`, providerId, isCloudProvider(providerId) && isLocalCatalogModel(currentValue) ? "" : currentValue, options, `code-agent-model-options-${index}`)}
+      `;
+    });
   });
 }
 

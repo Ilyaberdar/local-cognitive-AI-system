@@ -3,7 +3,13 @@ import { SystemPlugin } from "../../src/plugins/types";
 
 const plugin: SystemPlugin = {
   register(context) {
-    context.toolRegistry.register(new FileTool(context.config.outputDir));
+    context.toolRegistry.register(
+      new FileTool({
+        outputDir: context.config.outputDir,
+        accessMode: context.config.filesystem.accessMode,
+        allowedDirectories: context.config.filesystem.allowedDirectories
+      })
+    );
   }
 };
 

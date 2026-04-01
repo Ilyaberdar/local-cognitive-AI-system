@@ -48,9 +48,39 @@ const renderConversation = (entries: MemoryEntry[]): string => {
     .join("\n\n---\n\n");
 };
 
+const renderEntryOutput = (entry: MemoryEntry): string => {
+  if (typeof entry.output === "string") {
+    return entry.output;
+  }
+
+  if (entry.output && typeof entry.output === "object") {
+    const record = entry.output as Record<string, unknown>;
+
+    if ("response" in record || "arguments" in record) {
+      return renderModeResult(entry.mode, entry.output as ModeResult);
+    }
+  }
+
+  return JSON.stringify(entry.output, null, 2);
+};
+
+const extractReferencedContent = (rawInput: string, entries: MemoryEntry[]): string | undefined => {
+  const referencesPrevious =
+    /\b(this|that|it)\b|это|этот|эту|всё это|по всему этому|весь диалог/i.test(rawInput);
+
+  if (!referencesPrevious || entries.length === 0) {
+    return undefined;
+  }
+
+  return renderEntryOutput(entries[0]);
+};
+
 export class ToolRequestBuilder {
   build(input: BuildToolRequestInput): ToolExecutionRequest {
     const title = this.buildTitle(input.rawInput, input.mode);
+    const noteContent =
+      extractReferencedContent(input.rawInput, input.context.conversation) ??
+      renderModeResult(input.mode, input.result);
     const content = [
       `Mode: ${input.mode}`,
       `Session: ${input.context.actor.sessionId}`,
@@ -71,7 +101,11 @@ export class ToolRequestBuilder {
       title,
       content,
       context: input.context,
-      result: input.result
+      result: input.result,
+      metadata: {
+        noteTitle: title,
+        noteContent
+      }
     };
   }
 
