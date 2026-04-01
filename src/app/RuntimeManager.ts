@@ -4,6 +4,7 @@ import { AppConfig } from "../config/config";
 import { Logger } from "../utils/Logger";
 import { AppSettings, AppSettingsPatch } from "../types";
 import { AppSettingsStore } from "./AppSettingsStore";
+import { extractNotionId } from "../utils/notion";
 
 export class RuntimeManager {
   private runtime: AppRuntime | null = null;
@@ -72,6 +73,13 @@ export class RuntimeManager {
         botToken: settings.telegram.botToken ?? this.baseConfig.telegram.botToken,
         pollTimeoutSec: settings.telegram.pollTimeoutSec
       },
+      filesystem: {
+        accessMode:
+          this.asString(settings.plugins.file?.values.accessMode) === "full" ? "full" : "restricted",
+        allowedDirectories:
+          this.parseDirectories(settings.plugins.file?.values.allowedDirectories) ??
+          this.baseConfig.filesystem.allowedDirectories
+      },
       memory: {
         ...this.baseConfig.memory,
         adapter: settings.memory.adapter,
@@ -120,9 +128,11 @@ export class RuntimeManager {
         ...this.baseConfig.notion,
         apiKey: this.asString(settings.plugins.notion?.values.apiKey) ?? this.baseConfig.notion.apiKey,
         parentPageId:
+          extractNotionId(this.asString(settings.plugins.notion?.values.parentPageUrl)) ??
           this.asString(settings.plugins.notion?.values.parentPageId) ??
           this.baseConfig.notion.parentPageId,
         dataSourceId:
+          extractNotionId(this.asString(settings.plugins.notion?.values.dataSourceUrl)) ??
           this.asString(settings.plugins.notion?.values.dataSourceId) ??
           this.baseConfig.notion.dataSourceId,
         titleProperty:
@@ -154,5 +164,23 @@ export class RuntimeManager {
   private asAbsolutePath(value: string | number | boolean | undefined): string | undefined {
     const normalized = this.asString(value);
     return normalized ? path.resolve(process.cwd(), normalized) : undefined;
+  }
+
+  private parseDirectories(
+    value: string | number | boolean | undefined
+  ): string[] | undefined {
+    const normalized = this.asString(value);
+
+    if (!normalized) {
+      return undefined;
+    }
+
+    const directories = normalized
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => path.resolve(process.cwd(), item));
+
+    return directories.length ? Array.from(new Set(directories)) : undefined;
   }
 }

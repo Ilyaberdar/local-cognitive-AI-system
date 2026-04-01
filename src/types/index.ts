@@ -20,6 +20,11 @@ export interface ProviderTarget {
   model?: string;
 }
 
+export interface CodeAgentTarget extends ProviderTarget {
+  id: string;
+  name: string;
+}
+
 export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -31,6 +36,13 @@ export interface GenerationMetrics {
   completedAt: string;
   durationMs: number;
   usage?: TokenUsage;
+}
+
+export interface ProviderRateLimit {
+  remainingRequests?: string;
+  remainingTokens?: string;
+  resetRequests?: string;
+  resetTokens?: string;
 }
 
 export interface DebateSettings {
@@ -110,6 +122,7 @@ export interface SessionSettings {
   mode: SessionMode;
   language: LanguagePreference;
   defaultTarget: ProviderTarget;
+  codeAgents: CodeAgentTarget[];
   debate: DebateSettings;
 }
 
@@ -117,6 +130,7 @@ export interface SessionSettingsPatch {
   mode?: SessionMode;
   language?: LanguagePreference;
   defaultTarget?: Partial<ProviderTarget>;
+  codeAgents?: CodeAgentTarget[];
   debate?: {
     enabled?: boolean;
     profile?: DebateProfile;
@@ -254,6 +268,7 @@ export interface LLMResponse {
   raw?: unknown;
   responseId?: string;
   usage?: TokenUsage;
+  rateLimit?: ProviderRateLimit;
   error?: string;
 }
 

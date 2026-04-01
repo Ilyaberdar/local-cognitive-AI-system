@@ -1,4 +1,4 @@
-import { LLMRequest, LLMResponse, ProviderDescriptor, TokenUsage } from "../types";
+import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderRateLimit, TokenUsage } from "../types";
 
 export interface HttpProviderOptions {
   id: string;
@@ -39,6 +39,24 @@ export const buildFallbackResponse = (
       `Prompt digest: ${snippet}`
     ].join(" "),
     error
+  };
+};
+
+export const readRateLimit = (headers: Headers): ProviderRateLimit | undefined => {
+  const remainingRequests = headers.get("x-ratelimit-remaining-requests") ?? undefined;
+  const remainingTokens = headers.get("x-ratelimit-remaining-tokens") ?? undefined;
+  const resetRequests = headers.get("x-ratelimit-reset-requests") ?? undefined;
+  const resetTokens = headers.get("x-ratelimit-reset-tokens") ?? undefined;
+
+  if (!remainingRequests && !remainingTokens && !resetRequests && !resetTokens) {
+    return undefined;
+  }
+
+  return {
+    remainingRequests,
+    remainingTokens,
+    resetRequests,
+    resetTokens
   };
 };
 

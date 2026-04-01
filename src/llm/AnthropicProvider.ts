@@ -1,7 +1,13 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
-import { buildFallbackResponse, createDescriptor, HttpProviderOptions, readUsage } from "./provider-utils";
+import {
+  buildFallbackResponse,
+  createDescriptor,
+  HttpProviderOptions,
+  readRateLimit,
+  readUsage
+} from "./provider-utils";
 
 interface AnthropicProviderOptions extends Omit<HttpProviderOptions, "id" | "name"> {
   version: string;
@@ -85,7 +91,8 @@ export class AnthropicProvider implements LLMProvider {
         text,
         raw: payload,
         responseId: payload.id,
-        usage: readUsage(payload)
+        usage: readUsage(payload),
+        rateLimit: readRateLimit(response.headers)
       };
     } catch (error) {
       this.logger.warn("Falling back to mock Anthropic response", {

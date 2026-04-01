@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import {
+  CodeAgentTarget,
   ProviderTarget,
   SessionSettings,
   SessionSettingsPatch
@@ -38,6 +39,7 @@ export class SessionSettingsStore {
         ...current.defaultTarget,
         ...patch.defaultTarget
       },
+      codeAgents: patch.codeAgents ?? current.codeAgents,
       debate: {
         ...current.debate,
         ...patch.debate,
@@ -86,6 +88,7 @@ export class SessionSettingsStore {
       mode: settings.mode ?? fallback.mode,
       language: settings.language ?? fallback.language,
       defaultTarget: this.normalizeTarget(settings.defaultTarget, fallback.defaultTarget),
+      codeAgents: this.normalizeCodeAgents(settings.codeAgents, fallback.codeAgents),
       debate: {
         enabled: settings.debate?.enabled ?? fallback.debate.enabled,
         profile: settings.debate?.profile ?? fallback.debate.profile,
@@ -121,6 +124,13 @@ export class SessionSettingsStore {
       defaultTarget: {
         ...this.defaultTarget
       },
+      codeAgents: [
+        {
+          id: "agent-1",
+          name: "Agent1",
+          ...this.defaultTarget
+        }
+      ],
       debate: {
         enabled: false,
         profile: "general",
@@ -135,6 +145,37 @@ export class SessionSettingsStore {
         }
       }
     };
+  }
+
+  private normalizeCodeAgents(
+    agents: CodeAgentTarget[] | undefined,
+    fallback: CodeAgentTarget[]
+  ): CodeAgentTarget[] {
+    if (Array.isArray(agents)) {
+      return agents.slice(0, 5).map((agent, index) => {
+        const normalizedTarget = this.normalizeTarget(agent, fallback[0] ?? this.defaultTarget);
+
+        return {
+          id: agent.id?.trim() || `agent-${index + 1}`,
+          name: agent.name?.trim() || `Agent${index + 1}`,
+          providerId: normalizedTarget.providerId,
+          model: normalizedTarget.model
+        };
+      });
+    }
+
+    const source = fallback;
+
+    return source.map((agent, index) => {
+      const normalizedTarget = this.normalizeTarget(agent, fallback[0] ?? this.defaultTarget);
+
+      return {
+        id: agent.id?.trim() || `agent-${index + 1}`,
+        name: agent.name?.trim() || `Agent${index + 1}`,
+        providerId: normalizedTarget.providerId,
+        model: normalizedTarget.model
+      };
+    });
   }
 
   private getPath(sessionId: string): string {

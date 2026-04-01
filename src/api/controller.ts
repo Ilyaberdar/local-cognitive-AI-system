@@ -8,10 +8,12 @@ import {
   GenerationMetrics,
   LanguagePreference,
   SessionMode,
-  SessionSettingsPatch
+  SessionSettingsPatch,
+  ToolExecutionResult
 } from "../types";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
+import { extractNotionId } from "../utils/notion";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -224,6 +226,17 @@ export const createUpdateSessionSettingsController =
               model:
                 typeof body.defaultTarget.model === "string" ? body.defaultTarget.model : undefined
             }
+          : undefined,
+        codeAgents: Array.isArray(body.codeAgents)
+          ? body.codeAgents
+              .filter(isObject)
+              .map((agent, index) => ({
+                id: typeof agent.id === "string" ? agent.id : `agent-${index + 1}`,
+                name: typeof agent.name === "string" ? agent.name : `Agent${index + 1}`,
+                providerId:
+                  typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
+                model: typeof agent.model === "string" ? agent.model : undefined
+              }))
           : undefined,
         debate: isObject(body.debate)
           ? {
@@ -441,7 +454,8 @@ export const createProviderTestController =
         providerId,
         model: response.model,
         message: `Provider responded successfully with model ${response.model}.`,
-        usage: response.usage
+        usage: response.usage,
+        rateLimit: response.rateLimit
       });
     } catch (error) {
       next(error);
@@ -480,6 +494,8 @@ export const createPluginTestController =
         case "file": {
           const outputDir =
             readPluginValue(settings, "file", "outputDir") ?? runtime.config.outputDir;
+          const accessMode = readPluginValue(settings, "file", "accessMode") ?? "restricted";
+          const allowedDirectories = readPluginValue(settings, "file", "allowedDirectories") ?? "";
           await fs.mkdir(outputDir, { recursive: true });
           const filePath = path.join(outputDir, `plugin-check-${Date.now()}.md`);
           await fs.writeFile(filePath, "# File plugin check\n\nThe file plugin is configured.\n", "utf8");
@@ -490,15 +506,21 @@ export const createPluginTestController =
             status: "configured",
             message: `Test file written to ${filePath}`,
             metadata: {
-              filePath
+              filePath,
+              accessMode,
+              allowedDirectories
             }
           });
           return;
         }
         case "notion": {
           const apiKey = readPluginValue(settings, "notion", "apiKey");
-          const parentPageId = readPluginValue(settings, "notion", "parentPageId");
-          const dataSourceId = readPluginValue(settings, "notion", "dataSourceId");
+          const parentPageId =
+            extractNotionId(readPluginValue(settings, "notion", "parentPageUrl")) ??
+            readPluginValue(settings, "notion", "parentPageId");
+          const dataSourceId =
+            extractNotionId(readPluginValue(settings, "notion", "dataSourceUrl")) ??
+            readPluginValue(settings, "notion", "dataSourceId");
           const version = readPluginValue(settings, "notion", "version") ?? runtime.config.notion.version;
 
           if (!apiKey || (!parentPageId && !dataSourceId)) {
@@ -544,11 +566,17 @@ export const createPluginTestController =
           return;
         }
         case "vscode": {
+          const accessMode = readPluginValue(settings, "vscode", "accessMode") ?? "restricted";
+          const allowedDirectories = readPluginValue(settings, "vscode", "allowedDirectories") ?? "";
           res.status(200).json({
             ok: false,
             plugin: pluginName,
             status: "not_implemented",
-            message: "VS Code bridge is not implemented yet. This panel stores future config only."
+            message: "VS Code bridge is not implemented yet. This panel stores future config and access boundaries only.",
+            metadata: {
+              accessMode,
+              allowedDirectories
+            }
           });
           return;
         }
@@ -616,7 +644,7 @@ const buildStoredMessageContent = (
     mode: entry.mode,
     providerId: String(entry.metadata?.providerId ?? "unknown"),
     result: entry.output as never,
-    tools: [],
+    tools: readStoredTools(entry.metadata),
     memory: [],
     conversationSize: 0,
     sessionSettings: {
@@ -625,6 +653,7 @@ const buildStoredMessageContent = (
       defaultTarget: {
         providerId: "unknown"
       },
+      codeAgents: [],
       debate: {
         enabled: false,
         profile: "general",
@@ -651,6 +680,16 @@ const readStoredMetrics = (
   return isGenerationMetrics(candidate) ? candidate : undefined;
 };
 
+const readStoredTools = (metadata?: Record<string, unknown>): ToolExecutionResult[] => {
+  const candidate = metadata?.tools;
+
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+
+  return candidate.filter(isToolExecutionResult);
+};
+
 const isGenerationMetrics = (value: unknown): value is GenerationMetrics => {
   if (!value || typeof value !== "object") {
     return false;
@@ -662,6 +701,20 @@ const isGenerationMetrics = (value: unknown): value is GenerationMetrics => {
     typeof record.startedAt === "string" &&
     typeof record.completedAt === "string" &&
     typeof record.durationMs === "number"
+  );
+};
+
+const isToolExecutionResult = (value: unknown): value is ToolExecutionResult => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return (
+    typeof record.tool === "string" &&
+    typeof record.ok === "boolean" &&
+    typeof record.output === "string"
   );
 };
 
@@ -709,20 +762,28 @@ const buildPluginStatus = (
 
   if (name === "file") {
     configured = Boolean(readPluginValue(settings, "file", "outputDir"));
+    const accessMode = readPluginValue(settings, "file", "accessMode") ?? "restricted";
     summary = configured
-      ? `Output dir: ${readPluginValue(settings, "file", "outputDir")}`
+      ? `Output dir: ${readPluginValue(settings, "file", "outputDir")} · access: ${accessMode}`
       : "Output directory is missing.";
   } else if (name === "notion") {
     const hasKey = Boolean(readPluginValue(settings, "notion", "apiKey"));
-    const hasParent = Boolean(readPluginValue(settings, "notion", "parentPageId"));
-    const hasSource = Boolean(readPluginValue(settings, "notion", "dataSourceId"));
+    const hasParent = Boolean(
+      extractNotionId(readPluginValue(settings, "notion", "parentPageUrl")) ??
+        readPluginValue(settings, "notion", "parentPageId")
+    );
+    const hasSource = Boolean(
+      extractNotionId(readPluginValue(settings, "notion", "dataSourceUrl")) ??
+        readPluginValue(settings, "notion", "dataSourceId")
+    );
     configured = hasKey && (hasParent || hasSource);
     summary = configured
-      ? "API key and target container are configured."
-      : "Need API key and parent page or data source id.";
+      ? "API key and Notion target are configured."
+      : "Need API key and parent page URL or data source URL.";
   } else if (name === "vscode") {
-    configured = false;
-    summary = "Placeholder config only. Bridge is not implemented yet.";
+    configured = Boolean(readPluginValue(settings, "vscode", "workspaceRoot"));
+    const accessMode = readPluginValue(settings, "vscode", "accessMode") ?? "restricted";
+    summary = `Placeholder bridge config. Workspace root stored · access: ${accessMode}.`;
   }
 
   return {

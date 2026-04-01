@@ -5,6 +5,7 @@ import {
   buildFallbackResponse,
   createDescriptor,
   HttpProviderOptions,
+  readRateLimit,
   readResponseText,
   readUsage
 } from "./provider-utils";
@@ -109,7 +110,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
         text,
         raw: payload,
         responseId: typeof payload.id === "string" ? payload.id : undefined,
-        usage: readUsage(payload)
+        usage: readUsage(payload),
+        rateLimit: readRateLimit(response.headers)
       };
     } catch (error) {
       this.logger.warn(`Falling back to mock ${this.id} response`, {
