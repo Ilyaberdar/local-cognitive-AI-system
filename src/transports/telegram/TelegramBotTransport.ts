@@ -90,7 +90,7 @@ export class TelegramBotTransport {
             }
           });
 
-          await this.sendMessage(chatId, this.formatter.formatForChat(result));
+          await this.sendMessage(chatId, this.formatter.formatForChat(result, { maxChars: 3900 }));
         }
       } catch (error) {
         this.logger.warn("Telegram poll loop error", {

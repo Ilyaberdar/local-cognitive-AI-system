@@ -1,4 +1,5 @@
 const app = document.querySelector("#app");
+let systemMetricsPollTimer = null;
 
 const state = {
   route: "chat",
@@ -12,7 +13,9 @@ const state = {
   sessionSettings: null,
   messages: [],
   drafts: {},
+  draftAttachments: {},
   pendingRequest: null,
+  modelActions: {},
   pluginTestResults: {},
   providerTestResults: {},
   savedButtons: {}
@@ -80,7 +83,8 @@ const api = {
       request("/lmstudio/models/all")
     ]);
     return { loadedModels, allManagedModels };
-  }
+  },
+  getSystemMetrics: () => request("/system/metrics")
 };
 
 init().catch((error) => {
@@ -91,6 +95,7 @@ init().catch((error) => {
 window.addEventListener("hashchange", () => {
   syncRouteFromHash();
   render();
+  syncSystemMetricsPolling();
 });
 
 async function init() {
@@ -98,6 +103,7 @@ async function init() {
   await refreshBootstrap();
   await ensureSession();
   render();
+  syncSystemMetricsPolling();
 }
 
 function syncRouteFromHash() {
@@ -242,14 +248,6 @@ function renderSidebar() {
 
   return `
     <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">LC</div>
-        <div class="brand-copy">
-          <strong>Local Cognitive</strong>
-          <span>Headless engine dashboard</span>
-        </div>
-      </div>
-
       <nav class="nav">
         ${renderNavButton("chat", "Chat Workspace", "▣")}
         ${renderNavButton("models", "Models", "◎")}
@@ -387,6 +385,7 @@ function renderChatRoute() {
         ]
       : [])
   ];
+  const draftAttachments = getActiveDraftAttachments();
 
   return `
     <div class="chat-layout">
@@ -400,6 +399,12 @@ function renderChatRoute() {
         </div>
 
         <form class="composer" id="chat-form">
+          <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="image/*,.txt,.md,.markdown,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.xml,.toml,.sh,.log,.pdf,.doc,.docx" />
+          ${
+            draftAttachments.length
+              ? `<div class="composer-attachments">${draftAttachments.map(renderDraftAttachment).join("")}</div>`
+              : ""
+          }
           <textarea name="input" placeholder="Type a command, ask a question, or run a hypothesis debate...">${escapeHtml(getActiveDraft())}</textarea>
           <div class="composer-footer">
             <div class="chips">
@@ -419,7 +424,10 @@ function renderChatRoute() {
                 ["debate", "debate:on", settings.debate.enabled]
               ])}
             </div>
-            <button class="primary-button" type="submit">${state.chatSubmitting ? "Generating..." : "Send"}</button>
+            <div class="composer-actions">
+              <button class="ghost-button" type="button" data-action="attach-files">Attach</button>
+              <button class="primary-button" type="submit">${state.chatSubmitting ? "Generating..." : "Send"}</button>
+            </div>
           </div>
         </form>
       </section>
@@ -445,6 +453,10 @@ function renderChatRoute() {
           <div class="field">
             <label>Language</label>
             <select name="language">${["auto", "ru", "en"].map((value) => option(value, settings.language)).join("")}</select>
+          </div>
+          <div class="field">
+            <label>Output style</label>
+            <select name="outputStyle">${["compact", "balanced", "detailed", "exhaustive"].map((value) => option(value, settings.outputStyle)).join("")}</select>
           </div>
           <div class="field">
             <label>Debate</label>
@@ -510,7 +522,8 @@ function renderModelsRoute() {
 
     return (left.displayName || left.id).localeCompare(right.displayName || right.id);
   });
-      const providerDefaults = state.bootstrap?.appSettings?.providers ?? {};
+  const providerDefaults = state.bootstrap?.appSettings?.providers ?? {};
+  const systemMetrics = state.bootstrap?.systemMetrics;
 
   return `
     <div class="grid">
@@ -520,6 +533,7 @@ function renderModelsRoute() {
             <h2>Runtime Providers</h2>
             <div class="subtle">Read-only snapshot of provider aliases, defaults, and endpoints.</div>
           </div>
+          ${renderSystemMetricsPanel(systemMetrics, loaded)}
         </div>
         <div class="runtime-provider-grid">
         ${(state.bootstrap?.providers ?? [])
@@ -596,12 +610,13 @@ function renderModelsRoute() {
                     </div>
                     <span class="badge ${model.loaded ? "success" : "warning"}">${model.loaded ? "loaded" : "available"}</span>
                   </div>
+                  <div class="subtle">${formatManagedModelSize(model.sizeBytes)}</div>
                   <div class="footer-row">
                     <span class="subtle">${model.loaded ? "Ready for chat and debate." : "Can be loaded into LM Studio."}</span>
                     ${
                       model.loaded
-                        ? `<button class="ghost-button danger-button" data-action="unload-model" data-model-id="${escapeAttr(model.loadedInstanceIds[0] || model.id)}">Unload</button>`
-                        : `<button class="primary-button" data-action="load-model" data-model-id="${escapeAttr(model.id)}">Load</button>`
+                        ? renderModelActionButton("unload", model.loadedInstanceIds[0] || model.id)
+                        : renderModelActionButton("load", model.id)
                     }
                   </div>
                 </div>
@@ -611,6 +626,25 @@ function renderModelsRoute() {
         </div>
       </section>
     </div>
+  `;
+}
+
+function renderModelActionButton(action, modelId) {
+  const stateKey = `${action}:${modelId}`;
+  const pending = Boolean(state.modelActions[stateKey]);
+
+  if (action === "unload") {
+    return `
+      <button class="ghost-button danger-button" data-action="unload-model" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
+        ${pending ? `<span class="button-spinner"></span>Unloading...` : "Unload"}
+      </button>
+    `;
+  }
+
+  return `
+    <button class="primary-button" data-action="load-model" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
+      ${pending ? `<span class="button-spinner"></span>Loading...` : "Load"}
+    </button>
   `;
 }
 
@@ -908,7 +942,11 @@ function renderMessage(message) {
 
   const content = message.pending
     ? `<div class="thinking-indicator">Thinking</div>`
-    : escapeHtml(message.content);
+    : renderMessageContent(message);
+  const attachments =
+    message.attachments?.length
+      ? `<div class="message-attachments">${message.attachments.map(renderMessageAttachment).join("")}</div>`
+      : "";
 
   return `
     <article class="message ${message.role} ${message.pending ? "pending" : ""}">
@@ -917,9 +955,95 @@ function renderMessage(message) {
         <span>${escapeHtml(message.role === "assistant" ? formatDate(message.createdAt) : "")}</span>
       </div>
       <div class="message-content">${content}</div>
+      ${attachments}
       ${footer}
     </article>
   `;
+}
+
+function renderMessageContent(message) {
+  if (message.role !== "assistant") {
+    return escapeHtml(message.content);
+  }
+
+  return renderAssistantMessageContent(message.content);
+}
+
+function renderAssistantMessageContent(rawContent) {
+  const marker = "\nJudge Conclusion\n";
+  const markerIndex = rawContent.indexOf(marker);
+
+  if (markerIndex === -1) {
+    return renderPlainMessageText(rawContent);
+  }
+
+  const before = rawContent.slice(0, markerIndex).replace(/\n+$/, "");
+  const afterMarkerIndex = markerIndex + marker.length;
+  const tail = rawContent.slice(afterMarkerIndex);
+  const nextSectionMatch = tail.match(/\n\n(?=(Pro|Contra|Tools)\n)/);
+  const conclusion = (
+    nextSectionMatch ? tail.slice(0, nextSectionMatch.index) : tail
+  ).trim();
+  const after = (
+    nextSectionMatch ? tail.slice(nextSectionMatch.index).replace(/^\n+/, "") : ""
+  ).trim();
+
+  return [
+    before ? renderPlainMessageText(before) : "",
+    conclusion
+      ? `
+        <section class="judge-conclusion">
+          <div class="judge-conclusion__label">Judge Conclusion</div>
+          <blockquote class="judge-conclusion__body">${escapeHtml(conclusion)}</blockquote>
+        </section>
+      `
+      : "",
+    after ? renderPlainMessageText(after) : ""
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function renderPlainMessageText(value) {
+  return `<div class="message-text-block">${escapeHtml(value)}</div>`;
+}
+
+function renderDraftAttachment(attachment) {
+  return `
+    <div class="draft-attachment">
+      <div class="draft-attachment__copy">
+        <strong>${escapeHtml(attachment.name)}</strong>
+        <span>${escapeHtml(renderAttachmentMeta(attachment))}</span>
+      </div>
+      <button class="ghost-button draft-attachment__remove" type="button" data-action="remove-draft-attachment" data-attachment-id="${escapeAttr(attachment.id)}">×</button>
+    </div>
+  `;
+}
+
+function renderMessageAttachment(attachment) {
+  return `
+    <div class="message-attachment">
+      ${
+        attachment.kind === "image" && attachment.dataUrl
+          ? `<img class="message-attachment__image" src="${escapeAttr(attachment.dataUrl)}" alt="${escapeAttr(attachment.name)}" />`
+          : ""
+      }
+      <div class="message-attachment__copy">
+        <strong>${escapeHtml(attachment.name)}</strong>
+        <span>${escapeHtml(renderAttachmentMeta(attachment))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderAttachmentMeta(attachment) {
+  const parts = [attachment.kind, `${Math.max(1, Math.round(attachment.sizeBytes / 1024))} KB`];
+
+  if (attachment.mimeType) {
+    parts.unshift(attachment.mimeType);
+  }
+
+  return parts.join(" · ");
 }
 
 function bindEvents() {
@@ -1030,6 +1154,7 @@ function bindEvents() {
     }
 
     try {
+      const attachments = getActiveDraftAttachments();
       await persistActiveSessionSetup({ refreshBootstrap: false });
       state.route = "chat";
       window.location.hash = "/chat";
@@ -1046,9 +1171,17 @@ function bindEvents() {
 
       const response = await api.sendChat({
         input,
-        sessionId: state.activeSessionId
+        sessionId: state.activeSessionId,
+        metadata: attachments.length
+          ? {
+              attachments
+            }
+          : undefined
       });
       state.activeSessionId = response.sessionId;
+      if (state.activeSessionId) {
+        state.draftAttachments[state.activeSessionId] = [];
+      }
       await refreshBootstrap();
       await loadActiveSession();
     } catch (error) {
@@ -1067,6 +1200,44 @@ function bindEvents() {
     }
 
     state.drafts[state.activeSessionId] = event.currentTarget.value;
+  });
+
+  document.querySelector("[data-action='attach-files']")?.addEventListener("click", () => {
+    document.querySelector("#chat-attachment-input")?.click();
+  });
+
+  document.querySelector("#chat-attachment-input")?.addEventListener("change", async (event) => {
+    const files = [...(event.currentTarget.files ?? [])];
+
+    if (!files.length || !state.activeSessionId) {
+      return;
+    }
+
+    try {
+      const attachments = await buildAttachments(files);
+      state.draftAttachments[state.activeSessionId] = [
+        ...getActiveDraftAttachments(),
+        ...attachments
+      ].slice(0, 5);
+      render();
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to read attachments", "danger");
+    } finally {
+      event.currentTarget.value = "";
+    }
+  });
+
+  document.querySelectorAll("[data-action='remove-draft-attachment']").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.activeSessionId) {
+        return;
+      }
+
+      state.draftAttachments[state.activeSessionId] = getActiveDraftAttachments().filter(
+        (attachment) => attachment.id !== button.dataset.attachmentId
+      );
+      render();
+    });
   });
 
   document.querySelector("#session-settings-form")?.addEventListener("submit", async (event) => {
@@ -1140,21 +1311,63 @@ function bindEvents() {
 
   document.querySelectorAll("[data-action='load-model']").forEach((button) => {
     button.addEventListener("click", async () => {
-      await runAction(async () => {
-        await api.loadModel(button.dataset.modelId);
-        await refreshModelCollections();
+      const modelId = button.dataset.modelId;
+
+      if (!modelId) {
+        return;
+      }
+
+      const key = `load:${modelId}`;
+      const scrollSnapshot = captureScrollState();
+      state.modelActions[key] = true;
+      render();
+      restoreScrollState(scrollSnapshot);
+
+      try {
+        await api.loadModel(modelId);
+        const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
+        state.bootstrap.loadedModels = managed.loadedModels;
+        state.bootstrap.allManagedModels = managed.allManagedModels;
+        state.bootstrap.systemMetrics = systemMetrics;
         state.notice = "";
-      });
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Load failed", "danger");
+      } finally {
+        delete state.modelActions[key];
+        render();
+        restoreScrollState(scrollSnapshot);
+      }
     });
   });
 
   document.querySelectorAll("[data-action='unload-model']").forEach((button) => {
     button.addEventListener("click", async () => {
-      await runAction(async () => {
-        await api.unloadModel(button.dataset.modelId);
-        await refreshModelCollections();
+      const modelId = button.dataset.modelId;
+
+      if (!modelId) {
+        return;
+      }
+
+      const key = `unload:${modelId}`;
+      const scrollSnapshot = captureScrollState();
+      state.modelActions[key] = true;
+      render();
+      restoreScrollState(scrollSnapshot);
+
+      try {
+        await api.unloadModel(modelId);
+        const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
+        state.bootstrap.loadedModels = managed.loadedModels;
+        state.bootstrap.allManagedModels = managed.allManagedModels;
+        state.bootstrap.systemMetrics = systemMetrics;
         state.notice = "";
-      });
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Unload failed", "danger");
+      } finally {
+        delete state.modelActions[key];
+        render();
+        restoreScrollState(scrollSnapshot);
+      }
     });
   });
 
@@ -1258,11 +1471,42 @@ function bindEvents() {
 
 async function refreshModelCollections() {
   await runAction(async () => {
-    const managed = await api.refreshManagedModels();
+    const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
     state.bootstrap.loadedModels = managed.loadedModels;
     state.bootstrap.allManagedModels = managed.allManagedModels;
+    state.bootstrap.systemMetrics = systemMetrics;
     pushToast("Model catalog refreshed.", "info");
   });
+}
+
+async function pollSystemMetrics() {
+  if (state.route !== "models" || !state.bootstrap) {
+    return;
+  }
+
+  try {
+    const scrollSnapshot = captureScrollState();
+    state.bootstrap.systemMetrics = await api.getSystemMetrics();
+    render();
+    restoreScrollState(scrollSnapshot);
+  } catch {
+    // keep the dashboard usable even if metrics polling fails
+  }
+}
+
+function syncSystemMetricsPolling() {
+  if (systemMetricsPollTimer) {
+    window.clearInterval(systemMetricsPollTimer);
+    systemMetricsPollTimer = null;
+  }
+
+  if (state.route !== "models") {
+    return;
+  }
+
+  systemMetricsPollTimer = window.setInterval(() => {
+    void pollSystemMetrics();
+  }, 5000);
 }
 
 function buildAppSettingsPayload(form, pluginsOnly) {
@@ -1608,6 +1852,92 @@ function formatRuntimeQuota(rateLimit) {
   return parts.join(" · ");
 }
 
+function renderSystemMetricsPanel(metrics, loadedModels = []) {
+  if (!metrics) {
+    return "";
+  }
+
+  const loadedModelBytes = loadedModels.reduce((sum, model) => sum + (Number(model.sizeBytes) || 0), 0);
+  const estimatedModelPercent =
+    metrics.memoryTotalBytes > 0 ? Math.max(0, Math.min(100, (loadedModelBytes / metrics.memoryTotalBytes) * 100)) : 0;
+
+  return `
+    <div class="system-metrics">
+      ${renderMetricMini("CPU", metrics.cpuPercent, `${metrics.cpuPercent.toFixed(0)}%`)}
+      ${renderMetricMini(
+        "RAM",
+        metrics.ramPercent,
+        [
+          `${metrics.ramPercent.toFixed(0)}% · ${formatBytes(metrics.memoryUsedBytes)} / ${formatBytes(metrics.memoryTotalBytes)}`,
+          metrics.memoryCachedBytes ? `cached ${formatBytes(metrics.memoryCachedBytes)}` : ""
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      )}
+      ${renderMetricMini(
+        "LM",
+        estimatedModelPercent,
+        loadedModelBytes ? `${formatBytes(loadedModelBytes)} est.` : "No loaded model memory"
+      )}
+    </div>
+  `;
+}
+
+function renderMetricMini(label, percent, text) {
+  const normalized = Math.max(0, Math.min(100, Number(percent) || 0));
+  const tone = getMetricTone(normalized);
+  return `
+    <div class="metric-mini metric-mini--${tone}">
+      <div class="metric-mini__head">
+        <span>${escapeHtml(label)}</span>
+        <span>${escapeHtml(text)}</span>
+      </div>
+      <div class="metric-mini__track">
+        <span class="metric-mini__bar" style="width:${normalized}%"></span>
+      </div>
+    </div>
+  `;
+}
+
+function getMetricTone(percent) {
+  if (percent >= 85) {
+    return "danger";
+  }
+
+  if (percent >= 60) {
+    return "warning";
+  }
+
+  return "success";
+}
+
+function formatManagedModelSize(sizeBytes) {
+  if (!sizeBytes || !Number.isFinite(sizeBytes)) {
+    return "Size unavailable";
+  }
+
+  return `Size: ${formatBytes(sizeBytes)}`;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+
+  if (!bytes || bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KB", "MB", "GB", "TB"];
+  let current = bytes;
+  let unitIndex = -1;
+
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
 function getProviderConfiguredModel(providerId) {
   return state.bootstrap?.appSettings?.providers?.[providerId]?.model || "";
 }
@@ -1699,6 +2029,83 @@ function getActiveDraft() {
   return state.drafts[state.activeSessionId] ?? "";
 }
 
+function getActiveDraftAttachments() {
+  if (!state.activeSessionId) {
+    return [];
+  }
+
+  return state.draftAttachments[state.activeSessionId] ?? [];
+}
+
+function isTextAttachment(file) {
+  const textLikeExtensions = [
+    ".txt",
+    ".md",
+    ".markdown",
+    ".json",
+    ".csv",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".py",
+    ".html",
+    ".css",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".sh",
+    ".log"
+  ];
+  const lowerName = file.name.toLowerCase();
+
+  return file.type.startsWith("text/") || textLikeExtensions.some((ext) => lowerName.endsWith(ext));
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function buildAttachments(files) {
+  const attachments = [];
+
+  for (const file of files.slice(0, 5)) {
+    if (file.size > 5 * 1024 * 1024) {
+      pushToast(`${file.name} is larger than 5 MB and was skipped.`, "danger");
+      continue;
+    }
+
+    const attachment = {
+      id:
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      mimeType: file.type || "application/octet-stream",
+      sizeBytes: file.size,
+      kind: file.type.startsWith("image/") ? "image" : isTextAttachment(file) ? "text" : "binary"
+    };
+
+    if (attachment.kind === "text") {
+      attachment.textContent = (await file.text()).slice(0, 20000);
+    }
+
+    if (attachment.kind === "image" && file.size <= 350 * 1024) {
+      attachment.dataUrl = await fileToDataUrl(file);
+    }
+
+    attachments.push(attachment);
+  }
+
+  return attachments;
+}
+
 function cloneSessionSettings(settings) {
   return JSON.parse(JSON.stringify(settings));
 }
@@ -1757,6 +2164,8 @@ function readSessionSetupSnapshot() {
     settings: {
       mode: String(formData.get("mode") || fallbackSettings.mode),
       language: String(formData.get("language") || fallbackSettings.language),
+      outputStyle:
+        String(formData.get("outputStyle") || fallbackSettings.outputStyle || "balanced"),
       defaultTarget: {
         providerId: String(formData.get("defaultProvider") || fallbackSettings.defaultTarget.providerId).trim() || fallbackSettings.defaultTarget.providerId,
         model: resolveModelValue("defaultProvider", "defaultModel", fallbackSettings.defaultTarget.model)
@@ -1903,6 +2312,7 @@ async function deleteSessionById(sessionId) {
     const deletingActive = sessionId === state.activeSessionId;
     await api.deleteSession(sessionId);
     delete state.drafts[sessionId];
+    delete state.draftAttachments[sessionId];
     await refreshBootstrap();
 
     if (!state.bootstrap.sessions?.length) {
@@ -1927,6 +2337,7 @@ function buildNextSessionSettings(current, kind, value) {
     return {
       ...current,
       mode: value,
+      outputStyle: current.outputStyle,
       codeAgents: current.codeAgents ?? []
     };
   }
@@ -1935,6 +2346,7 @@ function buildNextSessionSettings(current, kind, value) {
     return {
       ...current,
       language: value,
+      outputStyle: current.outputStyle,
       codeAgents: current.codeAgents ?? []
     };
   }
@@ -1942,6 +2354,7 @@ function buildNextSessionSettings(current, kind, value) {
   if (kind === "debate") {
     return {
       ...current,
+      outputStyle: current.outputStyle,
       codeAgents: current.codeAgents ?? [],
       debate: {
         ...current.debate,
@@ -1957,6 +2370,7 @@ function sessionSettingsToPatch(settings) {
   return {
     mode: settings.mode,
     language: settings.language,
+    outputStyle: settings.outputStyle,
     defaultTarget: { ...settings.defaultTarget },
     codeAgents: (settings.codeAgents ?? []).map((agent) => ({ ...agent })),
     debate: {

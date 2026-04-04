@@ -3,5 +3,6 @@ dist
 .env
 data/memory
 data/output
+data/app/settings.json
 !.gitkeep
 test-tmp

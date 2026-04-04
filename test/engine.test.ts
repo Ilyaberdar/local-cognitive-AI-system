@@ -241,6 +241,7 @@ test("file tool can write scaffold files inside allowed directories", async () =
       sessionSettings: {
         mode: "code",
         language: "en",
+        outputStyle: "balanced",
         defaultTarget: {
           providerId: "lmstudio",
           model: "qwen/qwen3.5-9b"
@@ -305,6 +306,7 @@ test("file tool can overwrite and append files inside allowed directories", asyn
     sessionSettings: {
       mode: "code" as const,
       language: "en" as const,
+      outputStyle: "balanced" as const,
       defaultTarget: {
         providerId: "lmstudio",
         model: "qwen/qwen3.5-9b"
@@ -391,6 +393,7 @@ test("file tool refuses to write files from fallback model output", async () => 
     sessionSettings: {
       mode: "code" as const,
       language: "en" as const,
+      outputStyle: "balanced" as const,
       defaultTarget: {
         providerId: "lmstudio",
         model: "qwen/qwen3.5-9b"

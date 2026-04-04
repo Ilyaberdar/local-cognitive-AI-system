@@ -31,11 +31,13 @@ import {
   CodeAgentTarget,
   ExecutionContext,
   LLMResponse,
+  OutputStyle,
   ProviderDescriptor,
   ToolDescriptor
 } from "../types";
 import { Logger } from "../utils/Logger";
 import { ModelCatalogService } from "../llm/ModelCatalogService";
+import { readAttachments, renderAttachmentContext } from "../utils/attachments";
 
 export interface AppRuntime {
   engine: CognitiveEngine;
@@ -67,6 +69,66 @@ const buildLanguageInstruction = (language: "auto" | "ru" | "en"): string => {
       ].join(" ");
     default:
       return "Respond in the user's language unless asked otherwise.";
+  }
+};
+
+const buildOutputStyleInstruction = (style: OutputStyle, mode: "code" | "general"): string => {
+  switch (style) {
+    case "compact":
+      return "Keep the answer compact. Focus on the highest-signal points only.";
+    case "detailed":
+      return mode === "code"
+        ? "Give a detailed implementation-oriented answer. Expand tradeoffs, file plan, and concrete steps."
+        : "Give a detailed answer with concrete examples, tradeoffs, and practical next steps.";
+    case "exhaustive":
+      return mode === "code"
+        ? "Give an exhaustive implementation answer. Be thorough, explicit, and cover architecture, files, risks, and edge cases in depth."
+        : "Give an exhaustive answer. Cover the topic in depth with examples, caveats, alternatives, and practical guidance.";
+    case "balanced":
+    default:
+      return "Give a balanced answer. Prefer practical steps over theory.";
+  }
+};
+
+const buildCodeAdvisorInstruction = (style: OutputStyle): string => {
+  switch (style) {
+    case "compact":
+      return "Return only short implementation guidance: architecture, file plan, risks, and concrete suggestions.";
+    case "detailed":
+      return "Return detailed implementation guidance: architecture, file plan, risks, tradeoffs, and concrete suggestions.";
+    case "exhaustive":
+      return "Return exhaustive implementation guidance: architecture, file plan, risks, tradeoffs, alternatives, and execution details.";
+    case "balanced":
+    default:
+      return "Return practical implementation guidance: architecture, file plan, risks, and concrete suggestions.";
+  }
+};
+
+const buildCodeWriterRoleInstruction = (style: OutputStyle): string => {
+  switch (style) {
+    case "compact":
+      return "Produce a concise implementation-ready answer.";
+    case "detailed":
+      return "Produce a detailed implementation-ready answer.";
+    case "exhaustive":
+      return "Produce an exhaustive implementation-ready answer with strong coverage of risks and edge cases.";
+    case "balanced":
+    default:
+      return "Produce a practical implementation-ready answer.";
+  }
+};
+
+const buildCodeAdvisorRoleInstruction = (style: OutputStyle): string => {
+  switch (style) {
+    case "compact":
+      return "Provide compact implementation guidance only.";
+    case "detailed":
+      return "Provide detailed implementation guidance only.";
+    case "exhaustive":
+      return "Provide exhaustive implementation guidance only.";
+    case "balanced":
+    default:
+      return "Provide practical implementation guidance only.";
   }
 };
 
@@ -104,19 +166,22 @@ const buildTextPrompt = (
   mode: "code" | "general",
   input: string,
   memory: string,
-  language: "auto" | "ru" | "en"
+  language: "auto" | "ru" | "en",
+  outputStyle: OutputStyle,
+  attachmentContext?: string
 ): string =>
   [
     `Mode: ${mode}`,
     "Relevant memory:",
     memory,
+    ...(attachmentContext ? ["", attachmentContext] : []),
     "",
     `User input: ${input}`,
     "",
     buildLanguageInstruction(language),
     ...(buildFilesystemInstruction(input) ? ["", buildFilesystemInstruction(input)] : []),
     "",
-    "Respond concisely. Prefer practical steps over theory."
+    buildOutputStyleInstruction(outputStyle, mode)
   ].join("\n");
 
 const sumUsage = (
@@ -137,12 +202,15 @@ const isDegradedResponse = (response: LLMResponse): boolean =>
 const buildCodeAdvisorPrompt = (
   input: string,
   memory: string,
-  language: "auto" | "ru" | "en"
+  language: "auto" | "ru" | "en",
+  outputStyle: OutputStyle,
+  attachmentContext?: string
 ): string =>
   [
     "Mode: code",
     "Relevant memory:",
     memory,
+    ...(attachmentContext ? ["", attachmentContext] : []),
     "",
     `User input: ${input}`,
     "",
@@ -150,13 +218,15 @@ const buildCodeAdvisorPrompt = (
     "",
     "You are one of several advisor agents.",
     "Do not emit file blocks, final file contents, markdown fences, or full project scaffolds.",
-    "Return only concise implementation guidance: architecture, file plan, risks, and concrete suggestions."
+    buildCodeAdvisorInstruction(outputStyle)
   ].join("\n");
 
 const buildCodeWriterPrompt = (
   input: string,
   memory: string,
   language: "auto" | "ru" | "en",
+  outputStyle: OutputStyle,
+  attachmentContext: string | undefined,
   advisorRuns: Array<{ agent: CodeAgentTarget; normalized: string; degraded: boolean }>
 ): string => {
   const healthyAdvisorNotes = advisorRuns
@@ -168,7 +238,7 @@ const buildCodeWriterPrompt = (
     .map((item) => item.agent.name);
 
   return [
-    buildTextPrompt("code", input, memory, language),
+    buildTextPrompt("code", input, memory, language, outputStyle, attachmentContext),
     "",
     "Advisor notes from other coding agents:",
     healthyAdvisorNotes || "No reliable advisor notes were available.",
@@ -192,7 +262,7 @@ const runCodeAgent = async (
   llmService: LLMService,
   languageEnforcer: LanguageEnforcer,
   language: "auto" | "ru" | "en",
-  systemPrompt: string
+  systemPrompt: string,
 ) => {
   const response = await llmService.generateText(
     {
@@ -225,6 +295,7 @@ const runCodeSwarm = async (
   const memorySummary =
     context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
     "- No relevant memory found.";
+  const attachmentContext = renderAttachmentContext(readAttachments(context.requestMetadata));
   const configuredAgents =
     context.sessionSettings.codeAgents.length > 0
       ? context.sessionSettings.codeAgents.slice(0, 5)
@@ -240,14 +311,20 @@ const runCodeSwarm = async (
   if (configuredAgents.length === 1) {
     const writerRun = await runCodeAgent(
       configuredAgents[0],
-      buildTextPrompt("code", input, memorySummary, context.sessionSettings.language),
+      buildTextPrompt(
+        "code",
+        input,
+        memorySummary,
+        context.sessionSettings.language,
+        context.sessionSettings.outputStyle,
+        attachmentContext
+      ),
       llmService,
       languageEnforcer,
       context.sessionSettings.language,
       [
         `You are ${configuredAgents[0].name}, a focused coding agent.`,
-        "Provide a practical implementation-oriented answer.",
-        "Be concise, concrete, and useful for project execution."
+        buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle)
       ].join("\n")
     );
 
@@ -270,13 +347,19 @@ const runCodeSwarm = async (
     advisorAgents.map((agent) =>
       runCodeAgent(
         agent,
-        buildCodeAdvisorPrompt(input, memorySummary, context.sessionSettings.language),
+        buildCodeAdvisorPrompt(
+          input,
+          memorySummary,
+          context.sessionSettings.language,
+          context.sessionSettings.outputStyle,
+          attachmentContext
+        ),
         llmService,
         languageEnforcer,
         context.sessionSettings.language,
         [
           `You are ${agent.name}, an advisor in a multi-agent code swarm.`,
-          "Provide concise implementation guidance only.",
+          buildCodeAdvisorRoleInstruction(context.sessionSettings.outputStyle),
           "Do not produce final deliverable files or scaffolds."
         ].join("\n")
       )
@@ -288,6 +371,8 @@ const runCodeSwarm = async (
       input,
       memorySummary,
       context.sessionSettings.language,
+      context.sessionSettings.outputStyle,
+      attachmentContext,
       advisorRuns.map((item) => ({
         agent: item.agent,
         normalized: item.normalized,
@@ -299,7 +384,7 @@ const runCodeSwarm = async (
     context.sessionSettings.language,
     [
       `You are ${writerAgent.name}, the final writer in a multi-agent code swarm.`,
-      "Synthesize advisor guidance into one implementation-ready answer.",
+      buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
       "When file output is requested, produce only the final write-safe output."
     ].join("\n")
   );
@@ -396,7 +481,13 @@ export const buildRuntime = async (
           judge: { providerId: "local" }
         };
 
-    return hypothesisAgent.runDebate(input, debateConfig, context.sessionSettings.language);
+    return hypothesisAgent.runDebate(
+      input,
+      debateConfig,
+      context.sessionSettings.language,
+      context.sessionSettings.outputStyle,
+      renderAttachmentContext(readAttachments(context.requestMetadata))
+    );
   });
 
   router.register("code", async (input, context) => {
@@ -412,7 +503,9 @@ export const buildRuntime = async (
           input,
           context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
             "- No relevant memory found.",
-          context.sessionSettings.language
+          context.sessionSettings.language,
+          context.sessionSettings.outputStyle,
+          renderAttachmentContext(readAttachments(context.requestMetadata))
         )
       },
       context.providerId

@@ -19,7 +19,7 @@ const bootstrap = async (): Promise<void> => {
 
   if (config.server.enabled) {
     const app = express();
-    app.use(express.json({ limit: "1mb" }));
+    app.use(express.json({ limit: "8mb" }));
     app.use("/", createApiRouter(runtimeManager, sessionIndexStore));
     app.use(express.static(config.ui.publicDir));
     app.get("/", (_req, res) => {

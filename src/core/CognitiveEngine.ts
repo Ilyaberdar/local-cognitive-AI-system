@@ -53,7 +53,8 @@ export class CognitiveEngine {
       conversation,
       providerId,
       activeTarget,
-      sessionSettings
+      sessionSettings,
+      requestMetadata: request.metadata
     });
     const tools = await this.executeTools(normalizedInput, mode, result, {
       actor,

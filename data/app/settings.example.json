@@ -1,0 +1,90 @@
+{
+  "llm": {
+    "defaultProvider": "lmstudio"
+  },
+  "telegram": {
+    "enabled": false,
+    "botToken": "",
+    "pollTimeoutSec": 25
+  },
+  "memory": {
+    "adapter": "local-json",
+    "baseDir": "/absolute/path/to/data/memory",
+    "topK": 5,
+    "openMemory": {
+      "enabled": false,
+      "dbPath": "/absolute/path/to/data/openmemory.db"
+    }
+  },
+  "providers": {
+    "ollama": {
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:11434",
+      "model": "llama3.2",
+      "timeoutMs": 20000,
+      "apiKey": ""
+    },
+    "lmstudio": {
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "apiKey": "local",
+      "model": "qwen/qwen3.5-9b",
+      "timeoutMs": 60000
+    },
+    "openai": {
+      "enabled": false,
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "",
+      "model": "gpt-5-mini",
+      "timeoutMs": 60000
+    },
+    "anthropic": {
+      "enabled": false,
+      "baseUrl": "https://api.anthropic.com",
+      "apiKey": "",
+      "model": "claude-sonnet-4-20250514",
+      "timeoutMs": 60000,
+      "version": "2023-06-01",
+      "maxTokens": 1024
+    },
+    "gemini": {
+      "enabled": false,
+      "baseUrl": "https://generativelanguage.googleapis.com",
+      "apiKey": "",
+      "model": "gemini-2.5-flash",
+      "timeoutMs": 20000
+    }
+  },
+  "plugins": {
+    "file": {
+      "enabled": false,
+      "values": {
+        "outputDir": "/absolute/path/to/data/output",
+        "accessMode": "restricted",
+        "allowedDirectories": "/absolute/path/to/data/output"
+      }
+    },
+    "notion": {
+      "enabled": false,
+      "values": {
+        "apiKey": "",
+        "parentPageId": "",
+        "dataSourceId": "",
+        "titleProperty": "Name",
+        "version": "2026-03-11",
+        "parentPageUrl": "",
+        "dataSourceUrl": ""
+      }
+    },
+    "vscode": {
+      "enabled": false,
+      "values": {
+        "workspaceRoot": "/absolute/path/to/workspace",
+        "accessMode": "restricted",
+        "allowedDirectories": "/absolute/path/to/workspace",
+        "bridgeCommand": "",
+        "notes": "Reserved for future editor bridge."
+      }
+    }
+  }
+}
