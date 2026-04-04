@@ -1,7 +1,7 @@
 import { ProcessResult } from "../types";
 
 export class ResponseFormatter {
-  formatForChat(result: ProcessResult): string {
+  formatForChat(result: ProcessResult, options?: { maxChars?: number }): string {
     const base =
       result.mode === "hypothesis" && "arguments" in result.result
         ? [
@@ -40,9 +40,38 @@ export class ResponseFormatter {
                     : [])
                 ]
               : []),
+            ...(result.result.diagnostics?.agents &&
+            (result.result.diagnostics.agents.support?.status === "failed" ||
+              result.result.diagnostics.agents.attack?.status === "failed")
+              ? [
+                  "",
+                  "Agent Issues",
+                  ...(result.result.diagnostics.agents.support?.status === "failed"
+                    ? [
+                        `- Support provider failed${
+                          result.result.diagnostics.agents.support.providerError
+                            ? `: ${result.result.diagnostics.agents.support.providerError}`
+                            : ""
+                        }`
+                      ]
+                    : []),
+                  ...(result.result.diagnostics.agents.attack?.status === "failed"
+                    ? [
+                        `- Attack provider failed${
+                          result.result.diagnostics.agents.attack.providerError
+                            ? `: ${result.result.diagnostics.agents.attack.providerError}`
+                            : ""
+                        }`
+                      ]
+                    : [])
+                ]
+              : []),
             "",
             "Reasoning",
             `${result.result.reasoning}`,
+            "",
+            "Judge Conclusion",
+            `${result.result.conclusion}`,
             "",
             "Pro",
             ...result.result.arguments.pro.map((item) => `- ${item}`),
@@ -66,6 +95,13 @@ export class ResponseFormatter {
         ? `\n\nTools\n${result.tools.map((tool) => `- ${tool.output}`).join("\n")}`
         : "";
 
-    return `${base}${tools}`.slice(0, 3900);
+    const content = `${base}${tools}`;
+    const maxChars = options?.maxChars;
+
+    if (typeof maxChars === "number" && Number.isFinite(maxChars)) {
+      return content.slice(0, maxChars);
+    }
+
+    return content;
   }
 }

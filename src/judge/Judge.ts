@@ -5,6 +5,7 @@ import {
   AgentDebateResponse,
   DebateProfile,
   HypothesisResult,
+  OutputStyle,
   ProviderTarget,
   TokenUsage
 } from "../types";
@@ -13,11 +14,42 @@ interface JudgePayload {
   verdict?: string;
   confidence?: number;
   reasoning?: string;
+  conclusion?: string;
   winner?: string;
   decision?: string;
   rationale?: string;
   explanation?: string;
+  judgment?: string;
+  finalVerdict?: string;
 }
+
+const getStyleTokenBudget = (style: OutputStyle): number => {
+  switch (style) {
+    case "compact":
+      return 1200;
+    case "detailed":
+      return 3800;
+    case "exhaustive":
+      return 7000;
+    case "balanced":
+    default:
+      return 2200;
+  }
+};
+
+const buildJudgeInstruction = (style: OutputStyle): string => {
+  switch (style) {
+    case "compact":
+      return "Evaluate the two debate sides and choose the stronger one. Keep the judgment concise, but still provide a short final conclusion.";
+    case "detailed":
+      return "Evaluate the two debate sides and choose the stronger one. Provide a detailed judgment with clear reasoning and a final conclusion.";
+    case "exhaustive":
+      return "Evaluate the two debate sides and choose the stronger one. Provide an exhaustive judgment with nuanced reasoning, tradeoffs, and a detailed final conclusion.";
+    case "balanced":
+    default:
+      return "Evaluate the two debate sides and choose the stronger one. Provide a clear final conclusion.";
+  }
+};
 
 export class Judge {
   constructor(
@@ -30,7 +62,9 @@ export class Judge {
     [support, attack]: [AgentDebateResponse, AgentDebateResponse],
     judgeTarget: ProviderTarget,
     profile: DebateProfile,
-    language: "auto" | "ru" | "en"
+    language: "auto" | "ru" | "en",
+    outputStyle: OutputStyle,
+    attachmentContext?: string
   ): Promise<HypothesisResult> {
     if (judgeTarget.providerId === "local") {
       return this.evaluateLocally([support, attack], language, undefined);
@@ -40,10 +74,12 @@ export class Judge {
       {
         systemPrompt: "You are an impartial judge producing only structured JSON.",
         model: judgeTarget.model,
+        maxTokens: getStyleTokenBudget(outputStyle),
         prompt: [
-          "Evaluate the two debate sides and choose the stronger one.",
+          buildJudgeInstruction(outputStyle),
           buildDebateGuidance(profile),
           buildLanguageInstruction(language),
+          ...(attachmentContext ? ["", attachmentContext] : []),
           "",
           `Hypothesis: ${input}`,
           "",
@@ -53,7 +89,7 @@ export class Judge {
           `Attack summary: ${attack.summary}`,
           ...attack.arguments.map((item) => `Attack argument: ${item}`),
           "",
-          'Return JSON with keys: "verdict" ("support" or "attack"), "confidence" (0-1), "reasoning" (string).'
+          'Return JSON with keys: "verdict" ("support" or "attack"), "confidence" (0-1), "reasoning" (string), "conclusion" (string).'
         ].join("\n")
       },
       judgeTarget.providerId
@@ -93,11 +129,17 @@ export class Judge {
       language,
       judgeTarget
     );
+    const normalizedConclusion = await this.languageEnforcer.normalizeText(
+      normalizedPayload.conclusion,
+      language,
+      judgeTarget
+    );
 
     return {
       verdict: normalizedPayload.verdict,
       confidence: Number(Math.max(0, Math.min(1, normalizedPayload.confidence)).toFixed(2)),
       reasoning: normalizedReasoning,
+      conclusion: normalizedConclusion,
       participants: {
         support: `${support.provider}:${support.model}`,
         attack: `${attack.provider}:${attack.model}`,
@@ -111,6 +153,16 @@ export class Judge {
         reason: "Judge model response accepted."
       },
       diagnostics: {
+        agents: {
+          support: {
+            status: support.degraded ? "failed" : "ok",
+            providerError: support.error
+          },
+          attack: {
+            status: attack.degraded ? "failed" : "ok",
+            providerError: attack.error
+          }
+        },
         judge: {
           requestedTarget: `${judgeTarget.providerId}:${judgeTarget.model ?? "default"}`,
           responseTarget: `${response.provider}:${response.model}`,
@@ -152,6 +204,7 @@ export class Judge {
       verdict: supportWins ? "support" : "attack",
       confidence,
       reasoning: this.buildLocalReasoning(winningSide, losingSide, language),
+      conclusion: this.buildLocalConclusion(winningSide, losingSide, language),
       participants: {
         support: `${support.provider}:${support.model}`,
         attack: `${attack.provider}:${attack.model}`,
@@ -171,6 +224,16 @@ export class Judge {
             : "Local judge was used directly.")
       },
       diagnostics: {
+        agents: {
+          support: {
+            status: support.degraded ? "failed" : "ok",
+            providerError: support.error
+          },
+          attack: {
+            status: attack.degraded ? "failed" : "ok",
+            providerError: attack.error
+          }
+        },
         judge:
           judgeDiagnostics ??
           {
@@ -201,7 +264,7 @@ export class Judge {
 
   private normalizePayload(
     payload: JudgePayload | null
-  ): { verdict: "support" | "attack"; confidence: number; reasoning: string } | null {
+  ): { verdict: "support" | "attack"; confidence: number; reasoning: string; conclusion: string } | null {
     if (!payload || typeof payload !== "object") {
       return null;
     }
@@ -221,6 +284,9 @@ export class Judge {
     const reasoning = [payload.reasoning, payload.rationale, payload.explanation]
       .find((value): value is string => typeof value === "string" && value.trim().length > 0)
       ?.trim();
+    const conclusion = [payload.conclusion, payload.judgment, payload.finalVerdict, payload.explanation, payload.rationale]
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0)
+      ?.trim();
 
     const confidence = this.normalizeConfidence(payload.confidence);
 
@@ -231,7 +297,8 @@ export class Judge {
     return {
       verdict,
       confidence,
-      reasoning
+      reasoning,
+      conclusion: conclusion ?? reasoning
     };
   }
 
@@ -253,6 +320,10 @@ export class Judge {
   }
 
   private score(response: AgentDebateResponse): number {
+    if (response.degraded) {
+      return 0;
+    }
+
     const argumentWeight = response.arguments.length * 2;
     const summaryWeight = Math.min(response.summary.length / 80, 3);
     return argumentWeight + summaryWeight;
@@ -265,16 +336,49 @@ export class Judge {
   ): string {
     if (language === "ru") {
       return [
-        `${winningSide.agent} дал ${winningSide.arguments.length} более сильных аргумента(ов).`,
-        `${losingSide.agent} дал ${losingSide.arguments.length} контраргумента(ов).`,
+        winningSide.degraded
+          ? `${winningSide.agent} не дал валидного ответа от провайдера.`
+          : `${winningSide.agent} дал ${winningSide.arguments.length} более сильных аргумента(ов).`,
+        losingSide.degraded
+          ? `${losingSide.agent} не дал валидного ответа от провайдера.`
+          : `${losingSide.agent} дал ${losingSide.arguments.length} контраргумента(ов).`,
         "Судья использовал локальную эвристическую оценку."
       ].join(" ");
     }
 
     return [
-      `${winningSide.agent} produced ${winningSide.arguments.length} stronger argument(s).`,
-      `${losingSide.agent} produced ${losingSide.arguments.length} counterpoint(s).`,
+      winningSide.degraded
+        ? `${winningSide.agent} did not return a valid provider response.`
+        : `${winningSide.agent} produced ${winningSide.arguments.length} stronger argument(s).`,
+      losingSide.degraded
+        ? `${losingSide.agent} did not return a valid provider response.`
+        : `${losingSide.agent} produced ${losingSide.arguments.length} counterpoint(s).`,
       "Judge used local heuristic scoring."
+    ].join(" ");
+  }
+
+  private buildLocalConclusion(
+    winningSide: AgentDebateResponse,
+    losingSide: AgentDebateResponse,
+    language: "auto" | "ru" | "en"
+  ): string {
+    const winningSummary = winningSide.summary?.trim() || (language === "ru" ? "Сильная сторона не дала краткого summary." : "Winning side did not provide a short summary.");
+    const losingSummary = losingSide.summary?.trim() || (language === "ru" ? "Слабая сторона не дала краткого summary." : "Losing side did not provide a short summary.");
+
+    if (language === "ru") {
+      return [
+        `Итог судьи: более убедительной выглядит позиция ${winningSide.agent}, потому что её линия аргументации опирается на более сильный и целостный кейс.`,
+        `Ключевой вывод победившей стороны: ${winningSummary}`,
+        `При этом возражения ${losingSide.agent} нельзя игнорировать: ${losingSummary}`,
+        "Практически это означает, что решение стоит принимать в пользу победившей стороны, но с учётом озвученных ограничений, рисков и условий применимости."
+      ].join(" ");
+    }
+
+    return [
+      `Judge conclusion: ${winningSide.agent} appears more convincing because its case is more coherent and better supported overall.`,
+      `Key takeaway from the winning side: ${winningSummary}`,
+      `At the same time, the objections from ${losingSide.agent} still matter: ${losingSummary}`,
+      "In practice, the stronger side should guide the decision, but the listed risks, caveats, and limits of applicability should remain part of the final call."
     ].join(" ");
   }
 

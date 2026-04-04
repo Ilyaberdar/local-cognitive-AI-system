@@ -85,6 +85,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
           input: request.prompt,
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
+          ...(typeof request.maxTokens === "number"
+            ? {
+                max_output_tokens: request.maxTokens
+              }
+            : {}),
           ...(request.responseFormat
             ? {
                 text: {

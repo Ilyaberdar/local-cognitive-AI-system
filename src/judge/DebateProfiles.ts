@@ -3,7 +3,7 @@ import { DebateProfile } from "../types";
 const PROFILE_GUIDANCE: Record<DebateProfile, string[]> = {
   general: [
     "Focus on overall validity, tradeoffs, and hidden assumptions.",
-    "Prefer concise, concrete arguments."
+    "Prefer concrete, defensible arguments."
   ],
   technical: [
     "Focus on feasibility, architecture risk, scalability, complexity, and maintainability.",

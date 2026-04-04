@@ -77,7 +77,14 @@ export class OllamaProvider implements LLMProvider {
         body: JSON.stringify({
           model,
           prompt: buildComposedPrompt(request),
-          stream: false
+          stream: false,
+          ...(typeof request.maxTokens === "number"
+            ? {
+                options: {
+                  num_predict: request.maxTokens
+                }
+              }
+            : {})
         }),
         signal: AbortSignal.timeout(this.options.timeoutMs)
       });

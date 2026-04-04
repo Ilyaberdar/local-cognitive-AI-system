@@ -87,6 +87,7 @@ export class SessionSettingsStore {
     return {
       mode: settings.mode ?? fallback.mode,
       language: settings.language ?? fallback.language,
+      outputStyle: settings.outputStyle ?? fallback.outputStyle,
       defaultTarget: this.normalizeTarget(settings.defaultTarget, fallback.defaultTarget),
       codeAgents: this.normalizeCodeAgents(settings.codeAgents, fallback.codeAgents),
       debate: {
@@ -121,6 +122,7 @@ export class SessionSettingsStore {
     return {
       mode: "auto",
       language: "auto",
+      outputStyle: "balanced",
       defaultTarget: {
         ...this.defaultTarget
       },

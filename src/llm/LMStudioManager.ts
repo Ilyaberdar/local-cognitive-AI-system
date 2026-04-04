@@ -11,6 +11,10 @@ interface NativeModelRecord {
   key?: string;
   displayName?: string;
   display_name?: string;
+  sizeBytes?: number;
+  size_bytes?: number;
+  size?: number;
+  bytes?: number;
   state?: {
     loaded?: boolean;
   };
@@ -42,6 +46,9 @@ export class LMStudioManager {
         id: model.key ?? model.modelKey ?? "unknown-model",
         displayName:
           model.display_name ?? model.displayName ?? model.key ?? model.modelKey ?? "unknown-model",
+        sizeBytes: [model.sizeBytes, model.size_bytes, model.size, model.bytes].find(
+          (value): value is number => typeof value === "number" && Number.isFinite(value)
+        ),
         loaded:
           Boolean(model.state?.loaded) ||
           Boolean(model.loaded_instances?.length) ||

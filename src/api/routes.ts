@@ -20,6 +20,7 @@ import {
   createProviderTestController,
   createRenameSessionController,
   createRuntimeReloadController,
+  createSystemMetricsController,
   createUnloadModelController,
   createUpdateAppSettingsController,
   createUpdateSessionSettingsController
@@ -37,6 +38,7 @@ export const createApiRouter = (
 
   router.get("/meta", createMetadataController(runtimeManager));
   router.get("/dashboard/bootstrap", createDashboardBootstrapController(runtimeManager, sessionIndexStore));
+  router.get("/system/metrics", createSystemMetricsController());
   router.get("/models", createModelsController(runtimeManager));
   router.get("/lmstudio/models/loaded", createGetLoadedModelsController(runtimeManager));
   router.get("/lmstudio/models/all", createGetAllManagedModelsController(runtimeManager));

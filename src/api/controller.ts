@@ -1,5 +1,7 @@
 import { randomUUID } from "crypto";
+import { execFileSync } from "child_process";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { NextFunction, Request, Response } from "express";
 import {
@@ -7,13 +9,16 @@ import {
   ChatMessage,
   GenerationMetrics,
   LanguagePreference,
+  OutputStyle,
   SessionMode,
   SessionSettingsPatch,
+  SystemMetrics,
   ToolExecutionResult
 } from "../types";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { extractNotionId } from "../utils/notion";
+import { readAttachments } from "../utils/attachments";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -113,11 +118,18 @@ export const createDashboardBootstrapController =
         sessions,
         availableModels,
         loadedModels,
-        allManagedModels
+        allManagedModels,
+        systemMetrics: getSystemMetricsSnapshot()
       });
     } catch (error) {
       next(error);
     }
+  };
+
+export const createSystemMetricsController =
+  () =>
+  async (_req: Request, res: Response): Promise<void> => {
+    res.status(200).json(getSystemMetricsSnapshot());
   };
 
 export const createModelsController =
@@ -217,6 +229,7 @@ export const createUpdateSessionSettingsController =
       const patch: SessionSettingsPatch = {
         mode: isSessionMode(body.mode) ? body.mode : undefined,
         language: isLanguagePreference(body.language) ? body.language : undefined,
+        outputStyle: isOutputStyle(body.outputStyle) ? body.outputStyle : undefined,
         defaultTarget: isObject(body.defaultTarget)
           ? {
               providerId:
@@ -348,7 +361,10 @@ export const createGetSessionMessagesController =
               id: `${entry.id}:user`,
               role: "user",
               content: entry.input,
-              createdAt: entry.createdAt
+              createdAt: entry.createdAt,
+              attachments: readAttachments(
+                (entry.metadata?.requestMetadata as Record<string, unknown> | undefined) ?? undefined
+              )
             },
             {
               id: `${entry.id}:assistant`,
@@ -617,6 +633,12 @@ const isSessionMode = (value: unknown): value is SessionMode =>
 const isLanguagePreference = (value: unknown): value is LanguagePreference =>
   value === "auto" || value === "ru" || value === "en";
 
+const isOutputStyle = (value: unknown): value is OutputStyle =>
+  value === "compact" ||
+  value === "balanced" ||
+  value === "detailed" ||
+  value === "exhaustive";
+
 const isDebateProfile = (
   value: unknown
 ): value is NonNullable<SessionSettingsPatch["debate"]>["profile"] =>
@@ -639,30 +661,33 @@ const buildStoredMessageContent = (
     return JSON.stringify(entry.output, null, 2);
   }
 
-  return formatter.formatForChat({
-    input: entry.input,
-    mode: entry.mode,
-    providerId: String(entry.metadata?.providerId ?? "unknown"),
-    result: entry.output as never,
-    tools: readStoredTools(entry.metadata),
-    memory: [],
-    conversationSize: 0,
-    sessionSettings: {
-      mode: "auto",
-      language: "auto",
-      defaultTarget: {
-        providerId: "unknown"
-      },
-      codeAgents: [],
-      debate: {
-        enabled: false,
-        profile: "general",
-        support: { providerId: "unknown" },
-        attack: { providerId: "unknown" },
-        judge: { providerId: "local" }
+  return formatter.formatForChat(
+    {
+      input: entry.input,
+      mode: entry.mode,
+      providerId: String(entry.metadata?.providerId ?? "unknown"),
+      result: entry.output as never,
+      tools: readStoredTools(entry.metadata),
+      memory: [],
+      conversationSize: 0,
+      sessionSettings: {
+        mode: "auto",
+        language: "auto",
+        outputStyle: "balanced",
+        defaultTarget: {
+          providerId: "unknown"
+        },
+        codeAgents: [],
+        debate: {
+          enabled: false,
+          profile: "general",
+          support: { providerId: "unknown" },
+          attack: { providerId: "unknown" },
+          judge: { providerId: "local" }
+        }
       }
     }
-  });
+  );
 };
 
 const readStoredMetrics = (
@@ -746,6 +771,72 @@ const deleteSessionMemory = async (memoryBaseDir: string, sessionId: string): Pr
     }
   } catch {
     return;
+  }
+};
+
+const getSystemMetricsSnapshot = (): SystemMetrics => {
+  const cpuCores = Math.max(1, os.cpus().length);
+  const loadAverage1m = os.loadavg()[0] ?? 0;
+  const cpuPercent = Math.max(0, Math.min(100, (loadAverage1m / cpuCores) * 100));
+  const macMetrics = readMacMemoryMetrics();
+  const memoryTotalBytes = macMetrics?.memoryTotalBytes ?? os.totalmem();
+  const memoryUsedBytes = macMetrics?.memoryUsedBytes ?? memoryTotalBytes - os.freemem();
+  const memoryCachedBytes = macMetrics?.memoryCachedBytes;
+  const ramPercent =
+    memoryTotalBytes > 0 ? Math.max(0, Math.min(100, (memoryUsedBytes / memoryTotalBytes) * 100)) : 0;
+
+  return {
+    cpuPercent,
+    ramPercent,
+    memoryUsedBytes,
+    memoryTotalBytes,
+    memoryCachedBytes,
+    cpuCores,
+    loadAverage1m
+  };
+};
+
+const readMacMemoryMetrics = ():
+  | {
+      memoryTotalBytes: number;
+      memoryUsedBytes: number;
+      memoryCachedBytes: number;
+    }
+  | null => {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+
+  try {
+    const vmStatOutput = execFileSync("/usr/bin/vm_stat", { encoding: "utf8" });
+    const totalMemOutput = execFileSync("/usr/sbin/sysctl", ["-n", "hw.memsize"], { encoding: "utf8" });
+    const pageSizeMatch = vmStatOutput.match(/page size of (\d+) bytes/);
+    const pageSize = Number(pageSizeMatch?.[1] || 4096);
+    const totalBytes = Number(String(totalMemOutput).trim());
+
+    const getPages = (label: string): number => {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = vmStatOutput.match(new RegExp(`${escaped}:\\s+(\\d+)\\.`));
+      return Number(match?.[1] || 0);
+    };
+
+    const free = getPages("Pages free");
+    const fileBacked = getPages("File-backed pages");
+
+    const memoryCachedBytes = Math.max(0, fileBacked) * pageSize;
+    const memoryUsedBytes = Math.max(0, totalBytes - free * pageSize - memoryCachedBytes);
+
+    if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+      return null;
+    }
+
+    return {
+      memoryTotalBytes: totalBytes,
+      memoryUsedBytes,
+      memoryCachedBytes
+    };
+  } catch {
+    return null;
   }
 };
 

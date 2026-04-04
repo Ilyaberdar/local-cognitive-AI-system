@@ -2,6 +2,7 @@ export type Mode = "hypothesis" | "code" | "general";
 export type SessionMode = Mode | "auto";
 export type Channel = "http" | "telegram" | "system";
 export type LanguagePreference = "auto" | "ru" | "en";
+export type OutputStyle = "compact" | "balanced" | "detailed" | "exhaustive";
 export type DebateProfile =
   | "general"
   | "technical"
@@ -18,6 +19,16 @@ export interface ActorContext {
 export interface ProviderTarget {
   providerId: string;
   model?: string;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  kind: "text" | "image" | "binary";
+  textContent?: string;
+  dataUrl?: string;
 }
 
 export interface CodeAgentTarget extends ProviderTarget {
@@ -121,6 +132,7 @@ export interface AppSettingsPatch {
 export interface SessionSettings {
   mode: SessionMode;
   language: LanguagePreference;
+  outputStyle: OutputStyle;
   defaultTarget: ProviderTarget;
   codeAgents: CodeAgentTarget[];
   debate: DebateSettings;
@@ -129,6 +141,7 @@ export interface SessionSettings {
 export interface SessionSettingsPatch {
   mode?: SessionMode;
   language?: LanguagePreference;
+  outputStyle?: OutputStyle;
   defaultTarget?: Partial<ProviderTarget>;
   codeAgents?: CodeAgentTarget[];
   debate?: {
@@ -178,12 +191,15 @@ export interface AgentDebateResponse {
   arguments: string[];
   raw: string;
   usage?: TokenUsage;
+  degraded?: boolean;
+  error?: string;
 }
 
 export interface HypothesisResult {
   verdict: string;
   confidence: number;
   reasoning: string;
+  conclusion: string;
   participants: {
     support: string;
     attack: string;
@@ -205,6 +221,16 @@ export interface HypothesisResult {
       fallbackUsed: boolean;
       fallbackReason?: string;
       providerError?: string;
+    };
+    agents?: {
+      support?: {
+        status: "ok" | "failed";
+        providerError?: string;
+      };
+      attack?: {
+        status: "ok" | "failed";
+        providerError?: string;
+      };
     };
   };
   metrics?: GenerationMetrics;
@@ -247,6 +273,7 @@ export interface ChatMessage {
   content: string;
   createdAt: string;
   metrics?: GenerationMetrics;
+  attachments?: ChatAttachment[];
 }
 
 export interface LLMRequest {
@@ -279,6 +306,7 @@ export interface ExecutionContext {
   providerId: string;
   activeTarget: ProviderTarget;
   sessionSettings: SessionSettings;
+  requestMetadata?: Record<string, unknown>;
 }
 
 export interface ProcessInput {
@@ -339,6 +367,17 @@ export interface ProviderModel {
 export interface ManagedModel {
   id: string;
   displayName: string;
+  sizeBytes?: number;
   loaded: boolean;
   loadedInstanceIds: string[];
+}
+
+export interface SystemMetrics {
+  cpuPercent: number;
+  ramPercent: number;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  memoryCachedBytes?: number;
+  cpuCores: number;
+  loadAverage1m: number;
 }

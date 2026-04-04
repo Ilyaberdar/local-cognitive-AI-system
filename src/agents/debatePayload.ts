@@ -1,4 +1,5 @@
 import { tryParseJson } from "../utils/Json";
+import { OutputStyle } from "../types";
 
 interface DebatePayload {
   summary?: string;
@@ -41,8 +42,17 @@ const extractBulletLines = (raw: string): string[] =>
 export const normalizeDebatePayload = (
   data: DebatePayload | null,
   raw: string,
-  fallbackSummary: string
+  fallbackSummary: string,
+  outputStyle: OutputStyle
 ): { summary: string; arguments: string[] } => {
+  const maxArguments =
+    outputStyle === "compact"
+      ? 3
+      : outputStyle === "detailed"
+        ? 8
+        : outputStyle === "exhaustive"
+          ? 12
+          : 4;
   const parsed = data ?? tryParseJson<DebatePayload>(raw);
   const parsedArguments = parsed?.arguments?.map((item) => item?.trim()).filter(Boolean) ?? [];
   const extractedArguments = extractArrayField(raw, "arguments");
@@ -52,7 +62,7 @@ export const normalizeDebatePayload = (
     .map((item) => item.trim())
     .filter(Boolean)
     .filter((item) => !item.startsWith('{"summary"'))
-    .slice(0, 4);
+    .slice(0, maxArguments);
 
   const summary =
     parsed?.summary?.trim() ||
