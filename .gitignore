@@ -3,7 +3,16 @@ dist
 release
 .env
 data/memory
+memory/
 data/output
 data/app/settings.json
+data/app/sessions.json
+data/sessions/
+sessions.json
+sessions/
+docs/
+logo/
+screenshots/
+.tmp/
 !.gitkeep
 test-tmp
