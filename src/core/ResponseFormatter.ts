@@ -2,6 +2,14 @@ import { ProcessResult } from "../types";
 
 export class ResponseFormatter {
   formatForChat(result: ProcessResult, options?: { maxChars?: number }): string {
+    const textResponse =
+      "response" in result.result
+        ? this.renderTextResponse(result.result.response, result.result.provider, result.result.model)
+        : "";
+    const hasSubagents = "response" in result.result && Boolean(result.result.subagents?.length);
+    const collector = hasSubagents && "response" in result.result
+      ? result.result.subagents?.find((agent) => agent.role === "writer") ?? result.result.subagents?.[0]
+      : undefined;
     const base =
       result.mode === "hypothesis" && "arguments" in result.result
         ? [
@@ -80,14 +88,33 @@ export class ResponseFormatter {
             ...result.result.arguments.contra.map((item) => `- ${item}`)
           ].join("\n")
         : "response" in result.result
-          ? [
-              "Response",
-              "",
-              `Provider: ${result.result.provider}`,
-              `Model: ${result.result.model}`,
-              "",
-              result.result.response
-            ].join("\n")
+          ? hasSubagents
+            ? [
+                "Response",
+                "",
+                ...this.renderMultiAgentSummary(result.result.subagents ?? [], {
+                  provider: result.result.provider,
+                  model: result.result.model,
+                  collectorName: collector?.name
+                }),
+                "",
+                "Agent outputs",
+                ...this.renderSubagentOutputs(result.result.subagents ?? []),
+                "",
+                "Final answer",
+                "",
+                textResponse
+              ]
+                .filter((line): line is string => line !== undefined)
+                .join("\n")
+            : [
+                "Response",
+                "",
+                `Provider: ${result.result.provider}`,
+                `Model: ${result.result.model}`,
+                "",
+                textResponse
+              ].join("\n")
           : JSON.stringify(result.result, null, 2);
 
     const tools =
@@ -103,5 +130,77 @@ export class ResponseFormatter {
     }
 
     return content;
+  }
+
+  private renderTextResponse(response: string, provider: string, model: string): string {
+    if (!/^Mock response from /i.test(response.trim())) {
+      return response;
+    }
+
+    const providerLabel = provider === "lmstudio" ? "LM Studio" : provider;
+    const modelLabel = model ? ` (${model})` : "";
+
+    return [
+      `Provider request failed or timed out for ${providerLabel}${modelLabel}.`,
+      "Check that the provider is running, the selected model is loaded, and the timeout is high enough for this model."
+    ].join("\n");
+  }
+
+  private renderMultiAgentSummary(
+    subagents: NonNullable<ProcessResult["result"] extends infer Result
+      ? Result extends { subagents?: infer Agents }
+        ? Agents
+        : never
+      : never>,
+    collector: { provider: string; model: string; collectorName?: string }
+  ): string[] {
+    const researchAgents = subagents.filter((agent) => agent.role === "advisor");
+    const okCount = researchAgents.filter((agent) => agent.status === "ok").length;
+    const failedCount = researchAgents.length - okCount;
+    const names = researchAgents.map((agent) => `@${agent.name}`).join(", ") || "none";
+    const status = failedCount > 0 ? `${okCount} ok / ${failedCount} failed` : `${okCount} ok`;
+    const collectorLabel = collector.collectorName
+      ? `@${collector.collectorName} via ${collector.provider}:${collector.model}`
+      : `${collector.provider}:${collector.model}`;
+
+    return [
+      "Multi-agent run",
+      `Research agents: ${names}`,
+      `Research status: ${status}`,
+      `Final collector: ${collectorLabel}`
+    ];
+  }
+
+  private renderSubagentOutputs(subagents: NonNullable<ProcessResult["result"] extends infer Result
+    ? Result extends { subagents?: infer Agents }
+      ? Agents
+      : never
+    : never>): string[] {
+    return subagents
+      .filter((agent) => agent.output?.trim() || agent.status === "degraded")
+      .flatMap((agent) => {
+      const roleLabel = agent.role === "advisor" ? "research" : agent.role;
+      const label = `@${agent.name} (${roleLabel})`;
+      const body =
+        agent.output?.trim() ||
+        (agent.error
+          ? `Provider request failed or timed out: ${agent.error}`
+          : agent.status === "degraded"
+            ? "Provider request failed or timed out."
+            : "No separate note was returned.");
+
+      return ["", label, this.truncateAgentOutput(body)];
+    });
+  }
+
+  private truncateAgentOutput(value: string): string {
+    const maxChars = 2200;
+    const normalized = value.trim();
+
+    if (normalized.length <= maxChars) {
+      return normalized;
+    }
+
+    return `${normalized.slice(0, maxChars).replace(/\s+$/g, "")}\n...[trimmed]`;
   }
 }

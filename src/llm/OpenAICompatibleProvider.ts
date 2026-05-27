@@ -7,6 +7,7 @@ import {
   HttpProviderOptions,
   readRateLimit,
   readResponseText,
+  resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
 
@@ -68,6 +69,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     const model = request.model ?? this.options.model;
+    const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
       const response = await fetch(`${this.options.baseUrl}/responses`, {
@@ -98,7 +100,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
               }
             : {})
         }),
-        signal: AbortSignal.timeout(this.options.timeoutMs)
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {

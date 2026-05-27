@@ -3,6 +3,7 @@ export type SessionMode = Mode | "auto";
 export type Channel = "http" | "telegram" | "system";
 export type LanguagePreference = "auto" | "ru" | "en";
 export type OutputStyle = "compact" | "balanced" | "detailed" | "exhaustive";
+export type SubagentAccessMode = "default" | "full";
 export type DebateProfile =
   | "general"
   | "technical"
@@ -34,6 +35,25 @@ export interface ChatAttachment {
 export interface CodeAgentTarget extends ProviderTarget {
   id: string;
   name: string;
+  accessMode: SubagentAccessMode;
+}
+
+export interface HypothesisAgentTarget extends ProviderTarget {
+  id: string;
+  name: string;
+  role: "support" | "attack" | "judge" | "advisor";
+}
+
+export interface SubagentRunSummary {
+  id: string;
+  name: string;
+  role: "writer" | "advisor";
+  provider: string;
+  model?: string;
+  accessMode: SubagentAccessMode;
+  status: "ok" | "degraded";
+  error?: string;
+  output?: string;
 }
 
 export interface TokenUsage {
@@ -134,7 +154,9 @@ export interface SessionSettings {
   language: LanguagePreference;
   outputStyle: OutputStyle;
   defaultTarget: ProviderTarget;
+  defaultAccessMode: SubagentAccessMode;
   codeAgents: CodeAgentTarget[];
+  hypothesisAgents: HypothesisAgentTarget[];
   debate: DebateSettings;
 }
 
@@ -143,7 +165,10 @@ export interface SessionSettingsPatch {
   language?: LanguagePreference;
   outputStyle?: OutputStyle;
   defaultTarget?: Partial<ProviderTarget>;
+  defaultAccessMode?: SubagentAccessMode;
   codeAgents?: CodeAgentTarget[];
+  subagents?: CodeAgentTarget[];
+  hypothesisAgents?: HypothesisAgentTarget[];
   debate?: {
     enabled?: boolean;
     profile?: DebateProfile;
@@ -244,6 +269,7 @@ export interface TextModeResult {
   response: string;
   provider: string;
   model: string;
+  subagents?: SubagentRunSummary[];
   metrics?: GenerationMetrics;
 }
 
@@ -282,6 +308,7 @@ export interface LLMRequest {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  timeoutMs?: number;
   previousResponseId?: string;
   responseFormat?: {
     type: "json_object";

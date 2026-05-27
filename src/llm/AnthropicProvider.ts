@@ -6,6 +6,7 @@ import {
   createDescriptor,
   HttpProviderOptions,
   readRateLimit,
+  resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
 
@@ -46,6 +47,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     const model = request.model ?? this.options.model;
+    const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
       const response = await fetch(`${this.options.baseUrl}/v1/messages`, {
@@ -66,7 +68,7 @@ export class AnthropicProvider implements LLMProvider {
             }
           ]
         }),
-        signal: AbortSignal.timeout(this.options.timeoutMs)
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {

@@ -1,7 +1,45 @@
 import fs from "fs/promises";
+import { createRequire } from "module";
 import path from "path";
+import { pathToFileURL } from "url";
 import { Logger } from "../utils/Logger";
 import { LoadedPlugin, PluginContext, PluginManifest, SystemPlugin } from "./types";
+
+const requireModule = createRequire(__filename);
+const dynamicImport = new Function("specifier", "return import(specifier)") as (
+  specifier: string
+) => Promise<{
+  default?: SystemPlugin;
+  plugin?: SystemPlugin;
+  __esModule?: boolean;
+}>;
+
+type PluginModule = {
+  default?: SystemPlugin | PluginModule;
+  plugin?: SystemPlugin;
+  __esModule?: boolean;
+};
+
+const isSystemPlugin = (candidate: unknown): candidate is SystemPlugin =>
+  typeof candidate === "object" &&
+  candidate !== null &&
+  "register" in candidate &&
+  typeof (candidate as { register?: unknown }).register === "function";
+
+const resolvePluginExport = (moduleExport: PluginModule): SystemPlugin | undefined => {
+  const nestedDefault =
+    typeof moduleExport.default === "object" && moduleExport.default !== null
+      ? (moduleExport.default as PluginModule)
+      : undefined;
+  const candidates = [
+    moduleExport.plugin,
+    moduleExport.default,
+    nestedDefault?.plugin,
+    nestedDefault?.default
+  ];
+
+  return candidates.find(isSystemPlugin);
+};
 
 export class PluginLoader {
   private loadedPlugins: LoadedPlugin[] = [];
@@ -34,11 +72,8 @@ export class PluginLoader {
         }
 
         const modulePath = await this.resolveEntryPath(pluginDir, manifest.entry);
-        const imported = (await import(modulePath)) as {
-          default?: SystemPlugin;
-          plugin?: SystemPlugin;
-        };
-        const plugin = imported.default ?? imported.plugin;
+        const imported = await this.loadPluginModule(modulePath);
+        const plugin = resolvePluginExport(imported);
 
         if (!plugin) {
           throw new Error(`Plugin module ${modulePath} does not export a plugin`);
@@ -98,5 +133,13 @@ export class PluginLoader {
     }
 
     throw new Error(`Plugin entry not found for ${entry}`);
+  }
+
+  private async loadPluginModule(modulePath: string): Promise<PluginModule> {
+    if (modulePath.endsWith(".ts")) {
+      return dynamicImport(pathToFileURL(modulePath).href);
+    }
+
+    return requireModule(modulePath) as PluginModule;
   }
 }

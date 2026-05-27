@@ -36,24 +36,44 @@ export class FileTool implements Tool {
     }
 
     if (this.isDeleteIntent(rawInput) && requestedPath) {
+      const approval = this.requireFileApproval(input, "delete");
+      if (approval) {
+        return approval;
+      }
       return this.deletePath(requestedPath);
     }
 
     if (this.isMkdirIntent(rawInput) && requestedPath) {
+      const approval = this.requireFileApproval(input, "create directory");
+      if (approval) {
+        return approval;
+      }
       return this.makeDirectory(requestedPath);
     }
 
     if (this.isAppendIntent(rawInput) && requestedPath) {
+      const approval = this.requireFileApproval(input, "append file");
+      if (approval) {
+        return approval;
+      }
       this.assertWritableResult(input.result);
       return this.appendFile(requestedPath, this.renderSingleFileContent(input.result));
     }
 
     if (this.isWriteIntent(rawInput) && requestedPath) {
+      const approval = this.requireFileApproval(input, "write file");
+      if (approval) {
+        return approval;
+      }
       this.assertWritableResult(input.result);
       return this.writeFile(requestedPath, this.renderSingleFileContent(input.result));
     }
 
     if (scaffoldFiles.length > 0) {
+      const approval = this.requireFileApproval(input, "write scaffold");
+      if (approval) {
+        return approval;
+      }
       this.assertWritableResult(input.result);
       return this.writeScaffold(scaffoldFiles, requestedPath);
     }
@@ -229,6 +249,67 @@ export class FileTool implements Tool {
     if (!this.isAllowed(targetPath)) {
       throw new Error(`Filesystem access blocked for path: ${targetPath}`);
     }
+  }
+
+  private requireFileApproval(
+    input: ToolExecutionRequest,
+    operation: string
+  ): ToolExecutionResult | undefined {
+    if (!("response" in input.result)) {
+      return undefined;
+    }
+
+    const writer = input.result.subagents?.find((agent) => agent.role === "writer");
+
+    if (writer) {
+      if (writer.accessMode === "full" || this.hasExplicitFileApproval(input.rawInput)) {
+        return undefined;
+      }
+
+      return {
+        tool: this.name,
+        ok: false,
+        output: [
+          `Permission required: ${writer.name} requested ${operation} with access=default.`,
+          `Reply with explicit approval, for example "approve file access", or switch this subagent to full access.`
+        ].join(" "),
+        metadata: {
+          permissionRequired: true,
+          operation,
+          agentId: writer.id,
+          agentName: writer.name,
+          accessMode: writer.accessMode
+        }
+      };
+    }
+
+    const accessMode = input.context.sessionSettings.defaultAccessMode;
+
+    if (accessMode === "full" || this.hasExplicitFileApproval(input.rawInput)) {
+      return undefined;
+    }
+
+    return {
+      tool: this.name,
+      ok: false,
+      output: [
+        `Permission required: current model requested ${operation} with access=default.`,
+        `Reply with explicit approval, for example "approve file access", or switch the main model to full access.`
+      ].join(" "),
+      metadata: {
+        permissionRequired: true,
+        operation,
+        agentId: "default-model",
+        agentName: "Current model",
+        accessMode
+      }
+    };
+  }
+
+  private hasExplicitFileApproval(input: string): boolean {
+    return /approve file access|approved file access|allow file access|разрешаю доступ|подтверждаю доступ|одобряю доступ|full access/i.test(
+      input
+    );
   }
 
   private resolveTargetPath(rawPath: string): string {

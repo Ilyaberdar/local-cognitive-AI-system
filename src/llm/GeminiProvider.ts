@@ -1,7 +1,13 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
-import { buildFallbackResponse, createDescriptor, HttpProviderOptions, readUsage } from "./provider-utils";
+import {
+  buildFallbackResponse,
+  createDescriptor,
+  HttpProviderOptions,
+  resolveRequestTimeoutMs,
+  readUsage
+} from "./provider-utils";
 
 type GeminiProviderOptions = Omit<HttpProviderOptions, "id" | "name">;
 
@@ -35,6 +41,7 @@ export class GeminiProvider implements LLMProvider {
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     const model = request.model ?? this.options.model;
     const endpoint = `${this.options.baseUrl}/v1beta/models/${model}:generateContent`;
+    const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
       const response = await fetch(endpoint, {
@@ -60,7 +67,7 @@ export class GeminiProvider implements LLMProvider {
             maxOutputTokens: request.maxTokens
           }
         }),
-        signal: AbortSignal.timeout(this.options.timeoutMs)
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {

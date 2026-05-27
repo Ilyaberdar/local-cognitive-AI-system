@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import {
   CodeAgentTarget,
+  HypothesisAgentTarget,
   ProviderTarget,
   SessionSettings,
   SessionSettingsPatch
@@ -10,6 +11,9 @@ import {
 interface SessionSettingsStoreOptions {
   baseDir: string;
 }
+
+const maxHypothesisAdvisors = 5;
+const maxHypothesisAgents = 3 + maxHypothesisAdvisors;
 
 export class SessionSettingsStore {
   constructor(
@@ -39,7 +43,8 @@ export class SessionSettingsStore {
         ...current.defaultTarget,
         ...patch.defaultTarget
       },
-      codeAgents: patch.codeAgents ?? current.codeAgents,
+      codeAgents: patch.subagents ?? patch.codeAgents ?? current.codeAgents,
+      hypothesisAgents: patch.hypothesisAgents ?? current.hypothesisAgents,
       debate: {
         ...current.debate,
         ...patch.debate,
@@ -87,9 +92,11 @@ export class SessionSettingsStore {
     return {
       mode: settings.mode ?? fallback.mode,
       language: settings.language ?? fallback.language,
-      outputStyle: settings.outputStyle ?? fallback.outputStyle,
-      defaultTarget: this.normalizeTarget(settings.defaultTarget, fallback.defaultTarget),
-      codeAgents: this.normalizeCodeAgents(settings.codeAgents, fallback.codeAgents),
+	      outputStyle: settings.outputStyle ?? fallback.outputStyle,
+	      defaultTarget: this.normalizeTarget(settings.defaultTarget, fallback.defaultTarget),
+	      defaultAccessMode: settings.defaultAccessMode === "full" ? "full" : "default",
+	      codeAgents: this.normalizeCodeAgents(settings.codeAgents, fallback.codeAgents),
+      hypothesisAgents: this.normalizeHypothesisAgents(settings.hypothesisAgents, fallback.hypothesisAgents),
       debate: {
         enabled: settings.debate?.enabled ?? fallback.debate.enabled,
         profile: settings.debate?.profile ?? fallback.debate.profile,
@@ -123,14 +130,29 @@ export class SessionSettingsStore {
       mode: "auto",
       language: "auto",
       outputStyle: "balanced",
-      defaultTarget: {
-        ...this.defaultTarget
-      },
-      codeAgents: [
+	      defaultTarget: {
+	        ...this.defaultTarget
+	      },
+	      defaultAccessMode: "default",
+	      codeAgents: [],
+      hypothesisAgents: [
         {
-          id: "agent-1",
-          name: "Agent1",
+          id: "hypothesis-support",
+          name: "Support",
+          role: "support",
           ...this.defaultTarget
+        },
+        {
+          id: "hypothesis-attack",
+          name: "Attack",
+          role: "attack",
+          ...this.defaultTarget
+        },
+        {
+          id: "hypothesis-judge",
+          name: "Judge",
+          role: "judge",
+          providerId: "local"
         }
       ],
       debate: {
@@ -154,14 +176,15 @@ export class SessionSettingsStore {
     fallback: CodeAgentTarget[]
   ): CodeAgentTarget[] {
     if (Array.isArray(agents)) {
-      return agents.slice(0, 5).map((agent, index) => {
+      return agents.slice(0, 4).map((agent, index) => {
         const normalizedTarget = this.normalizeTarget(agent, fallback[0] ?? this.defaultTarget);
 
         return {
           id: agent.id?.trim() || `agent-${index + 1}`,
-          name: agent.name?.trim() || `Agent${index + 1}`,
+          name: agent.name?.trim() || this.defaultSubagentName(index),
           providerId: normalizedTarget.providerId,
-          model: normalizedTarget.model
+          model: normalizedTarget.model,
+          accessMode: agent.accessMode === "full" ? "full" : "default"
         };
       });
     }
@@ -173,11 +196,71 @@ export class SessionSettingsStore {
 
       return {
         id: agent.id?.trim() || `agent-${index + 1}`,
-        name: agent.name?.trim() || `Agent${index + 1}`,
+        name: agent.name?.trim() || this.defaultSubagentName(index),
+        providerId: normalizedTarget.providerId,
+        model: normalizedTarget.model,
+        accessMode: agent.accessMode === "full" ? "full" : "default"
+      };
+    });
+  }
+
+  private normalizeHypothesisAgents(
+    agents: HypothesisAgentTarget[] | undefined,
+    fallback: HypothesisAgentTarget[]
+  ): HypothesisAgentTarget[] {
+    const source = Array.isArray(agents) ? agents : fallback;
+    const normalized = source.slice(0, maxHypothesisAgents).map((agent, index) => {
+      const normalizedTarget = this.normalizeTarget(agent, fallback[index] ?? fallback[0] ?? this.defaultTarget);
+      const role = ["support", "attack", "judge", "advisor"].includes(agent.role)
+        ? agent.role
+        : index === 0
+          ? "support"
+          : index === 1
+            ? "attack"
+            : index === 2
+              ? "judge"
+              : "advisor";
+
+      return {
+        id: agent.id?.trim() || `hypothesis-${index + 1}`,
+        name: agent.name?.trim() || this.defaultHypothesisName(role, index),
+        role,
         providerId: normalizedTarget.providerId,
         model: normalizedTarget.model
       };
     });
+
+    if (normalized.length === 0) {
+      return fallback;
+    }
+
+    const requiredRoles = ["support", "attack", "judge"] as const;
+    const requiredAgents = requiredRoles.map((role, index) => {
+      return normalized.find((agent) => agent.role === role) ?? fallback[index];
+    });
+    const advisors = normalized.filter((agent) => agent.role === "advisor").slice(0, maxHypothesisAdvisors);
+
+    return [...requiredAgents, ...advisors];
+  }
+
+  private defaultSubagentName(index: number): string {
+    return ["Atlas", "Nova", "Vector", "Echo", "Orion", "Lyra", "Kepler", "Sable", "Rook", "Mira"][index % 10];
+  }
+
+  private defaultHypothesisName(role: HypothesisAgentTarget["role"], index: number): string {
+    if (role === "support") {
+      return "Support";
+    }
+
+    if (role === "attack") {
+      return "Attack";
+    }
+
+    if (role === "judge") {
+      return "Judge";
+    }
+
+    return `Advisor${index - 2}`;
   }
 
   private getPath(sessionId: string): string {

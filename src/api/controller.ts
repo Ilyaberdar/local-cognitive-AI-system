@@ -230,22 +230,54 @@ export const createUpdateSessionSettingsController =
         mode: isSessionMode(body.mode) ? body.mode : undefined,
         language: isLanguagePreference(body.language) ? body.language : undefined,
         outputStyle: isOutputStyle(body.outputStyle) ? body.outputStyle : undefined,
-        defaultTarget: isObject(body.defaultTarget)
-          ? {
+	        defaultTarget: isObject(body.defaultTarget)
+	          ? {
               providerId:
                 typeof body.defaultTarget.providerId === "string"
                   ? body.defaultTarget.providerId
                   : undefined,
               model:
                 typeof body.defaultTarget.model === "string" ? body.defaultTarget.model : undefined
-            }
-          : undefined,
-        codeAgents: Array.isArray(body.codeAgents)
+	            }
+	          : undefined,
+	        defaultAccessMode: body.defaultAccessMode === "full" ? "full" : body.defaultAccessMode === "default" ? "default" : undefined,
+	        codeAgents: Array.isArray(body.codeAgents)
           ? body.codeAgents
               .filter(isObject)
               .map((agent, index) => ({
                 id: typeof agent.id === "string" ? agent.id : `agent-${index + 1}`,
                 name: typeof agent.name === "string" ? agent.name : `Agent${index + 1}`,
+                providerId:
+                  typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
+                model: typeof agent.model === "string" ? agent.model : undefined,
+                accessMode: agent.accessMode === "full" ? "full" : "default"
+              }))
+          : undefined,
+        subagents: Array.isArray(body.subagents)
+          ? body.subagents
+              .filter(isObject)
+              .map((agent, index) => ({
+                id: typeof agent.id === "string" ? agent.id : `agent-${index + 1}`,
+                name: typeof agent.name === "string" ? agent.name : `Agent${index + 1}`,
+                providerId:
+                  typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
+                model: typeof agent.model === "string" ? agent.model : undefined,
+                accessMode: agent.accessMode === "full" ? "full" : "default"
+              }))
+          : undefined,
+        hypothesisAgents: Array.isArray(body.hypothesisAgents)
+          ? body.hypothesisAgents
+              .filter(isObject)
+              .map((agent, index) => ({
+                id: typeof agent.id === "string" ? agent.id : `hypothesis-${index + 1}`,
+                name: typeof agent.name === "string" ? agent.name : `Hypothesis${index + 1}`,
+                role:
+                  agent.role === "support" ||
+                  agent.role === "attack" ||
+                  agent.role === "judge" ||
+                  agent.role === "advisor"
+                    ? agent.role
+                    : "advisor",
                 providerId:
                   typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
                 model: typeof agent.model === "string" ? agent.model : undefined
@@ -674,10 +706,12 @@ const buildStoredMessageContent = (
         mode: "auto",
         language: "auto",
         outputStyle: "balanced",
-        defaultTarget: {
-          providerId: "unknown"
-        },
-        codeAgents: [],
+	        defaultTarget: {
+	          providerId: "unknown"
+	        },
+	        defaultAccessMode: "default",
+	        codeAgents: [],
+        hypothesisAgents: [],
         debate: {
           enabled: false,
           profile: "general",

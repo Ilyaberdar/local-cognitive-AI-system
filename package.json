@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local Cognitive AI System headless engine",
+  "author": "Local Cognitive AI System",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/index.js",
-    "test": "npm run build && node --test dist/test/**/*.test.js"
+    "test": "npm run build && node --test dist/test/**/*.test.js",
+    "electron": "npm run build && electron .",
+    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "engines": {
     "node": ">=18.18.0"
@@ -19,7 +24,53 @@
   "devDependencies": {
     "@types/express": "^5.0.1",
     "@types/node": "^22.13.10",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
+  },
+  "build": {
+    "appId": "com.localcognitiveai.system",
+    "productName": "Local Cognitive AI System",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/src/**/*",
+      "dist/plugins/**/*",
+      "plugins/**/plugin.json",
+      "public/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
