@@ -67,6 +67,34 @@ Open:
 http://127.0.0.1:3000
 ```
 
+## Desktop Builds
+
+The desktop package uses Electron as a thin shell around the existing local
+Express server and browser dashboard. The backend, plugins, and UI are reused;
+the app stores runtime data in the operating system user-data directory.
+
+Build a macOS DMG:
+
+```bash
+npm run dist:mac
+```
+
+Build a Windows x64 NSIS installer:
+
+```bash
+npm run dist:win
+```
+
+Artifacts are written to `release/`.
+
+Notes:
+
+- LM Studio or Ollama still need to be installed and running separately.
+- Local provider URLs still point to `127.0.0.1`, for example LM Studio on
+  `http://127.0.0.1:1234/v1`.
+- Release builds are unsigned until Apple Developer ID / Windows code-signing
+  certificates are configured.
+
 ## Fastest Local Setup
 
 If you want the system working as fast as possible, use LM Studio.
@@ -116,7 +144,7 @@ DEFAULT_PROVIDER=lmstudio
 LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
 LMSTUDIO_MODEL=qwen/qwen3.5-9b
 LMSTUDIO_API_KEY=lm-studio
-LMSTUDIO_TIMEOUT_MS=60000
+LMSTUDIO_TIMEOUT_MS=300000
 ```
 
 ### 4. Run the app
@@ -398,15 +426,24 @@ flowchart LR
 
 ## Code Mode Behavior
 
-`code` mode supports multiple agents.
+`code` mode supports configured subagents.
 
 Current behavior:
 
-- the first code agent acts as the final writer
-- other agents act as advisors
+- subagents can use any configured provider/model, including LM Studio models or API providers
+- prompts that mention `spawn subagent`, `subagent`, or `сабагент` are routed into code mode automatically
+- `@AgentName` selects configured agents explicitly; a generic spawn request picks the cheapest configured local/API target by heuristic
+- if no subagent config exists, spawn requests fall back to the current main provider/model
+- at most 4 code subagents run for a request
+- the first subagent acts as the final writer
+- other subagents act as advisors
+- assistant responses include a `Subagents` section showing role, provider, model, access mode, and status
+- each subagent has an access mode:
+  - `default`: file writes/deletes from subagent output require explicit approval
+  - `full`: file writes/deletes may run through the configured filesystem tool boundaries
 - the system reduces bad merged output by avoiding raw multi-agent file concatenation
 
-This is intentionally safer than letting 5 agents write directly into the same scaffold output.
+This is intentionally safer than letting multiple agents write directly into the same scaffold output.
 
 ## Project Structure
 

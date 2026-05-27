@@ -216,11 +216,13 @@ export class AppSettingsStore {
   }
 
   private defaultProvider(providerId: string) {
+    const timeoutMs = ["lmstudio", "ollama"].includes(providerId) ? 300000 : 60000;
+
     return {
       enabled: true,
       baseUrl: "",
       model: "",
-      timeoutMs: 20000,
+      timeoutMs,
       apiKey: providerId === "lmstudio" ? "lm-studio" : undefined
     };
   }

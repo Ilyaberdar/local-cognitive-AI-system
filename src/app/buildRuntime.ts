@@ -33,6 +33,7 @@ import {
   LLMResponse,
   OutputStyle,
   ProviderDescriptor,
+  SubagentRunSummary,
   ToolDescriptor
 } from "../types";
 import { Logger } from "../utils/Logger";
@@ -118,6 +119,66 @@ const buildCodeWriterRoleInstruction = (style: OutputStyle): string => {
   }
 };
 
+const buildNoSubagentBoilerplateInstruction = (): string =>
+  [
+    "Do not say that you are a subagent, that you were spawned, that you woke up, or that you are ready.",
+    "Do not restate the user's command.",
+    "Start directly with the requested analysis, answer, plan, or implementation result.",
+    "If the request is not actionable, ask one concise clarifying question instead of acknowledging readiness."
+  ].join("\n");
+
+const buildSubagentNameInstruction = (agents: CodeAgentTarget[]): string => {
+  const names = agents.map((agent) => `@${agent.name}`).join(", ");
+
+  return [
+    `Agent display names: ${names || "none"}.`,
+    "These @names are routing labels for the orchestration layer, not libraries, modules, decorators, frameworks, or task subjects.",
+    "If you mention any agent in the answer, use only its @Name form.",
+    "Never write generic numbered labels such as Subagent 1, Sub-agent 1, Подагент 1, Сабагент 1, Агент 1, or Agent 1.",
+    "Never assign tasks to these agents in your answer. Execute your own pass instead."
+  ].join("\n");
+};
+
+const stripSubagentRoutingSyntax = (input: string): string => {
+  const stripped = input
+    .replace(/@[\p{L}\p{N}_-]+/gu, " ")
+    .replace(/\bspawn\s+sub-?agents?\b/giu, " ")
+    .replace(/\bspawn\b/giu, " ")
+    .replace(/\bsub-?agents?\b/giu, " ")
+    .replace(/заспавн\p{L}*\s*(?:\d+\s*)?(?:[\p{L}.?-]*агент\p{L}*)?/giu, " ")
+    .replace(/заспавн(?:и|ить|ь)?\s*(?:\d+\s*)?(?:с[ау]б.?агент(?:а|ов)?|агент(?:а|ов)?)/giu, " ")
+    .replace(/[\p{L}.?-]*агент(?:а|ов|ом|ами)?/giu, " ")
+    .replace(/с[ау]б.?агент(?:а|ов)?/giu, " ")
+    .replace(/\bwith\s+the\s+goal\s+of\b/giu, " ")
+    .replace(/\bto\s+analy[sz]e\b/giu, "analyze")
+    .replace(/\band\s+then\b/giu, "and")
+    .replace(/с\s+ц[её]?лью/giu, " ")
+    .replace(/и\s+потом/giu, "и")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return stripped || input.trim();
+};
+
+const buildSubagentExecutionContract = (
+  input: string,
+  taskInput: string,
+  agents: CodeAgentTarget[]
+): string =>
+  [
+    buildSubagentNameInstruction(agents),
+    "",
+    "Actual task to execute:",
+    taskInput,
+    "",
+    "Important:",
+    "- The original routing text was intentionally stripped before this prompt.",
+    "- Do not interpret @Atlas, @Vector, or any @Name as a software package, decorator, module, framework, or data structure.",
+    "- Do not describe how to spawn agents, processes, scripts, or subprocesses.",
+    "- Do not write 'Задача для @Name', 'Task for @Name', or instructions for another agent.",
+    "- Produce findings, critique, risks, and recommendations from your own independent pass."
+  ].join("\n");
+
 const buildCodeAdvisorRoleInstruction = (style: OutputStyle): string => {
   switch (style) {
     case "compact":
@@ -199,6 +260,86 @@ const sumUsage = (
 const isDegradedResponse = (response: LLMResponse): boolean =>
   Boolean(response.error) || /^Mock response from /i.test(response.text.trim());
 
+const AGENT_LOCAL_TIMEOUT_MS = 300000;
+const AGENT_REMOTE_TIMEOUT_MS = 180000;
+
+const agentRequestTimeoutMs = (providerId: string): number =>
+  ["lmstudio", "ollama"].includes(providerId) ? AGENT_LOCAL_TIMEOUT_MS : AGENT_REMOTE_TIMEOUT_MS;
+
+const buildSubagentAccessInstruction = (agent: CodeAgentTarget): string =>
+  agent.accessMode === "full"
+    ? "Access mode: full. You may produce outputs intended for filesystem execution when the user asks for it."
+    : "Access mode: default. Do not assume filesystem changes will be executed automatically; write plans normally and expect explicit approval for file operations.";
+
+const summarizeSubagentRun = (
+  run: Awaited<ReturnType<typeof runCodeAgent>>,
+  role: "writer" | "advisor"
+): SubagentRunSummary => ({
+  id: run.agent.id,
+  name: run.agent.name,
+  role,
+  provider: run.response.provider,
+  model: run.response.model,
+  accessMode: run.agent.accessMode,
+  status: run.degraded ? "degraded" : "ok",
+  error: run.response.error,
+  output: run.degraded ? undefined : run.normalized
+});
+
+const hasSubagentTrigger = (input: string): boolean =>
+  /spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент/i.test(input);
+
+const parseMentionedSubagentNames = (input: string): string[] =>
+  Array.from(input.matchAll(/@([\p{L}\p{N}_-]+)/gu)).map((match) => match[1].toLowerCase());
+
+const rankSubagentCost = (agent: CodeAgentTarget): number => {
+  const providerScore =
+    agent.providerId === "lmstudio" || agent.providerId === "ollama"
+      ? 0
+      : agent.providerId === "gemini"
+        ? 20
+        : agent.providerId === "openai"
+          ? 30
+          : agent.providerId === "anthropic"
+            ? 40
+            : 50;
+  const model = (agent.model ?? "").toLowerCase();
+  const modelScore =
+    /nano|mini|flash|haiku|small|lite|3b|4b|7b|8b/.test(model)
+      ? -5
+      : /pro|sonnet|medium|14b|20b|32b/.test(model)
+        ? 5
+        : /opus|large|70b|120b/.test(model)
+          ? 15
+          : 0;
+
+  return providerScore + modelScore;
+};
+
+const selectConfiguredSubagents = (
+  input: string,
+  configuredAgents: CodeAgentTarget[]
+): CodeAgentTarget[] => {
+  const mentionedNames = parseMentionedSubagentNames(input);
+
+  if (mentionedNames.length > 0) {
+    const selected = configuredAgents.filter((agent) =>
+      mentionedNames.includes(agent.name.toLowerCase())
+    );
+
+    return selected.length > 0 ? selected.slice(0, 4) : [];
+  }
+
+  if (!hasSubagentTrigger(input)) {
+    return [];
+  }
+
+  return configuredAgents
+    .slice()
+    .sort((left, right) => rankSubagentCost(left) - rankSubagentCost(right))
+    .slice(0, 1);
+};
+
 const buildCodeAdvisorPrompt = (
   input: string,
   memory: string,
@@ -221,8 +362,34 @@ const buildCodeAdvisorPrompt = (
     buildCodeAdvisorInstruction(outputStyle)
   ].join("\n");
 
+const buildIndependentAgentPrompt = (
+  input: string,
+  taskInput: string,
+  memory: string,
+  language: "auto" | "ru" | "en",
+  outputStyle: OutputStyle,
+  attachmentContext: string | undefined,
+  agents: CodeAgentTarget[]
+): string =>
+  [
+    "Mode: code",
+    "Relevant memory:",
+    memory,
+    ...(attachmentContext ? ["", attachmentContext] : []),
+    "",
+    buildSubagentExecutionContract(input, taskInput, agents),
+    "",
+    buildLanguageInstruction(language),
+    "",
+    "You are doing an independent pass. Do not wait for other agents and do not summarize their possible work.",
+    "Focus on your own findings, risks, and concrete recommendation for the requested task.",
+    "Keep the output structured and useful for a later collector model.",
+    buildCodeAdvisorInstruction(outputStyle)
+  ].join("\n");
+
 const buildCodeWriterPrompt = (
   input: string,
+  taskInput: string,
   memory: string,
   language: "auto" | "ru" | "en",
   outputStyle: OutputStyle,
@@ -231,14 +398,16 @@ const buildCodeWriterPrompt = (
 ): string => {
   const healthyAdvisorNotes = advisorRuns
     .filter((item) => !item.degraded)
-    .map((item) => [`${item.agent.name}:`, item.normalized].join("\n"))
+    .map((item) => [`@${item.agent.name}:`, item.normalized].join("\n"))
     .join("\n\n");
   const degradedAdvisorNames = advisorRuns
     .filter((item) => item.degraded)
     .map((item) => item.agent.name);
 
   return [
-    buildTextPrompt("code", input, memory, language, outputStyle, attachmentContext),
+    buildTextPrompt("code", taskInput, memory, language, outputStyle, attachmentContext),
+    "",
+    buildSubagentExecutionContract(input, taskInput, advisorRuns.map((item) => item.agent)),
     "",
     "Advisor notes from other coding agents:",
     healthyAdvisorNotes || "No reliable advisor notes were available.",
@@ -251,6 +420,9 @@ const buildCodeWriterPrompt = (
     "",
     "You are the final writer for this code swarm.",
     "Produce one final implementation-ready answer.",
+    "Synthesize the independent findings into a clear answer for the user's actual task.",
+    "Do not repeat routing metadata or create new tasks for agents.",
+    "Do not output code for spawning agents, subprocesses, CLIs, or orchestration unless the actual task explicitly asks to implement an orchestration system.",
     "If the user asked for file edits or project scaffolding, return only the final write-safe output in the requested format.",
     "Do not include per-agent headings, comparisons, or swarm commentary in the final output."
   ].join("\n");
@@ -268,7 +440,8 @@ const runCodeAgent = async (
     {
       model: agent.model,
       systemPrompt,
-      prompt
+      prompt,
+      timeoutMs: agentRequestTimeoutMs(agent.providerId)
     },
     agent.providerId
   );
@@ -296,24 +469,28 @@ const runCodeSwarm = async (
     context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
     "- No relevant memory found.";
   const attachmentContext = renderAttachmentContext(readAttachments(context.requestMetadata));
+  const taskInput = stripSubagentRoutingSyntax(input);
+	  const fallbackAgent = {
+	    id: "default-agent",
+	    name: "Default",
+	    providerId: context.activeTarget.providerId,
+	    model: context.activeTarget.model,
+	    accessMode: context.sessionSettings.defaultAccessMode
+	  } satisfies CodeAgentTarget;
   const configuredAgents =
     context.sessionSettings.codeAgents.length > 0
-      ? context.sessionSettings.codeAgents.slice(0, 5)
-      : [
-          {
-            id: "agent-1",
-            name: "Agent1",
-            providerId: context.activeTarget.providerId,
-            model: context.activeTarget.model
-          } satisfies CodeAgentTarget
-        ];
+      ? selectConfiguredSubagents(input, context.sessionSettings.codeAgents.slice(0, 4))
+      : hasSubagentTrigger(input) || parseMentionedSubagentNames(input).length > 0
+        ? [fallbackAgent]
+        : [];
+  const activeAgents = configuredAgents.length > 0 ? configuredAgents : [fallbackAgent];
 
-  if (configuredAgents.length === 1) {
+  if (activeAgents.length === 1) {
     const writerRun = await runCodeAgent(
-      configuredAgents[0],
+      activeAgents[0],
       buildTextPrompt(
         "code",
-        input,
+        taskInput,
         memorySummary,
         context.sessionSettings.language,
         context.sessionSettings.outputStyle,
@@ -323,7 +500,11 @@ const runCodeSwarm = async (
       languageEnforcer,
       context.sessionSettings.language,
       [
-        `You are ${configuredAgents[0].name}, a focused coding agent.`,
+        `You are ${activeAgents[0].name}, a focused coding agent.`,
+        buildSubagentExecutionContract(input, taskInput, [activeAgents[0]]),
+        buildSubagentNameInstruction([activeAgents[0]]),
+        buildSubagentAccessInstruction(activeAgents[0]),
+        buildNoSubagentBoilerplateInstruction(),
         buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle)
       ].join("\n")
     );
@@ -332,6 +513,7 @@ const runCodeSwarm = async (
       response: writerRun.normalized,
       provider: writerRun.response.provider,
       model: writerRun.response.model,
+      subagents: [summarizeSubagentRun(writerRun, "writer")],
       metrics: {
         startedAt: new Date(0).toISOString(),
         completedAt: new Date(0).toISOString(),
@@ -341,39 +523,43 @@ const runCodeSwarm = async (
     };
   }
 
-  const writerAgent = configuredAgents[0];
-  const advisorAgents = configuredAgents.slice(1);
-  const advisorRuns = await Promise.all(
-    advisorAgents.map((agent) =>
+  const collectorAgent = activeAgents[0];
+  const independentRuns = await Promise.all(
+    activeAgents.map((agent) =>
       runCodeAgent(
         agent,
-        buildCodeAdvisorPrompt(
+        buildIndependentAgentPrompt(
           input,
+          taskInput,
           memorySummary,
           context.sessionSettings.language,
           context.sessionSettings.outputStyle,
-          attachmentContext
+          attachmentContext,
+          activeAgents
         ),
         llmService,
         languageEnforcer,
         context.sessionSettings.language,
         [
-          `You are ${agent.name}, an advisor in a multi-agent code swarm.`,
-          buildCodeAdvisorRoleInstruction(context.sessionSettings.outputStyle),
-          "Do not produce final deliverable files or scaffolds."
+          `You are ${agent.name}, an independent coding agent in a multi-agent run.`,
+          buildSubagentNameInstruction(activeAgents),
+          buildSubagentAccessInstruction(agent),
+          buildNoSubagentBoilerplateInstruction(),
+          buildCodeAdvisorRoleInstruction(context.sessionSettings.outputStyle)
         ].join("\n")
       )
     )
   );
   const writerRun = await runCodeAgent(
-    writerAgent,
+    collectorAgent,
     buildCodeWriterPrompt(
       input,
+      taskInput,
       memorySummary,
       context.sessionSettings.language,
       context.sessionSettings.outputStyle,
       attachmentContext,
-      advisorRuns.map((item) => ({
+      independentRuns.map((item) => ({
         agent: item.agent,
         normalized: item.normalized,
         degraded: item.degraded
@@ -383,24 +569,36 @@ const runCodeSwarm = async (
     languageEnforcer,
     context.sessionSettings.language,
     [
-      `You are ${writerAgent.name}, the final writer in a multi-agent code swarm.`,
+      `You are ${collectorAgent.name}, the collector for a multi-agent code run.`,
+      buildSubagentNameInstruction(activeAgents),
+      buildSubagentAccessInstruction(collectorAgent),
+      buildNoSubagentBoilerplateInstruction(),
       buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
+      "Use the independent agent notes as source material.",
       "When file output is requested, produce only the final write-safe output."
     ].join("\n")
   );
-  const firstHealthyAdvisor = advisorRuns.find((item) => !item.degraded);
+  const firstHealthyAdvisor = independentRuns.find((item) => !item.degraded);
   const chosenRun =
     !writerRun.degraded || !firstHealthyAdvisor ? writerRun : firstHealthyAdvisor;
+  const writerSummary = {
+    ...summarizeSubagentRun(writerRun, "writer" as const),
+    output: undefined
+  };
 
   return {
     response: chosenRun.normalized,
     provider: chosenRun.response.provider,
     model: chosenRun.response.model,
+    subagents: [
+      writerSummary,
+      ...independentRuns.map((item) => summarizeSubagentRun(item, "advisor"))
+    ],
     metrics: {
       startedAt: new Date(0).toISOString(),
       completedAt: new Date(0).toISOString(),
       durationMs: 0,
-      usage: sumUsage([writerRun.response.usage, ...advisorRuns.map((item) => item.response.usage)])
+      usage: sumUsage([writerRun.response.usage, ...independentRuns.map((item) => item.response.usage)])
     }
   };
 };

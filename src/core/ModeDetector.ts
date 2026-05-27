@@ -20,7 +20,7 @@ export class ModeDetector {
   }
 
   private isCode(input: string): boolean {
-    return /bug|fix|refactor|typescript|javascript|function|class|api|code|stack trace|error/i.test(
+    return /bug|fix|refactor|typescript|javascript|function|class|api|code|stack trace|error|spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент/i.test(
       input
     );
   }

@@ -6,6 +6,7 @@ import {
   buildFallbackResponse,
   createDescriptor,
   HttpProviderOptions,
+  resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
 
@@ -67,6 +68,7 @@ export class OllamaProvider implements LLMProvider {
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     const model = request.model ?? this.options.model;
+    const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
       const response = await fetch(`${this.options.baseUrl}/api/generate`, {
@@ -86,7 +88,7 @@ export class OllamaProvider implements LLMProvider {
               }
             : {})
         }),
-        signal: AbortSignal.timeout(this.options.timeoutMs)
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {

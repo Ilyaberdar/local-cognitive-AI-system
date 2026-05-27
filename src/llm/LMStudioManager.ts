@@ -32,12 +32,21 @@ export class LMStudioManager {
   }
 
   async listAllModels(): Promise<ManagedModel[]> {
-    const payload = await this.request<{
+    let payload: {
       data?: NativeModelRecord[];
       models?: NativeModelRecord[];
-    }>("/api/v1/models", {
-      method: "GET"
-    });
+    };
+
+    try {
+      payload = await this.request<{
+        data?: NativeModelRecord[];
+        models?: NativeModelRecord[];
+      }>("/api/v1/models", {
+        method: "GET"
+      });
+    } catch {
+      return [];
+    }
 
     const records = payload.models ?? payload.data ?? [];
 

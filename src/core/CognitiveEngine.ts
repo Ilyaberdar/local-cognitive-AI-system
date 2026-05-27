@@ -2,7 +2,7 @@ import { MemoryService } from "../memory/MemoryService";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { Logger } from "../utils/Logger";
-import { ProcessInput, ProcessResult, ToolExecutionResult } from "../types";
+import { ProcessInput, ProcessResult, SessionSettings, ToolExecutionResult } from "../types";
 import { ModeDetector } from "./ModeDetector";
 import { Router } from "./Router";
 import { ToolRequestBuilder } from "./ToolRequestBuilder";
@@ -40,12 +40,16 @@ export class CognitiveEngine {
     const memory = await this.memoryService.retrieve(normalizedInput, { actor });
     const conversation = await this.memoryService.recent({ actor, limit: 12 });
     const startedAt = new Date();
-    const mode =
+    const requestedMode =
       sessionSettings.mode === "auto"
         ? sessionSettings.debate.enabled
           ? "hypothesis"
           : this.modeDetector.detect(normalizedInput)
         : sessionSettings.mode;
+    const mode =
+      requestedMode !== "hypothesis" && this.shouldRunCodeAgents(normalizedInput, sessionSettings)
+        ? "code"
+        : requestedMode;
     const handler = this.router.route(mode);
     const result = await handler(normalizedInput, {
       actor,
@@ -120,6 +124,22 @@ export class CognitiveEngine {
         usage
       }
     };
+  }
+
+  private shouldRunCodeAgents(input: string, settings: SessionSettings): boolean {
+    if (/spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент/i.test(input)) {
+      return true;
+    }
+
+    const mentions = Array.from(input.matchAll(/@([\p{L}\p{N}_-]+)/gu)).map((match) =>
+      match[1].toLowerCase()
+    );
+
+    if (mentions.length === 0) {
+      return false;
+    }
+
+    return settings.codeAgents.some((agent) => mentions.includes(agent.name.toLowerCase()));
   }
 
   private async executeTools(

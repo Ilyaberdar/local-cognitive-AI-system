@@ -88,7 +88,8 @@ const toOptional = (value: string | undefined): string | undefined => {
   return normalized ? normalized : undefined;
 };
 
-const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 20000);
+const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 60000);
+const defaultLocalTimeoutMs = Number(process.env.LOCAL_PROVIDER_TIMEOUT_MS ?? 300000);
 
 export const config: AppConfig = {
   server: {
@@ -107,12 +108,12 @@ export const config: AppConfig = {
     ollama: {
       baseUrl: process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
       model: process.env.OLLAMA_MODEL ?? "llama3.2",
-      timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? defaultTimeoutMs)
+      timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? defaultLocalTimeoutMs)
     },
     lmstudio: {
       baseUrl: process.env.LMSTUDIO_BASE_URL ?? "http://127.0.0.1:1234/v1",
       model: process.env.LMSTUDIO_MODEL ?? "openai/gpt-oss-20b",
-      timeoutMs: Number(process.env.LMSTUDIO_TIMEOUT_MS ?? defaultTimeoutMs),
+      timeoutMs: Number(process.env.LMSTUDIO_TIMEOUT_MS ?? defaultLocalTimeoutMs),
       apiKey: toOptional(process.env.LMSTUDIO_API_KEY) ?? "lm-studio"
     },
     openai: {

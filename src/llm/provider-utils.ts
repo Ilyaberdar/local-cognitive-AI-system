@@ -22,6 +22,14 @@ export const createDescriptor = (
 export const buildComposedPrompt = (request: LLMRequest): string =>
   request.systemPrompt ? `${request.systemPrompt}\n\n${request.prompt}` : request.prompt;
 
+export const resolveRequestTimeoutMs = (
+  configuredTimeoutMs: number,
+  requestTimeoutMs?: number
+): number =>
+  typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs)
+    ? Math.max(configuredTimeoutMs, requestTimeoutMs)
+    : configuredTimeoutMs;
+
 export const buildFallbackResponse = (
   request: LLMRequest,
   provider: string,
