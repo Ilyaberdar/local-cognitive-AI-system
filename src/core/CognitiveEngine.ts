@@ -40,12 +40,14 @@ export class CognitiveEngine {
     const memory = await this.memoryService.retrieve(normalizedInput, { actor });
     const conversation = await this.memoryService.recent({ actor, limit: 12 });
     const startedAt = new Date();
+    const metadataMode = this.readMetadataMode(request.metadata);
     const requestedMode =
-      sessionSettings.mode === "auto"
+      metadataMode ??
+      (sessionSettings.mode === "auto"
         ? sessionSettings.debate.enabled
           ? "hypothesis"
           : this.modeDetector.detect(normalizedInput)
-        : sessionSettings.mode;
+        : sessionSettings.mode);
     const mode =
       requestedMode !== "hypothesis" && this.shouldRunCodeAgents(normalizedInput, sessionSettings)
         ? "code"
@@ -106,6 +108,12 @@ export class CognitiveEngine {
       conversationSize: conversation.length,
       sessionSettings
     };
+  }
+
+  private readMetadataMode(metadata: Record<string, unknown> | undefined): "general" | "code" | "hypothesis" | undefined {
+    const mode = metadata?.mode;
+
+    return mode === "general" || mode === "code" || mode === "hypothesis" ? mode : undefined;
   }
 
   private attachMetrics(

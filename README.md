@@ -17,26 +17,8 @@ The goal is simple: one personal system you can use every day for research, codi
 - `Chat Workspace` for normal chat, hypothesis debates, and code mode
 - `Models` page for LM Studio loaded models, provider status, and runtime checks
 - `Plugins` page for Notion and filesystem setup
-- `Settings` page for provider keys, Telegram, and memory
+- `Settings` page for provider keys, MCP, Telegram, and memory
 - session-based configuration, history, and message persistence
-
-## Screenshots
-
-### Chat Workspace
-
-![Chat Workspace](screenshots/tg_image_2595655779.png)
-
-### Models
-
-![Models](screenshots/tg_image_2374501082.png)
-
-### Plugins
-
-![Plugins](screenshots/tg_image_1835418318.png)
-
-### Cloud Provider Settings
-
-![Provider Settings](screenshots/tg_image_1625341737.png)
 
 ## Quick Start
 
@@ -110,14 +92,6 @@ The correct order is:
 3. open this dashboard
 4. assign those already loaded models inside `Chat Workspace` or `Settings`
 
-#### LM Studio model loader
-
-![LM Studio Catalog](screenshots/tg_image_3993820814.png)
-
-#### Loaded model in LM Studio server
-
-![LM Studio Loaded Model](screenshots/tg_image_2481713676.png)
-
 Example roles:
 
 - `support`: `qwen/qwen3.5-9b`
@@ -162,10 +136,6 @@ Go to:
   - mode
   - debate on/off
   - support / attack / judge providers and models
-
-#### Session setup with local / cloud role routing
-
-![Session Setup Roles](screenshots/tg_image_2185449697.png)
 
 That means a normal working flow looks like this:
 
@@ -259,6 +229,67 @@ Useful commands:
 - `/settings`
 - `/mode hypothesis`
 - `/debate on`
+
+## MCP Setup
+
+MCP is optional and is intended for opencode/Codex-style clients and local
+development pipelines.
+
+### 1. Configure MCP
+
+You can use environment variables:
+
+```env
+MCP_ENABLED=true
+MCP_DEFAULT_SESSION_ID=mcp-default
+```
+
+Or create a local config file:
+
+```bash
+cp local-cognitive.config.example.json local-cognitive.config.json
+```
+
+`local-cognitive.config.json` is ignored by Git.
+
+### 2. Run MCP over stdio
+
+Build once before using the stdio server from an MCP client:
+
+```bash
+npm run build
+```
+
+```bash
+npm run mcp:stdio
+```
+
+### 3. Example opencode config
+
+```json
+{
+  "mcp": {
+    "local-cognitive": {
+      "type": "local",
+      "command": "npm",
+      "args": ["run", "--silent", "mcp:stdio"]
+    }
+  },
+  "permission": {
+    "local_ai_*": "ask"
+  }
+}
+```
+
+Available tools:
+
+- `local_ai_chat`
+- `local_ai_code`
+- `local_ai_hypothesis`
+- `local_ai_runtime_status`
+- `local_ai_list_models`
+- `local_ai_get_session_settings`
+- `local_ai_update_session_settings`
 
 ## Notion Setup
 
@@ -467,7 +498,6 @@ plugins/
   file/
   notion/
 public/
-screenshots/
 data/
 ```
 

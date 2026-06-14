@@ -98,9 +98,6 @@ export class ResponseFormatter {
                   collectorName: collector?.name
                 }),
                 "",
-                "Agent outputs",
-                ...this.renderSubagentOutputs(result.result.subagents ?? []),
-                "",
                 "Final answer",
                 "",
                 textResponse
@@ -117,12 +114,7 @@ export class ResponseFormatter {
               ].join("\n")
           : JSON.stringify(result.result, null, 2);
 
-    const tools =
-      result.tools.length > 0
-        ? `\n\nTools\n${result.tools.map((tool) => `- ${tool.output}`).join("\n")}`
-        : "";
-
-    const content = `${base}${tools}`;
+    const content = base;
     const maxChars = options?.maxChars;
 
     if (typeof maxChars === "number" && Number.isFinite(maxChars)) {
@@ -171,36 +163,4 @@ export class ResponseFormatter {
     ];
   }
 
-  private renderSubagentOutputs(subagents: NonNullable<ProcessResult["result"] extends infer Result
-    ? Result extends { subagents?: infer Agents }
-      ? Agents
-      : never
-    : never>): string[] {
-    return subagents
-      .filter((agent) => agent.output?.trim() || agent.status === "degraded")
-      .flatMap((agent) => {
-      const roleLabel = agent.role === "advisor" ? "research" : agent.role;
-      const label = `@${agent.name} (${roleLabel})`;
-      const body =
-        agent.output?.trim() ||
-        (agent.error
-          ? `Provider request failed or timed out: ${agent.error}`
-          : agent.status === "degraded"
-            ? "Provider request failed or timed out."
-            : "No separate note was returned.");
-
-      return ["", label, this.truncateAgentOutput(body)];
-    });
-  }
-
-  private truncateAgentOutput(value: string): string {
-    const maxChars = 2200;
-    const normalized = value.trim();
-
-    if (normalized.length <= maxChars) {
-      return normalized;
-    }
-
-    return `${normalized.slice(0, maxChars).replace(/\s+$/g, "")}\n...[trimmed]`;
-  }
 }

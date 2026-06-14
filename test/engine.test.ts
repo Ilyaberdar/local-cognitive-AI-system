@@ -18,6 +18,13 @@ const createTestConfig = (root: string): AppConfig => ({
     host: "127.0.0.1",
     port: 0
   },
+  mcp: {
+    server: {
+      enabled: true,
+      transport: "stdio",
+      defaultSessionId: "mcp-test"
+    }
+  },
   plugins: {
     dir: path.resolve(process.cwd(), "plugins"),
     overrides: {}
@@ -260,7 +267,7 @@ test("response formatter hides mock fallback prompt digests", () => {
   assert.doesNotMatch(content, /secret prompt content/);
 });
 
-test("response formatter shows named subagent outputs without technical metadata", () => {
+test("response formatter summarizes subagents without inline output blocks", () => {
   const formatter = new ResponseFormatter();
   const content = formatter.formatForChat({
     input: "заспавни 2 сабагента",
@@ -314,14 +321,13 @@ test("response formatter shows named subagent outputs without technical metadata
     }
   });
 
-  assert.match(content, /Agent outputs/);
   assert.match(content, /Multi-agent run/);
   assert.match(content, /Research agents: @Atlas/);
   assert.match(content, /Research status: 1 ok/);
   assert.match(content, /Final collector: @Vector via lmstudio:qwen\/qwen3\.5-9b/);
-  assert.match(content, /@Atlas \(research\)/);
-  assert.match(content, /Проверил архитектуру/);
   assert.match(content, /Final answer/);
+  assert.doesNotMatch(content, /Agent outputs/);
+  assert.doesNotMatch(content, /Проверил архитектуру/);
   assert.doesNotMatch(content, /role=advisor/);
   assert.doesNotMatch(content, /access=default/);
 });
@@ -675,6 +681,75 @@ test("file tool asks for approval when a default-access subagent wants to write"
 
   assert.equal(result.ok, false);
   assert.equal(result.metadata?.permissionRequired, true);
+});
+
+test("file tool lets a full-access spawned writer edit files", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-file-agent-full-"));
+  const targetDir = path.join(tmpDir, "workspace");
+  const tool = new FileTool({
+    outputDir: targetDir,
+    accessMode: "restricted",
+    allowedDirectories: [targetDir]
+  });
+
+  const result = await tool.execute({
+    rawInput: "Spawn subagent and write file `notes/todo.txt`",
+    title: "todo",
+    content: "todo content",
+    context: {
+      actor: {
+        sessionId: "file-session",
+        channel: "http"
+      },
+      memory: [],
+      conversation: [],
+      providerId: "lmstudio",
+      activeTarget: {
+        providerId: "lmstudio",
+        model: "qwen/qwen3.5-9b"
+      },
+      sessionSettings: {
+        mode: "code",
+        language: "en",
+        outputStyle: "balanced",
+        defaultTarget: {
+          providerId: "lmstudio",
+          model: "qwen/qwen3.5-9b"
+        },
+        defaultAccessMode: "default",
+        codeAgents: [],
+        hypothesisAgents: [],
+        debate: {
+          enabled: false,
+          profile: "general",
+          support: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+          attack: { providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+          judge: { providerId: "local" }
+        }
+      }
+    },
+    result: {
+      response: "first line",
+      provider: "lmstudio",
+      model: "qwen/qwen3.5-9b",
+      subagents: [
+        {
+          id: "agent-1",
+          name: "Agent1",
+          role: "writer",
+          provider: "lmstudio",
+          model: "qwen/qwen3.5-9b",
+          accessMode: "full",
+          status: "ok"
+        }
+      ]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(path.join(targetDir, "notes", "todo.txt"), "utf8"), "first line\n");
+  assert.equal(result.metadata?.operation, "write");
+  assert.equal(typeof result.metadata?.diff, "object");
 });
 
 test("file tool gates main model writes by default access mode", async () => {

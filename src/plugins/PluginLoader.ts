@@ -84,7 +84,6 @@ export class PluginLoader {
           manifest,
           sourcePath: pluginDir
         });
-        this.logger.info("Plugin loaded", { name: manifest.name, version: manifest.version });
       } catch (error) {
         this.logger.warn("Failed to load plugin", {
           pluginDir,

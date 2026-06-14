@@ -1,0 +1,10 @@
+{
+  "$schema": "./local-cognitive.schema.json",
+  "mcp": {
+    "server": {
+      "enabled": true,
+      "transport": "stdio",
+      "defaultSessionId": "mcp-default"
+    }
+  }
+}

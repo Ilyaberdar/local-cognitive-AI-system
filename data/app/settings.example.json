@@ -2,6 +2,13 @@
   "llm": {
     "defaultProvider": "lmstudio"
   },
+  "mcp": {
+    "server": {
+      "enabled": true,
+      "transport": "stdio",
+      "defaultSessionId": "mcp-default"
+    }
+  },
   "telegram": {
     "enabled": false,
     "botToken": "",

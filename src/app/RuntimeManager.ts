@@ -48,9 +48,6 @@ export class RuntimeManager {
       const mergedConfig = this.applySettings(settings);
       const runtime = await buildRuntime(mergedConfig, this.logger);
       this.runtime = runtime;
-      this.logger.info("Runtime reloaded", {
-        defaultProvider: mergedConfig.llm.defaultProvider
-      });
       return runtime;
     })();
 
@@ -66,6 +63,14 @@ export class RuntimeManager {
       ...this.baseConfig,
       llm: {
         defaultProvider: settings.llm.defaultProvider
+      },
+      mcp: {
+        server: {
+          ...this.baseConfig.mcp.server,
+          enabled: settings.mcp.server.enabled,
+          transport: settings.mcp.server.transport,
+          defaultSessionId: settings.mcp.server.defaultSessionId
+        }
       },
       telegram: {
         ...this.baseConfig.telegram,

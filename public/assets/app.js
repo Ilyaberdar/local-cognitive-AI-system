@@ -446,27 +446,32 @@ function renderChatRoute() {
   const settings = state.sessionSettings;
   const currentSession = (state.bootstrap?.sessions ?? []).find((session) => session.id === state.activeSessionId);
   const providerOptions = getProviderOptions();
-	  const messages = [
-	    ...state.messages,
-	    ...(state.pendingRequest
-	      ? [
-	          {
-	            id: "pending:user",
-	            role: "user",
-	            content: state.pendingRequest.input,
-	            createdAt: state.pendingRequest.startedAt,
-	            pending: true
-	          },
-	          {
-	            id: "pending:assistant",
-	            role: "assistant",
-            content: renderPendingAssistantText(state.pendingRequest),
-            createdAt: state.pendingRequest.startedAt,
-	            pending: true,
-	            pendingKind: isSubagentRequest(state.pendingRequest.input) ? "subagent" : "default"
-	          }
-        ]
-      : [])
+  const pendingMessages = state.pendingRequest
+    ? [
+        {
+          id: "pending:user",
+          role: "user",
+          content: state.pendingRequest.input,
+          createdAt: state.pendingRequest.startedAt,
+          pending: true
+        },
+        ...(isSubagentRequest(state.pendingRequest.input)
+          ? [
+              {
+                id: "pending:assistant",
+                role: "assistant",
+                content: renderPendingAssistantText(state.pendingRequest),
+                createdAt: state.pendingRequest.startedAt,
+                pending: true,
+                pendingKind: "subagent"
+              }
+            ]
+          : [])
+      ]
+    : [];
+  const messages = [
+    ...state.messages,
+    ...pendingMessages
   ];
   const draftAttachments = getActiveDraftAttachments();
 
@@ -498,23 +503,7 @@ function renderChatRoute() {
           <textarea name="input" placeholder="Type a command, ask a question, or run a hypothesis debate...">${escapeHtml(getActiveDraft())}</textarea>
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
-            <div class="chips">
-              ${renderChipGroup("Mode", [
-                ["mode", "auto", settings.mode === "auto"],
-                ["mode", "general", settings.mode === "general"],
-                ["mode", "code", settings.mode === "code"],
-                ["mode", "hypothesis", settings.mode === "hypothesis"]
-              ])}
-              ${renderChipGroup("Language", [
-                ["language", "auto", settings.language === "auto"],
-                ["language", "ru", settings.language === "ru"],
-                ["language", "en", settings.language === "en"]
-              ])}
-              ${renderChipGroup("Debate", [
-                ["debate", "debate:off", !settings.debate.enabled],
-                ["debate", "debate:on", settings.debate.enabled]
-              ])}
-            </div>
+            ${renderChatActivityBar(settings)}
             <div class="composer-actions">
               <button class="ghost-button" type="button" data-action="attach-files">Attach</button>
               <button class="primary-button" type="submit">${state.chatSubmitting ? "Generating..." : "Send"}</button>
@@ -532,6 +521,32 @@ function isSubagentRequest(input) {
   return /spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент|@[\p{L}\p{N}_-]+/iu.test(input);
 }
 
+function renderChatActivityBar(settings) {
+  const running = Boolean(state.chatSubmitting || state.pendingRequest);
+  const target = settings?.defaultTarget ?? {};
+  const provider = getProviderDisplayName(target.providerId);
+  const model = target.model || "default";
+  const label = running
+    ? state.pendingRequest && isSubagentRequest(state.pendingRequest.input)
+      ? "Agents"
+      : "Build"
+    : "Stopped";
+
+  return `
+    <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
+      <span class="activity-scan" aria-hidden="true"><span></span></span>
+      <span class="activity-label">${escapeHtml(label)}</span>
+      <span class="activity-model">${escapeHtml(provider)} ${escapeHtml(model)}</span>
+      <span class="activity-hint">${running ? "esc interrupt" : "idle"}</span>
+    </div>
+  `;
+}
+
+function getProviderDisplayName(providerId) {
+  const provider = (state.bootstrap?.providers ?? []).find((item) => item.id === providerId);
+  return provider?.name || providerId || "provider";
+}
+
 function renderPendingAssistantText(pendingRequest) {
   const input = typeof pendingRequest === "string" ? pendingRequest : pendingRequest.input;
 
@@ -539,7 +554,7 @@ function renderPendingAssistantText(pendingRequest) {
     return pendingRequest.pendingText || chooseSubagentPendingText(input, pendingRequest.startedAt);
   }
 
-  return "Generating response...";
+  return "";
 }
 
 function chooseSubagentPendingText(input, seed = new Date().toISOString()) {
@@ -1028,6 +1043,44 @@ function renderSettingsRoute() {
       </section>
 
       <section class="card">
+        <h3>MCP Server</h3>
+        <div class="subtle">Expose this runtime to opencode, Codex-style clients, and local development pipelines over MCP stdio.</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>Enabled</label>
+            <select name="mcp.server.enabled">
+              ${["true", "false"].map((value) => option(value, String(settings.mcp?.server?.enabled ?? true), value === "true" ? "on" : "off")).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Transport</label>
+            <select name="mcp.server.transport">
+              ${["stdio"].map((value) => option(value, settings.mcp?.server?.transport ?? "stdio")).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Default session</label>
+            <input name="mcp.server.defaultSessionId" value="${escapeAttr(settings.mcp?.server?.defaultSessionId || "mcp-default")}" />
+          </div>
+          <div class="field full">
+            <label>opencode config</label>
+            <pre class="config-snippet">${escapeHtml(JSON.stringify({
+              mcp: {
+                "local-cognitive": {
+                  type: "local",
+                  command: "npm",
+                  args: ["run", "--silent", "mcp:stdio"]
+                }
+              },
+              permission: {
+                "local_ai_*": "ask"
+              }
+            }, null, 2))}</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
         <h3>Telegram</h3>
         <div class="subtle">Bot token and polling are stored here. Restart the server after changing Telegram settings.</div>
         <div class="field-grid">
@@ -1158,17 +1211,17 @@ function renderSettingsRoute() {
 
 function renderMessage(message) {
   const copyButton =
-    message.role === "assistant" && !message.pending
+    !message.pending
       ? `<button class="ghost-button message-copy-button" type="button" data-action="copy-message" data-message-id="${escapeAttr(message.id)}">Copy</button>`
       : "";
   const footer =
-    message.role === "assistant"
+    !message.pending
       ? `
         <div class="message-footer">
           <span class="message-footer-actions">
             ${copyButton}
           </span>
-          <span>${escapeHtml(renderMessageFooterMeta(message))}</span>
+          <span>${escapeHtml(message.role === "assistant" ? renderMessageFooterMeta(message) : "")}</span>
         </div>
       `
       : "";
@@ -1176,6 +1229,14 @@ function renderMessage(message) {
   const content = message.pending
     ? renderPendingMessageContent(message)
     : renderMessageContent(message);
+  const toolCards =
+    message.role === "assistant" && !message.pending && message.tools?.length
+      ? renderMessageTools(message.tools)
+      : "";
+  const subagentCards =
+    message.role === "assistant" && !message.pending && message.subagents?.length
+      ? renderMessageSubagents(message.subagents)
+      : "";
   const attachments =
     message.attachments?.length
       ? `<div class="message-attachments">${message.attachments.map(renderMessageAttachment).join("")}</div>`
@@ -1187,7 +1248,7 @@ function renderMessage(message) {
         <span>${escapeHtml(message.role)}</span>
         <span>${escapeHtml(message.role === "assistant" ? formatDate(message.createdAt) : "")}</span>
       </div>
-      <div class="message-content">${content}</div>
+      <div class="message-content">${toolCards}${subagentCards}${content}</div>
       ${attachments}
       ${footer}
     </article>
@@ -1313,8 +1374,7 @@ function getKnownAgentMentionNames() {
 }
 
 function stableMentionHue(name) {
-  const hues = [188, 214, 258, 286, 324, 18, 42, 146, 166, 232];
-  return hues[stableMessageIndex(String(name).toLowerCase(), hues.length)];
+  return 205;
 }
 
 function renderRuntimeMetaLine(label, value) {
@@ -1324,6 +1384,212 @@ function renderRuntimeMetaLine(label, value) {
       <strong class="runtime-gradient-text">${escapeHtml(value)}</strong>
     </div>
   `;
+}
+
+function renderMessageTools(tools) {
+  const cards = tools.map(renderToolCard).filter(Boolean);
+
+  if (!cards.length) {
+    return "";
+  }
+
+  return `<div class="process-card-stack">${cards.join("")}</div>`;
+}
+
+function renderMessageSubagents(subagents) {
+  const cards = subagents.map(renderSubagentCard).filter(Boolean);
+
+  if (!cards.length) {
+    return "";
+  }
+
+  return `<div class="subagent-card-stack">${cards.join("")}</div>`;
+}
+
+function renderSubagentCard(agent) {
+  const roleLabel = agent.role === "advisor" ? "research" : agent.role;
+  const status = agent.status === "ok" ? "done" : "degraded";
+  const output = String(
+    agent.output ||
+      agent.error ||
+      (agent.status === "degraded"
+        ? "Provider request failed or timed out. The collector continued without this output."
+        : "No separate output was returned.")
+  ).trim();
+
+  return `
+    <details class="subagent-card ${agent.status === "ok" ? "is-ok" : "is-degraded"}">
+      <summary>
+        <span class="subagent-card__name">${renderInlineMessageText(`@${agent.name}`)}</span>
+        <span class="subagent-card__role">${escapeHtml(roleLabel)}</span>
+        <span class="subagent-card__status">${escapeHtml(status)}</span>
+      </summary>
+      <div class="subagent-card__meta">
+        <span>${escapeHtml(agent.provider || "provider")}</span>
+        <span>${escapeHtml(agent.model || "model")}</span>
+        <span>access=${escapeHtml(agent.accessMode || "default")}</span>
+      </div>
+      <pre class="subagent-card__output">${escapeHtml(output)}</pre>
+    </details>
+  `;
+}
+
+function renderToolCard(tool) {
+  if (tool.tool === "file") {
+    return renderFileToolCard(tool);
+  }
+
+  return `
+    <section class="process-card ${tool.ok ? "is-ok" : "is-error"}">
+      <div class="process-card__header">
+        <span class="process-card__status">${tool.ok ? "✓" : "!"}</span>
+        <span class="process-card__title">${escapeHtml(tool.tool || "tool")}</span>
+      </div>
+      <pre class="process-card__output">${escapeHtml(String(tool.output || ""))}</pre>
+    </section>
+  `;
+}
+
+function renderFileToolCard(tool) {
+  const metadata = tool.metadata || {};
+  const files = Array.isArray(metadata.files) ? metadata.files : [];
+  const operation = metadata.operation || inferFileOperation(metadata);
+  const title = metadata.permissionRequired ? "Permission required" : fileOperationLabel(operation);
+  const targetPath = metadata.filePath || metadata.path || metadata.directory || metadata.baseDir;
+  const statusLabel = tool.ok ? "done" : metadata.permissionRequired ? "needs approval" : "failed";
+
+  if (files.length) {
+    return `
+      <section class="process-card ${tool.ok ? "is-ok" : "is-error"}">
+        <div class="process-card__header">
+          <span class="process-card__status">${tool.ok ? "✓" : "!"}</span>
+          <span class="process-card__title">Scaffold</span>
+          <span class="process-card__meta">${escapeHtml(statusLabel)} · ${files.length} files</span>
+        </div>
+        ${renderFilePathBar(metadata.baseDir || "project", "Project")}
+        ${files.slice(0, 4).map((file) => renderFileDiffBlock(file.filePath, file.diff, file.operation)).join("")}
+        ${
+          files.length > 4
+            ? `<div class="process-card__more">+${files.length - 4} more files</div>`
+            : ""
+        }
+      </section>
+    `;
+  }
+
+  return `
+    <section class="process-card ${tool.ok ? "is-ok" : "is-error"}">
+      <div class="process-card__header">
+        <span class="process-card__status">${tool.ok ? "✓" : "!"}</span>
+        <span class="process-card__title">${escapeHtml(title)}</span>
+        <span class="process-card__meta">${escapeHtml(statusLabel)}</span>
+      </div>
+      ${targetPath ? renderFilePathBar(targetPath, fileOperationLabel(operation)) : ""}
+      ${metadata.diff ? renderFileDiffBlock(targetPath, metadata.diff, operation, false) : renderToolOutput(tool.output)}
+    </section>
+  `;
+}
+
+function inferFileOperation(metadata) {
+  if (metadata.permissionRequired) {
+    return metadata.operation || "access";
+  }
+
+  if (metadata.directory) {
+    return "directory";
+  }
+
+  if (metadata.path) {
+    return "delete";
+  }
+
+  return "file";
+}
+
+function fileOperationLabel(operation) {
+  const labels = {
+    access: "Access",
+    append: "Append",
+    "create directory": "Create directory",
+    delete: "Delete",
+    directory: "List directory",
+    file: "File",
+    read: "Read",
+    write: "Edit"
+  };
+
+  return labels[operation] || String(operation || "File");
+}
+
+function renderFileDiffBlock(filePath, diff, operation = "write", showPath = true) {
+  if (!diff?.preview?.length) {
+    return showPath && filePath
+      ? `<div class="process-file-block">${renderFilePathBar(filePath, fileOperationLabel(operation), "process-file-block__pathbar")}</div>`
+      : "";
+  }
+
+  return `
+    <div class="process-file-block">
+      ${
+        showPath && filePath
+          ? renderFilePathBar(filePath, fileOperationLabel(operation), "process-file-block__pathbar")
+          : ""
+      }
+      <div class="diff-summary">
+        <span class="diff-summary__add">+${Number(diff.added || 0)}</span>
+        <span class="diff-summary__remove">-${Number(diff.removed || 0)}</span>
+        ${diff.truncated ? `<span class="diff-summary__muted">preview truncated</span>` : ""}
+      </div>
+      <div class="diff-preview">
+        ${diff.preview.map(renderDiffRow).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderFilePathBar(filePath, label = "File", extraClass = "") {
+  const value = String(filePath || "");
+
+  return `
+    <div class="process-pathbar ${escapeAttr(extraClass)}">
+      <div class="process-pathbar__copy">
+        <span>${escapeHtml(label)}</span>
+        <code title="${escapeAttr(value)}">${escapeHtml(compactPath(value))}</code>
+      </div>
+      <div class="process-pathbar__actions">
+        <button class="ghost-button process-pathbar__button" type="button" data-action="copy-tool-path" data-path="${escapeAttr(value)}">Copy</button>
+        <button class="ghost-button process-pathbar__button" type="button" data-action="open-tool-path" data-path="${escapeAttr(value)}">Open</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDiffRow(row) {
+  const prefix = row.type === "add" ? "+" : row.type === "remove" ? "-" : " ";
+
+  return `
+    <div class="diff-row diff-row--${escapeAttr(row.type)}">
+      <span class="diff-row__line">${escapeHtml(String(row.line || ""))}</span>
+      <span class="diff-row__prefix">${prefix}</span>
+      <code>${escapeHtml(row.text || "")}</code>
+    </div>
+  `;
+}
+
+function renderToolOutput(output) {
+  const text = String(output || "").trim();
+  return text ? `<pre class="process-card__output">${escapeHtml(text)}</pre>` : "";
+}
+
+function compactPath(value) {
+  const pathValue = String(value || "");
+  const parts = pathValue.split(/[\\/]/).filter(Boolean);
+
+  if (parts.length <= 4) {
+    return pathValue;
+  }
+
+  return `.../${parts.slice(-4).join("/")}`;
 }
 
 function renderDraftAttachment(attachment) {
@@ -1897,6 +2163,40 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll("[data-action='copy-tool-path']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const filePath = button.dataset.path;
+
+      if (!filePath) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(filePath);
+        const original = button.textContent;
+        button.textContent = "Copied";
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1000);
+      } catch (error) {
+        showToast(error.message, "danger");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='open-tool-path']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const filePath = button.dataset.path;
+
+      if (!filePath) {
+        return;
+      }
+
+      const normalized = filePath.startsWith("/") ? `file://${filePath}` : filePath;
+      window.open(normalized, "_blank", "noopener,noreferrer");
+    });
+  });
+
   document.querySelectorAll("[data-action='dismiss-toast']").forEach((button) => {
     button.addEventListener("click", () => {
       dismissToast(button.dataset.toastId);
@@ -2112,6 +2412,15 @@ function buildAppSettingsPayload(form, pluginsOnly) {
           enabled: form.get("telegram.enabled") === "true",
           botToken: String(form.get("telegram.botToken") || "").trim(),
           pollTimeoutSec: Number(form.get("telegram.pollTimeoutSec") || 25)
+        },
+    mcp: pluginsOnly
+      ? undefined
+      : {
+          server: {
+            enabled: form.get("mcp.server.enabled") === "true",
+            transport: "stdio",
+            defaultSessionId: String(form.get("mcp.server.defaultSessionId") || "mcp-default").trim()
+          }
         },
     memory: pluginsOnly
       ? undefined
@@ -2542,6 +2851,18 @@ function getProviderConfiguredModel(providerId) {
   return state.bootstrap?.appSettings?.providers?.[providerId]?.model || "";
 }
 
+function getDefaultModelForProvider(providerId) {
+  if (!providerId || providerId === "local") {
+    return "";
+  }
+
+  if (isLocalProvider(providerId)) {
+    return getLoadedModelOptions()[0] || getProviderConfiguredModel(providerId) || "";
+  }
+
+  return getProviderConfiguredModel(providerId) || getProviderSuggestedModels(providerId)[0] || "";
+}
+
 function getProviderSettingsModelOptions(providerId, currentValue = "") {
   return [...new Set([currentValue, ...getProviderSuggestedModels(providerId)].filter(Boolean))];
 }
@@ -2731,14 +3052,17 @@ function readSessionSetupSnapshot() {
   }
 
   const formData = new FormData(form);
-  const resolveModelValue = (providerFieldName, modelFieldName, fallbackModel) => {
+  const resolveModelValue = (providerFieldName, modelFieldName, fallbackModel, fallbackProviderId) => {
     const providerId = String(formData.get(providerFieldName) || "").trim();
 
     if (!providerId || providerId === "local") {
       return undefined;
     }
 
-    return String(formData.get(modelFieldName) || "").trim() || fallbackModel || getProviderConfiguredModel(providerId) || undefined;
+    const value = String(formData.get(modelFieldName) || "").trim();
+    const providerMatchesFallback = !fallbackProviderId || providerId === fallbackProviderId;
+
+    return value || (providerMatchesFallback ? fallbackModel : undefined) || getDefaultModelForProvider(providerId) || undefined;
   };
   const codeAgentCards = [...form.querySelectorAll(".code-agent-card")];
   const codeAgents = codeAgentCards
@@ -2756,8 +3080,7 @@ function readSessionSetupSnapshot() {
       providerId,
       accessMode: String(formData.get(`codeAgentAccess:${agentIndex}`) || existingAgent?.accessMode || "default") === "full" ? "full" : "default",
       model:
-        resolveModelValue(`codeAgentProvider:${agentIndex}`, `codeAgentModel:${agentIndex}`, existingAgent?.model) ||
-        existingAgent?.model ||
+        resolveModelValue(`codeAgentProvider:${agentIndex}`, `codeAgentModel:${agentIndex}`, existingAgent?.model, existingAgent?.providerId) ||
         getProviderConfiguredModel(providerId)
     };
   }).slice(0, 4);
@@ -2776,8 +3099,7 @@ function readSessionSetupSnapshot() {
       role: ["support", "attack", "judge", "advisor"].includes(role) ? role : "advisor",
       providerId,
       model:
-        resolveModelValue(`hypothesisAgentProvider:${agentIndex}`, `hypothesisAgentModel:${agentIndex}`, existingAgent?.model) ||
-        existingAgent?.model ||
+        resolveModelValue(`hypothesisAgentProvider:${agentIndex}`, `hypothesisAgentModel:${agentIndex}`, existingAgent?.model, existingAgent?.providerId) ||
         getProviderConfiguredModel(providerId)
     };
   }).slice(0, MAX_HYPOTHESIS_AGENTS);
@@ -2794,7 +3116,7 @@ function readSessionSetupSnapshot() {
         String(formData.get("outputStyle") || fallbackSettings.outputStyle || "balanced"),
 	      defaultTarget: {
 	        providerId: String(formData.get("defaultProvider") || fallbackSettings.defaultTarget.providerId).trim() || fallbackSettings.defaultTarget.providerId,
-	        model: resolveModelValue("defaultProvider", "defaultModel", fallbackSettings.defaultTarget.model)
+	        model: resolveModelValue("defaultProvider", "defaultModel", fallbackSettings.defaultTarget.model, fallbackSettings.defaultTarget.providerId)
 	      },
 	      defaultAccessMode: String(formData.get("defaultAccess") || fallbackSettings.defaultAccessMode || "default") === "full" ? "full" : "default",
 	      codeAgents,
@@ -3129,7 +3451,7 @@ function bindSessionSetupFieldSync() {
     ["judgeProvider", "judgeModel", "judge-model-options"]
   ];
 
-  const syncField = (providerFieldName, modelFieldName, datalistId) => {
+  const syncField = (providerFieldName, modelFieldName, datalistId, resetModel = false) => {
     const providerField = form.querySelector(`[name="${providerFieldName}"]`);
 
     if (!providerField) {
@@ -3137,8 +3459,9 @@ function bindSessionSetupFieldSync() {
     }
 
     const providerId = providerField.value;
-    const currentValue = form.querySelector(`[name="${modelFieldName}"]`)?.value ?? "";
-    const options = getSelectableSessionModels(providerId, currentValue);
+    const currentValue = resetModel ? "" : form.querySelector(`[name="${modelFieldName}"]`)?.value ?? "";
+    const nextValue = resetModel ? getDefaultModelForProvider(providerId) : currentValue;
+    const options = getSelectableSessionModels(providerId, nextValue);
     const field = form.querySelector(`.field [name="${modelFieldName}"]`)?.closest(".field");
 
     if (!field) {
@@ -3147,7 +3470,7 @@ function bindSessionSetupFieldSync() {
 
     field.innerHTML = `
       <label>${escapeHtml(sessionModelLabel(modelFieldName))}</label>
-      ${renderSessionModelControl(modelFieldName, providerId, isCloudProvider(providerId) && isLocalCatalogModel(currentValue) ? "" : currentValue, options, datalistId)}
+      ${renderSessionModelControl(modelFieldName, providerId, isCloudProvider(providerId) && isLocalCatalogModel(nextValue) ? "" : nextValue, options, datalistId)}
     `;
   };
 
@@ -3158,7 +3481,7 @@ function bindSessionSetupFieldSync() {
     }
 
     syncField(providerFieldName, modelFieldName, datalistId);
-    providerField.addEventListener("change", () => syncField(providerFieldName, modelFieldName, datalistId));
+    providerField.addEventListener("change", () => syncField(providerFieldName, modelFieldName, datalistId, true));
   });
 
   form.querySelectorAll("[name^='codeAgentProvider:']").forEach((providerField) => {
@@ -3170,9 +3493,8 @@ function bindSessionSetupFieldSync() {
       }
 
       const providerId = providerField.value;
-      const modelField = form.querySelector(`[name="codeAgentModel:${index}"]`);
-      const currentValue = modelField?.value ?? "";
-      const options = getSelectableSessionModels(providerId, currentValue);
+      const nextValue = getDefaultModelForProvider(providerId);
+      const options = getSelectableSessionModels(providerId, nextValue);
       const field = form.querySelector(`[data-code-agent-model-index="${index}"]`);
 
       if (!field) {
@@ -3181,7 +3503,7 @@ function bindSessionSetupFieldSync() {
 
       field.innerHTML = `
         <label>Model</label>
-        ${renderSessionModelControl(`codeAgentModel:${index}`, providerId, isCloudProvider(providerId) && isLocalCatalogModel(currentValue) ? "" : currentValue, options, `code-agent-model-options-${index}`)}
+        ${renderSessionModelControl(`codeAgentModel:${index}`, providerId, isCloudProvider(providerId) && isLocalCatalogModel(nextValue) ? "" : nextValue, options, `code-agent-model-options-${index}`)}
       `;
     });
   });
@@ -3195,9 +3517,8 @@ function bindSessionSetupFieldSync() {
       }
 
       const providerId = providerField.value;
-      const modelField = form.querySelector(`[name="hypothesisAgentModel:${index}"]`);
-      const currentValue = modelField?.value ?? "";
-      const options = getSelectableSessionModels(providerId, currentValue);
+      const nextValue = getDefaultModelForProvider(providerId);
+      const options = getSelectableSessionModels(providerId, nextValue);
       const field = form.querySelector(`[data-hypothesis-agent-model-index="${index}"]`);
 
       if (!field) {
@@ -3206,7 +3527,7 @@ function bindSessionSetupFieldSync() {
 
       field.innerHTML = `
         <label>Model</label>
-        ${renderSessionModelControl(`hypothesisAgentModel:${index}`, providerId, isCloudProvider(providerId) && isLocalCatalogModel(currentValue) ? "" : currentValue, options, `hypothesis-agent-model-options-${index}`)}
+        ${renderSessionModelControl(`hypothesisAgentModel:${index}`, providerId, isCloudProvider(providerId) && isLocalCatalogModel(nextValue) ? "" : nextValue, options, `hypothesis-agent-model-options-${index}`)}
       `;
     });
   });

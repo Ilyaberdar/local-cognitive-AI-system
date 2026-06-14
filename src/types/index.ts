@@ -1,6 +1,6 @@
 export type Mode = "hypothesis" | "code" | "general";
 export type SessionMode = Mode | "auto";
-export type Channel = "http" | "telegram" | "system";
+export type Channel = "http" | "telegram" | "mcp" | "system";
 export type LanguagePreference = "auto" | "ru" | "en";
 export type OutputStyle = "compact" | "balanced" | "detailed" | "exhaustive";
 export type SubagentAccessMode = "default" | "full";
@@ -103,6 +103,13 @@ export interface AppSettings {
   llm: {
     defaultProvider: string;
   };
+  mcp: {
+    server: {
+      enabled: boolean;
+      transport: "stdio";
+      defaultSessionId: string;
+    };
+  };
   telegram: {
     enabled: boolean;
     botToken?: string;
@@ -124,6 +131,13 @@ export interface AppSettings {
 export interface AppSettingsPatch {
   llm?: {
     defaultProvider?: string;
+  };
+  mcp?: {
+    server?: {
+      enabled?: boolean;
+      transport?: "stdio";
+      defaultSessionId?: string;
+    };
   };
   telegram?: {
     enabled?: boolean;
@@ -300,6 +314,8 @@ export interface ChatMessage {
   createdAt: string;
   metrics?: GenerationMetrics;
   attachments?: ChatAttachment[];
+  tools?: ToolExecutionResult[];
+  subagents?: SubagentRunSummary[];
 }
 
 export interface LLMRequest {
