@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import fs from "fs";
 import path from "path";
 
 dotenv.config();
@@ -17,6 +18,13 @@ export interface AppConfig {
     enabled: boolean;
     host: string;
     port: number;
+  };
+  mcp: {
+    server: {
+      enabled: boolean;
+      transport: "stdio";
+      defaultSessionId: string;
+    };
   };
   plugins: {
     dir: string;
@@ -88,6 +96,31 @@ const toOptional = (value: string | undefined): string | undefined => {
   return normalized ? normalized : undefined;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const readFileConfig = (): Record<string, unknown> => {
+  const configPath = path.resolve(
+    process.cwd(),
+    process.env.LOCAL_COGNITIVE_CONFIG ?? "local-cognitive.config.json"
+  );
+
+  if (!fs.existsSync(configPath)) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const fileConfig = readFileConfig();
+const fileMcp = isRecord(fileConfig.mcp) ? fileConfig.mcp : {};
+const fileMcpServer = isRecord(fileMcp.server) ? fileMcp.server : {};
+
 const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 60000);
 const defaultLocalTimeoutMs = Number(process.env.LOCAL_PROVIDER_TIMEOUT_MS ?? 300000);
 
@@ -96,6 +129,20 @@ export const config: AppConfig = {
     enabled: toBoolean(process.env.HTTP_ENABLED, true),
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 3000)
+  },
+  mcp: {
+    server: {
+      enabled: toBoolean(
+        process.env.MCP_ENABLED,
+        typeof fileMcpServer.enabled === "boolean" ? fileMcpServer.enabled : true
+      ),
+      transport: "stdio",
+      defaultSessionId:
+        process.env.MCP_DEFAULT_SESSION_ID ??
+        (typeof fileMcpServer.defaultSessionId === "string"
+          ? fileMcpServer.defaultSessionId
+          : "mcp-default")
+    }
   },
   plugins: {
     dir: resolveDir(process.env.PLUGINS_DIR ?? "./plugins", "./plugins"),

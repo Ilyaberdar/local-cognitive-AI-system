@@ -10,6 +10,17 @@ interface FileToolOptions {
   allowedDirectories: string[];
 }
 
+interface FileDiffPreview {
+  added: number;
+  removed: number;
+  truncated: boolean;
+  preview: Array<{
+    type: "add" | "remove" | "context";
+    line: number;
+    text: string;
+  }>;
+}
+
 export class FileTool implements Tool {
   name = "file";
   description = "Reads, writes, lists, and scaffolds files inside configured local filesystem boundaries.";
@@ -17,7 +28,7 @@ export class FileTool implements Tool {
   constructor(private readonly options: FileToolOptions) {}
 
   matchesIntent(input: string): boolean {
-    return /(?:save|write|export|create|build|make|read|list|delete|mkdir|append|edit|rewrite|overwrite|update).*(?:file|project|app|folder|directory|markdown|txt)|(?:в|во)\s+файл|сохрани.*файл|создай.*(?:проект|файл|папк)|прочитай.*файл|покажи.*файл|удали.*(?:файл|папк)|допиши.*файл|измени.*файл|обнови.*файл|перепиши.*файл/i.test(
+    return /(?:save|write|export|create|build|make|read|list|delete|mkdir|append|edit|rewrite|overwrite|update).*(?:file|project|app|folder|directory|markdown|txt)|(?:в|во)\s+файл|сохрани.*файл|создай.*(?:проект|файл|папк)|прочитай.*файл|покажи.*файл|удали.*(?:файл|папк)|допиши.*файл|добавь.*(?:в|во)?.*файл|измени.*файл|обнови.*файл|перепиши.*файл/i.test(
       input
     );
   }
@@ -57,7 +68,7 @@ export class FileTool implements Tool {
         return approval;
       }
       this.assertWritableResult(input.result);
-      return this.appendFile(requestedPath, this.renderSingleFileContent(input.result));
+      return this.appendFile(requestedPath, this.renderSingleFileContent(input.result, scaffoldFiles));
     }
 
     if (this.isWriteIntent(rawInput) && requestedPath) {
@@ -66,7 +77,7 @@ export class FileTool implements Tool {
         return approval;
       }
       this.assertWritableResult(input.result);
-      return this.writeFile(requestedPath, this.renderSingleFileContent(input.result));
+      return this.writeFile(requestedPath, this.renderSingleFileContent(input.result, scaffoldFiles));
     }
 
     if (scaffoldFiles.length > 0) {
@@ -97,7 +108,12 @@ export class FileTool implements Tool {
       tool: this.name,
       ok: true,
       output: `Saved file to ${filePath}`,
-      metadata: { filePath }
+      metadata: {
+        filePath,
+        operation: "write",
+        beforeExists: false,
+        diff: this.createDiffPreview("", content)
+      }
     };
   }
 
@@ -113,13 +129,27 @@ export class FileTool implements Tool {
     await fs.mkdir(baseDir, { recursive: true });
 
     const writtenPaths: string[] = [];
+    const filesMetadata: Array<{
+      filePath: string;
+      operation: "write";
+      beforeExists: boolean;
+      diff: FileDiffPreview;
+    }> = [];
 
     for (const file of files) {
       const destination = path.resolve(baseDir, file.filePath);
       this.assertAllowed(destination);
+      const before = await this.readTextIfExists(destination);
+      const nextContent = this.normalizeFileContent(file.content);
       await fs.mkdir(path.dirname(destination), { recursive: true });
-      await fs.writeFile(destination, file.content.replace(/\n+$/, "") + "\n", "utf8");
+      await fs.writeFile(destination, nextContent, "utf8");
       writtenPaths.push(destination);
+      filesMetadata.push({
+        filePath: destination,
+        operation: "write",
+        beforeExists: before.exists,
+        diff: this.createDiffPreview(before.content, nextContent)
+      });
     }
 
     return {
@@ -128,7 +158,8 @@ export class FileTool implements Tool {
       output: `Project scaffold written to ${baseDir}`,
       metadata: {
         baseDir,
-        writtenPaths
+        writtenPaths,
+        files: filesMetadata
       }
     };
   }
@@ -136,8 +167,10 @@ export class FileTool implements Tool {
   private async writeFile(targetPath: string, content: string): Promise<ToolExecutionResult> {
     const resolved = this.resolveTargetPath(targetPath);
     this.assertAllowed(resolved);
+    const before = await this.readTextIfExists(resolved);
+    const nextContent = this.normalizeFileContent(content);
     await fs.mkdir(path.dirname(resolved), { recursive: true });
-    await fs.writeFile(resolved, this.normalizeFileContent(content), "utf8");
+    await fs.writeFile(resolved, nextContent, "utf8");
 
     return {
       tool: this.name,
@@ -145,7 +178,9 @@ export class FileTool implements Tool {
       output: `Wrote file ${resolved}`,
       metadata: {
         filePath: resolved,
-        operation: "write"
+        operation: "write",
+        beforeExists: before.exists,
+        diff: this.createDiffPreview(before.content, nextContent)
       }
     };
   }
@@ -153,8 +188,11 @@ export class FileTool implements Tool {
   private async appendFile(targetPath: string, content: string): Promise<ToolExecutionResult> {
     const resolved = this.resolveTargetPath(targetPath);
     this.assertAllowed(resolved);
+    const before = await this.readTextIfExists(resolved);
+    const appendedContent = this.normalizeAppendContent(content);
+    const nextContent = `${before.content}${appendedContent}`;
     await fs.mkdir(path.dirname(resolved), { recursive: true });
-    await fs.appendFile(resolved, this.normalizeAppendContent(content), "utf8");
+    await fs.appendFile(resolved, appendedContent, "utf8");
 
     return {
       tool: this.name,
@@ -162,7 +200,9 @@ export class FileTool implements Tool {
       output: `Appended file ${resolved}`,
       metadata: {
         filePath: resolved,
-        operation: "append"
+        operation: "append",
+        beforeExists: before.exists,
+        diff: this.createDiffPreview(before.content, nextContent)
       }
     };
   }
@@ -229,6 +269,104 @@ export class FileTool implements Tool {
         path: resolved
       }
     };
+  }
+
+  private async readTextIfExists(filePath: string): Promise<{ exists: boolean; content: string }> {
+    try {
+      return {
+        exists: true,
+        content: await fs.readFile(filePath, "utf8")
+      };
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      if (code === "ENOENT") {
+        return { exists: false, content: "" };
+      }
+
+      throw error;
+    }
+  }
+
+  private createDiffPreview(before: string, after: string): FileDiffPreview {
+    const beforeLines = this.splitPreviewLines(before);
+    const afterLines = this.splitPreviewLines(after);
+    let prefix = 0;
+
+    while (
+      prefix < beforeLines.length &&
+      prefix < afterLines.length &&
+      beforeLines[prefix] === afterLines[prefix]
+    ) {
+      prefix += 1;
+    }
+
+    let suffix = 0;
+
+    while (
+      suffix + prefix < beforeLines.length &&
+      suffix + prefix < afterLines.length &&
+      beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+    ) {
+      suffix += 1;
+    }
+
+    const removedBlock = beforeLines.slice(prefix, beforeLines.length - suffix);
+    const addedBlock = afterLines.slice(prefix, afterLines.length - suffix);
+    const rows: FileDiffPreview["preview"] = [];
+    const contextBefore = beforeLines.slice(Math.max(0, prefix - 3), prefix);
+    const contextAfter = afterLines.slice(prefix + addedBlock.length, prefix + addedBlock.length + 3);
+    const maxChangedRows = 36;
+    let changedRows = 0;
+
+    contextBefore.forEach((text, index) => {
+      rows.push({
+        type: "context",
+        line: Math.max(1, prefix - contextBefore.length + index + 1),
+        text: this.truncatePreviewLine(text)
+      });
+    });
+
+    for (let index = 0; index < removedBlock.length && changedRows < maxChangedRows; index += 1) {
+      rows.push({
+        type: "remove",
+        line: prefix + index + 1,
+        text: this.truncatePreviewLine(removedBlock[index])
+      });
+      changedRows += 1;
+    }
+
+    for (let index = 0; index < addedBlock.length && changedRows < maxChangedRows; index += 1) {
+      rows.push({
+        type: "add",
+        line: prefix + index + 1,
+        text: this.truncatePreviewLine(addedBlock[index])
+      });
+      changedRows += 1;
+    }
+
+    contextAfter.forEach((text, index) => {
+      rows.push({
+        type: "context",
+        line: prefix + addedBlock.length + index + 1,
+        text: this.truncatePreviewLine(text)
+      });
+    });
+
+    return {
+      added: addedBlock.length,
+      removed: removedBlock.length,
+      truncated: removedBlock.length + addedBlock.length > maxChangedRows,
+      preview: rows
+    };
+  }
+
+  private splitPreviewLines(content: string): string[] {
+    const normalized = content.replace(/\n$/, "");
+    return normalized ? normalized.split(/\r?\n/) : [];
+  }
+
+  private truncatePreviewLine(line: string): string {
+    return line.length > 220 ? `${line.slice(0, 217)}...` : line;
   }
 
   private isAllowed(targetPath: string): boolean {
@@ -330,7 +468,7 @@ export class FileTool implements Tool {
     }
 
     const pathLike = input.match(
-      /(?:path|file|folder|directory|директори[яи]|папк[ауеи]?|файл[ауеы]?|путь)\s*(?:=|:|в|во|to|at)?\s*([./~\w-][^\n,]*)/i
+      /(?:path|file|folder|directory|директори[яи]|папк[ауеи]?|файл[ауеы]?|путь)\s*(?:=|:|в|во|to|at)?\s*([./~\w-][^\s,:;]*)/i
     );
 
     return pathLike?.[1]?.trim();
@@ -353,7 +491,14 @@ export class FileTool implements Tool {
       .filter((item) => item.filePath && item.content.trim());
   }
 
-  private renderSingleFileContent(result: ModeResult): string {
+  private renderSingleFileContent(
+    result: ModeResult,
+    scaffoldFiles: Array<{ filePath: string; content: string }> = this.extractScaffoldFiles(result)
+  ): string {
+    if (scaffoldFiles.length === 1) {
+      return scaffoldFiles[0].content;
+    }
+
     if (!("response" in result)) {
       return JSON.stringify(result, null, 2);
     }
@@ -403,13 +548,13 @@ export class FileTool implements Tool {
   }
 
   private isWriteIntent(input: string): boolean {
-    return /(?:write|save|overwrite|update|edit|rewrite).*(?:file)|(?:запиши|сохрани|перепиши|обнови|измени).*(?:файл)/i.test(
+    return /(?:write|save|overwrite|update|edit|rewrite|create).*(?:file)|(?:запиши|сохрани|перепиши|обнови|измени|создай).*(?:файл)/i.test(
       input
     );
   }
 
   private isAppendIntent(input: string): boolean {
-    return /(?:append|add to).*(?:file)|(?:добавь|допиши).*(?:в|во)?.*(?:файл)/i.test(input);
+    return /(?:append|add to).*(?:file)|(?:добавь|допиши).*(?:в|во)?.*(?:файл)|(?:добавь|допиши).*(?:в конец|в файл)/i.test(input);
   }
 
   toDescriptor() {

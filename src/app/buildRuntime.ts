@@ -26,6 +26,7 @@ import { VectorStore } from "../memory/VectorStore";
 import { PluginLoader } from "../plugins/PluginLoader";
 import { LoadedPlugin } from "../plugins/types";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
+import { FileTool } from "../tools/FileTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import {
   CodeAgentTarget,
@@ -436,27 +437,43 @@ const runCodeAgent = async (
   language: "auto" | "ru" | "en",
   systemPrompt: string,
 ) => {
-  const response = await llmService.generateText(
-    {
-      model: agent.model,
-      systemPrompt,
-      prompt,
-      timeoutMs: agentRequestTimeoutMs(agent.providerId)
-    },
-    agent.providerId
-  );
+  try {
+    const response = await llmService.generateText(
+      {
+        model: agent.model,
+        systemPrompt,
+        prompt,
+        timeoutMs: agentRequestTimeoutMs(agent.providerId)
+      },
+      agent.providerId
+    );
 
-  const normalized = await languageEnforcer.normalizeText(response.text, language, {
-    providerId: agent.providerId,
-    model: agent.model
-  });
+    const normalized = await languageEnforcer.normalizeText(response.text, language, {
+      providerId: agent.providerId,
+      model: agent.model
+    });
 
-  return {
-    agent,
-    response,
-    normalized,
-    degraded: isDegradedResponse(response)
-  };
+    return {
+      agent,
+      response,
+      normalized,
+      degraded: isDegradedResponse(response)
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown_error";
+
+    return {
+      agent,
+      response: {
+        provider: agent.providerId,
+        model: agent.model ?? "default",
+        text: `Provider request failed or timed out for @${agent.name}.`,
+        error: message
+      } satisfies LLMResponse,
+      normalized: `Provider request failed or timed out for @${agent.name}: ${message}`,
+      degraded: true
+    };
+  }
 };
 
 const runCodeSwarm = async (
@@ -508,17 +525,48 @@ const runCodeSwarm = async (
         buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle)
       ].join("\n")
     );
+    const finalRun =
+      writerRun.degraded && activeAgents[0].id !== fallbackAgent.id
+        ? await runCodeAgent(
+            fallbackAgent,
+            buildTextPrompt(
+              "code",
+              taskInput,
+              memorySummary,
+              context.sessionSettings.language,
+              context.sessionSettings.outputStyle,
+              attachmentContext
+            ),
+            llmService,
+            languageEnforcer,
+            context.sessionSettings.language,
+            [
+              "You are the main model taking over after a spawned subagent failed or timed out.",
+              buildSubagentExecutionContract(input, taskInput, [fallbackAgent]),
+              buildSubagentAccessInstruction(fallbackAgent),
+              buildNoSubagentBoilerplateInstruction(),
+              buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
+              "Complete the user's task directly. Mention failed subagents only if it materially affects the result."
+            ].join("\n")
+          )
+        : writerRun;
+    const fallbackUsed = finalRun !== writerRun;
 
     return {
-      response: writerRun.normalized,
-      provider: writerRun.response.provider,
-      model: writerRun.response.model,
-      subagents: [summarizeSubagentRun(writerRun, "writer")],
+      response: finalRun.normalized,
+      provider: finalRun.response.provider,
+      model: finalRun.response.model,
+      subagents: fallbackUsed
+        ? [
+            summarizeSubagentRun(finalRun, "writer"),
+            summarizeSubagentRun(writerRun, "advisor")
+          ]
+        : [summarizeSubagentRun(writerRun, "writer")],
       metrics: {
         startedAt: new Date(0).toISOString(),
         completedAt: new Date(0).toISOString(),
         durationMs: 0,
-        usage: writerRun.response.usage
+        usage: sumUsage([writerRun.response.usage, fallbackUsed ? finalRun.response.usage : undefined])
       }
     };
   }
@@ -579,8 +627,37 @@ const runCodeSwarm = async (
     ].join("\n")
   );
   const firstHealthyAdvisor = independentRuns.find((item) => !item.degraded);
-  const chosenRun =
-    !writerRun.degraded || !firstHealthyAdvisor ? writerRun : firstHealthyAdvisor;
+  const fallbackWriterRun =
+    writerRun.degraded && !firstHealthyAdvisor && collectorAgent.id !== fallbackAgent.id
+      ? await runCodeAgent(
+          fallbackAgent,
+          buildCodeWriterPrompt(
+            input,
+            taskInput,
+            memorySummary,
+            context.sessionSettings.language,
+            context.sessionSettings.outputStyle,
+            attachmentContext,
+            independentRuns.map((item) => ({
+              agent: item.agent,
+              normalized: item.normalized,
+              degraded: item.degraded
+            }))
+          ),
+          llmService,
+          languageEnforcer,
+          context.sessionSettings.language,
+          [
+            "You are the main model taking over after the collector failed or timed out.",
+            buildSubagentNameInstruction(activeAgents),
+            buildSubagentAccessInstruction(fallbackAgent),
+            buildNoSubagentBoilerplateInstruction(),
+            buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
+            "Complete the task directly using any available advisor notes. Do not wait for failed agents."
+          ].join("\n")
+        )
+      : undefined;
+  const chosenRun = fallbackWriterRun ?? (!writerRun.degraded || !firstHealthyAdvisor ? writerRun : firstHealthyAdvisor);
   const writerSummary = {
     ...summarizeSubagentRun(writerRun, "writer" as const),
     output: undefined
@@ -591,14 +668,19 @@ const runCodeSwarm = async (
     provider: chosenRun.response.provider,
     model: chosenRun.response.model,
     subagents: [
-      writerSummary,
+      ...(fallbackWriterRun ? [summarizeSubagentRun(fallbackWriterRun, "writer")] : [writerSummary]),
+      ...(fallbackWriterRun ? [writerSummary] : []),
       ...independentRuns.map((item) => summarizeSubagentRun(item, "advisor"))
     ],
     metrics: {
       startedAt: new Date(0).toISOString(),
       completedAt: new Date(0).toISOString(),
       durationMs: 0,
-      usage: sumUsage([writerRun.response.usage, ...independentRuns.map((item) => item.response.usage)])
+      usage: sumUsage([
+        writerRun.response.usage,
+        fallbackWriterRun?.response.usage,
+        ...independentRuns.map((item) => item.response.usage)
+      ])
     }
   };
 };
@@ -728,6 +810,14 @@ export const buildRuntime = async (
   });
 
   const toolRegistry = new ToolRegistry();
+  toolRegistry.register(
+    new FileTool({
+      outputDir: config.outputDir,
+      accessMode: config.filesystem.accessMode,
+      allowedDirectories: config.filesystem.allowedDirectories
+    })
+  );
+
   const pluginLoader = new PluginLoader(
     config.plugins.dir,
     {

@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { execFileSync } from "child_process";
 import fs from "fs/promises";
 import os from "os";
@@ -12,11 +11,13 @@ import {
   OutputStyle,
   SessionMode,
   SessionSettingsPatch,
+  SubagentRunSummary,
   SystemMetrics,
   ToolExecutionResult
 } from "../types";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
+import { processRuntimeInput } from "../transports/shared/runtimeActions";
 import { extractNotionId } from "../utils/notion";
 import { readAttachments } from "../utils/attachments";
 
@@ -51,30 +52,23 @@ export const createProcessController =
         return;
       }
 
-      const runtime = runtimeManager.getRuntime();
-      const resolvedSessionId =
-        typeof sessionId === "string" && sessionId.trim() ? sessionId : randomUUID();
-
-      await sessionIndexStore.touch(resolvedSessionId, {
-        title: typeof sessionTitle === "string" ? sessionTitle : input.slice(0, 60),
-        channel: channel === "telegram" ? "telegram" : "http"
-      });
-
-      const result = await runtime.engine.process({
-        input,
-        providerId: typeof providerId === "string" ? providerId : undefined,
-        model: typeof model === "string" ? model : undefined,
-        actor: {
-          sessionId: resolvedSessionId,
+      const result = await processRuntimeInput(
+        runtimeManager,
+        sessionIndexStore,
+        {
+          input,
+          sessionId: typeof sessionId === "string" ? sessionId : undefined,
+          sessionTitle: typeof sessionTitle === "string" ? sessionTitle : undefined,
           userId: typeof userId === "string" ? userId : undefined,
-          channel: channel === "telegram" ? "telegram" : "http"
+          providerId: typeof providerId === "string" ? providerId : undefined,
+          model: typeof model === "string" ? model : undefined,
+          metadata
         },
-        metadata
-      });
+        channel === "telegram" || channel === "mcp" ? channel : "http"
+      );
 
       res.status(200).json({
-        ...result,
-        sessionId: resolvedSessionId
+        ...result
       });
     } catch (error) {
       next(error);
@@ -403,7 +397,9 @@ export const createGetSessionMessagesController =
               role: "assistant",
               content: formatted,
               createdAt: entry.createdAt,
-              metrics: readStoredMetrics(entry.output, entry.metadata)
+              metrics: readStoredMetrics(entry.output, entry.metadata),
+              tools: readStoredTools(entry.metadata),
+              subagents: readStoredSubagents(entry.output)
             }
           ];
         });
@@ -749,6 +745,20 @@ const readStoredTools = (metadata?: Record<string, unknown>): ToolExecutionResul
   return candidate.filter(isToolExecutionResult);
 };
 
+const readStoredSubagents = (output: unknown): SubagentRunSummary[] => {
+  if (!output || typeof output !== "object" || !("subagents" in output)) {
+    return [];
+  }
+
+  const candidate = (output as { subagents?: unknown }).subagents;
+
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+
+  return candidate.filter(isSubagentRunSummary);
+};
+
 const isGenerationMetrics = (value: unknown): value is GenerationMetrics => {
   if (!value || typeof value !== "object") {
     return false;
@@ -774,6 +784,22 @@ const isToolExecutionResult = (value: unknown): value is ToolExecutionResult => 
     typeof record.tool === "string" &&
     typeof record.ok === "boolean" &&
     typeof record.output === "string"
+  );
+};
+
+const isSubagentRunSummary = (value: unknown): value is SubagentRunSummary => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return (
+    typeof record.id === "string" &&
+    typeof record.name === "string" &&
+    (record.role === "writer" || record.role === "advisor") &&
+    typeof record.provider === "string" &&
+    (record.status === "ok" || record.status === "degraded")
   );
 };
 

@@ -7,6 +7,7 @@ import { config } from "./config/config";
 import { SessionIndexStore } from "./session/SessionIndexStore";
 import { TelegramBotTransport } from "./transports/telegram/TelegramBotTransport";
 import { Logger } from "./utils/Logger";
+import { formatStartupSummary } from "./utils/startupSummary";
 
 const logger = new Logger();
 
@@ -33,14 +34,11 @@ const bootstrap = async (): Promise<void> => {
       });
     });
 
-    app.listen(config.server.port, config.server.host, () => {
-      logger.info("Local Cognitive AI System started", {
-        host: config.server.host,
-        port: config.server.port,
-        memoryAdapter: config.memory.adapter,
-        providers: runtime.providerDescriptors,
-        ui: config.ui.publicDir
+    await new Promise<void>((resolve, reject) => {
+      const server = app.listen(config.server.port, config.server.host, () => {
+        resolve();
       });
+      server.once("error", reject);
     });
   }
 
@@ -66,10 +64,20 @@ const bootstrap = async (): Promise<void> => {
     );
 
     telegram.start();
-    logger.info("Telegram transport started", {
-      pollTimeoutSec: telegramConfig.pollTimeoutSec
-    });
   }
+
+  logger.info(
+    formatStartupSummary({
+      config,
+      settings: appSettings,
+      runtime,
+      telegram: {
+        enabled: telegramConfig.enabled,
+        configured: Boolean(telegramConfig.botToken),
+        pollTimeoutSec: telegramConfig.pollTimeoutSec
+      }
+    })
+  );
 };
 
 void bootstrap().catch((error) => {

@@ -30,6 +30,14 @@ export class AppSettingsStore {
       llm: {
         defaultProvider: patch.llm?.defaultProvider ?? current.llm.defaultProvider
       },
+      mcp: {
+        server: {
+          enabled: patch.mcp?.server?.enabled ?? current.mcp.server.enabled,
+          transport: "stdio",
+          defaultSessionId:
+            patch.mcp?.server?.defaultSessionId ?? current.mcp.server.defaultSessionId
+        }
+      },
       telegram: {
         enabled: patch.telegram?.enabled ?? current.telegram.enabled,
         botToken: patch.telegram?.botToken ?? current.telegram.botToken,
@@ -84,6 +92,13 @@ export class AppSettingsStore {
     return {
       llm: {
         defaultProvider: this.baseConfig.llm.defaultProvider
+      },
+      mcp: {
+        server: {
+          enabled: this.baseConfig.mcp.server.enabled,
+          transport: this.baseConfig.mcp.server.transport,
+          defaultSessionId: this.baseConfig.mcp.server.defaultSessionId
+        }
       },
       telegram: {
         enabled: this.baseConfig.telegram.enabled,
@@ -175,6 +190,14 @@ export class AppSettingsStore {
     const settings: AppSettings = {
       llm: {
         defaultProvider: input.llm?.defaultProvider ?? defaults.llm.defaultProvider
+      },
+      mcp: {
+        server: {
+          enabled: input.mcp?.server?.enabled ?? defaults.mcp.server.enabled,
+          transport: "stdio",
+          defaultSessionId:
+            input.mcp?.server?.defaultSessionId ?? defaults.mcp.server.defaultSessionId
+        }
       },
       telegram: {
         enabled: input.telegram?.enabled ?? defaults.telegram.enabled,
