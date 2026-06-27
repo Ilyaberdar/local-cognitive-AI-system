@@ -1,4 +1,5 @@
 import { ManagedModel } from "../types";
+import { LocalModelManager } from "./LocalModelManager";
 
 interface LMStudioManagerOptions {
   baseUrl: string;
@@ -24,7 +25,9 @@ interface NativeModelRecord {
   }>;
 }
 
-export class LMStudioManager {
+export class LMStudioManager implements LocalModelManager {
+  readonly providerId = "lmstudio";
+  readonly providerName = "LM Studio";
   private readonly nativeBaseUrl: string;
 
   constructor(private readonly options: LMStudioManagerOptions) {
@@ -55,6 +58,8 @@ export class LMStudioManager {
         id: model.key ?? model.modelKey ?? "unknown-model",
         displayName:
           model.display_name ?? model.displayName ?? model.key ?? model.modelKey ?? "unknown-model",
+        providerId: this.providerId,
+        providerName: this.providerName,
         sizeBytes: [model.sizeBytes, model.size_bytes, model.size, model.bytes].find(
           (value): value is number => typeof value === "number" && Number.isFinite(value)
         ),

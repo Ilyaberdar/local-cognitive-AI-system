@@ -89,20 +89,20 @@ const api = {
     request("/runtime/reload", {
       method: "POST"
     }),
-  loadModel: (modelId) =>
-    request("/lmstudio/models/load", {
+  loadModel: (providerId, modelId) =>
+    request("/local/models/load", {
       method: "POST",
-      body: JSON.stringify({ modelId })
+      body: JSON.stringify({ providerId, modelId })
     }),
-  unloadModel: (modelIdOrInstanceId) =>
-    request("/lmstudio/models/unload", {
+  unloadModel: (providerId, modelIdOrInstanceId) =>
+    request("/local/models/unload", {
       method: "POST",
-      body: JSON.stringify({ modelIdOrInstanceId })
+      body: JSON.stringify({ providerId, modelIdOrInstanceId })
     }),
   refreshManagedModels: async () => {
     const [loadedModels, allManagedModels] = await Promise.all([
-      request("/lmstudio/models/loaded"),
-      request("/lmstudio/models/all")
+      request("/local/models/loaded"),
+      request("/local/models/all")
     ]);
     return { loadedModels, allManagedModels };
   },
@@ -812,7 +812,7 @@ function renderModelsRoute() {
         <div class="row-between">
           <div>
             <h2>Loaded Local Models</h2>
-            <div class="subtle">LM Studio instances currently ready for routing, debate, and judge roles.</div>
+            <div class="subtle">LM Studio and Ollama models currently ready for routing, debate, and judge roles.</div>
           </div>
           <button class="ghost-button" data-action="refresh-models">Refresh models</button>
         </div>
@@ -826,9 +826,9 @@ function renderModelsRoute() {
                         <div class="loaded-model-copy">
                             <strong>${escapeHtml(model.displayName || model.id)}</strong>
                             <div class="mono">${escapeHtml(model.id)}</div>
-                            <div class="subtle">Instances: ${escapeHtml(model.loadedInstanceIds.join(", ") || "1")}</div>
+                            <div class="subtle">${escapeHtml(model.providerName || model.providerId || "local")} · ${escapeHtml(model.loadedInstanceIds.join(", ") || "loaded")}</div>
                         </div>
-                        <button class="ghost-button danger-button" data-action="unload-model" data-model-id="${escapeAttr(model.loadedInstanceIds[0] || model.id)}">Unload</button>
+                        <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(model.providerId || "lmstudio")}" data-model-id="${escapeAttr(model.loadedInstanceIds[0] || model.id)}">Unload</button>
                       </div>
                     `
                   )
@@ -841,8 +841,8 @@ function renderModelsRoute() {
       <section class="panel">
         <div class="row-between">
           <div>
-            <h2>LM Studio Catalog</h2>
-            <div class="subtle">Load or unload local models without leaving the dashboard.</div>
+            <h2>Local Model Catalog</h2>
+            <div class="subtle">Load or unload LM Studio and Ollama models without leaving the dashboard.</div>
           </div>
         </div>
         <div class="catalog-grid">
@@ -855,15 +855,15 @@ function renderModelsRoute() {
                       <h3>${escapeHtml(model.displayName || model.id)}</h3>
                       <div class="mono">${escapeHtml(model.id)}</div>
                     </div>
-                    <span class="badge ${model.loaded ? "success" : "warning"}">${model.loaded ? "loaded" : "available"}</span>
+                    <span class="badge ${model.loaded ? "success" : "warning"}">${escapeHtml(model.providerName || model.providerId || "local")} · ${model.loaded ? "loaded" : "available"}</span>
                   </div>
                   <div class="subtle">${formatManagedModelSize(model.sizeBytes)}</div>
                   <div class="footer-row">
-                    <span class="subtle">${model.loaded ? "Ready for chat and debate." : "Can be loaded into LM Studio."}</span>
+                    <span class="subtle">${model.loaded ? "Ready for chat and debate." : `Can be loaded into ${escapeHtml(model.providerName || model.providerId || "local runtime")}.`}</span>
                     ${
                       model.loaded
-                        ? renderModelActionButton("unload", model.loadedInstanceIds[0] || model.id)
-                        : renderModelActionButton("load", model.id)
+                        ? renderModelActionButton("unload", model.loadedInstanceIds[0] || model.id, model.providerId || "lmstudio")
+                        : renderModelActionButton("load", model.id, model.providerId || "lmstudio")
                     }
                   </div>
                 </div>
@@ -876,20 +876,20 @@ function renderModelsRoute() {
   `;
 }
 
-function renderModelActionButton(action, modelId) {
-  const stateKey = `${action}:${modelId}`;
+function renderModelActionButton(action, modelId, providerId = "lmstudio") {
+  const stateKey = `${action}:${providerId}:${modelId}`;
   const pending = Boolean(state.modelActions[stateKey]);
 
   if (action === "unload") {
     return `
-      <button class="ghost-button danger-button" data-action="unload-model" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
+      <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(providerId)}" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
         ${pending ? `<span class="button-spinner"></span>Unloading...` : "Unload"}
       </button>
     `;
   }
 
   return `
-    <button class="primary-button" data-action="load-model" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
+    <button class="primary-button" data-action="load-model" data-provider-id="${escapeAttr(providerId)}" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
       ${pending ? `<span class="button-spinner"></span>Loading...` : "Load"}
     </button>
   `;
@@ -2035,19 +2035,20 @@ function bindEvents() {
   document.querySelectorAll("[data-action='load-model']").forEach((button) => {
     button.addEventListener("click", async () => {
       const modelId = button.dataset.modelId;
+      const providerId = button.dataset.providerId || "lmstudio";
 
       if (!modelId) {
         return;
       }
 
-      const key = `load:${modelId}`;
+      const key = `load:${providerId}:${modelId}`;
       const scrollSnapshot = captureScrollState();
       state.modelActions[key] = true;
       render();
       restoreScrollState(scrollSnapshot);
 
       try {
-        await api.loadModel(modelId);
+        await api.loadModel(providerId, modelId);
         const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
         state.bootstrap.loadedModels = managed.loadedModels;
         state.bootstrap.allManagedModels = managed.allManagedModels;
@@ -2066,19 +2067,20 @@ function bindEvents() {
   document.querySelectorAll("[data-action='unload-model']").forEach((button) => {
     button.addEventListener("click", async () => {
       const modelId = button.dataset.modelId;
+      const providerId = button.dataset.providerId || "lmstudio";
 
       if (!modelId) {
         return;
       }
 
-      const key = `unload:${modelId}`;
+      const key = `unload:${providerId}:${modelId}`;
       const scrollSnapshot = captureScrollState();
       state.modelActions[key] = true;
       render();
       restoreScrollState(scrollSnapshot);
 
       try {
-        await api.unloadModel(modelId);
+        await api.unloadModel(providerId, modelId);
         const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
         state.bootstrap.loadedModels = managed.loadedModels;
         state.bootstrap.allManagedModels = managed.allManagedModels;
@@ -2533,18 +2535,25 @@ function getProviderOptions() {
   }));
 }
 
-function getModelOptions() {
-  const fromCatalog = (state.bootstrap?.availableModels ?? []).map((model) => model.id);
-  const fromManaged = (state.bootstrap?.allManagedModels ?? []).map((model) => model.id);
+function getModelOptions(providerId) {
+  const matchesProvider = (model) => !providerId || model.providerId === providerId;
+  const fromCatalog = (state.bootstrap?.availableModels ?? [])
+    .filter(matchesProvider)
+    .map((model) => model.id);
+  const fromManaged = (state.bootstrap?.allManagedModels ?? [])
+    .filter(matchesProvider)
+    .map((model) => model.id);
   return [...new Set([...fromCatalog, ...fromManaged])].sort();
 }
 
-function getLoadedModelOptions() {
-  return (state.bootstrap?.loadedModels ?? []).map((model) => model.id);
+function getLoadedModelOptions(providerId) {
+  return (state.bootstrap?.loadedModels ?? [])
+    .filter((model) => !providerId || model.providerId === providerId)
+    .map((model) => model.id);
 }
 
 function getProviderSuggestedModels(providerId) {
-  const localModels = getModelOptions();
+  const localModels = getModelOptions(providerId);
 
   switch (providerId) {
     case "openai":
@@ -2711,7 +2720,7 @@ function getSelectableSessionModels(providerId, ...selected) {
   const providerModel = providerId ? state.bootstrap?.appSettings?.providers?.[providerId]?.model : undefined;
   const normalizedSelected = selected.filter(Boolean);
   const models = isLocalProvider(providerId)
-    ? [...getLoadedModelOptions(), ...normalizedSelected]
+    ? [...getLoadedModelOptions(providerId), ...normalizedSelected]
     : [
         !isLocalCatalogModel(providerModel) ? providerModel : undefined,
         ...getProviderSuggestedModels(providerId),
@@ -2857,7 +2866,7 @@ function getDefaultModelForProvider(providerId) {
   }
 
   if (isLocalProvider(providerId)) {
-    return getLoadedModelOptions()[0] || getProviderConfiguredModel(providerId) || "";
+    return getLoadedModelOptions(providerId)[0] || getProviderConfiguredModel(providerId) || "";
   }
 
   return getProviderConfiguredModel(providerId) || getProviderSuggestedModels(providerId)[0] || "";

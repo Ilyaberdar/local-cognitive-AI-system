@@ -304,7 +304,9 @@ export class TelegramBotTransport {
     includeLoadedState = true
   ): string {
     const aliases = aliasesForModel(model.id, aliasMap);
+    const providerLabel = model.providerName || model.providerId || "local";
     const lines = [`- ${model.id}${includeLoadedState && model.loaded ? " (loaded)" : ""}`];
+    lines.push(`  provider: ${providerLabel}`);
 
     if (aliases.length > 0) {
       lines.push(`  alias: ${aliases.join(", ")}`);

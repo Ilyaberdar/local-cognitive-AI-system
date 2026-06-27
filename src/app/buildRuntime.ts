@@ -1,5 +1,10 @@
 import fs from "fs/promises";
 import { AttackAgent } from "../agents/AttackAgent";
+import {
+  hasSubagentTrigger,
+  parseMentionedSubagentNames,
+  selectConfiguredSubagents
+} from "../agents/code/codeAgentRouting";
 import { HypothesisAgent } from "../agents/HypothesisAgent";
 import { SupportAgent } from "../agents/SupportAgent";
 import { AppConfig } from "../config/config";
@@ -12,9 +17,11 @@ import { Judge } from "../judge/Judge";
 import { AnthropicProvider } from "../llm/AnthropicProvider";
 import { GeminiProvider } from "../llm/GeminiProvider";
 import { LLMRegistry } from "../llm/LLMRegistry";
+import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LMStudioManager } from "../llm/LMStudioManager";
 import { LanguageEnforcer } from "../llm/LanguageEnforcer";
 import { LLMService } from "../llm/LLMService";
+import { OllamaModelManager } from "../llm/OllamaModelManager";
 import { OllamaProvider } from "../llm/OllamaProvider";
 import { OutputSanitizer } from "../llm/OutputSanitizer";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
@@ -32,7 +39,6 @@ import {
   CodeAgentTarget,
   ExecutionContext,
   LLMResponse,
-  OutputStyle,
   ProviderDescriptor,
   SubagentRunSummary,
   ToolDescriptor
@@ -40,6 +46,17 @@ import {
 import { Logger } from "../utils/Logger";
 import { ModelCatalogService } from "../llm/ModelCatalogService";
 import { readAttachments, renderAttachmentContext } from "../utils/attachments";
+import {
+  buildCodeWriterPrompt,
+  buildCollectorSystemPrompt,
+  buildFallbackCollectorSystemPrompt,
+  buildFallbackSingleAgentSystemPrompt,
+  buildIndependentAgentPrompt,
+  buildIndependentAgentSystemPrompt,
+  buildSingleAgentSystemPrompt,
+  stripSubagentRoutingSyntax
+} from "../prompts/codeAgentPrompts";
+import { buildTextPrompt } from "../prompts/common";
 
 export interface AppRuntime {
   engine: CognitiveEngine;
@@ -51,200 +68,11 @@ export interface AppRuntime {
   modelCatalog: ModelCatalogService;
   llmService: LLMService;
   lmStudioManager: LMStudioManager;
+  ollamaManager: OllamaModelManager;
+  localModelManager: LocalModelManagerRegistry;
   memoryService: MemoryService;
   config: AppConfig;
 }
-
-const buildLanguageInstruction = (language: "auto" | "ru" | "en"): string => {
-  switch (language) {
-    case "ru":
-      return [
-        "Respond only in Russian.",
-        "Every sentence in the final answer must be in Russian.",
-        "Do not switch to English except for product names, model ids, or technical proper nouns."
-      ].join(" ");
-    case "en":
-      return [
-        "Respond only in English.",
-        "Every sentence in the final answer must be in English.",
-        "Do not switch to Russian except for quoted user text or proper nouns."
-      ].join(" ");
-    default:
-      return "Respond in the user's language unless asked otherwise.";
-  }
-};
-
-const buildOutputStyleInstruction = (style: OutputStyle, mode: "code" | "general"): string => {
-  switch (style) {
-    case "compact":
-      return "Keep the answer compact. Focus on the highest-signal points only.";
-    case "detailed":
-      return mode === "code"
-        ? "Give a detailed implementation-oriented answer. Expand tradeoffs, file plan, and concrete steps."
-        : "Give a detailed answer with concrete examples, tradeoffs, and practical next steps.";
-    case "exhaustive":
-      return mode === "code"
-        ? "Give an exhaustive implementation answer. Be thorough, explicit, and cover architecture, files, risks, and edge cases in depth."
-        : "Give an exhaustive answer. Cover the topic in depth with examples, caveats, alternatives, and practical guidance.";
-    case "balanced":
-    default:
-      return "Give a balanced answer. Prefer practical steps over theory.";
-  }
-};
-
-const buildCodeAdvisorInstruction = (style: OutputStyle): string => {
-  switch (style) {
-    case "compact":
-      return "Return only short implementation guidance: architecture, file plan, risks, and concrete suggestions.";
-    case "detailed":
-      return "Return detailed implementation guidance: architecture, file plan, risks, tradeoffs, and concrete suggestions.";
-    case "exhaustive":
-      return "Return exhaustive implementation guidance: architecture, file plan, risks, tradeoffs, alternatives, and execution details.";
-    case "balanced":
-    default:
-      return "Return practical implementation guidance: architecture, file plan, risks, and concrete suggestions.";
-  }
-};
-
-const buildCodeWriterRoleInstruction = (style: OutputStyle): string => {
-  switch (style) {
-    case "compact":
-      return "Produce a concise implementation-ready answer.";
-    case "detailed":
-      return "Produce a detailed implementation-ready answer.";
-    case "exhaustive":
-      return "Produce an exhaustive implementation-ready answer with strong coverage of risks and edge cases.";
-    case "balanced":
-    default:
-      return "Produce a practical implementation-ready answer.";
-  }
-};
-
-const buildNoSubagentBoilerplateInstruction = (): string =>
-  [
-    "Do not say that you are a subagent, that you were spawned, that you woke up, or that you are ready.",
-    "Do not restate the user's command.",
-    "Start directly with the requested analysis, answer, plan, or implementation result.",
-    "If the request is not actionable, ask one concise clarifying question instead of acknowledging readiness."
-  ].join("\n");
-
-const buildSubagentNameInstruction = (agents: CodeAgentTarget[]): string => {
-  const names = agents.map((agent) => `@${agent.name}`).join(", ");
-
-  return [
-    `Agent display names: ${names || "none"}.`,
-    "These @names are routing labels for the orchestration layer, not libraries, modules, decorators, frameworks, or task subjects.",
-    "If you mention any agent in the answer, use only its @Name form.",
-    "Never write generic numbered labels such as Subagent 1, Sub-agent 1, Подагент 1, Сабагент 1, Агент 1, or Agent 1.",
-    "Never assign tasks to these agents in your answer. Execute your own pass instead."
-  ].join("\n");
-};
-
-const stripSubagentRoutingSyntax = (input: string): string => {
-  const stripped = input
-    .replace(/@[\p{L}\p{N}_-]+/gu, " ")
-    .replace(/\bspawn\s+sub-?agents?\b/giu, " ")
-    .replace(/\bspawn\b/giu, " ")
-    .replace(/\bsub-?agents?\b/giu, " ")
-    .replace(/заспавн\p{L}*\s*(?:\d+\s*)?(?:[\p{L}.?-]*агент\p{L}*)?/giu, " ")
-    .replace(/заспавн(?:и|ить|ь)?\s*(?:\d+\s*)?(?:с[ау]б.?агент(?:а|ов)?|агент(?:а|ов)?)/giu, " ")
-    .replace(/[\p{L}.?-]*агент(?:а|ов|ом|ами)?/giu, " ")
-    .replace(/с[ау]б.?агент(?:а|ов)?/giu, " ")
-    .replace(/\bwith\s+the\s+goal\s+of\b/giu, " ")
-    .replace(/\bto\s+analy[sz]e\b/giu, "analyze")
-    .replace(/\band\s+then\b/giu, "and")
-    .replace(/с\s+ц[её]?лью/giu, " ")
-    .replace(/и\s+потом/giu, "и")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return stripped || input.trim();
-};
-
-const buildSubagentExecutionContract = (
-  input: string,
-  taskInput: string,
-  agents: CodeAgentTarget[]
-): string =>
-  [
-    buildSubagentNameInstruction(agents),
-    "",
-    "Actual task to execute:",
-    taskInput,
-    "",
-    "Important:",
-    "- The original routing text was intentionally stripped before this prompt.",
-    "- Do not interpret @Atlas, @Vector, or any @Name as a software package, decorator, module, framework, or data structure.",
-    "- Do not describe how to spawn agents, processes, scripts, or subprocesses.",
-    "- Do not write 'Задача для @Name', 'Task for @Name', or instructions for another agent.",
-    "- Produce findings, critique, risks, and recommendations from your own independent pass."
-  ].join("\n");
-
-const buildCodeAdvisorRoleInstruction = (style: OutputStyle): string => {
-  switch (style) {
-    case "compact":
-      return "Provide compact implementation guidance only.";
-    case "detailed":
-      return "Provide detailed implementation guidance only.";
-    case "exhaustive":
-      return "Provide exhaustive implementation guidance only.";
-    case "balanced":
-    default:
-      return "Provide practical implementation guidance only.";
-  }
-};
-
-const wantsFilesystemScaffold = (input: string): boolean =>
-  /(?:create|build|make).*(?:project|app|api|service|bot|scaffold|files)|создай.*(?:проект|приложение|api|сервис|бот|структур)/i.test(
-    input
-  );
-
-const wantsSingleFileWrite = (input: string): boolean =>
-  /(?:write|save|overwrite|update|edit|rewrite|append).*(?:file)|(?:запиши|сохрани|перепиши|обнови|измени|добавь|допиши).*(?:файл)/i.test(
-    input
-  );
-
-const buildFilesystemInstruction = (input: string): string =>
-  wantsFilesystemScaffold(input)
-    ? [
-        "The user wants real files or a project scaffold.",
-        "Return one or more file blocks using this exact format and nothing else outside those blocks for file contents:",
-        "<<<FILE:relative/path.ext>>>",
-        "file content",
-        "<<<END FILE>>>",
-        "Use relative paths only.",
-        "Include all required files for a minimal working scaffold."
-      ].join("\n")
-    : wantsSingleFileWrite(input)
-      ? [
-          "The user wants a real file to be written or updated.",
-          "Return only the exact file content that should be written.",
-          "Do not add explanations, markdown fences, or commentary.",
-          "Do not include file markers unless the user explicitly requests multiple files."
-        ].join("\n")
-    : "";
-
-const buildTextPrompt = (
-  mode: "code" | "general",
-  input: string,
-  memory: string,
-  language: "auto" | "ru" | "en",
-  outputStyle: OutputStyle,
-  attachmentContext?: string
-): string =>
-  [
-    `Mode: ${mode}`,
-    "Relevant memory:",
-    memory,
-    ...(attachmentContext ? ["", attachmentContext] : []),
-    "",
-    `User input: ${input}`,
-    "",
-    buildLanguageInstruction(language),
-    ...(buildFilesystemInstruction(input) ? ["", buildFilesystemInstruction(input)] : []),
-    "",
-    buildOutputStyleInstruction(outputStyle, mode)
-  ].join("\n");
 
 const sumUsage = (
   usages: Array<{
@@ -267,11 +95,6 @@ const AGENT_REMOTE_TIMEOUT_MS = 180000;
 const agentRequestTimeoutMs = (providerId: string): number =>
   ["lmstudio", "ollama"].includes(providerId) ? AGENT_LOCAL_TIMEOUT_MS : AGENT_REMOTE_TIMEOUT_MS;
 
-const buildSubagentAccessInstruction = (agent: CodeAgentTarget): string =>
-  agent.accessMode === "full"
-    ? "Access mode: full. You may produce outputs intended for filesystem execution when the user asks for it."
-    : "Access mode: default. Do not assume filesystem changes will be executed automatically; write plans normally and expect explicit approval for file operations.";
-
 const summarizeSubagentRun = (
   run: Awaited<ReturnType<typeof runCodeAgent>>,
   role: "writer" | "advisor"
@@ -286,148 +109,6 @@ const summarizeSubagentRun = (
   error: run.response.error,
   output: run.degraded ? undefined : run.normalized
 });
-
-const hasSubagentTrigger = (input: string): boolean =>
-  /spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент/i.test(input);
-
-const parseMentionedSubagentNames = (input: string): string[] =>
-  Array.from(input.matchAll(/@([\p{L}\p{N}_-]+)/gu)).map((match) => match[1].toLowerCase());
-
-const rankSubagentCost = (agent: CodeAgentTarget): number => {
-  const providerScore =
-    agent.providerId === "lmstudio" || agent.providerId === "ollama"
-      ? 0
-      : agent.providerId === "gemini"
-        ? 20
-        : agent.providerId === "openai"
-          ? 30
-          : agent.providerId === "anthropic"
-            ? 40
-            : 50;
-  const model = (agent.model ?? "").toLowerCase();
-  const modelScore =
-    /nano|mini|flash|haiku|small|lite|3b|4b|7b|8b/.test(model)
-      ? -5
-      : /pro|sonnet|medium|14b|20b|32b/.test(model)
-        ? 5
-        : /opus|large|70b|120b/.test(model)
-          ? 15
-          : 0;
-
-  return providerScore + modelScore;
-};
-
-const selectConfiguredSubagents = (
-  input: string,
-  configuredAgents: CodeAgentTarget[]
-): CodeAgentTarget[] => {
-  const mentionedNames = parseMentionedSubagentNames(input);
-
-  if (mentionedNames.length > 0) {
-    const selected = configuredAgents.filter((agent) =>
-      mentionedNames.includes(agent.name.toLowerCase())
-    );
-
-    return selected.length > 0 ? selected.slice(0, 4) : [];
-  }
-
-  if (!hasSubagentTrigger(input)) {
-    return [];
-  }
-
-  return configuredAgents
-    .slice()
-    .sort((left, right) => rankSubagentCost(left) - rankSubagentCost(right))
-    .slice(0, 1);
-};
-
-const buildCodeAdvisorPrompt = (
-  input: string,
-  memory: string,
-  language: "auto" | "ru" | "en",
-  outputStyle: OutputStyle,
-  attachmentContext?: string
-): string =>
-  [
-    "Mode: code",
-    "Relevant memory:",
-    memory,
-    ...(attachmentContext ? ["", attachmentContext] : []),
-    "",
-    `User input: ${input}`,
-    "",
-    buildLanguageInstruction(language),
-    "",
-    "You are one of several advisor agents.",
-    "Do not emit file blocks, final file contents, markdown fences, or full project scaffolds.",
-    buildCodeAdvisorInstruction(outputStyle)
-  ].join("\n");
-
-const buildIndependentAgentPrompt = (
-  input: string,
-  taskInput: string,
-  memory: string,
-  language: "auto" | "ru" | "en",
-  outputStyle: OutputStyle,
-  attachmentContext: string | undefined,
-  agents: CodeAgentTarget[]
-): string =>
-  [
-    "Mode: code",
-    "Relevant memory:",
-    memory,
-    ...(attachmentContext ? ["", attachmentContext] : []),
-    "",
-    buildSubagentExecutionContract(input, taskInput, agents),
-    "",
-    buildLanguageInstruction(language),
-    "",
-    "You are doing an independent pass. Do not wait for other agents and do not summarize their possible work.",
-    "Focus on your own findings, risks, and concrete recommendation for the requested task.",
-    "Keep the output structured and useful for a later collector model.",
-    buildCodeAdvisorInstruction(outputStyle)
-  ].join("\n");
-
-const buildCodeWriterPrompt = (
-  input: string,
-  taskInput: string,
-  memory: string,
-  language: "auto" | "ru" | "en",
-  outputStyle: OutputStyle,
-  attachmentContext: string | undefined,
-  advisorRuns: Array<{ agent: CodeAgentTarget; normalized: string; degraded: boolean }>
-): string => {
-  const healthyAdvisorNotes = advisorRuns
-    .filter((item) => !item.degraded)
-    .map((item) => [`@${item.agent.name}:`, item.normalized].join("\n"))
-    .join("\n\n");
-  const degradedAdvisorNames = advisorRuns
-    .filter((item) => item.degraded)
-    .map((item) => item.agent.name);
-
-  return [
-    buildTextPrompt("code", taskInput, memory, language, outputStyle, attachmentContext),
-    "",
-    buildSubagentExecutionContract(input, taskInput, advisorRuns.map((item) => item.agent)),
-    "",
-    "Advisor notes from other coding agents:",
-    healthyAdvisorNotes || "No reliable advisor notes were available.",
-    ...(degradedAdvisorNames.length
-      ? [
-          "",
-          `Unavailable advisors: ${degradedAdvisorNames.join(", ")}. Ignore any missing advisor output and continue.`
-        ]
-      : []),
-    "",
-    "You are the final writer for this code swarm.",
-    "Produce one final implementation-ready answer.",
-    "Synthesize the independent findings into a clear answer for the user's actual task.",
-    "Do not repeat routing metadata or create new tasks for agents.",
-    "Do not output code for spawning agents, subprocesses, CLIs, or orchestration unless the actual task explicitly asks to implement an orchestration system.",
-    "If the user asked for file edits or project scaffolding, return only the final write-safe output in the requested format.",
-    "Do not include per-agent headings, comparisons, or swarm commentary in the final output."
-  ].join("\n");
-};
 
 const runCodeAgent = async (
   agent: CodeAgentTarget,
@@ -487,13 +168,13 @@ const runCodeSwarm = async (
     "- No relevant memory found.";
   const attachmentContext = renderAttachmentContext(readAttachments(context.requestMetadata));
   const taskInput = stripSubagentRoutingSyntax(input);
-	  const fallbackAgent = {
-	    id: "default-agent",
-	    name: "Default",
-	    providerId: context.activeTarget.providerId,
-	    model: context.activeTarget.model,
-	    accessMode: context.sessionSettings.defaultAccessMode
-	  } satisfies CodeAgentTarget;
+  const fallbackAgent = {
+    id: "default-agent",
+    name: "Default",
+    providerId: context.activeTarget.providerId,
+    model: context.activeTarget.model,
+    accessMode: context.sessionSettings.defaultAccessMode
+  } satisfies CodeAgentTarget;
   const configuredAgents =
     context.sessionSettings.codeAgents.length > 0
       ? selectConfiguredSubagents(input, context.sessionSettings.codeAgents.slice(0, 4))
@@ -516,14 +197,12 @@ const runCodeSwarm = async (
       llmService,
       languageEnforcer,
       context.sessionSettings.language,
-      [
-        `You are ${activeAgents[0].name}, a focused coding agent.`,
-        buildSubagentExecutionContract(input, taskInput, [activeAgents[0]]),
-        buildSubagentNameInstruction([activeAgents[0]]),
-        buildSubagentAccessInstruction(activeAgents[0]),
-        buildNoSubagentBoilerplateInstruction(),
-        buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle)
-      ].join("\n")
+      buildSingleAgentSystemPrompt(
+        activeAgents[0],
+        input,
+        taskInput,
+        context.sessionSettings.outputStyle
+      )
     );
     const finalRun =
       writerRun.degraded && activeAgents[0].id !== fallbackAgent.id
@@ -540,14 +219,12 @@ const runCodeSwarm = async (
             llmService,
             languageEnforcer,
             context.sessionSettings.language,
-            [
-              "You are the main model taking over after a spawned subagent failed or timed out.",
-              buildSubagentExecutionContract(input, taskInput, [fallbackAgent]),
-              buildSubagentAccessInstruction(fallbackAgent),
-              buildNoSubagentBoilerplateInstruction(),
-              buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
-              "Complete the user's task directly. Mention failed subagents only if it materially affects the result."
-            ].join("\n")
+            buildFallbackSingleAgentSystemPrompt(
+              fallbackAgent,
+              input,
+              taskInput,
+              context.sessionSettings.outputStyle
+            )
           )
         : writerRun;
     const fallbackUsed = finalRun !== writerRun;
@@ -588,13 +265,11 @@ const runCodeSwarm = async (
         llmService,
         languageEnforcer,
         context.sessionSettings.language,
-        [
-          `You are ${agent.name}, an independent coding agent in a multi-agent run.`,
-          buildSubagentNameInstruction(activeAgents),
-          buildSubagentAccessInstruction(agent),
-          buildNoSubagentBoilerplateInstruction(),
-          buildCodeAdvisorRoleInstruction(context.sessionSettings.outputStyle)
-        ].join("\n")
+        buildIndependentAgentSystemPrompt(
+          agent,
+          activeAgents,
+          context.sessionSettings.outputStyle
+        )
       )
     )
   );
@@ -616,15 +291,11 @@ const runCodeSwarm = async (
     llmService,
     languageEnforcer,
     context.sessionSettings.language,
-    [
-      `You are ${collectorAgent.name}, the collector for a multi-agent code run.`,
-      buildSubagentNameInstruction(activeAgents),
-      buildSubagentAccessInstruction(collectorAgent),
-      buildNoSubagentBoilerplateInstruction(),
-      buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
-      "Use the independent agent notes as source material.",
-      "When file output is requested, produce only the final write-safe output."
-    ].join("\n")
+    buildCollectorSystemPrompt(
+      collectorAgent,
+      activeAgents,
+      context.sessionSettings.outputStyle
+    )
   );
   const firstHealthyAdvisor = independentRuns.find((item) => !item.degraded);
   const fallbackWriterRun =
@@ -647,14 +318,11 @@ const runCodeSwarm = async (
           llmService,
           languageEnforcer,
           context.sessionSettings.language,
-          [
-            "You are the main model taking over after the collector failed or timed out.",
-            buildSubagentNameInstruction(activeAgents),
-            buildSubagentAccessInstruction(fallbackAgent),
-            buildNoSubagentBoilerplateInstruction(),
-            buildCodeWriterRoleInstruction(context.sessionSettings.outputStyle),
-            "Complete the task directly using any available advisor notes. Do not wait for failed agents."
-          ].join("\n")
+          buildFallbackCollectorSystemPrompt(
+            fallbackAgent,
+            activeAgents,
+            context.sessionSettings.outputStyle
+          )
         )
       : undefined;
   const chosenRun = fallbackWriterRun ?? (!writerRun.degraded || !firstHealthyAdvisor ? writerRun : firstHealthyAdvisor);
@@ -731,6 +399,14 @@ export const buildRuntime = async (
     apiKey: config.providers.lmstudio.apiKey,
     timeoutMs: config.providers.lmstudio.timeoutMs
   });
+  const ollamaManager = new OllamaModelManager({
+    baseUrl: config.providers.ollama.baseUrl,
+    timeoutMs: config.providers.ollama.timeoutMs
+  });
+  const localModelManager = new LocalModelManagerRegistry([
+    lmStudioManager,
+    ollamaManager
+  ]);
   const memoryAdapter = await createMemoryAdapter(config, logger);
   const memoryService = new MemoryService(memoryAdapter);
   const sessionSettingsStore = new SessionSettingsStore(config.sessions, {
@@ -850,6 +526,8 @@ export const buildRuntime = async (
     modelCatalog,
     llmService,
     lmStudioManager,
+    ollamaManager,
+    localModelManager,
     memoryService,
     config
   };

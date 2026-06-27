@@ -6,11 +6,14 @@ import {
   createDeleteSessionController,
   createDashboardBootstrapController,
   createGetAllManagedModelsController,
+  createGetAllLocalModelsController,
   createGetAppSettingsController,
+  createGetLoadedLocalModelsController,
   createGetLoadedModelsController,
   createGetSessionMessagesController,
   createGetSessionSettingsController,
   createListSessionsController,
+  createLoadLocalModelController,
   createLoadModelController,
   createMetadataController,
   createModelsController,
@@ -21,6 +24,7 @@ import {
   createRenameSessionController,
   createRuntimeReloadController,
   createSystemMetricsController,
+  createUnloadLocalModelController,
   createUnloadModelController,
   createUpdateAppSettingsController,
   createUpdateSessionSettingsController
@@ -44,6 +48,10 @@ export const createApiRouter = (
   router.get("/lmstudio/models/all", createGetAllManagedModelsController(runtimeManager));
   router.post("/lmstudio/models/load", createLoadModelController(runtimeManager));
   router.post("/lmstudio/models/unload", createUnloadModelController(runtimeManager));
+  router.get("/local/models/loaded", createGetLoadedLocalModelsController(runtimeManager));
+  router.get("/local/models/all", createGetAllLocalModelsController(runtimeManager));
+  router.post("/local/models/load", createLoadLocalModelController(runtimeManager));
+  router.post("/local/models/unload", createUnloadLocalModelController(runtimeManager));
 
   router.get("/sessions", createListSessionsController(sessionIndexStore));
   router.post("/sessions", createCreateSessionController(sessionIndexStore));
