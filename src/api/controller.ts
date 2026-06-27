@@ -95,8 +95,8 @@ export const createDashboardBootstrapController =
         runtimeManager.getSettings(),
         sessionIndexStore.list(),
         runtime.modelCatalog.listAll(),
-        runtime.lmStudioManager.listLoadedModels(),
-        runtime.lmStudioManager.listAllModels()
+        runtime.localModelManager.listLoadedModels(),
+        runtime.localModelManager.listAllModels()
       ]);
 
       const loadedNames = new Set(runtime.plugins.map((plugin) => plugin.manifest.name));
@@ -156,6 +156,77 @@ export const createGetAllManagedModelsController =
     try {
       const runtime = runtimeManager.getRuntime();
       res.status(200).json(await runtime.lmStudioManager.listAllModels());
+    } catch (error) {
+      next(error);
+    }
+  };
+
+export const createGetLoadedLocalModelsController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const runtime = runtimeManager.getRuntime();
+      const providerId = typeof req.query.providerId === "string" ? req.query.providerId : undefined;
+      res.status(200).json(await runtime.localModelManager.listLoadedModels(providerId));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+export const createGetAllLocalModelsController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const runtime = runtimeManager.getRuntime();
+      const providerId = typeof req.query.providerId === "string" ? req.query.providerId : undefined;
+      res.status(200).json(await runtime.localModelManager.listAllModels(providerId));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+export const createLoadLocalModelController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const providerId = typeof req.body?.providerId === "string" ? req.body.providerId : undefined;
+      const modelId = typeof req.body?.modelId === "string" ? req.body.modelId : undefined;
+
+      if (!providerId || !modelId) {
+        res.status(400).json({
+          error: "Fields 'providerId' and 'modelId' must be non-empty strings."
+        });
+        return;
+      }
+
+      const runtime = runtimeManager.getRuntime();
+      await runtime.localModelManager.loadModel(providerId, modelId);
+      res.status(200).json({ ok: true, providerId, modelId });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+export const createUnloadLocalModelController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const providerId = typeof req.body?.providerId === "string" ? req.body.providerId : undefined;
+      const modelIdOrInstanceId =
+        typeof req.body?.modelIdOrInstanceId === "string"
+          ? req.body.modelIdOrInstanceId
+          : undefined;
+
+      if (!providerId || !modelIdOrInstanceId) {
+        res.status(400).json({
+          error: "Fields 'providerId' and 'modelIdOrInstanceId' must be non-empty strings."
+        });
+        return;
+      }
+
+      const runtime = runtimeManager.getRuntime();
+      await runtime.localModelManager.unloadModel(providerId, modelIdOrInstanceId);
+      res.status(200).json({ ok: true, providerId, modelIdOrInstanceId });
     } catch (error) {
       next(error);
     }

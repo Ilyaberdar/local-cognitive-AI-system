@@ -410,6 +410,8 @@ export interface ProviderModel {
 export interface ManagedModel {
   id: string;
   displayName: string;
+  providerId: string;
+  providerName: string;
   sizeBytes?: number;
   loaded: boolean;
   loadedInstanceIds: string[];

@@ -139,10 +139,10 @@ export const registerLocalCognitiveMcpTools = (
     "local_ai_list_models",
     {
       title: "Local AI List Models",
-      description: "List provider model aliases and optionally LM Studio managed models.",
+      description: "List provider model aliases and optionally locally managed LM Studio/Ollama models.",
       inputSchema: {
         providerId: optionalString().describe("Optional provider id filter."),
-        includeManagedModels: z.boolean().optional().describe("When true, include LM Studio managed model list.")
+        includeManagedModels: z.boolean().optional().describe("When true, include locally managed model list.")
       },
       annotations: {
         readOnlyHint: true
@@ -152,7 +152,7 @@ export const registerLocalCognitiveMcpTools = (
       const runtime = context.runtimeManager.getRuntime();
       const models = await runtime.modelCatalog.listAll(providerId);
       const managedModels = includeManagedModels
-        ? await runtime.lmStudioManager.listAllModels()
+        ? await runtime.localModelManager.listAllModels(providerId)
         : undefined;
 
       return textResult(jsonText({ models, managedModels }), { models, managedModels });
