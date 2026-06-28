@@ -55,10 +55,17 @@ The desktop package uses Electron as a thin shell around the existing local
 Express server and browser dashboard. The backend, plugins, and UI are reused;
 the app stores runtime data in the operating system user-data directory.
 
-Build a macOS DMG:
+Build macOS DMGs for Apple Silicon and Intel:
 
 ```bash
 npm run dist:mac
+```
+
+Build only one architecture:
+
+```bash
+npm run dist:mac:arm64
+npm run dist:mac:x64
 ```
 
 Build a Windows x64 NSIS installer:
@@ -76,6 +83,8 @@ Notes:
   `http://127.0.0.1:1234/v1`.
 - Release builds are unsigned until Apple Developer ID / Windows code-signing
   certificates are configured.
+- macOS builds use Electron's default icon until a project `.icns` asset is
+  configured in the `build.mac.icon` field.
 
 ## Fastest Local Setup
 

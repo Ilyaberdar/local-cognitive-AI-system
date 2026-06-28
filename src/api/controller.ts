@@ -91,12 +91,24 @@ export const createDashboardBootstrapController =
   async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const runtime = runtimeManager.getRuntime();
-      const [appSettings, sessions, availableModels, loadedModels, allManagedModels] = await Promise.all([
+      const [
+        appSettings,
+        sessions,
+        availableModels,
+        loadedModels,
+        allManagedModels,
+        tasks,
+        workflows,
+        workflowRuns
+      ] = await Promise.all([
         runtimeManager.getSettings(),
         sessionIndexStore.list(),
         runtime.modelCatalog.listAll(),
         runtime.localModelManager.listLoadedModels(),
-        runtime.localModelManager.listAllModels()
+        runtime.localModelManager.listAllModels(),
+        runtime.taskService.list(),
+        runtime.workflowStore.list(),
+        runtime.workflowRunStore.listRuns()
       ]);
 
       const loadedNames = new Set(runtime.plugins.map((plugin) => plugin.manifest.name));
@@ -110,6 +122,9 @@ export const createDashboardBootstrapController =
           .map((name) => buildPluginStatus(name, appSettings, loadedNames)),
         appSettings,
         sessions,
+        tasks,
+        workflows,
+        workflowRuns,
         availableModels,
         loadedModels,
         allManagedModels,

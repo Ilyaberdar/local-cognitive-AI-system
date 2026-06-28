@@ -206,7 +206,9 @@ a {
   vector-effect: non-scaling-stroke;
 }
 
-.nav-label span:last-child {
+.nav-text {
+  display: block;
+  min-width: 0;
   max-width: 180px;
   overflow: hidden;
   white-space: nowrap;
@@ -214,9 +216,53 @@ a {
   transition: max-width 320ms ease, opacity 220ms ease, margin 320ms ease;
 }
 
-.shell--sidebar-collapsed .sidebar .nav-label span:last-child {
+.nav-text--marquee {
+  width: 100%;
+}
+
+.nav-marquee-track {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  width: max-content;
+  animation: nav-label-marquee 10s linear infinite;
+  will-change: transform;
+}
+
+.nav-marquee-copy {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.nav-label-note {
+  color: #9f3548;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.shell--sidebar-collapsed .sidebar .nav-text {
   max-width: 0;
   opacity: 0;
+}
+
+@keyframes nav-label-marquee {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+
+  88%,
+  100% {
+    transform: translateX(calc(-50% - 12px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-marquee-track {
+    animation: none;
+  }
 }
 
 .shell--sidebar-collapsed .nav-button {
@@ -1983,6 +2029,343 @@ a {
   align-self: end;
 }
 
+.orchestration-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  align-content: start;
+}
+
+.orchestration-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: #050505;
+}
+
+.orchestration-tab {
+  min-height: 34px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.orchestration-tab:hover,
+.orchestration-tab.active {
+  border-color: var(--line);
+  background: #090909;
+  color: var(--text);
+}
+
+.orchestration-tabs .ghost-button {
+  margin-left: auto;
+}
+
+.orchestration-layout {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  align-content: start;
+}
+
+.orchestration-layout--tasks {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+.orchestration-layout--workflow {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.orchestration-intake,
+.orchestration-main,
+.orchestration-side {
+  min-width: 0;
+}
+
+.orchestration-main,
+.orchestration-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 8px;
+  overflow: auto;
+  padding-bottom: 4px;
+}
+
+.task-column {
+  min-width: 220px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+
+.task-column.is-drop-target .task-list {
+  border-color: var(--line-strong);
+  background: #0a0a0a;
+}
+
+.task-column__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: #070707;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-list,
+.workflow-list,
+.run-node-list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-list {
+  align-content: start;
+  min-height: 320px;
+  padding: 8px;
+  border: 1px dashed var(--line);
+  background: #030303;
+}
+
+.task-card,
+.workflow-card,
+.node-run-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: #070707;
+  min-width: 0;
+}
+
+.workflow-card.active {
+  border-color: var(--line-strong);
+  background: #0a0a0a;
+}
+
+.task-card {
+  border-top-width: 2px;
+}
+
+.task-card[draggable="true"] {
+  cursor: grab;
+}
+
+.task-card.is-dragging {
+  opacity: 0.45;
+}
+
+.task-card.priority-high {
+  border-top-color: #d88474;
+}
+
+.task-card.priority-normal {
+  border-top-color: #d8c15a;
+}
+
+.task-card.priority-low {
+  border-top-color: #7f8b96;
+}
+
+.task-card h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.task-card p,
+.workflow-card p,
+.node-run-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.task-model-line {
+  color: #b7b7b7;
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.task-card__top,
+.workflow-card__title,
+.node-run-card__header,
+.task-meta,
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-card__top,
+.workflow-card__title,
+.node-run-card__header,
+.task-meta {
+  justify-content: space-between;
+}
+
+.task-priority,
+.workflow-card__title span,
+.task-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.task-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-actions {
+  flex-wrap: wrap;
+}
+
+.task-actions--card {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.task-actions__primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.task-delete-button {
+  margin-left: auto;
+  color: var(--danger);
+  border-color: rgba(223, 139, 122, 0.24);
+}
+
+.task-delete-button:hover {
+  border-color: rgba(223, 139, 122, 0.5);
+  background: #100606;
+}
+
+.task-actions .ghost-button,
+.task-actions .primary-button {
+  min-height: 30px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.workflow-graph,
+.workflow-transitions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.workflow-graph span,
+.workflow-transitions span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  background: #050505;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.workflow-graph small,
+.workflow-transitions {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.run-header {
+  margin-top: 8px;
+}
+
+.run-trace {
+  display: grid;
+  gap: 10px;
+}
+
+.empty.compact {
+  padding: 14px 8px;
+  border: 1px solid var(--line);
+  background: #050505;
+  font-size: 12px;
+}
+
+.workflow-builder-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.workflow-builder {
+  display: grid;
+  gap: 14px;
+}
+
+.workflow-builder-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.workflow-builder-section {
+  display: grid;
+  gap: 8px;
+}
+
+.compact-header {
+  align-items: center;
+}
+
+.compact-header h3 {
+  margin: 0;
+}
+
+.workflow-editor-list {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-editor-card {
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: #070707;
+  min-width: 0;
+}
+
+.workflow-editor-card .footer-row {
+  margin-top: 10px;
+}
+
+.node-grid {
+  grid-template-columns: minmax(120px, 1fr) minmax(140px, 1fr) minmax(110px, 0.8fr) minmax(72px, 0.45fr) minmax(72px, 0.45fr);
+}
+
+.transition-grid {
+  grid-template-columns: minmax(150px, 1.2fr) repeat(4, minmax(96px, 0.8fr));
+}
+
 @media (max-width: 1180px) {
   .system-metrics {
     min-width: 0;
@@ -1990,13 +2373,21 @@ a {
   }
 
   .chat-layout,
+  .orchestration-layout,
   .field-grid,
   .settings-grid,
   .plugin-grid,
   .catalog-grid,
   .provider-grid,
   .runtime-provider-grid,
-  .chat-settings__grid {
+  .chat-settings__grid,
+  .workflow-builder-grid,
+  .node-grid,
+  .transition-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-board {
     grid-template-columns: 1fr;
   }
 }
@@ -2013,6 +2404,14 @@ a {
   .catalog-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
+
+  .orchestration-layout--workflow {
+    grid-template-columns: minmax(0, 1fr) 420px;
+  }
+
+  .orchestration-layout--tasks {
+    grid-template-columns: 360px minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 1440px) {
@@ -2022,6 +2421,15 @@ a {
 
   .catalog-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .orchestration-layout--workflow,
+  .orchestration-layout--tasks {
+    grid-template-columns: 1fr;
+  }
+
+  .orchestration-side {
+    grid-column: 1 / -1;
   }
 }
 
@@ -2051,6 +2459,10 @@ a {
   .loaded-model-item {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .task-board {
+    grid-template-columns: 1fr;
   }
 
   .route.active {

@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import path from "path";
 import { AttackAgent } from "../agents/AttackAgent";
 import {
   hasSubagentTrigger,
@@ -35,6 +36,8 @@ import { LoadedPlugin } from "../plugins/types";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { FileTool } from "../tools/FileTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
+import { TaskService } from "../tasks/TaskService";
+import { TaskStore } from "../tasks/TaskStore";
 import {
   CodeAgentTarget,
   ExecutionContext,
@@ -57,6 +60,15 @@ import {
   stripSubagentRoutingSyntax
 } from "../prompts/codeAgentPrompts";
 import { buildTextPrompt } from "../prompts/common";
+import { FsmEngine } from "../workflows/FsmEngine";
+import { AgentNodeExecutor } from "../workflows/nodes/AgentNodeExecutor";
+import { EntryNodeExecutor } from "../workflows/nodes/EntryNodeExecutor";
+import { HumanReviewNodeExecutor } from "../workflows/nodes/HumanReviewNodeExecutor";
+import { NodeExecutorRegistry } from "../workflows/nodes/NodeExecutor";
+import { TerminalNodeExecutor } from "../workflows/nodes/TerminalNodeExecutor";
+import { WorkflowRunner } from "../workflows/WorkflowRunner";
+import { WorkflowRunStore } from "../workflows/WorkflowRunStore";
+import { WorkflowStore } from "../workflows/WorkflowStore";
 
 export interface AppRuntime {
   engine: CognitiveEngine;
@@ -70,6 +82,11 @@ export interface AppRuntime {
   lmStudioManager: LMStudioManager;
   ollamaManager: OllamaModelManager;
   localModelManager: LocalModelManagerRegistry;
+  taskStore: TaskStore;
+  taskService: TaskService;
+  workflowStore: WorkflowStore;
+  workflowRunStore: WorkflowRunStore;
+  workflowRunner: WorkflowRunner;
   memoryService: MemoryService;
   config: AppConfig;
 }
@@ -360,6 +377,8 @@ export const buildRuntime = async (
   await fs.mkdir(config.memory.baseDir, { recursive: true });
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
   await fs.mkdir(config.outputDir, { recursive: true });
+  await fs.mkdir(path.join(config.appDataDir, "tasks"), { recursive: true });
+  await fs.mkdir(path.join(config.appDataDir, "workflows"), { recursive: true });
 
   const providerRegistry = new LLMRegistry();
   providerRegistry.register(new OllamaProvider(config.providers.ollama, logger));
@@ -409,6 +428,9 @@ export const buildRuntime = async (
   ]);
   const memoryAdapter = await createMemoryAdapter(config, logger);
   const memoryService = new MemoryService(memoryAdapter);
+  const taskStore = new TaskStore(path.join(config.appDataDir, "tasks"));
+  const workflowStore = new WorkflowStore(path.join(config.appDataDir, "workflows"));
+  const workflowRunStore = new WorkflowRunStore(path.join(config.appDataDir, "workflows"));
   const sessionSettingsStore = new SessionSettingsStore(config.sessions, {
     providerId: config.llm.defaultProvider,
     model: resolveDefaultModel(config, config.llm.defaultProvider)
@@ -515,6 +537,25 @@ export const buildRuntime = async (
     logger,
     config.llm.defaultProvider
   );
+  const workflowRunner = new WorkflowRunner(
+    taskStore,
+    workflowStore,
+    workflowRunStore,
+    new FsmEngine(),
+    new NodeExecutorRegistry([
+      new EntryNodeExecutor(),
+      new AgentNodeExecutor(engine, {
+        ollama: config.providers.ollama.model,
+        lmstudio: config.providers.lmstudio.model,
+        openai: config.providers.openai.model,
+        anthropic: config.providers.anthropic.model,
+        gemini: config.providers.gemini.model
+      }),
+      new HumanReviewNodeExecutor(),
+      new TerminalNodeExecutor()
+    ])
+  );
+  const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner);
 
   return {
     engine,
@@ -528,6 +569,11 @@ export const buildRuntime = async (
     lmStudioManager,
     ollamaManager,
     localModelManager,
+    taskStore,
+    taskService,
+    workflowStore,
+    workflowRunStore,
+    workflowRunner,
     memoryService,
     config
   };
