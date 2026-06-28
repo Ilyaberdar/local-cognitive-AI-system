@@ -29,6 +29,13 @@ const state = {
   pluginTestResults: {},
   providerTestResults: {},
   savedButtons: {},
+  activeWorkflowRunId: null,
+  workflowRunDetail: null,
+  orchestrationTab: "tasks",
+  workflowBuilder: {
+    draft: null,
+    validation: null
+  },
   ui: {
     sidebarCollapsed: localStorage.getItem("lcai.sidebarCollapsed") === "true",
     sidebarWidth: Number(localStorage.getItem("lcai.sidebarWidth") || 240),
@@ -99,6 +106,59 @@ const api = {
       method: "POST",
       body: JSON.stringify({ providerId, modelIdOrInstanceId })
     }),
+  createTask: (payload) =>
+    request("/tasks", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateTask: (taskId, payload) =>
+    request(`/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteTask: (taskId) =>
+    request(`/tasks/${taskId}`, {
+      method: "DELETE"
+    }),
+  queueTask: (taskId) =>
+    request(`/tasks/${taskId}/queue`, {
+      method: "POST"
+    }),
+  runTask: (taskId) =>
+    request(`/tasks/${taskId}/run`, {
+      method: "POST",
+      timeoutMs: 900000
+    }),
+  runNextTask: () =>
+    request("/tasks/run-next", {
+      method: "POST",
+      timeoutMs: 900000
+    }),
+  getWorkflowRun: (runId) => request(`/workflow-runs/${runId}`),
+  stepWorkflowRun: (runId) =>
+    request(`/workflow-runs/${runId}/step`, {
+      method: "POST",
+      timeoutMs: 900000
+    }),
+  cancelWorkflowRun: (runId) =>
+    request(`/workflow-runs/${runId}/cancel`, {
+      method: "POST"
+    }),
+  createWorkflow: (workflow) =>
+    request("/workflows", {
+      method: "POST",
+      body: JSON.stringify(workflow)
+    }),
+  updateWorkflow: (workflowId, workflow) =>
+    request(`/workflows/${workflowId}`, {
+      method: "PUT",
+      body: JSON.stringify(workflow)
+    }),
+  validateWorkflow: (workflow) =>
+    request(`/workflows/${workflow.id || "draft"}/validate`, {
+      method: "POST",
+      body: JSON.stringify(workflow)
+    }),
   refreshManagedModels: async () => {
     const [loadedModels, allManagedModels] = await Promise.all([
       request("/local/models/loaded"),
@@ -133,7 +193,7 @@ async function init() {
 
 function syncRouteFromHash() {
   const route = window.location.hash.replace(/^#\/?/, "");
-  state.route = ["chat", "models", "plugins", "settings"].includes(route) ? route : "chat";
+  state.route = ["chat", "orchestration", "models", "plugins", "settings"].includes(route) ? route : "chat";
 }
 
 async function refreshBootstrap() {
@@ -238,6 +298,9 @@ function render() {
           <section class="route route--models ${state.route === "models" ? "active" : ""}">
             ${renderModelsRoute()}
           </section>
+          <section class="route route--orchestration ${state.route === "orchestration" ? "active" : ""}">
+            ${renderOrchestrationRoute()}
+          </section>
           <section class="route route--plugins ${state.route === "plugins" ? "active" : ""}">
             ${renderPluginsRoute()}
           </section>
@@ -280,6 +343,7 @@ function renderSidebar() {
       <div class="sidebar-resize-handle" data-action="resize-sidebar" title="Resize navigation"></div>
       <nav class="nav">
         ${renderNavButton("chat", "Chat Workspace")}
+        ${renderNavButton("orchestration", "Orchestration", "feature in test mode")}
         ${renderNavButton("models", "Models")}
         ${renderNavButton("plugins", "Plugins")}
         ${renderNavButton("settings", "Settings")}
@@ -400,10 +464,18 @@ function renderToasts() {
   `;
 }
 
-function renderNavButton(route, label) {
+function renderNavButton(route, label, note) {
+  const accessibleLabel = note ? `${label} (${note})` : label;
+  const text = note
+    ? `<span class="nav-marquee-track">
+        <span class="nav-marquee-copy">${escapeHtml(label)} <span class="nav-label-note">(${escapeHtml(note)})</span></span>
+        <span class="nav-marquee-copy" aria-hidden="true">${escapeHtml(label)} <span class="nav-label-note">(${escapeHtml(note)})</span></span>
+      </span>`
+    : escapeHtml(label);
+
   return `
-    <button class="nav-button ${state.route === route ? "active" : ""}" data-action="route" data-route="${route}">
-      <span class="nav-label"><span class="nav-icon" aria-hidden="true">${renderNavIcon(route)}</span><span>${label}</span></span>
+    <button class="nav-button ${state.route === route ? "active" : ""}" data-action="route" data-route="${route}" aria-label="${escapeAttr(accessibleLabel)}" title="${escapeAttr(accessibleLabel)}">
+      <span class="nav-label"><span class="nav-icon" aria-hidden="true">${renderNavIcon(route)}</span><span class="nav-text ${note ? "nav-text--marquee" : ""}">${text}</span></span>
     </button>
   `;
 }
@@ -418,6 +490,12 @@ function renderNavIcon(route) {
       <circle cx="8" cy="8" r="3"></circle>
       <circle cx="16" cy="8" r="3"></circle>
       <circle cx="12" cy="16" r="3"></circle>
+    `,
+    orchestration: `
+      <rect x="4" y="5" width="5" height="5" rx="1"></rect>
+      <rect x="15" y="5" width="5" height="5" rx="1"></rect>
+      <rect x="9.5" y="15" width="5" height="5" rx="1"></rect>
+      <path d="M9 7.5h6M17.5 10v2.5l-3 3M6.5 10v2.5l3 3"></path>
     `,
     plugins: `
       <path d="M12 4l6 6-6 10-6-10 6-6z"></path>
@@ -758,6 +836,834 @@ function normalizeHypothesisAgentsForUi(settings) {
     byRole.get("judge") ?? fallback[2],
     ...merged.filter((agent) => agent.role === "advisor").slice(0, MAX_HYPOTHESIS_ADVISORS)
   ];
+}
+
+function renderOrchestrationRoute() {
+  const workflows = state.bootstrap?.workflows ?? [];
+  const tasks = state.bootstrap?.tasks ?? [];
+  const workflowRuns = state.bootstrap?.workflowRuns ?? [];
+  const workflowDraft = ensureWorkflowBuilderDraft(workflows);
+  const selectedRunId = state.activeWorkflowRunId;
+  const selectedRun = state.workflowRunDetail?.run?.id === selectedRunId
+    ? state.workflowRunDetail.run
+    : workflowRuns.find((run) => run.id === selectedRunId);
+  const activeTab = state.orchestrationTab === "workflow" ? "workflow" : "tasks";
+
+  return `
+    <div class="orchestration-shell">
+      <div class="orchestration-tabs">
+        <button class="orchestration-tab ${activeTab === "tasks" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="tasks">Tasks</button>
+        <button class="orchestration-tab ${activeTab === "workflow" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="workflow">Workflow</button>
+        <button class="ghost-button" type="button" data-action="refresh-orchestration">Refresh</button>
+      </div>
+      ${
+        activeTab === "workflow"
+          ? renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun)
+          : renderTasksOrchestrationTab(workflows, tasks, workflowRuns)
+      }
+    </div>
+  `;
+}
+
+function renderTasksOrchestrationTab(workflows, tasks, workflowRuns) {
+  const defaultWorkflowId = workflows[0]?.id ?? "default-task-workflow";
+
+  return `
+    <div class="orchestration-layout orchestration-layout--tasks">
+      <section class="panel orchestration-intake">
+        <div class="card-header">
+          <div>
+            <h2>Create Task</h2>
+            <p class="subtle">New tasks land in Todo. The runner consumes Todo by priority.</p>
+          </div>
+        </div>
+        <form id="task-form" class="form-grid">
+          <div class="field">
+            <label for="task-title">Title</label>
+            <input id="task-title" name="title" type="text" placeholder="Implement provider adapter" required />
+          </div>
+          <div class="field">
+            <label for="task-priority">Priority</label>
+            <select id="task-priority" name="priority">
+              ${option("normal", "normal", "Normal")}
+              ${option("high", "normal", "High")}
+              ${option("low", "normal", "Low")}
+            </select>
+          </div>
+          <div class="field field--full">
+            <label for="task-workflow">Workflow</label>
+            <select id="task-workflow" name="workflowId">
+              ${
+                workflows.length
+                  ? workflows.map((workflow) => option(workflow.id, defaultWorkflowId, `${workflow.name} v${workflow.version}`)).join("")
+                  : option("default-task-workflow", "default-task-workflow", "Default Task Workflow")
+              }
+            </select>
+          </div>
+          <div class="field field--full">
+            <label for="task-description">Description</label>
+            <textarea id="task-description" name="description" rows="5" placeholder="Describe the expected outcome, constraints, files, and verification." required></textarea>
+          </div>
+          <div class="footer-row field--full">
+            <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs</span>
+            <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Task</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel orchestration-main">
+        <div class="card-header">
+          <div>
+            <h2>Tasks</h2>
+            <p class="subtle">Drag cards between columns. Agents move Todo -> In Progress -> Done while executing.</p>
+          </div>
+          <button class="primary-button" type="button" data-action="run-next-task" ${state.loading ? "disabled" : ""}>Run Next Todo</button>
+        </div>
+        ${renderTaskBoard(tasks)}
+      </section>
+    </div>
+  `;
+}
+
+function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
+  return `
+    <div class="orchestration-layout orchestration-layout--workflow">
+      <section class="orchestration-main">
+        <div class="panel workflow-builder-panel">
+          <div class="card-header">
+            <div>
+              <h2>Workflow Builder</h2>
+              <p class="subtle">Edit the FSM definition used by agent task execution.</p>
+            </div>
+            <div class="task-actions">
+              <button class="ghost-button" type="button" data-action="new-workflow">New</button>
+              <button class="ghost-button" type="button" data-action="duplicate-workflow">Duplicate</button>
+              <button class="ghost-button" type="button" data-action="validate-workflow">Validate</button>
+              <button class="primary-button" type="button" data-action="save-workflow" ${state.loading ? "disabled" : ""}>Save</button>
+            </div>
+          </div>
+          ${renderWorkflowBuilder(workflowDraft)}
+        </div>
+      </section>
+
+      <aside class="panel orchestration-side">
+        <div class="card-header">
+          <div>
+            <h2>Workflows</h2>
+            <p class="subtle">Definitions available for task execution.</p>
+          </div>
+        </div>
+        <div class="workflow-list">
+          ${workflows.length ? workflows.map(renderWorkflowCard).join("") : `<div class="empty">No workflows configured.</div>`}
+        </div>
+
+        <div class="card-header run-header">
+          <div>
+            <h2>Run Trace</h2>
+            <p class="subtle">${selectedRun ? `${selectedRun.workflowId} v${selectedRun.workflowVersion}` : "Select Trace on a task card."}</p>
+          </div>
+          ${
+            selectedRun
+              ? `<div class="task-actions">
+                  <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Step</button>
+                  ${
+                    ["done", "failed", "cancelled"].includes(selectedRun.status)
+                      ? ""
+                      : `<button class="ghost-button" type="button" data-action="cancel-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Cancel</button>`
+                  }
+                </div>`
+              : ""
+          }
+        </div>
+        ${renderWorkflowRunTrace(selectedRun)}
+      </aside>
+    </div>
+  `;
+}
+
+const TASK_STATUS_COLUMNS = [
+  ["todo", "Todo"],
+  ["in_progress", "In Progress"],
+  ["done", "Done"]
+];
+
+const TASK_STATUS_GROUPS = {
+  todo: new Set(["todo", "backlog", "queued"]),
+  in_progress: new Set(["in_progress", "running", "waiting", "blocked", "failed"]),
+  done: new Set(["done", "cancelled"])
+};
+
+function renderTaskBoard(tasks) {
+  return `
+    <div class="task-board">
+      ${TASK_STATUS_COLUMNS.map(([status, label]) => {
+        const columnTasks = tasks.filter((task) => getTaskBoardStatus(task) === status);
+
+        return `
+          <section class="task-column" data-drop-status="${escapeAttr(status)}">
+            <div class="task-column__header">
+              <strong>${label}</strong>
+              <span>${columnTasks.length}</span>
+            </div>
+            <div class="task-list">
+              ${columnTasks.length ? columnTasks.map(renderTaskCard).join("") : `<div class="empty compact">No tasks.</div>`}
+            </div>
+          </section>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderTaskCard(task) {
+  const workflow = (state.bootstrap?.workflows ?? []).find((item) => item.id === task.workflowId);
+  const canRun = getTaskBoardStatus(task) === "todo" || ["blocked", "failed"].includes(task.status);
+
+  return `
+    <article class="task-card priority-${escapeAttr(task.priority)}" draggable="true" data-task-id="${escapeAttr(task.id)}">
+      <div class="task-card__top">
+        <span class="badge ${statusTone(task.status)}">${escapeHtml(task.status)}</span>
+        <span class="task-priority">${escapeHtml(task.priority)}</span>
+      </div>
+      <h3>${escapeHtml(task.title)}</h3>
+      <p>${escapeHtml(task.description || "No description.")}</p>
+      <div class="task-model-line">Models: ${escapeHtml(getWorkflowTargetSummary(workflow))}</div>
+      <div class="task-meta">
+        <span>${escapeHtml(workflow?.name ?? task.workflowId)}</span>
+        <span>${formatDate(task.updatedAt)}</span>
+      </div>
+      <div class="task-actions task-actions--card">
+        <div class="task-actions__primary">
+          ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading ? "disabled" : ""}>Run</button>` : ""}
+          ${
+            task.lastRunId
+              ? `<button class="ghost-button" type="button" data-action="select-workflow-run" data-run-id="${escapeAttr(task.lastRunId)}">Trace</button>`
+              : ""
+          }
+        </div>
+        <button class="ghost-button task-delete-button" type="button" data-action="delete-task" data-task-id="${escapeAttr(task.id)}">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function getTaskBoardStatus(task) {
+  for (const [status, aliases] of Object.entries(TASK_STATUS_GROUPS)) {
+    if (aliases.has(task.status)) {
+      return status;
+    }
+  }
+
+  return "todo";
+}
+
+function renderWorkflowCard(workflow) {
+  const draft = state.workflowBuilder?.draft;
+  const isActive = draft?.id === workflow.id && draft?.version === workflow.version;
+
+  return `
+    <article class="workflow-card ${isActive ? "active" : ""}">
+      <div class="workflow-card__title">
+        <strong>${escapeHtml(workflow.name)}</strong>
+        <span>v${escapeHtml(workflow.version)}</span>
+      </div>
+      <p>${escapeHtml(workflow.description || "No description.")}</p>
+      <div class="workflow-graph">
+        ${workflow.nodes.map(renderWorkflowNodeChip).join("")}
+      </div>
+      <div class="workflow-transitions">
+        ${workflow.transitions.map((transition) => `<span>${escapeHtml(transition.from)} -> ${escapeHtml(transition.to)}</span>`).join("")}
+      </div>
+      <div class="task-actions">
+        <button class="ghost-button" type="button" data-action="edit-workflow" data-workflow-id="${escapeAttr(workflow.id)}" data-workflow-version="${escapeAttr(workflow.version)}">Edit</button>
+        <button class="ghost-button" type="button" data-action="duplicate-workflow-card" data-workflow-id="${escapeAttr(workflow.id)}" data-workflow-version="${escapeAttr(workflow.version)}">Duplicate</button>
+      </div>
+    </article>
+  `;
+}
+
+const WORKFLOW_NODE_TYPES = ["entry", "agent", "decision", "tool", "human_review", "terminal"];
+const WORKFLOW_GUARD_TYPES = ["always", "status", "event", "json_path"];
+const WORKFLOW_NODE_STATUSES = ["ok", "failed", "blocked", "needs_input"];
+
+function renderWorkflowBuilder(workflow) {
+  if (!workflow) {
+    return `<div class="empty">No workflow draft available.</div>`;
+  }
+
+  const validation = state.workflowBuilder?.validation;
+
+  return `
+    <form id="workflow-builder-form" class="workflow-builder">
+      <div class="workflow-builder-grid">
+        <div class="field">
+          <label for="workflow-id">ID</label>
+          <input id="workflow-id" name="id" type="text" value="${escapeAttr(workflow.id)}" required />
+        </div>
+        <div class="field">
+          <label for="workflow-name">Name</label>
+          <input id="workflow-name" name="name" type="text" value="${escapeAttr(workflow.name)}" required />
+        </div>
+        <div class="field">
+          <label for="workflow-version">Version</label>
+          <input id="workflow-version" name="version" type="number" min="1" step="1" value="${escapeAttr(workflow.version)}" required />
+        </div>
+        <div class="field">
+          <label for="workflow-entry-node">Entry Node</label>
+          <select id="workflow-entry-node" name="entryNodeId">
+            ${workflow.nodes.map((node) => option(node.id, workflow.entryNodeId, node.id)).join("")}
+          </select>
+        </div>
+        <div class="field field--full">
+          <label for="workflow-description">Description</label>
+          <textarea id="workflow-description" name="description" rows="2">${escapeHtml(workflow.description || "")}</textarea>
+        </div>
+      </div>
+
+      ${
+        validation
+          ? `<div class="status-block ${validation.ok ? "success" : "danger"}">
+              <div class="status-block__label">${validation.ok ? "Valid" : "Invalid"}</div>
+              <div class="status-block__text">${validation.ok ? "Workflow contract is valid." : escapeHtml(validation.errors.join(" "))}</div>
+            </div>`
+          : ""
+      }
+
+      <div class="workflow-builder-section">
+        <div class="card-header compact-header">
+          <h3>Nodes</h3>
+          <button class="ghost-button" type="button" data-action="add-workflow-node">Add Node</button>
+        </div>
+        <div class="workflow-editor-list">
+          ${workflow.nodes.map(renderWorkflowNodeEditor).join("")}
+        </div>
+      </div>
+
+      <div class="workflow-builder-section">
+        <div class="card-header compact-header">
+          <h3>Transitions</h3>
+          <button class="ghost-button" type="button" data-action="add-workflow-transition">Add Transition</button>
+        </div>
+        <div class="workflow-editor-list">
+          ${workflow.transitions.map((transition, index) => renderWorkflowTransitionEditor(transition, index, workflow.nodes)).join("")}
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+function renderWorkflowNodeEditor(node, index) {
+  const isAgent = node.type === "agent";
+  const providerId = String(node.config?.providerId ?? "");
+  const model = String(node.config?.model ?? "");
+  const fallbackTarget = getWorkflowFallbackTarget();
+  const providerOptions = [
+    {
+      id: "",
+      name: `Task/session default (${formatProviderTarget(fallbackTarget.providerId, fallbackTarget.model)})`
+    },
+    ...getProviderOptions()
+  ];
+
+  return `
+    <article class="workflow-editor-card" data-node-index="${index}">
+      <div class="workflow-builder-grid node-grid">
+        <div class="field">
+          <label>Node ID</label>
+          <input name="node-id-${index}" type="text" value="${escapeAttr(node.id)}" required />
+        </div>
+        <div class="field">
+          <label>Label</label>
+          <input name="node-label-${index}" type="text" value="${escapeAttr(node.label)}" required />
+        </div>
+        <div class="field">
+          <label>Type</label>
+          <select name="node-type-${index}">
+            ${WORKFLOW_NODE_TYPES.map((type) => option(type, node.type, type)).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>X</label>
+          <input name="node-x-${index}" type="number" value="${escapeAttr(node.position?.x ?? 0)}" />
+        </div>
+        <div class="field">
+          <label>Y</label>
+          <input name="node-y-${index}" type="number" value="${escapeAttr(node.position?.y ?? 0)}" />
+        </div>
+        ${
+          isAgent
+            ? `<div class="field">
+                <label>Provider</label>
+                <select name="node-provider-${index}">
+                  ${providerOptions.map((item) => option(item.id, providerId, item.name)).join("")}
+                </select>
+              </div>
+              <div class="field">
+                <label>Model</label>
+                ${renderWorkflowModelControl(index, providerId, model, fallbackTarget)}
+              </div>`
+            : ""
+        }
+        <div class="field field--full">
+          <label>Config JSON</label>
+          <textarea name="node-config-${index}" rows="4">${escapeHtml(JSON.stringify(getNodeEditableConfig(node), null, 2))}</textarea>
+        </div>
+      </div>
+      <div class="footer-row">
+        <span class="subtle">${escapeHtml(node.type)} node</span>
+        <button class="ghost-button" type="button" data-action="delete-workflow-node" data-node-index="${index}">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function getNodeEditableConfig(node) {
+  const config = { ...(node.config ?? {}) };
+  delete config.providerId;
+  delete config.model;
+  return config;
+}
+
+function renderWorkflowModelControl(index, providerId, model, fallbackTarget) {
+  const effectiveProviderId = providerId || fallbackTarget.providerId;
+  const defaultModel = getProviderConfiguredModel(effectiveProviderId) || fallbackTarget.model || "";
+  const options = getSelectableSessionModels(effectiveProviderId, model, defaultModel);
+  const placeholder = defaultModel ? `Provider default: ${defaultModel}` : "Use provider default";
+
+  if (isLocalProvider(effectiveProviderId)) {
+    return `
+      <select name="node-model-${index}">
+        <option value="">${escapeHtml(placeholder)}</option>
+        ${options.map((value) => option(value, model, value)).join("")}
+      </select>
+    `;
+  }
+
+  return `
+    <input
+      name="node-model-${index}"
+      list="workflow-node-model-options-${index}"
+      value="${escapeAttr(model)}"
+      placeholder="${escapeAttr(placeholder)}"
+    />
+    <datalist id="workflow-node-model-options-${index}">${renderDatalistOptions(options)}</datalist>
+  `;
+}
+
+function getWorkflowFallbackTarget() {
+  const sessionTarget = state.sessionSettings?.defaultTarget;
+  const providerId = sessionTarget?.providerId || state.bootstrap?.appSettings?.llm?.defaultProvider || "lmstudio";
+
+  return {
+    providerId,
+    model: sessionTarget?.model || getProviderConfiguredModel(providerId) || ""
+  };
+}
+
+function formatProviderTarget(providerId, model) {
+  return model ? `${providerId}/${model}` : providerId || "runtime default";
+}
+
+function renderWorkflowTransitionEditor(transition, index, nodes) {
+  const guard = transition.guard ?? { type: "always" };
+
+  return `
+    <article class="workflow-editor-card" data-transition-index="${index}">
+      <div class="workflow-builder-grid transition-grid">
+        <div class="field">
+          <label>Transition ID</label>
+          <input name="transition-id-${index}" type="text" value="${escapeAttr(transition.id)}" required />
+        </div>
+        <div class="field">
+          <label>From</label>
+          <select name="transition-from-${index}">
+            ${nodes.map((node) => option(node.id, transition.from, node.id)).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>To</label>
+          <select name="transition-to-${index}">
+            ${nodes.map((node) => option(node.id, transition.to, node.id)).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>Priority</label>
+          <input name="transition-priority-${index}" type="number" value="${escapeAttr(transition.priority ?? 100)}" />
+        </div>
+        <div class="field">
+          <label>Guard</label>
+          <select name="transition-guard-type-${index}">
+            ${WORKFLOW_GUARD_TYPES.map((type) => option(type, guard.type, type)).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>Status</label>
+          <select name="transition-status-equals-${index}">
+            ${WORKFLOW_NODE_STATUSES.map((status) => option(status, guard.equals, status)).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>Event</label>
+          <input name="transition-event-equals-${index}" type="text" value="${escapeAttr(guard.type === "event" ? guard.equals : "")}" />
+        </div>
+        <div class="field">
+          <label>JSON Path</label>
+          <input name="transition-json-path-${index}" type="text" value="${escapeAttr(guard.type === "json_path" ? guard.path : "")}" placeholder="data.score" />
+        </div>
+        <div class="field">
+          <label>JSON Op</label>
+          <select name="transition-json-op-${index}">
+            ${["exists", "eq", "contains"].map((op) => option(op, guard.op, op)).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>JSON Value</label>
+          <input name="transition-json-value-${index}" type="text" value="${escapeAttr(guard.type === "json_path" && guard.value !== undefined ? JSON.stringify(guard.value) : "")}" />
+        </div>
+        <div class="field field--full">
+          <label>Label</label>
+          <input name="transition-label-${index}" type="text" value="${escapeAttr(transition.label || "")}" />
+        </div>
+      </div>
+      <div class="footer-row">
+        <span class="subtle">${escapeHtml(transition.from)} -> ${escapeHtml(transition.to)}</span>
+        <button class="ghost-button" type="button" data-action="delete-workflow-transition" data-transition-index="${index}">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderWorkflowRunTrace(selectedRun) {
+  if (!selectedRun) {
+    return `<div class="empty">No run selected.</div>`;
+  }
+
+  const detail = state.workflowRunDetail?.run?.id === selectedRun.id ? state.workflowRunDetail : null;
+  const nodeRuns = detail?.nodeRuns ?? [];
+
+  return `
+    <div class="run-trace">
+      <div class="status-block ${statusTone(selectedRun.status)}">
+        <div class="status-block__label">${escapeHtml(selectedRun.status)}</div>
+        <div class="status-block__text">
+          Current node: ${escapeHtml(selectedRun.currentNodeId ?? "terminal")} · Updated ${formatDate(selectedRun.updatedAt)}
+        </div>
+      </div>
+      ${
+        selectedRun.error
+          ? `<div class="status-block danger"><div class="status-block__label">Error</div><div class="status-block__text">${escapeHtml(selectedRun.error)}</div></div>`
+          : ""
+      }
+      <div class="run-node-list">
+        ${nodeRuns.length ? nodeRuns.map(renderNodeRunCard).join("") : `<div class="empty compact">Open Trace on a task to load node runs.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderNodeRunCard(nodeRun) {
+  const output = nodeRun.output;
+  const target = output?.data?.target;
+  const targetLabel = target?.providerId ? formatProviderTarget(target.providerId, target.model) : "";
+
+  return `
+    <article class="node-run-card">
+      <div class="node-run-card__header">
+        <strong>${escapeHtml(nodeRun.nodeId)}</strong>
+        <span class="badge ${statusTone(nodeRun.status)}">${escapeHtml(nodeRun.status)}</span>
+      </div>
+      <p>${escapeHtml(output?.summary ?? nodeRun.error ?? "Node is still running.")}</p>
+      <div class="task-meta">
+        <span>${escapeHtml(targetLabel || output?.event || "no-event")}</span>
+        <span>${formatDate(nodeRun.completedAt ?? nodeRun.startedAt)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderWorkflowNodeChip(node) {
+  const target = node.type === "agent" ? getAgentNodeTargetLabel(node) : node.type;
+  return `<span>${escapeHtml(node.label)} <small>${escapeHtml(target)}</small></span>`;
+}
+
+function getWorkflowTargetSummary(workflow) {
+  if (!workflow) {
+    return "workflow unavailable";
+  }
+
+  const targets = workflow.nodes
+    .filter((node) => node.type === "agent")
+    .map((node) => `${node.label}: ${getAgentNodeTargetLabel(node)}`);
+
+  return targets.length ? targets.join("; ") : "no agent nodes";
+}
+
+function getAgentNodeTargetLabel(node) {
+  const providerId = String(node.config?.providerId ?? "");
+  const model = String(node.config?.model ?? "");
+
+  if (!providerId && !model) {
+    return "task/session default";
+  }
+
+  return formatProviderTarget(providerId || "session provider", model);
+}
+
+function statusTone(status) {
+  if (["done", "ok", "success"].includes(status)) {
+    return "success";
+  }
+
+  if (["todo", "queued"].includes(status)) {
+    return "";
+  }
+
+  if (["in_progress", "running", "waiting"].includes(status)) {
+    return "warning";
+  }
+
+  if (["failed", "blocked", "cancelled"].includes(status)) {
+    return "danger";
+  }
+
+  return "";
+}
+
+function ensureWorkflowBuilderDraft(workflows) {
+  if (state.workflowBuilder?.draft) {
+    return state.workflowBuilder.draft;
+  }
+
+  const source = workflows[0] ?? createBlankWorkflow();
+  state.workflowBuilder = {
+    draft: cloneWorkflow(source),
+    validation: null
+  };
+  return state.workflowBuilder.draft;
+}
+
+function createBlankWorkflow() {
+  const now = new Date().toISOString();
+
+  return {
+    id: `workflow-${Date.now()}`,
+    name: "New Workflow",
+    version: 1,
+    description: "",
+    entryNodeId: "entry",
+    nodes: [
+      {
+        id: "entry",
+        type: "entry",
+        label: "Entry",
+        position: { x: 0, y: 0 },
+        config: {}
+      },
+      {
+        id: "done",
+        type: "terminal",
+        label: "Done",
+        position: { x: 320, y: 0 },
+        config: { runStatus: "done" }
+      }
+    ],
+    transitions: [
+      {
+        id: "entry-done",
+        from: "entry",
+        to: "done",
+        priority: 100,
+        guard: { type: "always" }
+      }
+    ],
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function cloneWorkflow(workflow) {
+  return JSON.parse(JSON.stringify(workflow));
+}
+
+function duplicateWorkflow(workflow) {
+  const now = new Date().toISOString();
+  const next = cloneWorkflow(workflow);
+
+  next.id = `${workflow.id}-copy-${Date.now()}`;
+  next.name = `${workflow.name} Copy`;
+  next.version = 1;
+  next.createdAt = now;
+  next.updatedAt = now;
+  return next;
+}
+
+function readWorkflowBuilderDraftFromForm() {
+  const form = document.querySelector("#workflow-builder-form");
+
+  if (!form) {
+    return state.workflowBuilder?.draft ?? createBlankWorkflow();
+  }
+
+  const data = new FormData(form);
+  const existing = state.workflowBuilder?.draft ?? createBlankWorkflow();
+  const nodes = [...form.querySelectorAll("[data-node-index]")].map((element) => {
+    const index = element.dataset.nodeIndex;
+    const type = readFormString(data, `node-type-${index}`, "agent");
+    const config = parseJsonField(
+      readFormString(data, `node-config-${index}`, "{}"),
+      {},
+      `Node ${index} config`
+    );
+
+    if (type === "agent") {
+      const providerId = readFormString(data, `node-provider-${index}`, "").trim();
+      const model = readFormString(data, `node-model-${index}`, "").trim();
+
+      if (providerId) {
+        config.providerId = providerId;
+      } else {
+        delete config.providerId;
+      }
+
+      if (model) {
+        config.model = model;
+      } else {
+        delete config.model;
+      }
+    } else {
+      delete config.providerId;
+      delete config.model;
+    }
+
+    return {
+      id: readFormString(data, `node-id-${index}`, "node").trim(),
+      type,
+      label: readFormString(data, `node-label-${index}`, "Node").trim(),
+      position: {
+        x: readFormNumber(data, `node-x-${index}`, 0),
+        y: readFormNumber(data, `node-y-${index}`, 0)
+      },
+      config
+    };
+  });
+  const transitions = [...form.querySelectorAll("[data-transition-index]")].map((element) => {
+    const index = element.dataset.transitionIndex;
+    const guardType = readFormString(data, `transition-guard-type-${index}`, "always");
+
+    return {
+      id: readFormString(data, `transition-id-${index}`, "transition").trim(),
+      from: readFormString(data, `transition-from-${index}`, "").trim(),
+      to: readFormString(data, `transition-to-${index}`, "").trim(),
+      label: readFormString(data, `transition-label-${index}`, "").trim() || undefined,
+      priority: readFormNumber(data, `transition-priority-${index}`, 100),
+      guard: buildWorkflowGuard(data, index, guardType)
+    };
+  });
+  const now = new Date().toISOString();
+
+  return {
+    ...existing,
+    id: readFormString(data, "id", existing.id).trim(),
+    name: readFormString(data, "name", existing.name).trim(),
+    version: Math.max(1, readFormNumber(data, "version", existing.version ?? 1)),
+    description: readFormString(data, "description", "").trim(),
+    entryNodeId: readFormString(data, "entryNodeId", nodes[0]?.id ?? "entry").trim(),
+    nodes,
+    transitions,
+    createdAt: existing.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function buildWorkflowGuard(data, index, guardType) {
+  if (guardType === "status") {
+    return {
+      type: "status",
+      equals: readFormString(data, `transition-status-equals-${index}`, "ok")
+    };
+  }
+
+  if (guardType === "event") {
+    return {
+      type: "event",
+      equals: readFormString(data, `transition-event-equals-${index}`, "").trim()
+    };
+  }
+
+  if (guardType === "json_path") {
+    const rawValue = readFormString(data, `transition-json-value-${index}`, "").trim();
+    const guard = {
+      type: "json_path",
+      path: readFormString(data, `transition-json-path-${index}`, "").trim(),
+      op: readFormString(data, `transition-json-op-${index}`, "exists")
+    };
+
+    if (rawValue) {
+      guard.value = parseJsonValue(rawValue);
+    }
+
+    return guard;
+  }
+
+  return { type: "always" };
+}
+
+function readFormString(data, key, fallback = "") {
+  const value = data.get(key);
+  return typeof value === "string" ? value : fallback;
+}
+
+function readFormNumber(data, key, fallback = 0) {
+  const parsed = Number(readFormString(data, key, String(fallback)));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseJsonField(value, fallback, label) {
+  if (!value.trim()) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+}
+
+function parseJsonValue(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function updateWorkflowDraft(mutator) {
+  const draft = readWorkflowDraftOrToast();
+
+  if (!draft) {
+    return;
+  }
+
+  try {
+    mutator(draft);
+    state.workflowBuilder = {
+      draft,
+      validation: null
+    };
+    render();
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Workflow edit failed.", "danger");
+  }
+}
+
+function readWorkflowDraftOrToast() {
+  try {
+    return readWorkflowBuilderDraftFromForm();
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Workflow draft is invalid.", "danger");
+    return null;
+  }
 }
 
 function renderModelsRoute() {
@@ -1725,6 +2631,383 @@ function bindEvents() {
         await loadActiveSession();
         state.notice = "";
       });
+    });
+  });
+
+  document.querySelector("#task-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get("title") || "").trim();
+    const description = String(form.get("description") || "").trim();
+    const workflowId = String(form.get("workflowId") || "").trim();
+    const priority = String(form.get("priority") || "normal");
+
+    if (!title || !description) {
+      return;
+    }
+
+    await runAction(async () => {
+      await api.createTask({
+        title,
+        description,
+        workflowId,
+        priority,
+        sessionId: state.activeSessionId
+      });
+      await refreshBootstrap();
+    });
+  });
+
+  document.querySelector("[data-action='refresh-orchestration']")?.addEventListener("click", async () => {
+    await runAction(async () => {
+      await refreshBootstrap();
+      if (state.activeWorkflowRunId) {
+        state.workflowRunDetail = await api.getWorkflowRun(state.activeWorkflowRunId);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='set-orchestration-tab']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.orchestrationTab = button.dataset.orchestrationTab === "workflow" ? "workflow" : "tasks";
+      render();
+    });
+  });
+
+  document.querySelectorAll(".task-card[draggable='true']").forEach((card) => {
+    card.addEventListener("dragstart", (event) => {
+      event.dataTransfer?.setData("text/plain", card.dataset.taskId || "");
+      event.dataTransfer?.setData("application/x-lcai-task-id", card.dataset.taskId || "");
+      card.classList.add("is-dragging");
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("is-dragging");
+      document.querySelectorAll(".task-column.is-drop-target").forEach((column) => {
+        column.classList.remove("is-drop-target");
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-drop-status]").forEach((column) => {
+    column.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      column.classList.add("is-drop-target");
+    });
+    column.addEventListener("dragleave", () => {
+      column.classList.remove("is-drop-target");
+    });
+    column.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      column.classList.remove("is-drop-target");
+      const taskId =
+        event.dataTransfer?.getData("application/x-lcai-task-id") ||
+        event.dataTransfer?.getData("text/plain");
+      const status = column.dataset.dropStatus;
+
+      if (!taskId || !status) {
+        return;
+      }
+
+      await runAction(async () => {
+        await api.updateTask(taskId, { status });
+        await refreshBootstrap();
+      });
+    });
+  });
+
+  document.querySelector("[data-action='new-workflow']")?.addEventListener("click", () => {
+    state.workflowBuilder = {
+      draft: createBlankWorkflow(),
+      validation: null
+    };
+    render();
+  });
+
+  document.querySelector("[data-action='duplicate-workflow']")?.addEventListener("click", () => {
+    const draft = readWorkflowDraftOrToast();
+
+    if (!draft) {
+      return;
+    }
+
+    state.workflowBuilder = {
+      draft: duplicateWorkflow(draft),
+      validation: null
+    };
+    render();
+  });
+
+  document.querySelectorAll("[data-action='edit-workflow']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const workflow = (state.bootstrap?.workflows ?? []).find(
+        (item) =>
+          item.id === button.dataset.workflowId &&
+          String(item.version) === String(button.dataset.workflowVersion)
+      );
+
+      if (!workflow) {
+        return;
+      }
+
+      state.workflowBuilder = {
+        draft: cloneWorkflow(workflow),
+        validation: null
+      };
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-action='duplicate-workflow-card']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const workflow = (state.bootstrap?.workflows ?? []).find(
+        (item) =>
+          item.id === button.dataset.workflowId &&
+          String(item.version) === String(button.dataset.workflowVersion)
+      );
+
+      if (!workflow) {
+        return;
+      }
+
+      state.workflowBuilder = {
+        draft: duplicateWorkflow(workflow),
+        validation: null
+      };
+      render();
+    });
+  });
+
+  document.querySelector("[data-action='add-workflow-node']")?.addEventListener("click", () => {
+    updateWorkflowDraft((draft) => {
+      const index = draft.nodes.length + 1;
+      draft.nodes.push({
+        id: `agent-${index}`,
+        type: "agent",
+        label: `Agent ${index}`,
+        position: { x: 220 * index, y: 0 },
+        config: {
+          mode: "code",
+          promptTemplate: "{{task.title}}\n\n{{task.description}}"
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll("select[name^='node-type-']").forEach((select) => {
+    select.addEventListener("change", () => {
+      updateWorkflowDraft(() => undefined);
+    });
+  });
+
+  document.querySelectorAll("select[name^='node-provider-']").forEach((select) => {
+    select.addEventListener("change", () => {
+      const index = Number(select.name.replace("node-provider-", ""));
+      updateWorkflowDraft((draft) => {
+        if (draft.nodes[index]?.config) {
+          delete draft.nodes[index].config.model;
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-workflow-node']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateWorkflowDraft((draft) => {
+        const index = Number(button.dataset.nodeIndex);
+        const [removed] = draft.nodes.splice(index, 1);
+
+        if (!removed) {
+          return;
+        }
+
+        draft.transitions = draft.transitions.filter(
+          (transition) => transition.from !== removed.id && transition.to !== removed.id
+        );
+
+        if (draft.entryNodeId === removed.id) {
+          draft.entryNodeId = draft.nodes[0]?.id ?? "";
+        }
+      });
+    });
+  });
+
+  document.querySelector("[data-action='add-workflow-transition']")?.addEventListener("click", () => {
+    updateWorkflowDraft((draft) => {
+      const from = draft.nodes[0]?.id ?? "";
+      const to = draft.nodes[1]?.id ?? from;
+      draft.transitions.push({
+        id: `${from || "node"}-${to || "node"}-${draft.transitions.length + 1}`,
+        from,
+        to,
+        priority: 100,
+        guard: { type: "always" }
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-workflow-transition']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateWorkflowDraft((draft) => {
+        draft.transitions.splice(Number(button.dataset.transitionIndex), 1);
+      });
+    });
+  });
+
+  document.querySelector("[data-action='validate-workflow']")?.addEventListener("click", async () => {
+    const draft = readWorkflowDraftOrToast();
+
+    if (!draft) {
+      return;
+    }
+
+    await runAction(async () => {
+      const validation = await api.validateWorkflow(draft);
+      state.workflowBuilder = {
+        draft,
+        validation
+      };
+      pushToast(validation.ok ? "Workflow is valid." : "Workflow has validation errors.", validation.ok ? "info" : "danger");
+    });
+  });
+
+  document.querySelector("[data-action='save-workflow']")?.addEventListener("click", async () => {
+    const draft = readWorkflowDraftOrToast();
+
+    if (!draft) {
+      return;
+    }
+
+    await runAction(async () => {
+      const validation = await api.validateWorkflow(draft);
+      state.workflowBuilder = {
+        draft,
+        validation
+      };
+
+      if (!validation.ok) {
+        throw new Error(`Workflow is invalid: ${validation.errors.join("; ")}`);
+      }
+
+      const exists = (state.bootstrap?.workflows ?? []).some(
+        (workflow) => workflow.id === draft.id && workflow.version === draft.version
+      );
+      const saved = exists
+        ? await api.updateWorkflow(draft.id, draft)
+        : await api.createWorkflow(draft);
+
+      await refreshBootstrap();
+      state.workflowBuilder = {
+        draft: cloneWorkflow(saved),
+        validation: { ok: true, errors: [] }
+      };
+      pushToast("Workflow saved.", "info");
+    });
+  });
+
+  document.querySelectorAll("[data-action='queue-task']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.taskId;
+
+      if (!taskId) {
+        return;
+      }
+
+      await runAction(async () => {
+        await api.queueTask(taskId);
+        await refreshBootstrap();
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-task']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.taskId;
+      const task = (state.bootstrap?.tasks ?? []).find((item) => item.id === taskId);
+
+      if (!taskId || !window.confirm(`Delete task "${task?.title ?? "Untitled"}"?`)) {
+        return;
+      }
+
+      await runAction(async () => {
+        await api.deleteTask(taskId);
+
+        if (task?.lastRunId && state.activeWorkflowRunId === task.lastRunId) {
+          state.activeWorkflowRunId = null;
+          state.workflowRunDetail = null;
+        }
+
+        await refreshBootstrap();
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-action='run-task']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.taskId;
+
+      if (!taskId) {
+        return;
+      }
+
+      await runAction(async () => {
+        const result = await api.runTask(taskId);
+        state.activeWorkflowRunId = result.runId;
+        await refreshBootstrap();
+        state.workflowRunDetail = result.runId ? await api.getWorkflowRun(result.runId) : null;
+      });
+    });
+  });
+
+  document.querySelector("[data-action='run-next-task']")?.addEventListener("click", async () => {
+    await runAction(async () => {
+      const result = await api.runNextTask();
+      state.activeWorkflowRunId = result.runId;
+      await refreshBootstrap();
+      state.workflowRunDetail = result.runId ? await api.getWorkflowRun(result.runId) : null;
+    });
+  });
+
+  document.querySelectorAll("[data-action='select-workflow-run']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const runId = button.dataset.runId;
+
+      if (!runId) {
+        return;
+      }
+
+      await runAction(async () => {
+        state.activeWorkflowRunId = runId;
+        state.workflowRunDetail = await api.getWorkflowRun(runId);
+        state.orchestrationTab = "workflow";
+      });
+    });
+  });
+
+  document.querySelector("[data-action='step-workflow-run']")?.addEventListener("click", async (event) => {
+    const runId = event.currentTarget.dataset.runId;
+
+    if (!runId) {
+      return;
+    }
+
+    await runAction(async () => {
+      await api.stepWorkflowRun(runId);
+      await refreshBootstrap();
+      state.workflowRunDetail = await api.getWorkflowRun(runId);
+    });
+  });
+
+  document.querySelector("[data-action='cancel-workflow-run']")?.addEventListener("click", async (event) => {
+    const runId = event.currentTarget.dataset.runId;
+
+    if (!runId) {
+      return;
+    }
+
+    await runAction(async () => {
+      await api.cancelWorkflowRun(runId);
+      await refreshBootstrap();
+      state.workflowRunDetail = await api.getWorkflowRun(runId);
     });
   });
 

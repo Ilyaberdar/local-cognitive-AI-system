@@ -12,7 +12,9 @@
     "mcp:stdio": "node dist/src/mcp.js",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "electron": "npm run build && electron .",
-    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "dist:mac": "npm run build && electron-builder --mac dmg --arm64 --x64",
+    "dist:mac:arm64": "npm run build && electron-builder --mac dmg --arm64",
+    "dist:mac:x64": "npm run build && electron-builder --mac dmg --x64",
     "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
   "engines": {

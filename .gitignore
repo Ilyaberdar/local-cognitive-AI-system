@@ -1,6 +1,6 @@
 node_modules
 dist
-release
+/release/
 .env
 local-cognitive.config.json
 data/memory
@@ -8,6 +8,8 @@ memory/
 data/output
 data/app/settings.json
 data/app/sessions.json
+data/app/tasks/
+data/app/workflows/
 data/sessions/
 sessions.json
 sessions/
