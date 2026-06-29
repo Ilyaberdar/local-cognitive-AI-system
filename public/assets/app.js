@@ -1,5 +1,10 @@
 const app = document.querySelector("#app");
 let systemMetricsPollTimer = null;
+const UI_THEMES = ["warm", "carbon", "light"];
+const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
+  ? localStorage.getItem("lcai.theme")
+  : "warm";
+document.documentElement.dataset.theme = initialTheme;
 const DEFAULT_SUBAGENT_NAMES = ["Atlas", "Nova", "Vector", "Echo", "Orion", "Lyra", "Kepler", "Sable", "Rook", "Mira"];
 const MAX_HYPOTHESIS_ADVISORS = 5;
 const MAX_HYPOTHESIS_AGENTS = 3 + MAX_HYPOTHESIS_ADVISORS;
@@ -37,6 +42,7 @@ const state = {
     validation: null
   },
   ui: {
+    theme: initialTheme,
     sidebarCollapsed: localStorage.getItem("lcai.sidebarCollapsed") === "true",
     sidebarWidth: Number(localStorage.getItem("lcai.sidebarWidth") || 240),
     sessionSetupCollapsed: localStorage.getItem("lcai.sessionSetupCollapsed") === "true",
@@ -280,6 +286,13 @@ async function safeJson(response) {
   } catch {
     return null;
   }
+}
+
+function applyTheme(theme) {
+  const nextTheme = UI_THEMES.includes(theme) ? theme : "warm";
+  state.ui.theme = nextTheme;
+  document.documentElement.dataset.theme = nextTheme;
+  localStorage.setItem("lcai.theme", nextTheme);
 }
 
 function render() {
@@ -1936,17 +1949,33 @@ function renderSettingsRoute() {
         </div>
       </section>
 
-      <section class="card">
-        <h3>Global defaults</h3>
-        <div class="field-grid">
-          <div class="field">
-            <label>Default provider</label>
-            <select name="llm.defaultProvider">
-              ${(state.bootstrap?.providers ?? []).map((provider) => option(provider.id, settings.llm.defaultProvider, provider.id)).join("")}
-            </select>
+      <div class="settings-top-grid">
+        <section class="card">
+          <h3>Appearance</h3>
+          <div class="field-grid">
+            <div class="field">
+              <label>Theme</label>
+              <select id="appearance-theme" name="appearance.theme">
+                ${option("warm", state.ui.theme, "Warm Workspace")}
+                ${option("carbon", state.ui.theme, "Carbon")}
+                ${option("light", state.ui.theme, "Light Neutral")}
+              </select>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+
+        <section class="card">
+          <h3>Global defaults</h3>
+          <div class="field-grid">
+            <div class="field">
+              <label>Default provider</label>
+              <select name="llm.defaultProvider">
+                ${(state.bootstrap?.providers ?? []).map((provider) => option(provider.id, settings.llm.defaultProvider, provider.id)).join("")}
+              </select>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <section class="card">
         <h3>MCP Server</h3>
@@ -3300,6 +3329,10 @@ function bindEvents() {
       state.notice = "";
     });
     flashSavedButton("app-settings");
+  });
+
+  document.querySelector("#appearance-theme")?.addEventListener("change", (event) => {
+    applyTheme(event.currentTarget.value);
   });
 
   document.querySelector("[data-action='reload-runtime']")?.addEventListener("click", async () => {
