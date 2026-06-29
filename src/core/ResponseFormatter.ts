@@ -7,9 +7,6 @@ export class ResponseFormatter {
         ? this.renderTextResponse(result.result.response, result.result.provider, result.result.model)
         : "";
     const hasSubagents = "response" in result.result && Boolean(result.result.subagents?.length);
-    const collector = hasSubagents && "response" in result.result
-      ? result.result.subagents?.find((agent) => agent.role === "writer") ?? result.result.subagents?.[0]
-      : undefined;
     const base =
       result.mode === "hypothesis" && "arguments" in result.result
         ? [
@@ -23,6 +20,9 @@ export class ResponseFormatter {
             `- Support: ${result.result.participants.support}`,
             `- Attack: ${result.result.participants.attack}`,
             `- Judge: ${result.result.participants.judge}`,
+            ...(result.result.participants.advisors?.map(
+              (advisor, index) => `- Advisor ${index + 1}: ${advisor}`
+            ) ?? []),
             ...(result.result.configuredParticipants?.judge
               ? [`- Configured Judge: ${result.result.configuredParticipants.judge}`]
               : []),
@@ -94,8 +94,7 @@ export class ResponseFormatter {
                 "",
                 ...this.renderMultiAgentSummary(result.result.subagents ?? [], {
                   provider: result.result.provider,
-                  model: result.result.model,
-                  collectorName: collector?.name
+                  model: result.result.model
                 }),
                 "",
                 "Final answer",
@@ -144,22 +143,19 @@ export class ResponseFormatter {
         ? Agents
         : never
       : never>,
-    collector: { provider: string; model: string; collectorName?: string }
+    finalTarget: { provider: string; model: string }
   ): string[] {
-    const researchAgents = subagents.filter((agent) => agent.role === "advisor");
-    const okCount = researchAgents.filter((agent) => agent.status === "ok").length;
-    const failedCount = researchAgents.length - okCount;
-    const names = researchAgents.map((agent) => `@${agent.name}`).join(", ") || "none";
+    const delegatedAgents = subagents.filter((agent) => agent.role === "advisor");
+    const okCount = delegatedAgents.filter((agent) => agent.status === "ok").length;
+    const failedCount = delegatedAgents.length - okCount;
+    const names = delegatedAgents.map((agent) => `@${agent.name}`).join(", ") || "none";
     const status = failedCount > 0 ? `${okCount} ok / ${failedCount} failed` : `${okCount} ok`;
-    const collectorLabel = collector.collectorName
-      ? `@${collector.collectorName} via ${collector.provider}:${collector.model}`
-      : `${collector.provider}:${collector.model}`;
 
     return [
       "Multi-agent run",
-      `Research agents: ${names}`,
-      `Research status: ${status}`,
-      `Final collector: ${collectorLabel}`
+      `Delegated agents: ${names}`,
+      `Agent status: ${status}`,
+      `Final response: Main model via ${finalTarget.provider}:${finalTarget.model}`
     ];
   }
 

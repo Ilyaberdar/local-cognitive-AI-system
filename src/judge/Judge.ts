@@ -64,7 +64,8 @@ export class Judge {
     profile: DebateProfile,
     language: "auto" | "ru" | "en",
     outputStyle: OutputStyle,
-    attachmentContext?: string
+    attachmentContext?: string,
+    signal?: AbortSignal
   ): Promise<HypothesisResult> {
     if (judgeTarget.providerId === "local") {
       return this.evaluateLocally([support, attack], language, undefined);
@@ -75,6 +76,7 @@ export class Judge {
         systemPrompt: "You are an impartial judge producing only structured JSON.",
         model: judgeTarget.model,
         maxTokens: getStyleTokenBudget(outputStyle),
+        signal,
         prompt: [
           buildJudgeInstruction(outputStyle),
           buildDebateGuidance(profile),
@@ -127,12 +129,14 @@ export class Judge {
     const normalizedReasoning = await this.languageEnforcer.normalizeText(
       normalizedPayload.reasoning,
       language,
-      judgeTarget
+      judgeTarget,
+      signal
     );
     const normalizedConclusion = await this.languageEnforcer.normalizeText(
       normalizedPayload.conclusion,
       language,
-      judgeTarget
+      judgeTarget,
+      signal
     );
 
     return {

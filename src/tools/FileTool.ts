@@ -13,6 +13,7 @@ interface FileToolOptions {
 interface FileDiffPreview {
   added: number;
   removed: number;
+  changeStartLine: number;
   truncated: boolean;
   preview: Array<{
     type: "add" | "remove" | "context";
@@ -54,6 +55,20 @@ export class FileTool implements Tool {
       return this.deletePath(requestedPath);
     }
 
+    if (scaffoldFiles.length > 0) {
+      const approval = this.requireFileApproval(input, "write scaffold");
+      if (approval) {
+        return approval;
+      }
+      this.assertWritableResult(input.result);
+
+      if (requestedPath && this.looksLikeFilePath(requestedPath) && scaffoldFiles.length === 1) {
+        return this.writeFile(requestedPath, scaffoldFiles[0].content);
+      }
+
+      return this.writeScaffold(scaffoldFiles, requestedPath);
+    }
+
     if (this.isMkdirIntent(rawInput) && requestedPath) {
       const approval = this.requireFileApproval(input, "create directory");
       if (approval) {
@@ -78,15 +93,6 @@ export class FileTool implements Tool {
       }
       this.assertWritableResult(input.result);
       return this.writeFile(requestedPath, this.renderSingleFileContent(input.result, scaffoldFiles));
-    }
-
-    if (scaffoldFiles.length > 0) {
-      const approval = this.requireFileApproval(input, "write scaffold");
-      if (approval) {
-        return approval;
-      }
-      this.assertWritableResult(input.result);
-      return this.writeScaffold(scaffoldFiles, requestedPath);
     }
 
     return this.writeNote(input);
@@ -355,6 +361,7 @@ export class FileTool implements Tool {
     return {
       added: addedBlock.length,
       removed: removedBlock.length,
+      changeStartLine: prefix + 1,
       truncated: removedBlock.length + addedBlock.length > maxChangedRows,
       preview: rows
     };
@@ -468,10 +475,22 @@ export class FileTool implements Tool {
     }
 
     const pathLike = input.match(
-      /(?:path|file|folder|directory|директори[яи]|папк[ауеи]?|файл[ауеы]?|путь)\s*(?:=|:|в|во|to|at)?\s*([./~\w-][^\s,:;]*)/i
+      /(?:^|\s|["'])(~?\/[^\s"',:;]+|\.{1,2}\/[^\s"',:;]+|[\w.-]+(?:\/[\w.-]+)+|[\w-]+\.[A-Za-z0-9]{1,16})(?=$|\s|["',:;])/i
     );
 
-    return pathLike?.[1]?.trim();
+    if (pathLike?.[1]) {
+      return pathLike[1].trim();
+    }
+
+    if (/\b(?:current|working)\s+directory\b|\bcurrent\s+folder\b|текущ(?:ей|ую)\s+(?:директори[ию]|папк[еу])/i.test(input)) {
+      return this.options.allowedDirectories.at(-1) || process.cwd();
+    }
+
+    return undefined;
+  }
+
+  private looksLikeFilePath(rawPath: string): boolean {
+    return path.extname(rawPath).length > 1;
   }
 
   private extractScaffoldFiles(result: ModeResult): Array<{ filePath: string; content: string }> {
@@ -479,8 +498,9 @@ export class FileTool implements Tool {
       return [];
     }
 
+    const executionOutput = result.toolPayload?.trim() || result.response;
     const matches = Array.from(
-      result.response.matchAll(/<<<FILE:([^\n>]+)>>>\n?([\s\S]*?)<<<END FILE>>>/g)
+      executionOutput.matchAll(/<<<FILE:([^\n>]+)>>>\n?([\s\S]*?)<<<END FILE>>>/g)
     );
 
     return matches
@@ -503,7 +523,7 @@ export class FileTool implements Tool {
       return JSON.stringify(result, null, 2);
     }
 
-    return result.response
+    return (result.toolPayload?.trim() || result.response)
       .replace(/<<<FILE:[^\n>]+>>>\n?/g, "")
       .replace(/<<<END FILE>>>/g, "")
       .trim();
@@ -514,7 +534,7 @@ export class FileTool implements Tool {
       return;
     }
 
-    if (/^Mock response from /i.test(result.response.trim())) {
+    if (/^Mock response from /i.test((result.toolPayload?.trim() || result.response).trim())) {
       throw new Error("Refusing to write files from fallback model output.");
     }
   }

@@ -5,6 +5,7 @@ import {
   buildFallbackResponse,
   createDescriptor,
   HttpProviderOptions,
+  resolveAbortSignal,
   resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
@@ -67,7 +68,7 @@ export class GeminiProvider implements LLMProvider {
             maxOutputTokens: request.maxTokens
           }
         }),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: resolveAbortSignal(timeoutMs, request.signal)
       });
 
       if (!response.ok) {
@@ -96,6 +97,9 @@ export class GeminiProvider implements LLMProvider {
         usage: readUsage(payload)
       };
     } catch (error) {
+      if (request.signal?.aborted) {
+        throw new Error("Request cancelled");
+      }
       this.logger.warn("Falling back to mock Gemini response", {
         error: error instanceof Error ? error.message : "unknown_error"
       });

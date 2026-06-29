@@ -3,6 +3,7 @@ import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import {
   createCreateSessionController,
+  createCancelProcessRunController,
   createDeleteSessionController,
   createDashboardBootstrapController,
   createGetAllManagedModelsController,
@@ -21,6 +22,9 @@ import {
   createPluginTestController,
   createProcessController,
   createProviderTestController,
+  createProcessRunStatusController,
+  createReadWorkspaceFileController,
+  createRevealWorkspacePathController,
   createRenameSessionController,
   createRuntimeReloadController,
   createSystemMetricsController,
@@ -110,6 +114,10 @@ export const createApiRouter = (
 
   router.post("/chat", createProcessController(runtimeManager, sessionIndexStore));
   router.post("/process", createProcessController(runtimeManager, sessionIndexStore));
+  router.get("/process-runs/:requestId", createProcessRunStatusController());
+  router.post("/process-runs/:requestId/cancel", createCancelProcessRunController());
+  router.get("/workspace/file", createReadWorkspaceFileController(runtimeManager));
+  router.post("/workspace/reveal", createRevealWorkspacePathController(runtimeManager));
 
   return router;
 };

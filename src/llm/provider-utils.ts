@@ -30,6 +30,9 @@ export const resolveRequestTimeoutMs = (
     ? Math.max(configuredTimeoutMs, requestTimeoutMs)
     : configuredTimeoutMs;
 
+export const resolveAbortSignal = (timeoutMs: number, signal?: AbortSignal): AbortSignal =>
+  signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+
 export const buildFallbackResponse = (
   request: LLMRequest,
   provider: string,

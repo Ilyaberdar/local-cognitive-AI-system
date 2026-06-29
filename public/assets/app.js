@@ -20,6 +20,7 @@ const state = {
   route: "chat",
   loading: false,
   chatSubmitting: false,
+  activeChatRequest: null,
   notice: "",
   error: "",
   toasts: [],
@@ -50,9 +51,12 @@ const state = {
     autosaveStatus: "idle",
     autosaveTimer: null,
     autosaveSeq: 0,
+    autosavePromise: Promise.resolve(),
     messageStreamScrollTop: 0,
     messageStreamPinnedToBottom: true,
-    showScrollToBottom: false
+    showScrollToBottom: false,
+    rightPanelTabs: [],
+    activeRightPanelTab: "setup"
   }
 };
 
@@ -79,11 +83,22 @@ const api = {
       method: "PUT",
       body: JSON.stringify(payload)
     }),
-  sendChat: (payload) =>
+  sendChat: (payload, controller) =>
     request("/chat", {
       method: "POST",
       body: JSON.stringify(payload),
-      timeoutMs: 900000
+      timeoutMs: 900000,
+      controller
+    }),
+  getProcessRun: (requestId) => request(`/process-runs/${encodeURIComponent(requestId)}`),
+  cancelProcessRun: (requestId) =>
+    request(`/process-runs/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
+  readWorkspaceFile: (filePath) =>
+    request(`/workspace/file?path=${encodeURIComponent(filePath)}`),
+  revealWorkspacePath: (filePath) =>
+    request("/workspace/reveal", {
+      method: "POST",
+      body: JSON.stringify({ path: filePath })
     }),
   updateAppSettings: (payload) =>
     request("/app/settings", {
@@ -190,6 +205,7 @@ window.addEventListener("hashchange", () => {
 });
 
 async function init() {
+  window.addEventListener("keydown", handleGlobalKeydown);
   syncRouteFromHash();
   await refreshBootstrap();
   await ensureSession();
@@ -245,7 +261,8 @@ async function loadActiveSession() {
 }
 
 async function request(url, options = {}) {
-  const controller = new AbortController();
+  const controller = options.controller ?? new AbortController();
+  const { controller: _providedController, timeoutMs: _timeoutMs, ...fetchOptions } = options;
   const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 30000;
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
@@ -256,7 +273,7 @@ async function request(url, options = {}) {
         ...(options.headers ?? {})
       },
       signal: controller.signal,
-      ...options
+      ...fetchOptions
     });
 
     if (!response.ok) {
@@ -271,7 +288,7 @@ async function request(url, options = {}) {
     return await safeJson(response);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Request timed out.");
+      throw new Error(options.controller ? "Request cancelled." : "Request timed out.");
     }
 
     throw error;
@@ -603,7 +620,7 @@ function renderChatRoute() {
         </form>
       </section>
 
-      ${renderSessionSetupPanel(settings, currentSession, providerOptions)}
+      ${renderChatRightPanel(settings, currentSession, providerOptions)}
     </div>
   `;
 }
@@ -617,17 +634,19 @@ function renderChatActivityBar(settings) {
   const target = settings?.defaultTarget ?? {};
   const provider = getProviderDisplayName(target.providerId);
   const model = target.model || "default";
-  const label = running
+  const progress = state.pendingRequest?.progress;
+  const label = progress?.label || (running
     ? state.pendingRequest && isSubagentRequest(state.pendingRequest.input)
       ? "Agents"
       : "Build"
-    : "Stopped";
+    : "Stopped");
+  const activityDetail = progress?.detail || `${provider} ${model}`;
 
   return `
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
       <span class="activity-scan" aria-hidden="true"><span></span></span>
       <span class="activity-label">${escapeHtml(label)}</span>
-      <span class="activity-model">${escapeHtml(provider)} ${escapeHtml(model)}</span>
+      <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
       <span class="activity-hint">${running ? "esc interrupt" : "idle"}</span>
     </div>
   `;
@@ -646,6 +665,85 @@ function renderPendingAssistantText(pendingRequest) {
   }
 
   return "";
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key !== "Escape" || !state.activeChatRequest) {
+    return;
+  }
+
+  event.preventDefault();
+  void cancelActiveChatRequest();
+}
+
+async function cancelActiveChatRequest() {
+  const active = state.activeChatRequest;
+  if (!active || active.cancelled) {
+    return;
+  }
+
+  active.cancelled = true;
+  stopProcessProgressPolling(active);
+
+  try {
+    await api.cancelProcessRun(active.requestId);
+  } catch {
+    // The local abort still stops the UI even if the cancellation endpoint already completed.
+  } finally {
+    active.controller.abort();
+    if (state.activeChatRequest?.requestId === active.requestId) {
+      state.activeChatRequest = null;
+      state.pendingRequest = null;
+      state.chatSubmitting = false;
+      pushToast("Generation interrupted.", "info");
+      render();
+    }
+  }
+}
+
+function startProcessProgressPolling(active) {
+  active.progressTimer = window.setInterval(async () => {
+    if (state.activeChatRequest?.requestId !== active.requestId || active.cancelled) {
+      stopProcessProgressPolling(active);
+      return;
+    }
+
+    try {
+      const run = await api.getProcessRun(active.requestId);
+      if (run?.progress && state.pendingRequest) {
+        state.pendingRequest.progress = run.progress;
+        updateChatActivityProgress(run.progress);
+      }
+      if (run?.status && run.status !== "running") {
+        stopProcessProgressPolling(active);
+      }
+    } catch {
+      // The first poll can race request registration; keep polling until the chat request settles.
+    }
+  }, 600);
+}
+
+function stopProcessProgressPolling(active) {
+  if (active?.progressTimer) {
+    window.clearInterval(active.progressTimer);
+    active.progressTimer = null;
+  }
+}
+
+function updateChatActivityProgress(progress) {
+  const bar = document.querySelector(".chat-activity-bar");
+  if (!bar) {
+    return;
+  }
+
+  const label = bar.querySelector(".activity-label");
+  const detail = bar.querySelector(".activity-model");
+  if (label) {
+    label.textContent = progress.label || "Working";
+  }
+  if (detail) {
+    detail.textContent = progress.detail || "Processing";
+  }
 }
 
 function chooseSubagentPendingText(input, seed = new Date().toISOString()) {
@@ -772,7 +870,54 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
           ? renderHypothesisSetup(settings, providerOptions)
           : renderSubagentSetup(settings, providerOptions)}
       </div>
+      ${renderRightPanelTabs()}
     </form>
+  `;
+}
+
+function renderChatRightPanel(settings, currentSession, providerOptions) {
+  const activeTab = state.ui.activeRightPanelTab;
+  const fileTab = state.ui.rightPanelTabs.find((tab) => tab.id === activeTab);
+
+  if (!fileTab) {
+    return renderSessionSetupPanel(settings, currentSession, providerOptions);
+  }
+
+  const lineCount = splitFileViewerLines(fileTab.content).length;
+  return `
+    <aside class="panel chat-settings file-viewer-panel" style="--session-panel-width: ${Math.max(280, Math.min(window.innerWidth * 0.5, state.ui.sessionSetupWidth || 360))}px;">
+      <div class="session-resize-handle" data-action="resize-session-setup" title="Resize panel"></div>
+      <div class="file-viewer__header">
+        <div>
+          <div class="section-label">Full file</div>
+          <h3>${escapeHtml(fileTab.name)}</h3>
+        </div>
+        <div class="file-viewer__actions">
+          <button class="ghost-button" type="button" data-action="reveal-tool-path" data-path="${escapeAttr(fileTab.path)}">Folder</button>
+          <button class="ghost-button" type="button" data-action="copy-open-file" data-tab-id="${escapeAttr(fileTab.id)}">Copy</button>
+        </div>
+      </div>
+      <div class="file-viewer__meta" title="${escapeAttr(fileTab.path)}">
+        <code>${escapeHtml(compactPath(fileTab.path))}</code>
+        <span>${lineCount} lines · ${formatBytes(fileTab.sizeBytes)}</span>
+      </div>
+      <div class="file-viewer__content">${renderFullFileRows(fileTab)}</div>
+      ${renderRightPanelTabs()}
+    </aside>
+  `;
+}
+
+function renderRightPanelTabs() {
+  return `
+    <div class="right-panel-tabs" role="tablist" aria-label="Right panel views">
+      <button class="right-panel-tab ${state.ui.activeRightPanelTab === "setup" ? "active" : ""}" type="button" data-action="open-right-panel-tab" data-tab-id="setup">Setup</button>
+      ${state.ui.rightPanelTabs.map((tab) => `
+        <span class="right-panel-tab-wrap">
+          <button class="right-panel-tab ${state.ui.activeRightPanelTab === tab.id ? "active" : ""}" type="button" data-action="open-right-panel-tab" data-tab-id="${escapeAttr(tab.id)}" title="${escapeAttr(tab.path)}">${escapeHtml(tab.name)}</button>
+          <button class="right-panel-tab-close" type="button" data-action="close-right-panel-tab" data-tab-id="${escapeAttr(tab.id)}" aria-label="Close ${escapeAttr(tab.name)}">×</button>
+        </span>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -842,12 +987,33 @@ function normalizeHypothesisAgentsForUi(settings) {
   ];
   const merged = configured.length ? configured : fallback;
   const byRole = new Map(merged.map((agent) => [agent.role, agent]));
+  const seenAdvisorIds = new Set();
+  const seenAdvisorNames = new Set();
+  const advisors = merged.filter((agent) => {
+    if (agent.role !== "advisor") {
+      return false;
+    }
+
+    const id = String(agent.id || "").trim();
+    const name = String(agent.name || "").trim().toLowerCase();
+    if ((id && seenAdvisorIds.has(id)) || (name && seenAdvisorNames.has(name))) {
+      return false;
+    }
+
+    if (id) {
+      seenAdvisorIds.add(id);
+    }
+    if (name) {
+      seenAdvisorNames.add(name);
+    }
+    return true;
+  });
 
   return [
     byRole.get("support") ?? fallback[0],
     byRole.get("attack") ?? fallback[1],
     byRole.get("judge") ?? fallback[2],
-    ...merged.filter((agent) => agent.role === "advisor").slice(0, MAX_HYPOTHESIS_ADVISORS)
+    ...advisors.slice(0, MAX_HYPOTHESIS_ADVISORS)
   ];
 }
 
@@ -1747,7 +1913,7 @@ function renderModelsRoute() {
                             <div class="mono">${escapeHtml(model.id)}</div>
                             <div class="subtle">${escapeHtml(model.providerName || model.providerId || "local")} · ${escapeHtml(model.loadedInstanceIds.join(", ") || "loaded")}</div>
                         </div>
-                        <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(model.providerId || "lmstudio")}" data-model-id="${escapeAttr(model.loadedInstanceIds[0] || model.id)}">Unload</button>
+                        <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(model.providerId || "lmstudio")}" data-model-id="${escapeAttr(model.loadedInstanceIds[0] || model.id)}" data-model-key="${escapeAttr(model.id)}">Unload</button>
                       </div>
                     `
                   )
@@ -1781,7 +1947,7 @@ function renderModelsRoute() {
                     <span class="subtle">${model.loaded ? "Ready for chat and debate." : `Can be loaded into ${escapeHtml(model.providerName || model.providerId || "local runtime")}.`}</span>
                     ${
                       model.loaded
-                        ? renderModelActionButton("unload", model.loadedInstanceIds[0] || model.id, model.providerId || "lmstudio")
+                        ? renderModelActionButton("unload", model.loadedInstanceIds[0] || model.id, model.providerId || "lmstudio", model.id)
                         : renderModelActionButton("load", model.id, model.providerId || "lmstudio")
                     }
                   </div>
@@ -1795,13 +1961,13 @@ function renderModelsRoute() {
   `;
 }
 
-function renderModelActionButton(action, modelId, providerId = "lmstudio") {
+function renderModelActionButton(action, modelId, providerId = "lmstudio", modelKey = modelId) {
   const stateKey = `${action}:${providerId}:${modelId}`;
   const pending = Boolean(state.modelActions[stateKey]);
 
   if (action === "unload") {
     return `
-      <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(providerId)}" data-model-id="${escapeAttr(modelId)}" ${pending ? "disabled" : ""}>
+      <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(providerId)}" data-model-id="${escapeAttr(modelId)}" data-model-key="${escapeAttr(modelKey)}" ${pending ? "disabled" : ""}>
         ${pending ? `<span class="button-spinner"></span>Unloading...` : "Unload"}
       </button>
     `;
@@ -2253,7 +2419,7 @@ function renderPlainMessageText(value) {
   };
 
   for (const line of value.split(/\r?\n/)) {
-    const runtimeMatch = line.match(/^(Research agents|Research status|Final collector|Provider|Model):\s*(.+)$/i);
+    const runtimeMatch = line.match(/^(Delegated agents|Agent status|Final response|Provider|Model):\s*(.+)$/i);
     if (runtimeMatch) {
       flushPlainLines();
       chunks.push(renderRuntimeMetaLine(runtimeMatch[1], runtimeMatch[2]));
@@ -2313,8 +2479,10 @@ function stableMentionHue(name) {
 }
 
 function renderRuntimeMetaLine(label, value) {
+  const isFinalResponse = label.trim().toLowerCase() === "final response";
+
   return `
-    <div class="message-runtime-line">
+    <div class="message-runtime-line ${isFinalResponse ? "is-final-response" : ""}">
       <span>${escapeHtml(label)}</span>
       <strong class="runtime-gradient-text">${escapeHtml(value)}</strong>
     </div>
@@ -2342,7 +2510,7 @@ function renderMessageSubagents(subagents) {
 }
 
 function renderSubagentCard(agent) {
-  const roleLabel = agent.role === "advisor" ? "research" : agent.role;
+  const roleLabel = agent.role === "advisor" ? "task" : agent.role;
   const status = agent.status === "ok" ? "done" : "degraded";
   const output = String(
     agent.output ||
@@ -2474,6 +2642,7 @@ function renderFileDiffBlock(filePath, diff, operation = "write", showPath = tru
         <span class="diff-summary__add">+${Number(diff.added || 0)}</span>
         <span class="diff-summary__remove">-${Number(diff.removed || 0)}</span>
         ${diff.truncated ? `<span class="diff-summary__muted">preview truncated</span>` : ""}
+        ${diff.truncated && filePath ? `<button class="ghost-button diff-summary__view" type="button" data-action="open-tool-path" data-path="${escapeAttr(filePath)}">View full</button>` : ""}
       </div>
       <div class="diff-preview">
         ${diff.preview.map(renderDiffRow).join("")}
@@ -2484,6 +2653,7 @@ function renderFileDiffBlock(filePath, diff, operation = "write", showPath = tru
 
 function renderFilePathBar(filePath, label = "File", extraClass = "") {
   const value = String(filePath || "");
+  const isDirectory = ["Project", "List directory", "Create directory"].includes(label);
 
   return `
     <div class="process-pathbar ${escapeAttr(extraClass)}">
@@ -2491,10 +2661,12 @@ function renderFilePathBar(filePath, label = "File", extraClass = "") {
         <span>${escapeHtml(label)}</span>
         <code title="${escapeAttr(value)}">${escapeHtml(compactPath(value))}</code>
       </div>
-      <div class="process-pathbar__actions">
-        <button class="ghost-button process-pathbar__button" type="button" data-action="copy-tool-path" data-path="${escapeAttr(value)}">Copy</button>
-        <button class="ghost-button process-pathbar__button" type="button" data-action="open-tool-path" data-path="${escapeAttr(value)}">Open</button>
-      </div>
+      ${isDirectory ? `
+        <div class="process-pathbar__actions">
+          <button class="ghost-button process-pathbar__button" type="button" data-action="copy-tool-path" data-path="${escapeAttr(value)}">Copy</button>
+          <button class="ghost-button process-pathbar__button" type="button" data-action="reveal-tool-path" data-path="${escapeAttr(value)}">Open</button>
+        </div>
+      ` : ""}
     </div>
   `;
 }
@@ -2509,6 +2681,54 @@ function renderDiffRow(row) {
       <code>${escapeHtml(row.text || "")}</code>
     </div>
   `;
+}
+
+function splitFileViewerLines(content) {
+  const normalized = String(content || "").replace(/\r?\n$/, "");
+  return normalized ? normalized.split(/\r?\n/) : [""];
+}
+
+function renderFullFileRows(fileTab) {
+  const lines = splitFileViewerLines(fileTab.content);
+  const change = fileTab.change;
+  const diff = change?.diff;
+  const addedLines = new Set();
+  const removedByLine = new Map();
+
+  if (diff) {
+    const start = Number(
+      diff.changeStartLine || diff.preview?.find((row) => row.type === "add")?.line || 1
+    );
+    for (let index = 0; index < Number(diff.added || 0); index += 1) {
+      addedLines.add(start + index);
+    }
+    for (const row of diff.preview || []) {
+      if (row.type !== "remove") {
+        continue;
+      }
+      const lineNumber = Number(row.line || start);
+      removedByLine.set(lineNumber, [...(removedByLine.get(lineNumber) || []), row]);
+    }
+  }
+
+  const rows = [];
+  lines.forEach((text, index) => {
+    const lineNumber = index + 1;
+    for (const removed of removedByLine.get(lineNumber) || []) {
+      rows.push(renderDiffRow({ ...removed, line: lineNumber }));
+    }
+    const type = change?.beforeExists === false || addedLines.has(lineNumber) ? "add" : "context";
+    rows.push(renderDiffRow({ type, line: lineNumber, text }));
+  });
+
+  for (const [lineNumber, removedRows] of removedByLine.entries()) {
+    if (lineNumber <= lines.length) {
+      continue;
+    }
+    removedRows.forEach((row) => rows.push(renderDiffRow(row)));
+  }
+
+  return rows.join("");
 }
 
 function renderToolOutput(output) {
@@ -3105,8 +3325,8 @@ function bindEvents() {
         hypothesisAgents: [
           ...agents,
           {
-            id: `hypothesis-${Date.now()}`,
-            name: `Advisor${advisorCount + 1}`,
+            id: createUiEntityId("hypothesis"),
+            name: chooseHypothesisAdvisorName(agents),
             role: "advisor",
             providerId: baseSettings.defaultTarget.providerId,
             model: baseSettings.defaultTarget.model
@@ -3127,9 +3347,29 @@ function bindEvents() {
       const snapshot = readSessionSetupSnapshot();
       const baseSettings = snapshot?.settings ?? state.sessionSettings;
       const index = Number(button.dataset.hypothesisAgentIndex);
+      const agentId = button.dataset.hypothesisAgentId;
+      const agents = normalizeHypothesisAgentsForUi(baseSettings);
+      let removed = false;
+
+      if (!Number.isInteger(index) || index < 3) {
+        return;
+      }
+
       state.sessionSettings = {
         ...baseSettings,
-        hypothesisAgents: normalizeHypothesisAgentsForUi(baseSettings).filter((_, itemIndex) => itemIndex !== index)
+        hypothesisAgents: agents.filter((agent, itemIndex) => {
+          if (removed || itemIndex < 3) {
+            return true;
+          }
+
+          const matches = agentId ? agent.id === agentId : itemIndex === index;
+          if (matches) {
+            removed = true;
+            return false;
+          }
+
+          return true;
+        })
       };
       render();
       scheduleSessionSetupAutosave();
@@ -3168,15 +3408,20 @@ function bindEvents() {
     }
 
     try {
+      const requestId = createUiEntityId("chat");
+      const controller = new AbortController();
+      const activeRequest = { requestId, controller, cancelled: false, progressTimer: null };
       const attachments = getActiveDraftAttachments();
       await persistActiveSessionSetup({ refreshBootstrap: false });
       state.route = "chat";
       window.location.hash = "/chat";
       state.pendingRequest = {
+        requestId,
         input,
         startedAt: new Date().toISOString(),
         pendingText: isSubagentRequest(input) ? chooseSubagentPendingText(input) : undefined
       };
+      state.activeChatRequest = activeRequest;
       state.chatSubmitting = true;
       if (state.activeSessionId) {
         state.drafts[state.activeSessionId] = "";
@@ -3186,8 +3431,10 @@ function bindEvents() {
       if (wasNearBottom) {
         requestAnimationFrame(() => scrollChatToBottom("auto"));
       }
+      startProcessProgressPolling(activeRequest);
 
       const response = await api.sendChat({
+        requestId,
         input,
         sessionId: state.activeSessionId,
         metadata: attachments.length
@@ -3195,7 +3442,10 @@ function bindEvents() {
               attachments
             }
           : undefined
-      });
+      }, controller);
+      if (activeRequest.cancelled) {
+        return;
+      }
       state.activeSessionId = response.sessionId;
       if (state.activeSessionId) {
         state.draftAttachments[state.activeSessionId] = [];
@@ -3203,9 +3453,15 @@ function bindEvents() {
       await refreshBootstrap();
       await loadActiveSession();
     } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Action failed", "danger");
+      if (!state.activeChatRequest?.cancelled && !(error instanceof Error && /cancelled/i.test(error.message))) {
+        pushToast(error instanceof Error ? error.message : "Action failed", "danger");
+      }
       state.pendingRequest = null;
     } finally {
+      if (state.activeChatRequest) {
+        stopProcessProgressPolling(state.activeChatRequest);
+      }
+      state.activeChatRequest = null;
       state.chatSubmitting = false;
       render();
       if (state.ui.messageStreamPinnedToBottom) {
@@ -3383,6 +3639,7 @@ function bindEvents() {
   document.querySelectorAll("[data-action='unload-model']").forEach((button) => {
     button.addEventListener("click", async () => {
       const modelId = button.dataset.modelId;
+      const modelKey = button.dataset.modelKey || modelId;
       const providerId = button.dataset.providerId || "lmstudio";
 
       if (!modelId) {
@@ -3397,7 +3654,13 @@ function bindEvents() {
 
       try {
         await api.unloadModel(providerId, modelId);
-        const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
+        optimisticallyUnloadModel(providerId, modelKey, modelId);
+        invalidateSessionModelSelection(providerId, modelKey);
+        render();
+        const [managed, systemMetrics] = await Promise.all([
+          waitForManagedModelState(providerId, modelKey, false),
+          api.getSystemMetrics()
+        ]);
         state.bootstrap.loadedModels = managed.loadedModels;
         state.bootstrap.allManagedModels = managed.allManagedModels;
         state.bootstrap.systemMetrics = systemMetrics;
@@ -3503,15 +3766,68 @@ function bindEvents() {
   });
 
   document.querySelectorAll("[data-action='open-tool-path']").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const filePath = button.dataset.path;
 
       if (!filePath) {
         return;
       }
 
-      const normalized = filePath.startsWith("/") ? `file://${filePath}` : filePath;
-      window.open(normalized, "_blank", "noopener,noreferrer");
+      try {
+        await openFileInRightPanel(filePath);
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Unable to open file", "danger");
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='reveal-tool-path']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const filePath = button.dataset.path;
+      if (!filePath) {
+        return;
+      }
+
+      try {
+        await api.revealWorkspacePath(filePath);
+        pushToast("Opened in file manager", "success");
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Unable to open directory", "danger");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='open-right-panel-tab']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.ui.activeRightPanelTab = button.dataset.tabId || "setup";
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-action='close-right-panel-tab']").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const tabId = button.dataset.tabId;
+      state.ui.rightPanelTabs = state.ui.rightPanelTabs.filter((tab) => tab.id !== tabId);
+      if (state.ui.activeRightPanelTab === tabId) {
+        state.ui.activeRightPanelTab = "setup";
+      }
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-action='copy-open-file']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const tab = state.ui.rightPanelTabs.find((item) => item.id === button.dataset.tabId);
+      if (!tab) {
+        return;
+      }
+      await navigator.clipboard.writeText(tab.content);
+      button.textContent = "Copied";
+      window.setTimeout(() => {
+        button.textContent = "Copy";
+      }, 1000);
     });
   });
 
@@ -3542,6 +3858,59 @@ function bindEvents() {
       }
     });
   });
+}
+
+async function openFileInRightPanel(filePath) {
+  const change = findFileChangeMetadata(filePath);
+  const existing = state.ui.rightPanelTabs.find((tab) => tab.path === filePath);
+  if (existing) {
+    existing.change = change || existing.change;
+    state.ui.activeRightPanelTab = existing.id;
+    render();
+    return;
+  }
+
+  const file = await api.readWorkspaceFile(filePath);
+  const tab = {
+    id: createUiEntityId("file"),
+    path: file.path,
+    name: file.name,
+    sizeBytes: file.sizeBytes,
+    content: file.content,
+    change
+  };
+  state.ui.rightPanelTabs = [...state.ui.rightPanelTabs, tab].slice(-6);
+  state.ui.activeRightPanelTab = tab.id;
+  state.ui.sessionSetupCollapsed = false;
+  localStorage.setItem("lcai.sessionSetupCollapsed", "false");
+  render();
+}
+
+function findFileChangeMetadata(filePath) {
+  for (const message of [...state.messages].reverse()) {
+    for (const tool of [...(message.tools || [])].reverse()) {
+      if (tool.tool !== "file") {
+        continue;
+      }
+      const metadata = tool.metadata || {};
+      const file = (metadata.files || []).find((item) => item.filePath === filePath);
+      if (file) {
+        return {
+          operation: file.operation || "write",
+          beforeExists: file.beforeExists,
+          diff: file.diff
+        };
+      }
+      if (metadata.filePath === filePath) {
+        return {
+          operation: metadata.operation || "write",
+          beforeExists: metadata.beforeExists,
+          diff: metadata.diff
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function bindResizeHandle(selector, stateKey, storageKey, minWidth, maxWidth, readWidth) {
@@ -3579,20 +3948,29 @@ function scheduleSessionSetupAutosave() {
   }
 
   window.clearTimeout(state.ui.autosaveTimer);
+  const saveSeq = state.ui.autosaveSeq + 1;
+  state.ui.autosaveSeq = saveSeq;
   setAutosaveStatus("saving");
-  state.ui.autosaveTimer = window.setTimeout(async () => {
-    const saveSeq = state.ui.autosaveSeq + 1;
-    state.ui.autosaveSeq = saveSeq;
+  state.ui.autosaveTimer = window.setTimeout(() => {
+    state.ui.autosavePromise = state.ui.autosavePromise
+      .catch(() => undefined)
+      .then(async () => {
+        if (state.ui.autosaveSeq !== saveSeq) {
+          return;
+        }
 
-    try {
-      await persistActiveSessionSetup({ refreshBootstrap: false });
-      if (state.ui.autosaveSeq === saveSeq) {
-        setAutosaveStatus("saved");
-      }
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Autosave failed", "danger");
-      setAutosaveStatus("error");
-    }
+        try {
+          await persistActiveSessionSetup({ refreshBootstrap: false, saveSeq });
+          if (state.ui.autosaveSeq === saveSeq) {
+            setAutosaveStatus("saved");
+          }
+        } catch (error) {
+          if (state.ui.autosaveSeq === saveSeq) {
+            pushToast(error instanceof Error ? error.message : "Autosave failed", "danger");
+            setAutosaveStatus("error");
+          }
+        }
+      });
   }, 650);
 }
 
@@ -3627,6 +4005,29 @@ function chooseSubagentName(existingAgents) {
     .sort(() => Math.random() - 0.5);
 
   return candidates[0];
+}
+
+function chooseHypothesisAdvisorName(existingAgents) {
+  const used = new Set(
+    existingAgents.map((agent) => String(agent.name || "").trim().toLowerCase())
+  );
+
+  for (let index = 1; index <= MAX_HYPOTHESIS_ADVISORS; index += 1) {
+    const candidate = `Advisor${index}`;
+    if (!used.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  return `Advisor-${Date.now()}`;
+}
+
+function createUiEntityId(prefix) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function updateMentionMenu(textarea) {
@@ -3685,6 +4086,84 @@ async function refreshModelCollections() {
     state.bootstrap.systemMetrics = systemMetrics;
     pushToast("Model catalog refreshed.", "info");
   });
+}
+
+function optimisticallyUnloadModel(providerId, modelKey, instanceId) {
+  if (!state.bootstrap) {
+    return;
+  }
+
+  state.bootstrap.loadedModels = (state.bootstrap.loadedModels ?? []).filter(
+    (model) =>
+      !(
+        model.providerId === providerId &&
+        (model.id === modelKey || model.id === instanceId || model.loadedInstanceIds?.includes(instanceId))
+      )
+  );
+  state.bootstrap.allManagedModels = (state.bootstrap.allManagedModels ?? []).map((model) =>
+    model.providerId === providerId && model.id === modelKey
+      ? { ...model, loaded: false, loadedInstanceIds: [] }
+      : model
+  );
+}
+
+function invalidateSessionModelSelection(providerId, modelKey) {
+  if (!state.sessionSettings) {
+    return;
+  }
+
+  const replacement = getLoadedModelOptions(providerId)[0];
+  const replaceTarget = (target) =>
+    target?.providerId === providerId && target.model === modelKey
+      ? { ...target, model: replacement }
+      : target;
+
+  state.sessionSettings = {
+    ...state.sessionSettings,
+    defaultTarget: replaceTarget(state.sessionSettings.defaultTarget),
+    codeAgents: (state.sessionSettings.codeAgents ?? []).map((agent) => replaceTarget(agent)),
+    hypothesisAgents: (state.sessionSettings.hypothesisAgents ?? []).map((agent) => replaceTarget(agent)),
+    debate: {
+      ...state.sessionSettings.debate,
+      support: replaceTarget(state.sessionSettings.debate.support),
+      attack: replaceTarget(state.sessionSettings.debate.attack),
+      judge: replaceTarget(state.sessionSettings.debate.judge)
+    }
+  };
+  scheduleSessionSetupAutosave();
+}
+
+async function waitForManagedModelState(providerId, modelKey, loaded) {
+  let latest = await api.refreshManagedModels();
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const model = latest.allManagedModels.find(
+      (item) => item.providerId === providerId && item.id === modelKey
+    );
+    const stillLoaded = latest.loadedModels.some(
+      (item) => item.providerId === providerId && item.id === modelKey
+    );
+
+    if (Boolean(model?.loaded || stillLoaded) === loaded) {
+      return latest;
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 450));
+    latest = await api.refreshManagedModels();
+  }
+
+  if (!loaded) {
+    latest.loadedModels = latest.loadedModels.filter(
+      (model) => !(model.providerId === providerId && model.id === modelKey)
+    );
+    latest.allManagedModels = latest.allManagedModels.map((model) =>
+      model.providerId === providerId && model.id === modelKey
+        ? { ...model, loaded: false, loadedInstanceIds: [] }
+        : model
+    );
+  }
+
+  return latest;
 }
 
 async function pollSystemMetrics() {
@@ -4036,7 +4515,7 @@ function getSelectableSessionModels(providerId, ...selected) {
   const providerModel = providerId ? state.bootstrap?.appSettings?.providers?.[providerId]?.model : undefined;
   const normalizedSelected = selected.filter(Boolean);
   const models = isLocalProvider(providerId)
-    ? [...getLoadedModelOptions(providerId), ...normalizedSelected]
+    ? getLoadedModelOptions(providerId)
     : [
         !isLocalCatalogModel(providerModel) ? providerModel : undefined,
         ...getProviderSuggestedModels(providerId),
@@ -4409,7 +4888,9 @@ function readSessionSetupSnapshot() {
         getProviderConfiguredModel(providerId)
     };
   }).slice(0, 4);
-  const hypothesisAgentCards = [...form.querySelectorAll("[data-hypothesis-agent-index]")];
+  const hypothesisAgentCards = [
+    ...form.querySelectorAll(".hypothesis-agent-card[data-hypothesis-agent-index]")
+  ];
   const hypothesisAgents = hypothesisAgentCards.map((card, index) => {
     const agentIndex = card.dataset.hypothesisAgentIndex ?? String(index);
     const existingAgent = fallbackSettings.hypothesisAgents?.[index];
@@ -4486,10 +4967,14 @@ async function persistActiveSessionSetup(options = {}) {
     }
   }
 
-  state.sessionSettings = await api.updateSessionSettings(
+  const savedSettings = await api.updateSessionSettings(
     state.activeSessionId,
     sessionSettingsToPatch(snapshot.settings)
   );
+
+  if (options.saveSeq === undefined || state.ui.autosaveSeq === options.saveSeq) {
+    state.sessionSettings = savedSettings;
+  }
 
   if (options.refreshBootstrap) {
     await refreshBootstrap();
@@ -4656,7 +5141,7 @@ function renderHypothesisAgentCard(agent, index, providerOptions) {
       </div>
       <div class="field code-agent-delete">
         <label>&nbsp;</label>
-        <button class="ghost-button" type="button" data-action="delete-hypothesis-agent" data-hypothesis-agent-index="${index}" ${index < 3 ? "disabled" : ""}>Delete</button>
+        <button class="ghost-button" type="button" data-action="delete-hypothesis-agent" data-hypothesis-agent-index="${index}" data-hypothesis-agent-id="${escapeAttr(agent.id)}" ${index < 3 ? "disabled" : ""}>Delete</button>
       </div>
     </div>
   `;

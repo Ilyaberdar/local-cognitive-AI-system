@@ -16,16 +16,18 @@ export class LanguageEnforcer {
   async normalizeText(
     text: string,
     language: LanguagePreference,
-    target: ProviderTarget
+    target: ProviderTarget,
+    signal?: AbortSignal
   ): Promise<string> {
-    const [item] = await this.normalizeMany([text], language, target);
+    const [item] = await this.normalizeMany([text], language, target, signal);
     return item;
   }
 
   async normalizeMany(
     items: string[],
     language: LanguagePreference,
-    target: ProviderTarget
+    target: ProviderTarget,
+    signal?: AbortSignal
   ): Promise<string[]> {
     if (language === "auto" || items.length === 0 || !target.providerId || target.providerId === "local") {
       return items;
@@ -44,6 +46,7 @@ export class LanguageEnforcer {
           language
         )}. Output valid JSON only.`,
         model: target.model,
+        signal,
         prompt: [
           `Translate every item into ${this.languageName(language)}.`,
           "Preserve ordering, meaning, and bullet/list style.",

@@ -49,13 +49,15 @@ export class SupportAgent {
     profile: DebateProfile,
     language: "auto" | "ru" | "en",
     outputStyle: OutputStyle,
-    attachmentContext?: string
+    attachmentContext?: string,
+    signal?: AbortSignal
   ): Promise<AgentDebateResponse> {
     const { data, response } = await this.llmService.generateObject<DebatePayload>(
       {
         systemPrompt: "You are a rigorous analyst producing only structured JSON.",
         model: target.model,
         maxTokens: getStyleTokenBudget(outputStyle),
+        signal,
         prompt: [
           buildSupportInstruction(outputStyle),
           buildDebateGuidance(profile),
@@ -100,12 +102,14 @@ export class SupportAgent {
     const normalizedSummary = await this.languageEnforcer.normalizeText(
       payload.summary,
       language,
-      target
+      target,
+      signal
     );
     const normalizedArguments = await this.languageEnforcer.normalizeMany(
       argumentsList,
       language,
-      target
+      target,
+      signal
     );
 
     return {

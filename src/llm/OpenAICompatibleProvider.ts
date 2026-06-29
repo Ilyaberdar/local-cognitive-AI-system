@@ -7,6 +7,7 @@ import {
   HttpProviderOptions,
   readRateLimit,
   readResponseText,
+  resolveAbortSignal,
   resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
@@ -100,7 +101,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
               }
             : {})
         }),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: resolveAbortSignal(timeoutMs, request.signal)
       });
 
       if (!response.ok) {
@@ -121,6 +122,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
         rateLimit: readRateLimit(response.headers)
       };
     } catch (error) {
+      if (request.signal?.aborted) {
+        throw new Error("Request cancelled");
+      }
       this.logger.warn(`Falling back to mock ${this.id} response`, {
         error: error instanceof Error ? error.message : "unknown_error"
       });

@@ -243,6 +243,7 @@ export interface HypothesisResult {
     support: string;
     attack: string;
     judge: string;
+    advisors?: string[];
   };
   configuredParticipants?: {
     judge?: string;
@@ -277,10 +278,12 @@ export interface HypothesisResult {
     pro: string[];
     contra: string[];
   };
+  subagents?: SubagentRunSummary[];
 }
 
 export interface TextModeResult {
   response: string;
+  toolPayload?: string;
   provider: string;
   model: string;
   subagents?: SubagentRunSummary[];
@@ -325,6 +328,7 @@ export interface LLMRequest {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   previousResponseId?: string;
   responseFormat?: {
     type: "json_object";
@@ -350,6 +354,17 @@ export interface ExecutionContext {
   activeTarget: ProviderTarget;
   sessionSettings: SessionSettings;
   requestMetadata?: Record<string, unknown>;
+  signal?: AbortSignal;
+  onProgress?: (event: ProcessProgressEvent) => void;
+}
+
+export interface ProcessProgressEvent {
+  phase: string;
+  label: string;
+  detail?: string;
+  completed?: number;
+  total?: number;
+  at: string;
 }
 
 export interface ProcessInput {
@@ -358,6 +373,8 @@ export interface ProcessInput {
   providerId?: string;
   model?: string;
   metadata?: Record<string, unknown>;
+  signal?: AbortSignal;
+  onProgress?: (event: ProcessProgressEvent) => void;
 }
 
 export interface MemorySaveInput {
