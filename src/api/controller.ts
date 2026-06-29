@@ -1,4 +1,5 @@
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
+import { randomUUID } from "crypto";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -20,10 +21,15 @@ import { SessionIndexStore } from "../session/SessionIndexStore";
 import { processRuntimeInput } from "../transports/shared/runtimeActions";
 import { extractNotionId } from "../utils/notion";
 import { readAttachments } from "../utils/attachments";
+import { processRunRegistry } from "./ProcessRunRegistry";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const requestId = typeof req.body?.requestId === "string" ? req.body.requestId : randomUUID();
+    const processRun = processRunRegistry.start(requestId);
+    req.once("aborted", () => processRunRegistry.cancel(requestId));
+
     try {
       const {
         input,
@@ -62,14 +68,129 @@ export const createProcessController =
           userId: typeof userId === "string" ? userId : undefined,
           providerId: typeof providerId === "string" ? providerId : undefined,
           model: typeof model === "string" ? model : undefined,
-          metadata
+          metadata,
+          signal: processRun.controller.signal,
+          onProgress: (event) => processRunRegistry.update(requestId, event)
         },
         channel === "telegram" || channel === "mcp" ? channel : "http"
       );
 
       res.status(200).json({
-        ...result
+        ...result,
+        requestId
       });
+      processRunRegistry.complete(requestId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown_error";
+      processRunRegistry.fail(requestId, message);
+      if (processRun.controller.signal.aborted && !res.headersSent) {
+        res.status(499).json({ error: "Request cancelled", requestId });
+        return;
+      }
+      next(error);
+    }
+  };
+
+export const createProcessRunStatusController = () =>
+  (req: Request, res: Response): void => {
+    const run = processRunRegistry.get(String(req.params.requestId));
+    if (!run) {
+      res.status(404).json({ error: "Process run not found" });
+      return;
+    }
+    res.status(200).json(run);
+  };
+
+export const createCancelProcessRunController = () =>
+  (req: Request, res: Response): void => {
+    const requestId = String(req.params.requestId);
+    const cancelled = processRunRegistry.cancel(requestId);
+    res.status(cancelled ? 202 : 409).json({ requestId, cancelled });
+  };
+
+export const createReadWorkspaceFileController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const requestedPath = typeof req.query.path === "string" ? req.query.path : "";
+      if (!requestedPath) {
+        res.status(400).json({ error: "Query parameter 'path' is required." });
+        return;
+      }
+
+      const runtime = runtimeManager.getRuntime();
+      const filePath = path.resolve(requestedPath);
+      const allowed = runtime.config.filesystem.allowedDirectories.some((directory) => {
+        const root = path.resolve(directory);
+        return filePath === root || filePath.startsWith(`${root}${path.sep}`);
+      });
+
+      if (!allowed) {
+        res.status(403).json({ error: "File is outside configured workspace boundaries." });
+        return;
+      }
+
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) {
+        res.status(400).json({ error: "Requested path is not a file." });
+        return;
+      }
+      if (stat.size > 5 * 1024 * 1024) {
+        res.status(413).json({ error: "File is larger than the 5 MB viewer limit." });
+        return;
+      }
+
+      res.status(200).json({
+        path: filePath,
+        name: path.basename(filePath),
+        sizeBytes: stat.size,
+        content: await fs.readFile(filePath, "utf8")
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+export const createRevealWorkspacePathController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const requestedPath = typeof req.body?.path === "string" ? req.body.path : "";
+      if (!requestedPath) {
+        res.status(400).json({ error: "Field 'path' is required." });
+        return;
+      }
+
+      const runtime = runtimeManager.getRuntime();
+      const targetPath = path.resolve(requestedPath);
+      const allowed = runtime.config.filesystem.allowedDirectories.some((directory) => {
+        const root = path.resolve(directory);
+        return targetPath === root || targetPath.startsWith(`${root}${path.sep}`);
+      });
+
+      if (!allowed) {
+        res.status(403).json({ error: "Path is outside configured workspace boundaries." });
+        return;
+      }
+
+      const stat = await fs.stat(targetPath);
+      const directoryPath = stat.isDirectory() ? targetPath : path.dirname(targetPath);
+      const command = process.platform === "darwin"
+        ? "/usr/bin/open"
+        : process.platform === "win32"
+          ? "explorer.exe"
+          : "xdg-open";
+      const args = process.platform === "darwin"
+        ? stat.isDirectory() ? [directoryPath] : ["-R", targetPath]
+        : process.platform === "win32"
+          ? stat.isDirectory() ? [directoryPath] : [`/select,${targetPath}`]
+          : [directoryPath];
+
+      await new Promise<void>((resolve, reject) => {
+        execFile(command, args, (error) => error ? reject(error) : resolve());
+      });
+
+      res.status(200).json({ ok: true, directory: directoryPath });
     } catch (error) {
       next(error);
     }

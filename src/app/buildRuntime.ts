@@ -1,12 +1,9 @@
 import fs from "fs/promises";
 import path from "path";
 import { AttackAgent } from "../agents/AttackAgent";
-import {
-  hasSubagentTrigger,
-  parseMentionedSubagentNames,
-  selectConfiguredSubagents
-} from "../agents/code/codeAgentRouting";
+import { selectConfiguredSubagents } from "../agents/code/codeAgentRouting";
 import { HypothesisAgent } from "../agents/HypothesisAgent";
+import { HypothesisAdvisorAgent } from "../agents/HypothesisAdvisorAgent";
 import { SupportAgent } from "../agents/SupportAgent";
 import { AppConfig } from "../config/config";
 import { CognitiveEngine } from "../core/CognitiveEngine";
@@ -50,13 +47,18 @@ import { Logger } from "../utils/Logger";
 import { ModelCatalogService } from "../llm/ModelCatalogService";
 import { readAttachments, renderAttachmentContext } from "../utils/attachments";
 import {
-  buildCodeWriterPrompt,
-  buildCollectorSystemPrompt,
-  buildFallbackCollectorSystemPrompt,
-  buildFallbackSingleAgentSystemPrompt,
-  buildIndependentAgentPrompt,
-  buildIndependentAgentSystemPrompt,
+  buildFinalMainPrompt,
+  buildFinalMainSystemPrompt,
+  buildMainDraftPrompt,
+  buildMainDraftSystemPrompt,
+  buildMainSummaryPrompt,
+  buildMainSummarySystemPrompt,
+  buildReviewAgentPrompt,
+  buildReviewAgentSystemPrompt,
+  extractMainExecutionOutput,
+  parseMainUserSummary,
   buildSingleAgentSystemPrompt,
+  parseMainDelegationPlan,
   stripSubagentRoutingSyntax
 } from "../prompts/codeAgentPrompts";
 import { buildTextPrompt } from "../prompts/common";
@@ -134,6 +136,7 @@ const runCodeAgent = async (
   languageEnforcer: LanguageEnforcer,
   language: "auto" | "ru" | "en",
   systemPrompt: string,
+  signal?: AbortSignal
 ) => {
   try {
     const response = await llmService.generateText(
@@ -141,7 +144,8 @@ const runCodeAgent = async (
         model: agent.model,
         systemPrompt,
         prompt,
-        timeoutMs: agentRequestTimeoutMs(agent.providerId)
+        timeoutMs: agentRequestTimeoutMs(agent.providerId),
+        signal
       },
       agent.providerId
     );
@@ -158,6 +162,9 @@ const runCodeAgent = async (
       degraded: isDegradedResponse(response)
     };
   } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : "unknown_error";
 
     return {
@@ -185,24 +192,28 @@ const runCodeSwarm = async (
     "- No relevant memory found.";
   const attachmentContext = renderAttachmentContext(readAttachments(context.requestMetadata));
   const taskInput = stripSubagentRoutingSyntax(input);
-  const fallbackAgent = {
-    id: "default-agent",
-    name: "Default",
+  const mainAgent = {
+    id: "main-model",
+    name: "Main model",
     providerId: context.activeTarget.providerId,
     model: context.activeTarget.model,
     accessMode: context.sessionSettings.defaultAccessMode
   } satisfies CodeAgentTarget;
-  const configuredAgents =
+  const reviewAgents =
     context.sessionSettings.codeAgents.length > 0
       ? selectConfiguredSubagents(input, context.sessionSettings.codeAgents.slice(0, 4))
-      : hasSubagentTrigger(input) || parseMentionedSubagentNames(input).length > 0
-        ? [fallbackAgent]
-        : [];
-  const activeAgents = configuredAgents.length > 0 ? configuredAgents : [fallbackAgent];
+      : [];
 
-  if (activeAgents.length === 1) {
-    const writerRun = await runCodeAgent(
-      activeAgents[0],
+  context.onProgress?.({
+    phase: "planning",
+    label: "Planning",
+    detail: reviewAgents.length ? `Preparing work for ${reviewAgents.length} delegated agent${reviewAgents.length === 1 ? "" : "s"}` : "Preparing main-model response",
+    at: new Date().toISOString()
+  });
+
+  if (reviewAgents.length === 0) {
+    const mainRun = await runCodeAgent(
+      mainAgent,
       buildTextPrompt(
         "code",
         taskInput,
@@ -215,91 +226,133 @@ const runCodeSwarm = async (
       languageEnforcer,
       context.sessionSettings.language,
       buildSingleAgentSystemPrompt(
-        activeAgents[0],
+        mainAgent,
         input,
         taskInput,
         context.sessionSettings.outputStyle
-      )
+      ),
+      context.signal
     );
-    const finalRun =
-      writerRun.degraded && activeAgents[0].id !== fallbackAgent.id
-        ? await runCodeAgent(
-            fallbackAgent,
-            buildTextPrompt(
-              "code",
-              taskInput,
-              memorySummary,
-              context.sessionSettings.language,
-              context.sessionSettings.outputStyle,
-              attachmentContext
-            ),
-            llmService,
-            languageEnforcer,
-            context.sessionSettings.language,
-            buildFallbackSingleAgentSystemPrompt(
-              fallbackAgent,
-              input,
-              taskInput,
-              context.sessionSettings.outputStyle
-            )
-          )
-        : writerRun;
-    const fallbackUsed = finalRun !== writerRun;
 
     return {
-      response: finalRun.normalized,
-      provider: finalRun.response.provider,
-      model: finalRun.response.model,
-      subagents: fallbackUsed
-        ? [
-            summarizeSubagentRun(finalRun, "writer"),
-            summarizeSubagentRun(writerRun, "advisor")
-          ]
-        : [summarizeSubagentRun(writerRun, "writer")],
+      response: mainRun.normalized,
+      provider: mainRun.response.provider,
+      model: mainRun.response.model,
       metrics: {
         startedAt: new Date(0).toISOString(),
         completedAt: new Date(0).toISOString(),
         durationMs: 0,
-        usage: sumUsage([writerRun.response.usage, fallbackUsed ? finalRun.response.usage : undefined])
+        usage: sumUsage([mainRun.response.usage])
       }
     };
   }
 
-  const collectorAgent = activeAgents[0];
-  const independentRuns = await Promise.all(
-    activeAgents.map((agent) =>
-      runCodeAgent(
-        agent,
-        buildIndependentAgentPrompt(
-          input,
-          taskInput,
-          memorySummary,
-          context.sessionSettings.language,
-          context.sessionSettings.outputStyle,
-          attachmentContext,
-          activeAgents
-        ),
-        llmService,
-        languageEnforcer,
-        context.sessionSettings.language,
-        buildIndependentAgentSystemPrompt(
-          agent,
-          activeAgents,
-          context.sessionSettings.outputStyle
-        )
-      )
-    )
-  );
-  const writerRun = await runCodeAgent(
-    collectorAgent,
-    buildCodeWriterPrompt(
-      input,
+  const draftRun = await runCodeAgent(
+    mainAgent,
+    buildMainDraftPrompt(
       taskInput,
       memorySummary,
       context.sessionSettings.language,
       context.sessionSettings.outputStyle,
       attachmentContext,
-      independentRuns.map((item) => ({
+      reviewAgents
+    ),
+    llmService,
+    languageEnforcer,
+    context.sessionSettings.language,
+    buildMainDraftSystemPrompt(
+      mainAgent,
+      reviewAgents,
+      context.sessionSettings.outputStyle
+    ),
+    context.signal
+  );
+  context.onProgress?.({
+    phase: "delegation",
+    label: "Delegating",
+    detail: `Main draft ready; assigning ${reviewAgents.length} agent task${reviewAgents.length === 1 ? "" : "s"}`,
+    at: new Date().toISOString()
+  });
+  const delegationPlan = parseMainDelegationPlan(draftRun.normalized, reviewAgents);
+  context.onProgress?.({
+    phase: "agents",
+    label: "Running agents",
+    detail: `Waiting for ${reviewAgents.map((agent) => `@${agent.name}`).join(", ")}`,
+    completed: 0,
+    total: reviewAgents.length,
+    at: new Date().toISOString()
+  });
+  const reviewRuns = await Promise.all(
+    reviewAgents.map((agent) => {
+      const assignment = delegationPlan.assignments.get(agent.id);
+
+      if (!assignment) {
+        const error = "The main model did not produce a valid assignment for this agent.";
+
+        return Promise.resolve({
+          agent,
+          response: {
+            provider: agent.providerId,
+            model: agent.model ?? "default",
+            text: error,
+            error,
+            usage: undefined
+          } satisfies LLMResponse,
+          normalized: error,
+          degraded: true
+        });
+      }
+
+      return runCodeAgent(
+        agent,
+        buildReviewAgentPrompt(
+          input,
+          taskInput,
+          assignment,
+          delegationPlan.draft,
+          memorySummary,
+          context.sessionSettings.language,
+          context.sessionSettings.outputStyle,
+          attachmentContext,
+          reviewAgents
+        ),
+        llmService,
+        languageEnforcer,
+        context.sessionSettings.language,
+        buildReviewAgentSystemPrompt(
+          agent,
+          reviewAgents,
+          context.sessionSettings.outputStyle
+        ),
+        context.signal
+      );
+    })
+  );
+  context.onProgress?.({
+    phase: "agents-complete",
+    label: "Agents complete",
+    detail: `${reviewRuns.filter((item) => !item.degraded).length}/${reviewRuns.length} delegated results available`,
+    completed: reviewRuns.filter((item) => !item.degraded).length,
+    total: reviewRuns.length,
+    at: new Date().toISOString()
+  });
+  context.onProgress?.({
+    phase: "synthesis",
+    label: "Synthesizing",
+    detail: "Main model is validating agent results and preparing the final implementation",
+    at: new Date().toISOString()
+  });
+  const finalRun = await runCodeAgent(
+    mainAgent,
+    buildFinalMainPrompt(
+      input,
+      taskInput,
+      delegationPlan.draft,
+      memorySummary,
+      context.sessionSettings.language,
+      context.sessionSettings.outputStyle,
+      attachmentContext,
+      reviewRuns.map((item) => ({
         agent: item.agent,
         normalized: item.normalized,
         degraded: item.degraded
@@ -308,63 +361,58 @@ const runCodeSwarm = async (
     llmService,
     languageEnforcer,
     context.sessionSettings.language,
-    buildCollectorSystemPrompt(
-      collectorAgent,
-      activeAgents,
+    buildFinalMainSystemPrompt(
+      mainAgent,
+      reviewAgents,
       context.sessionSettings.outputStyle
-    )
+    ),
+    context.signal
   );
-  const firstHealthyAdvisor = independentRuns.find((item) => !item.degraded);
-  const fallbackWriterRun =
-    writerRun.degraded && !firstHealthyAdvisor && collectorAgent.id !== fallbackAgent.id
-      ? await runCodeAgent(
-          fallbackAgent,
-          buildCodeWriterPrompt(
-            input,
-            taskInput,
-            memorySummary,
-            context.sessionSettings.language,
-            context.sessionSettings.outputStyle,
-            attachmentContext,
-            independentRuns.map((item) => ({
-              agent: item.agent,
-              normalized: item.normalized,
-              degraded: item.degraded
-            }))
-          ),
-          llmService,
-          languageEnforcer,
-          context.sessionSettings.language,
-          buildFallbackCollectorSystemPrompt(
-            fallbackAgent,
-            activeAgents,
-            context.sessionSettings.outputStyle
-          )
-        )
-      : undefined;
-  const chosenRun = fallbackWriterRun ?? (!writerRun.degraded || !firstHealthyAdvisor ? writerRun : firstHealthyAdvisor);
-  const writerSummary = {
-    ...summarizeSubagentRun(writerRun, "writer" as const),
-    output: undefined
-  };
+  const executionRun = !finalRun.degraded || draftRun.degraded ? finalRun : draftRun;
+  const executionOutput = extractMainExecutionOutput(
+    executionRun.normalized,
+    delegationPlan.draft
+  );
+  const summaryRun = await runCodeAgent(
+    mainAgent,
+    buildMainSummaryPrompt(
+      taskInput,
+      executionOutput,
+      reviewRuns.map((item) => ({ agent: item.agent, degraded: item.degraded })),
+      context.sessionSettings.language
+    ),
+    llmService,
+    languageEnforcer,
+    "auto",
+    buildMainSummarySystemPrompt(),
+    context.signal
+  );
+  context.onProgress?.({
+    phase: "finalizing",
+    label: "Finalizing",
+    detail: "Preparing the user-facing summary and file actions",
+    at: new Date().toISOString()
+  });
+  const fallbackSummary = /[А-Яа-яЁё]/.test(taskInput)
+    ? "Основная модель завершила задачу и обработала результаты делегированных проверок. Детали изменений показаны в блоке файловой операции выше."
+    : "The main model completed the task and processed the delegated results. Review the file operation above for the concrete changes.";
+  const userSummary = parseMainUserSummary(summaryRun.normalized) ?? fallbackSummary;
 
   return {
-    response: chosenRun.normalized,
-    provider: chosenRun.response.provider,
-    model: chosenRun.response.model,
-    subagents: [
-      ...(fallbackWriterRun ? [summarizeSubagentRun(fallbackWriterRun, "writer")] : [writerSummary]),
-      ...(fallbackWriterRun ? [writerSummary] : []),
-      ...independentRuns.map((item) => summarizeSubagentRun(item, "advisor"))
-    ],
+    response: userSummary,
+    toolPayload: executionOutput,
+    provider: summaryRun.response.provider,
+    model: summaryRun.response.model,
+    subagents: reviewRuns.map((item) => summarizeSubagentRun(item, "advisor")),
     metrics: {
       startedAt: new Date(0).toISOString(),
       completedAt: new Date(0).toISOString(),
       durationMs: 0,
       usage: sumUsage([
-        writerRun.response.usage,
-        fallbackWriterRun?.response.usage,
-        ...independentRuns.map((item) => item.response.usage)
+        draftRun.response.usage,
+        finalRun.response.usage,
+        summaryRun.response.usage,
+        ...reviewRuns.map((item) => item.response.usage)
       ])
     }
   };
@@ -445,10 +493,17 @@ export const buildRuntime = async (
   const judge = new Judge(llmService, languageEnforcer);
   const supportAgent = new SupportAgent(llmService, languageEnforcer);
   const attackAgent = new AttackAgent(llmService, languageEnforcer);
-  const hypothesisAgent = new HypothesisAgent(supportAgent, attackAgent, judge);
+  const hypothesisAdvisorAgent = new HypothesisAdvisorAgent(llmService, languageEnforcer);
+  const hypothesisAgent = new HypothesisAgent(
+    supportAgent,
+    attackAgent,
+    hypothesisAdvisorAgent,
+    judge
+  );
   const router = new Router();
 
   router.register("hypothesis", async (input, context) => {
+    context.onProgress?.({ phase: "debate", label: "Debating", detail: "Running hypothesis participants", at: new Date().toISOString() });
     const debateConfig = context.sessionSettings.debate.enabled
       ? context.sessionSettings.debate
       : {
@@ -464,7 +519,9 @@ export const buildRuntime = async (
       debateConfig,
       context.sessionSettings.language,
       context.sessionSettings.outputStyle,
-      renderAttachmentContext(readAttachments(context.requestMetadata))
+      renderAttachmentContext(readAttachments(context.requestMetadata)),
+      context.sessionSettings.hypothesisAgents.filter((agent) => agent.role === "advisor"),
+      context.signal
     );
   });
 
@@ -473,6 +530,7 @@ export const buildRuntime = async (
   });
 
   router.register("general", async (input, context) => {
+    context.onProgress?.({ phase: "generating", label: "Generating", detail: "Main model is preparing a response", at: new Date().toISOString() });
     const response = await llmService.generateText(
       {
         model: context.activeTarget.model,
@@ -484,7 +542,8 @@ export const buildRuntime = async (
           context.sessionSettings.language,
           context.sessionSettings.outputStyle,
           renderAttachmentContext(readAttachments(context.requestMetadata))
-        )
+        ),
+        signal: context.signal
       },
       context.providerId
     );

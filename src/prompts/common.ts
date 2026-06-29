@@ -43,7 +43,7 @@ export const buildOutputStyleInstruction = (
 };
 
 const wantsFilesystemScaffold = (input: string): boolean =>
-  /(?:create|build|make).*(?:project|app|api|service|bot|scaffold|files)|создай.*(?:проект|приложение|api|сервис|бот|структур)/i.test(
+  /(?:create|build|make).*(?:project|app|api|service|bot|scaffold|files?)|создай.*(?:проект|приложение|api|сервис|бот|структур|файл)/i.test(
     input
   );
 

@@ -238,7 +238,21 @@ export class SessionSettingsStore {
     const requiredAgents = requiredRoles.map((role, index) => {
       return normalized.find((agent) => agent.role === role) ?? fallback[index];
     });
-    const advisors = normalized.filter((agent) => agent.role === "advisor").slice(0, maxHypothesisAdvisors);
+    const seenIds = new Set(requiredAgents.map((agent) => agent.id));
+    const seenNames = new Set(requiredAgents.map((agent) => agent.name.trim().toLowerCase()));
+    const advisors = normalized
+      .filter((agent) => agent.role === "advisor")
+      .filter((agent) => {
+        const name = agent.name.trim().toLowerCase();
+        if (seenIds.has(agent.id) || seenNames.has(name)) {
+          return false;
+        }
+
+        seenIds.add(agent.id);
+        seenNames.add(name);
+        return true;
+      })
+      .slice(0, maxHypothesisAdvisors);
 
     return [...requiredAgents, ...advisors];
   }

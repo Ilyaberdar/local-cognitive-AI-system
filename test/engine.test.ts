@@ -275,6 +275,7 @@ test("response formatter summarizes subagents without inline output blocks", () 
     providerId: "lmstudio",
     result: {
       response: "Финальный план.",
+      toolPayload: "<<<DRAFT>>>\nsecret code\n<<<END_DRAFT>>>\n<<<TASK:atlas>>>\nsecret task\n<<<END_TASK>>>",
       provider: "lmstudio",
       model: "qwen/qwen3.5-9b",
       subagents: [
@@ -288,16 +289,6 @@ test("response formatter summarizes subagents without inline output blocks", () 
           status: "ok",
           output: "Проверил архитектуру."
         },
-        {
-          id: "vector",
-          name: "Vector",
-          role: "writer",
-          provider: "lmstudio",
-          model: "qwen/qwen3.5-9b",
-          accessMode: "default",
-          status: "ok",
-          output: "Собрал финальный вывод."
-        }
       ]
     },
     tools: [],
@@ -322,12 +313,13 @@ test("response formatter summarizes subagents without inline output blocks", () 
   });
 
   assert.match(content, /Multi-agent run/);
-  assert.match(content, /Research agents: @Atlas/);
-  assert.match(content, /Research status: 1 ok/);
-  assert.match(content, /Final collector: @Vector via lmstudio:qwen\/qwen3\.5-9b/);
+  assert.match(content, /Delegated agents: @Atlas/);
+  assert.match(content, /Agent status: 1 ok/);
+  assert.match(content, /Final response: Main model via lmstudio:qwen\/qwen3\.5-9b/);
   assert.match(content, /Final answer/);
   assert.doesNotMatch(content, /Agent outputs/);
   assert.doesNotMatch(content, /Проверил архитектуру/);
+  assert.doesNotMatch(content, /secret code|secret task|<<<DRAFT>>>|<<<TASK:/);
   assert.doesNotMatch(content, /role=advisor/);
   assert.doesNotMatch(content, /access=default/);
 });
@@ -365,14 +357,83 @@ test("explicit subagent mentions route general sessions into independent code ag
   });
 
   assert.equal(result.mode, "code");
+  assert.ok("response" in result.result);
   assert.ok("subagents" in result.result);
   assert.equal(result.result.subagents?.filter((agent) => agent.role === "advisor").length, 2);
+  assert.equal(result.result.subagents?.some((agent) => agent.role === "writer"), false);
+  assert.equal(result.result.provider, "ollama");
+  assert.equal(result.result.model, "llama3.2");
   assert.ok(result.result.subagents?.some((agent) => agent.name === "Atlas" && agent.model === "zai-org/glm-4.6v-flash"));
   assert.ok(
     result.result.subagents?.some(
       (agent) => agent.name === "Vector" && agent.model === "nvidia/llama-3.1-nemotron-nano-8b-v1"
     )
   );
+});
+
+test("file tool does not treat the preposition in as a filename", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-current-dir-file-"));
+  const targetDir = path.join(tmpDir, "workspace");
+  const tool = new FileTool({
+    outputDir: targetDir,
+    accessMode: "restricted",
+    allowedDirectories: [targetDir]
+  });
+
+  const result = await tool.execute({
+    rawInput: "Create a file in a current directory and write a small neural network",
+    title: "neural network",
+    content: "unused",
+    context: {
+      actor: { sessionId: "file-session", channel: "http" },
+      memory: [],
+      conversation: [],
+      providerId: "lmstudio",
+      activeTarget: { providerId: "lmstudio", model: "main-model" },
+      sessionSettings: {
+        mode: "code",
+        language: "en",
+        outputStyle: "balanced",
+        defaultTarget: { providerId: "lmstudio", model: "main-model" },
+        defaultAccessMode: "full",
+        codeAgents: [],
+        hypothesisAgents: [],
+        debate: {
+          enabled: false,
+          profile: "general",
+          support: { providerId: "lmstudio", model: "main-model" },
+          attack: { providerId: "lmstudio", model: "main-model" },
+          judge: { providerId: "local" }
+        }
+      }
+    },
+    result: {
+      response: "The main model implemented the file and incorporated the delegated review.",
+      toolPayload: [
+        "<<<FILE:ffnn.py>>>",
+        "print('network')",
+        "<<<END FILE>>>"
+      ].join("\n"),
+      provider: "lmstudio",
+      model: "main-model",
+      subagents: [
+        {
+          id: "lyra",
+          name: "Lyra",
+          role: "advisor",
+          provider: "lmstudio",
+          model: "review-model",
+          accessMode: "full",
+          status: "ok",
+          output: "Review only"
+        }
+      ]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(path.join(targetDir, "ffnn.py"), "utf8"), "print('network')\n");
+  await assert.rejects(fs.access(path.join(targetDir, "in")));
 });
 
 test("subagent routing syntax is stripped before model task execution", async () => {
@@ -409,6 +470,7 @@ test("subagent routing syntax is stripped before model task execution", async ()
   });
 
   assert.equal(result.mode, "code");
+  assert.ok("response" in result.result);
   assert.ok("subagents" in result.result);
   assert.equal(result.result.subagents?.filter((agent) => agent.role === "advisor").length, 2);
   assert.doesNotMatch(result.result.response, /subprocess|spawn_agent|запуск/i);
@@ -614,6 +676,158 @@ test("session settings keep three hypothesis roles plus five advisors", async ()
     "judge"
   ]);
   assert.equal(settings.hypothesisAgents.filter((agent) => agent.role === "advisor").length, 5);
+});
+
+test("hypothesis advisor counts remain stable from zero through five", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-hypothesis-counts-"));
+  const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+  const requiredAgents = [
+    { id: "support", name: "Support", role: "support" as const, providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+    { id: "attack", name: "Attack", role: "attack" as const, providerId: "lmstudio", model: "qwen/qwen3.5-9b" },
+    { id: "judge", name: "Judge", role: "judge" as const, providerId: "local" }
+  ];
+
+  for (let advisorCount = 0; advisorCount <= 5; advisorCount += 1) {
+    const advisors = Array.from({ length: advisorCount }, (_, index) => ({
+      id: `advisor-${index + 1}`,
+      name: `Advisor${index + 1}`,
+      role: "advisor" as const,
+      providerId: "lmstudio",
+      model: "qwen/qwen3.5-9b"
+    }));
+
+    await runtime.sessionSettingsStore.update("hypothesis-count-session", {
+      hypothesisAgents: [...requiredAgents, ...advisors]
+    });
+
+    const settings = await runtime.sessionSettingsStore.get("hypothesis-count-session");
+    assert.equal(settings.hypothesisAgents.length, 3 + advisorCount);
+    assert.deepEqual(
+      settings.hypothesisAgents.filter((agent) => agent.role === "advisor").map((agent) => agent.id),
+      advisors.map((agent) => agent.id)
+    );
+  }
+
+  await runtime.sessionSettingsStore.update("hypothesis-count-session", {
+    hypothesisAgents: [
+      ...requiredAgents,
+      { id: "advisor-1", name: "Advisor1", role: "advisor", providerId: "lmstudio" },
+      { id: "advisor-3", name: "Advisor3", role: "advisor", providerId: "lmstudio" }
+    ]
+  });
+
+  const afterDelete = await runtime.sessionSettingsStore.get("hypothesis-count-session");
+  assert.deepEqual(
+    afterDelete.hypothesisAgents.filter((agent) => agent.role === "advisor").map((agent) => agent.id),
+    ["advisor-1", "advisor-3"]
+  );
+});
+
+test("hypothesis runtime executes every configured advisor from zero through five", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-hypothesis-runtime-counts-"));
+  const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+  const requiredAgents = [
+    { id: "support", name: "Support", role: "support" as const, providerId: "ollama", model: "llama3.2" },
+    { id: "attack", name: "Attack", role: "attack" as const, providerId: "ollama", model: "llama3.2" },
+    { id: "judge", name: "Judge", role: "judge" as const, providerId: "local" }
+  ];
+
+  for (let advisorCount = 0; advisorCount <= 5; advisorCount += 1) {
+    const sessionId = `hypothesis-runtime-${advisorCount}`;
+    const advisors = Array.from({ length: advisorCount }, (_, index) => ({
+      id: `advisor-${index + 1}`,
+      name: `Advisor${index + 1}`,
+      role: "advisor" as const,
+      providerId: "ollama",
+      model: "llama3.2"
+    }));
+
+    await runtime.sessionSettingsStore.update(sessionId, {
+      mode: "hypothesis",
+      hypothesisAgents: [...requiredAgents, ...advisors],
+      debate: {
+        enabled: true,
+        support: { providerId: "ollama", model: "llama3.2" },
+        attack: { providerId: "ollama", model: "llama3.2" },
+        judge: { providerId: "local" }
+      }
+    });
+
+    const result = await runtime.engine.process({
+      input: "Evaluate whether local-first development improves iteration speed.",
+      actor: { sessionId, channel: "http" }
+    });
+
+    assert.equal(result.mode, "hypothesis");
+    assert.ok("arguments" in result.result);
+    assert.equal(result.result.subagents?.length ?? 0, advisorCount);
+    assert.equal(result.result.participants.advisors?.length ?? 0, advisorCount);
+    assert.deepEqual(
+      result.result.subagents?.map((agent) => agent.name) ?? [],
+      advisors.map((advisor) => advisor.name)
+    );
+    assert.ok(
+      [...result.result.arguments.pro, ...result.result.arguments.contra].every(
+        (argument) => !/^Advisor\d+:/i.test(argument)
+      )
+    );
+  }
+});
+
+test("hypothesis advisors are deduplicated by id and name", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-hypothesis-dedupe-"));
+  const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+
+  await runtime.sessionSettingsStore.update("hypothesis-dedupe-session", {
+    hypothesisAgents: [
+      { id: "support", name: "Support", role: "support", providerId: "lmstudio" },
+      { id: "attack", name: "Attack", role: "attack", providerId: "lmstudio" },
+      { id: "judge", name: "Judge", role: "judge", providerId: "local" },
+      { id: "advisor-1", name: "Advisor1", role: "advisor", providerId: "lmstudio" },
+      { id: "advisor-1", name: "Advisor2", role: "advisor", providerId: "lmstudio" },
+      { id: "advisor-3", name: "advisor1", role: "advisor", providerId: "lmstudio" },
+      { id: "advisor-4", name: "Advisor4", role: "advisor", providerId: "lmstudio" }
+    ]
+  });
+
+  const settings = await runtime.sessionSettingsStore.get("hypothesis-dedupe-session");
+  assert.deepEqual(
+    settings.hypothesisAgents.filter((agent) => agent.role === "advisor").map((agent) => agent.name),
+    ["Advisor1", "Advisor4"]
+  );
+});
+
+test("hypothesis snapshot selector targets cards instead of delete buttons", async () => {
+  const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
+  assert.match(
+    source,
+    /querySelectorAll\("\.hypothesis-agent-card\[data-hypothesis-agent-index\]"\)/
+  );
+  assert.doesNotMatch(source, /querySelectorAll\("\[data-hypothesis-agent-index\]"\)/);
+});
+
+test("chat UI exposes cancellation, phase progress, and an in-panel full file viewer", async () => {
+  const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
+
+  assert.match(source, /event\.key !== "Escape"/);
+  assert.match(source, /cancelProcessRun/);
+  assert.match(source, /getProcessRun/);
+  assert.match(source, /data-action="open-tool-path"/);
+  assert.match(source, /file-viewer-panel/);
+  assert.match(source, /revealWorkspacePath/);
+  assert.match(source, /renderFullFileRows/);
+  assert.doesNotMatch(source, /window\.open\(normalized/);
+});
+
+test("model unload handler resolves the catalog key in its own scope", async () => {
+  const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
+  const handler = source.match(
+    /document\.querySelectorAll\("\[data-action='unload-model'\]"\)[\s\S]*?document\.querySelectorAll\("\[data-action='open-tool-path'\]"\)/
+  )?.[0];
+
+  assert.ok(handler);
+  assert.match(handler, /const modelKey = button\.dataset\.modelKey \|\| modelId;/);
+  assert.match(handler, /optimisticallyUnloadModel\(providerId, modelKey, modelId\)/);
 });
 
 test("file tool asks for approval when a default-access subagent wants to write", async () => {

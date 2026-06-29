@@ -6,6 +6,7 @@ import {
   createDescriptor,
   HttpProviderOptions,
   readRateLimit,
+  resolveAbortSignal,
   resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
@@ -68,7 +69,7 @@ export class AnthropicProvider implements LLMProvider {
             }
           ]
         }),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: resolveAbortSignal(timeoutMs, request.signal)
       });
 
       if (!response.ok) {
@@ -97,6 +98,9 @@ export class AnthropicProvider implements LLMProvider {
         rateLimit: readRateLimit(response.headers)
       };
     } catch (error) {
+      if (request.signal?.aborted) {
+        throw new Error("Request cancelled");
+      }
       this.logger.warn("Falling back to mock Anthropic response", {
         error: error instanceof Error ? error.message : "unknown_error"
       });

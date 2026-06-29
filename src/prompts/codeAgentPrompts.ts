@@ -267,3 +267,231 @@ export const buildFallbackCollectorSystemPrompt = (
     buildCodeWriterRoleInstruction(outputStyle),
     "Complete the task directly using any available advisor notes. Do not wait for failed agents."
   ].join("\n");
+
+export const buildMainDraftPrompt = (
+  taskInput: string,
+  memory: string,
+  language: LanguagePreference,
+  outputStyle: OutputStyle,
+  attachmentContext: string | undefined,
+  delegates: CodeAgentTarget[]
+): string =>
+  [
+    buildTextPrompt("code", taskInput, memory, language, outputStyle, attachmentContext),
+    "",
+    "Create a complete internal draft for the user's task and assign one bounded subtask to each selected subagent.",
+    `Selected subagents: ${delegates.map((agent) => `${agent.id} (@${agent.name})`).join(", ")}.`,
+    "Return the internal result using this exact structure:",
+    "<<<DRAFT>>>",
+    "complete main-model draft",
+    "<<<END_DRAFT>>>",
+    ...delegates.flatMap((agent) => [
+      `<<<TASK:${agent.id}>>>`,
+      `specific task for @${agent.name}`,
+      "<<<END_TASK>>>"
+    ]),
+    "Each task must be derived from the user's request and explain exactly what that agent should inspect, research, test, or critique.",
+    "Do not ask an agent to produce the user-facing final answer or perform filesystem writes.",
+    "Preserve every required filesystem marker and exact-output constraint inside the DRAFT block."
+  ].join("\n");
+
+export const parseMainDelegationPlan = (
+  response: string,
+  delegates: CodeAgentTarget[]
+): { draft: string; assignments: Map<string, string> } => {
+  const draftMatch = response.match(/<<<DRAFT>>>\s*([\s\S]*?)\s*<<<END_DRAFT>>>/i);
+  const assignments = new Map<string, string>();
+
+  for (const agent of delegates) {
+    const escapedId = agent.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedName = agent.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const taskMatch = response.match(
+      new RegExp(`<<<TASK:(?:${escapedId}|${escapedName})>>>\\s*([\\s\\S]*?)\\s*<<<END_TASK>>>`, "i")
+    );
+    const assignment = taskMatch?.[1]?.trim();
+
+    if (assignment) {
+      assignments.set(agent.id, assignment);
+    }
+  }
+
+  return {
+    draft: draftMatch?.[1]?.trim() || response.trim(),
+    assignments
+  };
+};
+
+export const buildMainDraftSystemPrompt = (
+  agent: CodeAgentTarget,
+  reviewers: CodeAgentTarget[],
+  outputStyle: OutputStyle
+): string =>
+  [
+    "You are the main model and the only implementation writer for this run.",
+    buildSubagentNameInstruction(reviewers),
+    buildSubagentAccessInstruction(agent),
+    buildNoSubagentBoilerplateInstruction(),
+    buildCodeWriterRoleInstruction(outputStyle),
+    "Produce the implementation draft yourself, then assign bounded supporting tasks to the selected subagents. They must not replace your work."
+  ].join("\n");
+
+export const buildReviewAgentPrompt = (
+  input: string,
+  taskInput: string,
+  assignment: string,
+  draft: string,
+  memory: string,
+  language: LanguagePreference,
+  outputStyle: OutputStyle,
+  attachmentContext: string | undefined,
+  reviewers: CodeAgentTarget[]
+): string =>
+  [
+    "Mode: delegated code task",
+    "Relevant memory:",
+    memory,
+    ...(attachmentContext ? ["", attachmentContext] : []),
+    "",
+    buildSubagentExecutionContract(input, taskInput, reviewers),
+    "",
+    "Your task, assigned by the main model:",
+    assignment,
+    "",
+    "Main model draft to inspect:",
+    draft,
+    "",
+    buildLanguageInstruction(language),
+    "",
+    "Execute only the assigned subtask and return the result to the main model.",
+    "Do not broaden your role, rewrite the complete solution, or emit filesystem file blocks.",
+    buildCodeAdvisorInstruction(outputStyle)
+  ].join("\n");
+
+export const buildReviewAgentSystemPrompt = (
+  agent: CodeAgentTarget,
+  reviewers: CodeAgentTarget[],
+  outputStyle: OutputStyle
+): string =>
+  [
+    `You are ${agent.name}, a delegated subagent.`,
+    buildSubagentNameInstruction(reviewers),
+    buildSubagentAccessInstruction(agent),
+    buildNoSubagentBoilerplateInstruction(),
+    buildCodeAdvisorRoleInstruction(outputStyle),
+    "Execute only the task explicitly assigned by the main model.",
+    "Do not create files or produce the final user-facing answer. Return your findings only to the main model."
+  ].join("\n");
+
+export const buildFinalMainPrompt = (
+  input: string,
+  taskInput: string,
+  draft: string,
+  memory: string,
+  language: LanguagePreference,
+  outputStyle: OutputStyle,
+  attachmentContext: string | undefined,
+  reviewRuns: Array<{ agent: CodeAgentTarget; normalized: string; degraded: boolean }>
+): string => {
+  const healthyReviews = reviewRuns
+    .filter((item) => !item.degraded)
+    .map((item) => [`@${item.agent.name} delegated result:`, item.normalized].join("\n"))
+    .join("\n\n");
+  const unavailableReviewers = reviewRuns
+    .filter((item) => item.degraded)
+    .map((item) => `@${item.agent.name}`);
+
+  return [
+    buildTextPrompt("code", taskInput, memory, language, outputStyle, attachmentContext),
+    "",
+    "Your internal draft:",
+    draft,
+    "",
+    "Delegated subagent results:",
+    healthyReviews || "No reliable delegated results were available.",
+    ...(unavailableReviewers.length
+      ? [
+          "",
+          `Unavailable reviewers: ${unavailableReviewers.join(", ")}. Continue without waiting for them.`
+        ]
+      : []),
+    "",
+    "Produce the final answer yourself after evaluating the delegated results.",
+    "Do not copy an agent response verbatim, expose internal agent output, mention orchestration, or add per-agent sections.",
+    "If files were requested, obey the filesystem output format exactly and return no commentary outside it."
+  ].join("\n");
+};
+
+export const buildFinalMainSystemPrompt = (
+  agent: CodeAgentTarget,
+  reviewers: CodeAgentTarget[],
+  outputStyle: OutputStyle
+): string =>
+  [
+    "You are the main model and final implementation writer.",
+    buildSubagentNameInstruction(reviewers),
+    buildSubagentAccessInstruction(agent),
+    buildNoSubagentBoilerplateInstruction(),
+    buildCodeWriterRoleInstruction(outputStyle),
+    "Delegated results are advisory input. Validate them, revise your draft, and own the final result.",
+    "Only your response is user-facing and eligible for filesystem execution."
+  ].join("\n");
+
+export const buildMainSummaryPrompt = (
+  taskInput: string,
+  executionOutput: string,
+  delegates: Array<{ agent: CodeAgentTarget; degraded: boolean }>,
+  language: LanguagePreference
+): string =>
+  [
+    "The implementation phase is complete.",
+    "User task:",
+    taskInput,
+    "",
+    "Final implementation output:",
+    executionOutput,
+    "",
+    "Delegated task status:",
+    ...delegates.map(
+      ({ agent, degraded }) => `- @${agent.name}: ${degraded ? "unavailable" : "completed"}`
+    ),
+    "",
+    buildLanguageInstruction(language),
+    "",
+    "Write a concise user-facing completion summary from the main model's perspective.",
+    "Explain what was done, important implementation decisions, and any validation concerns that remain.",
+    "Do not include source code, file contents, diffs, internal drafts, delegation tasks, raw agent output, or orchestration details.",
+    "Return exactly one block:",
+    "<<<USER_SUMMARY>>>",
+    "summary text",
+    "<<<END_USER_SUMMARY>>>"
+  ].join("\n");
+
+export const buildMainSummarySystemPrompt = (): string =>
+  [
+    "You are the main model reporting the completed result to the user.",
+    "Return a concise reasoning summary, not implementation payload.",
+    "Never output code, file blocks, DRAFT markers, TASK markers, or raw subagent responses.",
+    "Use the required USER_SUMMARY markers exactly."
+  ].join("\n");
+
+export const parseMainUserSummary = (response: string): string | undefined =>
+  response.match(/<<<USER_SUMMARY>>>\s*([\s\S]*?)\s*<<<END_USER_SUMMARY>>>/i)?.[1]?.trim() ||
+  undefined;
+
+export const extractMainExecutionOutput = (response: string, draft: string): string => {
+  const finalOutput = response.match(
+    /<<<FINAL_OUTPUT>>>\s*([\s\S]*?)\s*<<<END_FINAL_OUTPUT>>>/i
+  )?.[1]?.trim();
+
+  if (finalOutput) {
+    return finalOutput;
+  }
+
+  if (/<<<DRAFT>>>|<<<TASK:/i.test(response)) {
+    return (
+      response.match(/<<<DRAFT>>>\s*([\s\S]*?)\s*<<<END_DRAFT>>>/i)?.[1]?.trim() || draft
+    );
+  }
+
+  return response.trim() || draft;
+};

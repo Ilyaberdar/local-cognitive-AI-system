@@ -60,7 +60,16 @@ export class CognitiveEngine {
       providerId,
       activeTarget,
       sessionSettings,
-      requestMetadata: request.metadata
+      requestMetadata: request.metadata,
+      signal: request.signal,
+      onProgress: request.onProgress
+    });
+    request.signal?.throwIfAborted();
+    request.onProgress?.({
+      phase: "tools",
+      label: "Applying tools",
+      detail: "Executing requested file and plugin actions",
+      at: new Date().toISOString()
     });
     const tools = await this.executeTools(normalizedInput, mode, result, {
       actor,
@@ -69,6 +78,13 @@ export class CognitiveEngine {
       providerId,
       activeTarget,
       sessionSettings
+    });
+    request.signal?.throwIfAborted();
+    request.onProgress?.({
+      phase: "complete",
+      label: "Complete",
+      detail: "Final response is ready",
+      at: new Date().toISOString()
     });
     const completedAt = new Date();
     const finalizedResult = this.attachMetrics(result, startedAt, completedAt);
