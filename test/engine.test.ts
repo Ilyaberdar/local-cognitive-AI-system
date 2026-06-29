@@ -808,6 +808,7 @@ test("hypothesis snapshot selector targets cards instead of delete buttons", asy
 
 test("chat UI exposes cancellation, phase progress, and an in-panel full file viewer", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
+  const styles = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.css"), "utf8");
 
   assert.match(source, /event\.key !== "Escape"/);
   assert.match(source, /cancelProcessRun/);
@@ -817,6 +818,10 @@ test("chat UI exposes cancellation, phase progress, and an in-panel full file vi
   assert.match(source, /revealWorkspacePath/);
   assert.match(source, /renderFullFileRows/);
   assert.doesNotMatch(source, /window\.open\(normalized/);
+  assert.match(styles, /\.diff-preview[\s\S]*?background: var\(--control-bg\)/);
+  assert.match(styles, /\.subagent-card__output[\s\S]*?background: var\(--control-bg\)/);
+  assert.match(styles, /\.scroll-bottom-button[\s\S]*?var\(--control-bg\)/);
+  assert.match(styles, /\.process-pathbar[\s\S]*?background: var\(--control-bg\)/);
 });
 
 test("model unload handler resolves the catalog key in its own scope", async () => {
