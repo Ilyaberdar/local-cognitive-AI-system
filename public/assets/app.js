@@ -1,5 +1,8 @@
 const app = document.querySelector("#app");
 let systemMetricsPollTimer = null;
+let workflowEditorHandle = null;
+let workflowEditorModulePromise = null;
+let workflowEditorMountGeneration = 0;
 const UI_THEMES = ["warm", "carbon", "light"];
 const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
   ? localStorage.getItem("lcai.theme")
@@ -48,6 +51,8 @@ const state = {
     sidebarWidth: Number(localStorage.getItem("lcai.sidebarWidth") || 240),
     sessionSetupCollapsed: localStorage.getItem("lcai.sessionSetupCollapsed") === "true",
     sessionSetupWidth: Number(localStorage.getItem("lcai.sessionSetupWidth") || 360),
+    workflowSideCollapsed: localStorage.getItem("lcai.workflowSideCollapsed") === "true",
+    workflowSideWidth: Number(localStorage.getItem("lcai.workflowSideWidth") || 360),
     autosaveStatus: "idle",
     autosaveTimer: null,
     autosaveSeq: 0,
@@ -317,6 +322,8 @@ function render() {
     return;
   }
 
+  unmountWorkflowEditor();
+
   app.innerHTML = `
     <div class="shell ${state.ui.sidebarCollapsed ? "shell--sidebar-collapsed" : ""}" style="--sidebar-width: ${Math.max(180, Math.min(window.innerWidth * 0.5, state.ui.sidebarWidth || 240))}px;">
       ${renderSidebar()}
@@ -344,6 +351,7 @@ function render() {
   `;
 
   bindEvents();
+  mountActiveWorkflowEditor();
   if (state.route === "chat") {
     restoreStoredMessageStreamScroll();
   }
@@ -1105,8 +1113,11 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns) {
 }
 
 function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
+  const sideCollapsed = state.ui.workflowSideCollapsed;
+  const sideWidth = Math.max(280, Math.min(window.innerWidth * 0.55, state.ui.workflowSideWidth || 360));
+
   return `
-    <div class="orchestration-layout orchestration-layout--workflow">
+    <div class="orchestration-layout orchestration-layout--workflow ${sideCollapsed ? "orchestration-layout--workflow-side-collapsed" : ""}" style="--workflow-side-width: ${sideWidth}px;">
       <section class="orchestration-main">
         <div class="panel workflow-builder-panel">
           <div class="card-header">
@@ -1125,36 +1136,40 @@ function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
         </div>
       </section>
 
-      <aside class="panel orchestration-side">
-        <div class="card-header">
-          <div>
-            <h2>Workflows</h2>
-            <p class="subtle">Definitions available for task execution.</p>
+      <aside class="panel orchestration-side workflow-side-panel">
+        <button class="workflow-side-toggle" type="button" data-action="toggle-workflow-side" title="${sideCollapsed ? "Show workflows" : "Hide workflows"}">${sideCollapsed ? "‹" : "›"}</button>
+        <div class="workflow-side-resize-handle" data-action="resize-workflow-side" title="Resize workflow panel"></div>
+        <div class="workflow-side-content">
+          <div class="card-header">
+            <div>
+              <h2>Workflows</h2>
+              <p class="subtle">Definitions available for task execution.</p>
+            </div>
           </div>
-        </div>
-        <div class="workflow-list">
-          ${workflows.length ? workflows.map(renderWorkflowCard).join("") : `<div class="empty">No workflows configured.</div>`}
-        </div>
+          <div class="workflow-list">
+            ${workflows.length ? workflows.map(renderWorkflowCard).join("") : `<div class="empty">No workflows configured.</div>`}
+          </div>
 
-        <div class="card-header run-header">
-          <div>
-            <h2>Run Trace</h2>
-            <p class="subtle">${selectedRun ? `${selectedRun.workflowId} v${selectedRun.workflowVersion}` : "Select Trace on a task card."}</p>
+          <div class="card-header run-header">
+            <div>
+              <h2>Run Trace</h2>
+              <p class="subtle">${selectedRun ? `${selectedRun.workflowId} v${selectedRun.workflowVersion}` : "Select Trace on a task card."}</p>
+            </div>
+            ${
+              selectedRun
+                ? `<div class="task-actions">
+                    <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Step</button>
+                    ${
+                      ["done", "failed", "cancelled"].includes(selectedRun.status)
+                        ? ""
+                        : `<button class="ghost-button" type="button" data-action="cancel-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Cancel</button>`
+                    }
+                  </div>`
+                : ""
+            }
           </div>
-          ${
-            selectedRun
-              ? `<div class="task-actions">
-                  <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Step</button>
-                  ${
-                    ["done", "failed", "cancelled"].includes(selectedRun.status)
-                      ? ""
-                      : `<button class="ghost-button" type="button" data-action="cancel-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Cancel</button>`
-                  }
-                </div>`
-              : ""
-          }
+          ${renderWorkflowRunTrace(selectedRun)}
         </div>
-        ${renderWorkflowRunTrace(selectedRun)}
       </aside>
     </div>
   `;
@@ -1261,7 +1276,18 @@ function renderWorkflowCard(workflow) {
   `;
 }
 
-const WORKFLOW_NODE_TYPES = ["entry", "agent", "decision", "tool", "human_review", "terminal"];
+const WORKFLOW_NODE_TYPES = [
+  "entry",
+  "agent",
+  "file_search",
+  "web_search",
+  "file_write",
+  "command",
+  "decision",
+  "tool",
+  "human_review",
+  "terminal"
+];
 const WORKFLOW_GUARD_TYPES = ["always", "status", "event", "json_path"];
 const WORKFLOW_NODE_STATUSES = ["ok", "failed", "blocked", "needs_input"];
 
@@ -1270,65 +1296,54 @@ function renderWorkflowBuilder(workflow) {
     return `<div class="empty">No workflow draft available.</div>`;
   }
 
-  const validation = state.workflowBuilder?.validation;
+  return `<div id="workflow-graph-editor" class="workflow-graph-editor" aria-label="Visual workflow editor"></div>`;
+}
 
-  return `
-    <form id="workflow-builder-form" class="workflow-builder">
-      <div class="workflow-builder-grid">
-        <div class="field">
-          <label for="workflow-id">ID</label>
-          <input id="workflow-id" name="id" type="text" value="${escapeAttr(workflow.id)}" required />
-        </div>
-        <div class="field">
-          <label for="workflow-name">Name</label>
-          <input id="workflow-name" name="name" type="text" value="${escapeAttr(workflow.name)}" required />
-        </div>
-        <div class="field">
-          <label for="workflow-version">Version</label>
-          <input id="workflow-version" name="version" type="number" min="1" step="1" value="${escapeAttr(workflow.version)}" required />
-        </div>
-        <div class="field">
-          <label for="workflow-entry-node">Entry Node</label>
-          <select id="workflow-entry-node" name="entryNodeId">
-            ${workflow.nodes.map((node) => option(node.id, workflow.entryNodeId, node.id)).join("")}
-          </select>
-        </div>
-        <div class="field field--full">
-          <label for="workflow-description">Description</label>
-          <textarea id="workflow-description" name="description" rows="2">${escapeHtml(workflow.description || "")}</textarea>
-        </div>
-      </div>
+function unmountWorkflowEditor() {
+  workflowEditorMountGeneration += 1;
+  workflowEditorHandle?.unmount?.();
+  workflowEditorHandle = null;
+}
 
-      ${
-        validation
-          ? `<div class="status-block ${validation.ok ? "success" : "danger"}">
-              <div class="status-block__label">${validation.ok ? "Valid" : "Invalid"}</div>
-              <div class="status-block__text">${validation.ok ? "Workflow contract is valid." : escapeHtml(validation.errors.join(" "))}</div>
-            </div>`
-          : ""
+async function mountActiveWorkflowEditor() {
+  const container = document.querySelector("#workflow-graph-editor");
+  const workflow = state.workflowBuilder?.draft;
+
+  if (!container || !workflow || state.route !== "orchestration" || state.orchestrationTab !== "workflow") {
+    return;
+  }
+
+  const generation = workflowEditorMountGeneration;
+  container.innerHTML = `<div class="empty compact">Loading visual workflow editor...</div>`;
+
+  try {
+    workflowEditorModulePromise ??= import("/assets/workflow-editor.js");
+    const module = await workflowEditorModulePromise;
+
+    if (generation !== workflowEditorMountGeneration || !container.isConnected) {
+      return;
+    }
+
+    const providers = getProviderOptions().map((provider) => ({
+      ...provider,
+      models: getSelectableSessionModels(provider.id, getProviderConfiguredModel(provider.id)),
+      defaultModel: getProviderConfiguredModel(provider.id)
+    }));
+
+    container.innerHTML = "";
+    workflowEditorHandle = module.mountWorkflowEditor(container, {
+      workflow: cloneWorkflow(workflow),
+      providers,
+      validation: state.workflowBuilder?.validation ?? null,
+      colorMode: state.ui.theme === "light" ? "light" : "dark",
+      onChange: (nextWorkflow) => {
+        state.workflowBuilder.draft = cloneWorkflow(nextWorkflow);
+        state.workflowBuilder.validation = null;
       }
-
-      <div class="workflow-builder-section">
-        <div class="card-header compact-header">
-          <h3>Nodes</h3>
-          <button class="ghost-button" type="button" data-action="add-workflow-node">Add Node</button>
-        </div>
-        <div class="workflow-editor-list">
-          ${workflow.nodes.map(renderWorkflowNodeEditor).join("")}
-        </div>
-      </div>
-
-      <div class="workflow-builder-section">
-        <div class="card-header compact-header">
-          <h3>Transitions</h3>
-          <button class="ghost-button" type="button" data-action="add-workflow-transition">Add Transition</button>
-        </div>
-        <div class="workflow-editor-list">
-          ${workflow.transitions.map((transition, index) => renderWorkflowTransitionEditor(transition, index, workflow.nodes)).join("")}
-        </div>
-      </div>
-    </form>
-  `;
+    });
+  } catch (error) {
+    container.innerHTML = `<div class="status-block danger"><div class="status-block__label">Editor failed to load</div><div class="status-block__text">${escapeHtml(error instanceof Error ? error.message : "Unknown error")}</div></div>`;
+  }
 }
 
 function renderWorkflowNodeEditor(node, index) {
@@ -1556,8 +1571,23 @@ function renderNodeRunCard(nodeRun) {
         <span>${escapeHtml(targetLabel || output?.event || "no-event")}</span>
         <span>${formatDate(nodeRun.completedAt ?? nodeRun.startedAt)}</span>
       </div>
+      ${
+        output?.data && Object.keys(output.data).length
+          ? `<details class="node-run-output">
+              <summary>Output parameters</summary>
+              <pre>${escapeHtml(renderNodeOutputData(output.data))}</pre>
+            </details>`
+          : ""
+      }
     </article>
   `;
+}
+
+function renderNodeOutputData(data) {
+  const serialized = JSON.stringify(data, null, 2);
+  return serialized.length > 12000
+    ? `${serialized.slice(0, 12000)}\n... output truncated`
+    : serialized;
 }
 
 function renderWorkflowNodeChip(node) {
@@ -1680,7 +1710,11 @@ function readWorkflowBuilderDraftFromForm() {
   const form = document.querySelector("#workflow-builder-form");
 
   if (!form) {
-    return state.workflowBuilder?.draft ?? createBlankWorkflow();
+    const draft = state.workflowBuilder?.draft ?? createBlankWorkflow();
+    return {
+      ...cloneWorkflow(draft),
+      updatedAt: new Date().toISOString()
+    };
   }
 
   const data = new FormData(form);
@@ -2824,6 +2858,22 @@ function bindEvents() {
 
   bindResizeHandle("[data-action='resize-session-setup']", "sessionSetupWidth", "lcai.sessionSetupWidth", 280, Math.floor(window.innerWidth * 0.5), (event) => window.innerWidth - event.clientX);
 
+  document.querySelector("[data-action='toggle-workflow-side']")?.addEventListener("click", () => {
+    state.ui.workflowSideCollapsed = !state.ui.workflowSideCollapsed;
+    localStorage.setItem("lcai.workflowSideCollapsed", String(state.ui.workflowSideCollapsed));
+    render();
+  });
+
+  const workflowLayout = document.querySelector(".orchestration-layout--workflow");
+  bindResizeHandle(
+    "[data-action='resize-workflow-side']",
+    "workflowSideWidth",
+    "lcai.workflowSideWidth",
+    280,
+    Math.floor((workflowLayout?.clientWidth ?? window.innerWidth) * 0.55),
+    (event) => (workflowLayout?.getBoundingClientRect().right ?? window.innerWidth) - event.clientX
+  );
+
   document.querySelector(".message-stream")?.addEventListener("scroll", () => {
     rememberMessageStreamScroll();
     syncScrollToBottomButton();
@@ -3931,6 +3981,7 @@ function bindResizeHandle(selector, stateKey, storageKey, minWidth, maxWidth, re
       document.querySelector(".shell")?.style.setProperty("--sidebar-width", `${state.ui.sidebarWidth}px`);
       document.querySelector(".chat-layout")?.style.setProperty("--session-panel-width", `${state.ui.sessionSetupWidth}px`);
       document.querySelector("#session-settings-form")?.style.setProperty("--session-panel-width", `${state.ui.sessionSetupWidth}px`);
+      document.querySelector(".orchestration-layout--workflow")?.style.setProperty("--workflow-side-width", `${state.ui.workflowSideWidth}px`);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);

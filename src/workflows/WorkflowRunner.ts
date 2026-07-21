@@ -23,6 +23,12 @@ export class WorkflowRunner {
   async startTask(taskId: string): Promise<WorkflowRun> {
     const task = await this.requireTask(taskId);
     const workflow = await this.requireWorkflow(task);
+    const validation = this.workflowStore.validate(workflow);
+
+    if (!validation.ok) {
+      throw new Error(`Cannot start invalid workflow: ${validation.errors.join("; ")}`);
+    }
+
     const run = await this.runStore.createRun({ task, workflow });
     await this.taskStore.setStatus(task.id, "in_progress", {
       workflowVersion: workflow.version,
@@ -142,7 +148,10 @@ export class WorkflowRunner {
         [node.id]: {
           status: result.status,
           event: result.event,
-          summary: result.summary
+          summary: result.summary,
+          data: result.data,
+          artifacts: result.artifacts,
+          error: result.error
         }
       }
     };

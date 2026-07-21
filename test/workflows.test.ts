@@ -102,6 +102,53 @@ test("fsm engine selects the highest-priority matching transition", () => {
   assert.equal(transition?.id, "execute-done");
 });
 
+test("workflow validation rejects broken graph contracts", async () => {
+  const root = await makeTmpDir();
+  const workflowStore = new WorkflowStore(path.join(root, "workflows"));
+  const workflow = defaultTaskWorkflow();
+  workflow.nodes.push({
+    ...workflow.nodes[1],
+    label: "Duplicate id"
+  });
+  workflow.transitions.push({
+    id: "invalid-terminal-edge",
+    from: "done",
+    to: "entry",
+    priority: 1,
+    guard: { type: "always" }
+  });
+
+  const validation = workflowStore.validate(workflow);
+
+  assert.equal(validation.ok, false);
+  assert.ok(validation.errors.includes("Workflow node ids must be unique."));
+  assert.ok(validation.errors.includes("Terminal node done cannot have outgoing transitions."));
+  assert.ok(validation.errors.includes("Entry node entry cannot have incoming transitions."));
+});
+
+test("workflow runner validates the graph again before creating a run", async () => {
+  const root = await makeTmpDir();
+  const taskStore = new TaskStore(path.join(root, "tasks"));
+  const workflowStore = new WorkflowStore(path.join(root, "workflows"));
+  const runStore = new WorkflowRunStore(path.join(root, "workflows"));
+  const runner = new WorkflowRunner(
+    taskStore,
+    workflowStore,
+    runStore,
+    new FsmEngine(),
+    new NodeExecutorRegistry([new EntryNodeExecutor(), new FakeAgentExecutor(), new TerminalNodeExecutor()])
+  );
+  const task = await taskStore.create({
+    title: "Reject invalid workflow",
+    description: "Validation must run before run creation.",
+    workflowId: defaultTaskWorkflow().id
+  });
+  workflowStore.validate = () => ({ ok: false, errors: ["graph is invalid"] });
+
+  await assert.rejects(() => runner.startTask(task.id), /Cannot start invalid workflow: graph is invalid/);
+  assert.equal((await runStore.listRuns()).length, 0);
+});
+
 test("agent node forwards its provider and model overrides to the cognitive engine", async () => {
   const root = await makeTmpDir();
   const taskStore = new TaskStore(path.join(root, "tasks"));
@@ -217,4 +264,8 @@ test("workflow runner executes a task through entry, agent, and terminal nodes",
   assert.equal(finalTask?.status, "done");
   assert.deepEqual(nodeRuns.map((nodeRun) => nodeRun.nodeId), ["entry", "execute", "done"]);
   assert.equal(nodeRuns[1].output?.summary, "processed:Run workflow");
+  assert.deepEqual(
+    (finalRun.state.nodeResults as Record<string, { data: Record<string, unknown> }>).execute.data,
+    { response: "done" }
+  );
 });

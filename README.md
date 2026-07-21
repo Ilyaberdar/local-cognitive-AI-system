@@ -239,6 +239,30 @@ Useful commands:
 - `/mode hypothesis`
 - `/debate on`
 
+## Workflow Tool Nodes
+
+The visual FSM builder supports structured outputs between nodes. Reference a
+previous node from any string config field with `{{nodes.<node-id>.data.<key>}}`.
+
+- `Search Files`: returns `data.results` and `data.scannedFiles`.
+- `Search Web`: supports `provider=searxng` through `SEARXNG_URL`, or
+  `provider=brave` through `BRAVE_SEARCH_API_KEY`; returns `data.results`.
+- `Save File`: writes or appends `contentTemplate`; set `access=full` for an
+  unattended run. Default access returns `needs_input`.
+- `Run Command`: executes an executable and argument array without a shell;
+  returns `data.exitCode`, `data.stdout`, and `data.stderr`. It also requires
+  explicit full access for an unattended run.
+- `Decision`: evaluates a stored output and emits `decision.true` or
+  `decision.false` for event guards.
+
+Example chain:
+
+```text
+Entry -> Search Files -> Agent -> Save File -> Run Command -> Decision
+Decision --decision.true--> Done
+Decision --decision.false--> Failed
+```
+
 ## MCP Setup
 
 MCP is optional and is intended for opencode/Codex-style clients and local

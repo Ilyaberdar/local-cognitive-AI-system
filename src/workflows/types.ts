@@ -3,6 +3,10 @@ import { Task } from "../tasks/types";
 export type WorkflowNodeType =
   | "entry"
   | "agent"
+  | "file_search"
+  | "web_search"
+  | "file_write"
+  | "command"
   | "decision"
   | "tool"
   | "human_review"
@@ -88,6 +92,15 @@ export interface NodeResult {
     path?: string;
     contentType?: string;
   }>;
+  error?: string;
+}
+
+export interface StoredNodeResult {
+  status: NodeResultStatus;
+  event: string;
+  summary: string;
+  data: Record<string, unknown>;
+  artifacts?: NodeResult["artifacts"];
   error?: string;
 }
 
