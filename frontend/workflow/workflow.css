@@ -1,0 +1,382 @@
+.fsm-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  color: var(--text);
+}
+
+.fsm-toolbar,
+.fsm-inspector__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fsm-toolbar {
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.fsm-toolbar > div:first-child,
+.fsm-inspector__header > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fsm-toolbar strong,
+.fsm-inspector__header strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fsm-toolbar span,
+.fsm-inspector__header span,
+.fsm-editor__hint {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.fsm-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.fsm-toolbar button,
+.fsm-inspector button {
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.fsm-toolbar button:hover,
+.fsm-inspector button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.fsm-inspector button.danger {
+  color: var(--danger);
+}
+
+.fsm-validation {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--success);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 11px;
+}
+
+.fsm-validation.is-invalid {
+  border-left-color: var(--danger);
+}
+
+.fsm-validation span {
+  color: var(--muted);
+}
+
+.fsm-workspace {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 248px;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.fsm-canvas {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  border-right: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+.fsm-canvas .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.fsm-canvas .react-flow__background {
+  color: var(--line-strong);
+}
+
+.fsm-canvas .react-flow__controls,
+.fsm-canvas .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: var(--shadow);
+}
+
+.fsm-canvas .react-flow__controls-button {
+  border-bottom-color: var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  fill: currentColor;
+}
+
+.fsm-canvas .react-flow__controls-button:hover {
+  background: var(--surface-hover);
+}
+
+.fsm-canvas .react-flow__minimap-mask {
+  fill: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+
+.fsm-canvas .react-flow__edge-path {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.fsm-canvas .react-flow__edge-path.is-selected,
+.fsm-canvas .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.fsm-canvas .react-flow__connectionline {
+  stroke: var(--accent);
+}
+
+.fsm-node {
+  width: 190px;
+  min-height: 76px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--shadow);
+}
+
+.fsm-node.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--focus-ring), var(--shadow);
+}
+
+.fsm-node--entry,
+.fsm-node--terminal {
+  border-left-color: var(--success);
+}
+
+.fsm-node--human_review {
+  border-left-color: #d3a74d;
+}
+
+.fsm-node--file_search,
+.fsm-node--web_search {
+  border-left-color: #4a9ec2;
+}
+
+.fsm-node--file_write {
+  border-left-color: #4eaa70;
+}
+
+.fsm-node--command,
+.fsm-node--decision,
+.fsm-node--tool {
+  border-left-color: var(--danger);
+}
+
+.fsm-node__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.fsm-node strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fsm-node__meta {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fsm-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--surface-2);
+  background: var(--accent);
+}
+
+.fsm-edge-label {
+  position: absolute;
+  max-width: 150px;
+  padding: 3px 5px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 8px;
+  pointer-events: all;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fsm-inspector {
+  min-width: 0;
+  padding: 10px;
+  overflow-y: auto;
+  background: var(--surface-1);
+}
+
+.fsm-inspector__header {
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.fsm-field-list {
+  display: grid;
+  gap: 9px;
+  padding-top: 10px;
+}
+
+.fsm-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fsm-field > span {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fsm-field input,
+.fsm-field select,
+.fsm-field textarea {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.fsm-field textarea {
+  resize: vertical;
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  line-height: 1.45;
+}
+
+.fsm-field input[readonly] {
+  color: var(--muted);
+}
+
+.fsm-inline-status,
+.fsm-warning,
+.fsm-field-error {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.fsm-warning,
+.fsm-field-error {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  color: var(--danger);
+}
+
+.fsm-output-contract {
+  display: grid;
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.fsm-output-contract span {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fsm-output-contract code {
+  color: var(--text);
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.fsm-editor__hint {
+  padding: 0 2px;
+}
+
+@media (max-width: 720px) {
+  .fsm-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .fsm-canvas {
+    min-height: 520px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .fsm-inspector {
+    max-height: 340px;
+  }
+}
+
+@media (max-width: 720px) {
+  .fsm-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .fsm-workspace,
+  .fsm-canvas {
+    min-height: 460px;
+  }
+}

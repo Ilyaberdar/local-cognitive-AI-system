@@ -1,5 +1,7 @@
 node_modules
 dist
+public/assets/workflow-editor.js
+public/assets/workflow-editor.css
 /release/
 .env
 local-cognitive.config.json

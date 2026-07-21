@@ -66,8 +66,13 @@ import { FsmEngine } from "../workflows/FsmEngine";
 import { AgentNodeExecutor } from "../workflows/nodes/AgentNodeExecutor";
 import { EntryNodeExecutor } from "../workflows/nodes/EntryNodeExecutor";
 import { HumanReviewNodeExecutor } from "../workflows/nodes/HumanReviewNodeExecutor";
+import { CommandNodeExecutor } from "../workflows/nodes/CommandNodeExecutor";
+import { DecisionNodeExecutor } from "../workflows/nodes/DecisionNodeExecutor";
+import { FileSearchNodeExecutor } from "../workflows/nodes/FileSearchNodeExecutor";
 import { NodeExecutorRegistry } from "../workflows/nodes/NodeExecutor";
+import { SaveFileNodeExecutor } from "../workflows/nodes/SaveFileNodeExecutor";
 import { TerminalNodeExecutor } from "../workflows/nodes/TerminalNodeExecutor";
+import { WebSearchNodeExecutor } from "../workflows/nodes/WebSearchNodeExecutor";
 import { WorkflowRunner } from "../workflows/WorkflowRunner";
 import { WorkflowRunStore } from "../workflows/WorkflowRunStore";
 import { WorkflowStore } from "../workflows/WorkflowStore";
@@ -610,6 +615,26 @@ export const buildRuntime = async (
         anthropic: config.providers.anthropic.model,
         gemini: config.providers.gemini.model
       }),
+      new FileSearchNodeExecutor({
+        accessMode: config.filesystem.accessMode,
+        allowedDirectories: config.filesystem.allowedDirectories,
+        workspaceDir: process.cwd()
+      }),
+      new WebSearchNodeExecutor({
+        braveApiKey: process.env.BRAVE_SEARCH_API_KEY,
+        searxngUrl: process.env.SEARXNG_URL
+      }),
+      new SaveFileNodeExecutor({
+        accessMode: config.filesystem.accessMode,
+        allowedDirectories: config.filesystem.allowedDirectories,
+        outputDir: config.outputDir
+      }),
+      new CommandNodeExecutor({
+        accessMode: config.filesystem.accessMode,
+        allowedDirectories: config.filesystem.allowedDirectories,
+        workspaceDir: process.cwd()
+      }),
+      new DecisionNodeExecutor(),
       new HumanReviewNodeExecutor(),
       new TerminalNodeExecutor()
     ])

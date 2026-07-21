@@ -6,8 +6,12 @@
   "author": "Local Cognitive AI System",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "dev": "npm run build:ui && concurrently -k -n server,workflow \"npm:dev:server\" \"npm:dev:ui\"",
+    "dev:server": "tsx watch src/index.ts",
+    "dev:ui": "vite build --watch",
+    "build": "npm run build:server && npm run build:ui",
+    "build:server": "tsc -p tsconfig.json",
+    "build:ui": "vite build",
     "start": "node dist/src/index.js",
     "mcp:stdio": "node dist/src/mcp.js",
     "test": "npm run build && node --test dist/test/**/*.test.js",
@@ -22,17 +26,25 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xyflow/react": "^12.11.1",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
     "@types/node": "^22.13.10",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^10.0.3",
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vite": "^6.1.0"
   },
   "build": {
     "appId": "com.localcognitiveai.system",

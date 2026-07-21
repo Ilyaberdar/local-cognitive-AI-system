@@ -310,8 +310,13 @@ a {
 }
 
 .shell--sidebar-collapsed .sidebar .nav-text {
+  position: absolute;
+  width: 0;
+  height: 0;
   max-width: 0;
+  overflow: hidden;
   opacity: 0;
+  pointer-events: none;
 }
 
 @keyframes nav-label-marquee {
@@ -340,9 +345,10 @@ a {
 }
 
 .shell--sidebar-collapsed .nav-label {
+  display: grid;
+  place-items: center;
   width: 100%;
   grid-template-columns: 1fr;
-  justify-items: center;
   gap: 0;
   line-height: 1;
 }
@@ -566,6 +572,10 @@ a {
 .route--chat.active {
   height: 100%;
   min-height: 0;
+  overflow: hidden;
+}
+
+.route--orchestration.active {
   overflow: hidden;
 }
 
@@ -2381,13 +2391,79 @@ a {
 }
 
 .orchestration-layout--workflow {
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) var(--workflow-side-width, 360px);
+  height: 100%;
+  min-height: 0;
+  align-content: stretch;
+  transition: grid-template-columns 280ms ease;
+}
+
+.orchestration-layout--workflow-side-collapsed {
+  grid-template-columns: minmax(0, 1fr) 44px;
 }
 
 .orchestration-intake,
 .orchestration-main,
 .orchestration-side {
   min-width: 0;
+}
+
+.orchestration-layout--workflow .orchestration-main,
+.workflow-side-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.workflow-side-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.workflow-side-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding-top: 30px;
+  overflow-y: auto;
+  transition: opacity 180ms ease;
+}
+
+.workflow-side-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+.workflow-side-toggle:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.workflow-side-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  z-index: 6;
+  width: 7px;
+  cursor: col-resize;
+}
+
+.orchestration-layout--workflow-side-collapsed .workflow-side-content,
+.orchestration-layout--workflow-side-collapsed .workflow-side-resize-handle {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .orchestration-main,
@@ -2609,6 +2685,33 @@ a {
   gap: 10px;
 }
 
+.node-run-output {
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.node-run-output summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.node-run-output pre {
+  max-height: 280px;
+  margin: 7px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .empty.compact {
   padding: 14px 8px;
   border: 1px solid var(--line);
@@ -2619,7 +2722,16 @@ a {
 
 .workflow-builder-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workflow-graph-editor {
+  min-height: 0;
+  height: 100%;
 }
 
 .workflow-builder {
@@ -2677,7 +2789,6 @@ a {
   }
 
   .chat-layout,
-  .orchestration-layout,
   .field-grid,
   .settings-grid,
   .plugin-grid,
@@ -2710,7 +2821,7 @@ a {
   }
 
   .orchestration-layout--workflow {
-    grid-template-columns: minmax(0, 1fr) 420px;
+    grid-template-columns: minmax(0, 1fr) var(--workflow-side-width, 420px);
   }
 
   .orchestration-layout--tasks {
@@ -2727,17 +2838,28 @@ a {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .orchestration-layout--workflow,
   .orchestration-layout--tasks {
     grid-template-columns: 1fr;
   }
 
-  .orchestration-side {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 920px) {
+  .orchestration-layout--workflow,
+  .orchestration-layout--workflow-side-collapsed {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .orchestration-layout--workflow-side-collapsed .workflow-side-panel {
+    min-height: 44px;
+    height: 44px;
+  }
+
+  .workflow-side-resize-handle {
+    display: none;
+  }
+
   .row-between {
     flex-direction: column;
     align-items: stretch;
@@ -2771,6 +2893,10 @@ a {
 
   .route.active {
     padding: 12px;
+  }
+
+  .route--orchestration.active {
+    overflow: auto;
   }
 
   .content-shell {
