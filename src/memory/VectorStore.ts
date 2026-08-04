@@ -20,6 +20,15 @@ export class VectorStore {
   ): Promise<MemoryEntry[]> {
     const queryEmbedding = await this.embed(query);
 
+    return this.similaritySearchByEmbedding(queryEmbedding, entries, limit);
+  }
+
+  similaritySearchByEmbedding(
+    queryEmbedding: number[],
+    entries: MemoryEntry[],
+    limit = 5
+  ): MemoryEntry[] {
+
     const ranked = entries
       .map((entry) => ({
         entry,

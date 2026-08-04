@@ -45,13 +45,15 @@ const bootstrap = async (): Promise<void> => {
   const telegramConfig = {
     enabled: appSettings.telegram.enabled,
     botToken: appSettings.telegram.botToken ?? config.telegram.botToken,
+    ownerUserIds: appSettings.telegram.ownerUserIds,
     pollTimeoutSec: appSettings.telegram.pollTimeoutSec
   };
 
-  if (telegramConfig.enabled && telegramConfig.botToken) {
+  if (telegramConfig.enabled && telegramConfig.botToken && telegramConfig.ownerUserIds.length > 0) {
     const telegram = new TelegramBotTransport(
       {
         token: telegramConfig.botToken,
+        ownerUserIds: telegramConfig.ownerUserIds,
         pollTimeoutSec: telegramConfig.pollTimeoutSec
       },
       runtime.engine,
@@ -64,6 +66,10 @@ const bootstrap = async (): Promise<void> => {
     );
 
     telegram.start();
+  } else if (telegramConfig.enabled) {
+    logger.warn("Telegram transport was not started because an owner user ID is required", {
+      hasToken: Boolean(telegramConfig.botToken)
+    });
   }
 
   logger.info(

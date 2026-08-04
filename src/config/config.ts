@@ -4,7 +4,8 @@ import path from "path";
 
 dotenv.config();
 
-type MemoryAdapterName = "local-json" | "openmemory";
+type MemoryAdapterName = "local-json" | "openmemory" | "world-partition";
+type MemoryPartitionStrategy = "auto" | "global" | "partitioned";
 
 export interface ProviderHttpConfig {
   baseUrl: string;
@@ -47,6 +48,16 @@ export interface AppConfig {
     adapter: MemoryAdapterName;
     baseDir: string;
     topK: number;
+    worldPartition: {
+      crossSessionRecall: boolean;
+      strategy: MemoryPartitionStrategy;
+      activationThreshold: number;
+      chunkCapacity: number;
+      initialRadius: number;
+      maxRadius: number;
+      fallbackToGlobalSearch: boolean;
+      migrateLegacyOnStart: boolean;
+    };
     openMemory: {
       enabled: boolean;
       dbPath: string;
@@ -65,6 +76,7 @@ export interface AppConfig {
   telegram: {
     enabled: boolean;
     botToken?: string;
+    ownerUserIds: string[];
     pollTimeoutSec: number;
   };
   filesystem: {
@@ -95,6 +107,30 @@ const toOptional = (value: string | undefined): string | undefined => {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
 };
+
+const toTelegramOwnerUserIds = (value: string | undefined): string[] =>
+  [...new Set(
+    (value ?? "")
+      .split(",")
+      .map((userId) => userId.trim())
+      .filter((userId) => /^(?:0|[1-9]\d*)$/.test(userId))
+  )];
+
+const toPartitionStrategy = (value: string | undefined): MemoryPartitionStrategy => {
+  if (value === "global" || value === "partitioned") {
+    return value;
+  }
+
+  return "auto";
+};
+
+const positiveNumber = (value: string | undefined, fallback: number, minimum = 1): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.floor(parsed)) : fallback;
+};
+
+const nonNegativeNumber = (value: string | undefined, fallback: number): number =>
+  positiveNumber(value, fallback, 0);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -185,9 +221,19 @@ export const config: AppConfig = {
     }
   },
   memory: {
-    adapter: (process.env.MEMORY_ADAPTER as MemoryAdapterName) ?? "local-json",
+    adapter: (process.env.MEMORY_ADAPTER as MemoryAdapterName) ?? "world-partition",
     baseDir: resolveDir(process.env.MEMORY_DIR ?? "./data/memory", "./data/memory"),
     topK: Number(process.env.MEMORY_TOP_K ?? 5),
+    worldPartition: {
+      crossSessionRecall: toBoolean(process.env.MEMORY_CROSS_SESSION_RECALL, true),
+      strategy: toPartitionStrategy(process.env.MEMORY_PARTITION_STRATEGY),
+      activationThreshold: positiveNumber(process.env.MEMORY_PARTITION_ACTIVATION_THRESHOLD, 10000),
+      chunkCapacity: positiveNumber(process.env.MEMORY_PARTITION_CHUNK_CAPACITY, 1024, 32),
+      initialRadius: nonNegativeNumber(process.env.MEMORY_PARTITION_INITIAL_RADIUS, 1),
+      maxRadius: nonNegativeNumber(process.env.MEMORY_PARTITION_MAX_RADIUS, 3),
+      fallbackToGlobalSearch: toBoolean(process.env.MEMORY_PARTITION_GLOBAL_FALLBACK, true),
+      migrateLegacyOnStart: toBoolean(process.env.MEMORY_PARTITION_MIGRATE_LEGACY, true)
+    },
     openMemory: {
       enabled: toBoolean(process.env.OPENMEMORY_ENABLED, false),
       dbPath: resolveDir(process.env.OPENMEMORY_DB_PATH ?? "./data/openmemory.db", "./data/openmemory.db")
@@ -206,6 +252,7 @@ export const config: AppConfig = {
   telegram: {
     enabled: toBoolean(process.env.TELEGRAM_ENABLED, false),
     botToken: toOptional(process.env.TELEGRAM_BOT_TOKEN),
+    ownerUserIds: toTelegramOwnerUserIds(process.env.TELEGRAM_OWNER_USER_IDS),
     pollTimeoutSec: Number(process.env.TELEGRAM_POLL_TIMEOUT_SEC ?? 25)
   },
   filesystem: {

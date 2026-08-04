@@ -79,6 +79,15 @@ export class LocalJsonMemoryAdapter implements MemoryAdapter {
       .slice(0, options?.limit ?? 10);
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    const allEntries = await this.loadAllEntries();
+    await Promise.all(
+      allEntries
+        .filter((entry) => entry.actor.sessionId === sessionId)
+        .map((entry) => fs.unlink(path.join(this.options.baseDir, entry.scope, `${entry.id}.json`)).catch(() => undefined))
+    );
+  }
+
   private async loadAllEntries(options?: { actor?: MemoryQueryOptions["actor"] }): Promise<MemoryEntry[]> {
     await fs.mkdir(this.options.baseDir, { recursive: true });
     const scopeDirs = await fs.readdir(this.options.baseDir, { withFileTypes: true });

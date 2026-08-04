@@ -23,6 +23,10 @@ export class MemoryService {
     return this.adapter.recent(options);
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.adapter.deleteSession(sessionId);
+  }
+
   private toReference(entry: MemoryEntry): MemoryReference {
     return {
       id: entry.id,

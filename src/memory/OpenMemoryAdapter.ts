@@ -64,6 +64,10 @@ export class OpenMemoryAdapter implements MemoryAdapter {
     return [];
   }
 
+  async deleteSession(_sessionId: string): Promise<void> {
+    this.logger.warn("Session deletion is not implemented for the OpenMemory adapter.");
+  }
+
   private async getClient(): Promise<unknown | null> {
     if (this.client) {
       return this.client;

@@ -113,12 +113,15 @@ export interface AppSettings {
   telegram: {
     enabled: boolean;
     botToken?: string;
+    ownerUserIds: string[];
     pollTimeoutSec: number;
   };
   memory: {
-    adapter: "local-json" | "openmemory";
+    adapter: "local-json" | "openmemory" | "world-partition";
     baseDir: string;
     topK: number;
+    localProfileId: string;
+    worldPartition: MemoryWorldPartitionSettings;
     openMemory: {
       enabled: boolean;
       dbPath: string;
@@ -142,12 +145,14 @@ export interface AppSettingsPatch {
   telegram?: {
     enabled?: boolean;
     botToken?: string;
+    ownerUserIds?: string[];
     pollTimeoutSec?: number;
   };
   memory?: {
-    adapter?: "local-json" | "openmemory";
+    adapter?: "local-json" | "openmemory" | "world-partition";
     baseDir?: string;
     topK?: number;
+    worldPartition?: Partial<MemoryWorldPartitionSettings>;
     openMemory?: {
       enabled?: boolean;
       dbPath?: string;
@@ -203,6 +208,19 @@ export interface MemoryEntry {
   createdAt: string;
   actor: ActorContext;
   metadata?: Record<string, unknown>;
+}
+
+export type MemoryPartitionStrategy = "auto" | "global" | "partitioned";
+
+export interface MemoryWorldPartitionSettings {
+  crossSessionRecall: boolean;
+  strategy: MemoryPartitionStrategy;
+  activationThreshold: number;
+  chunkCapacity: number;
+  initialRadius: number;
+  maxRadius: number;
+  fallbackToGlobalSearch: boolean;
+  migrateLegacyOnStart: boolean;
 }
 
 export interface MemoryReference {

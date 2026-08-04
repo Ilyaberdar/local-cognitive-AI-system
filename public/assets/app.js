@@ -2233,6 +2233,11 @@ function renderSettingsRoute() {
             <label>Bot token</label>
             <input type="password" autocomplete="off" name="telegram.botToken" value="${escapeAttr(settings.telegram.botToken || "")}" placeholder="123456:telegram-bot-token" />
           </div>
+          <div class="field full">
+            <label>Owner Telegram user IDs</label>
+            <input name="telegram.ownerUserIds" value="${escapeAttr(settings.telegram.ownerUserIds.join(", "))}" placeholder="123456789" />
+            <div class="subtle">Comma-separated numeric IDs. Telegram starts only when at least one owner is configured.</div>
+          </div>
         </div>
       </section>
 
@@ -2242,7 +2247,7 @@ function renderSettingsRoute() {
           <div class="field">
             <label>Adapter</label>
             <select name="memory.adapter">
-              ${["local-json", "openmemory"].map((value) => option(value, settings.memory.adapter)).join("")}
+              ${["local-json", "world-partition", "openmemory"].map((value) => option(value, settings.memory.adapter)).join("")}
             </select>
           </div>
           <div class="field">
@@ -2252,6 +2257,45 @@ function renderSettingsRoute() {
           <div class="field">
             <label>Memory directory</label>
             <input name="memory.baseDir" value="${escapeAttr(settings.memory.baseDir)}" />
+          </div>
+          <div class="field">
+            <label>Cross-session recall</label>
+            <select name="memory.worldPartition.crossSessionRecall">
+              ${["true", "false"].map((value) => option(value, String(settings.memory.worldPartition.crossSessionRecall), value === "true" ? "on" : "off")).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Partition strategy</label>
+            <select name="memory.worldPartition.strategy">
+              ${["auto", "global", "partitioned"].map((value) => option(value, settings.memory.worldPartition.strategy)).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Activation threshold / user</label>
+            <input name="memory.worldPartition.activationThreshold" type="number" min="1" value="${escapeAttr(String(settings.memory.worldPartition.activationThreshold))}" />
+          </div>
+          <div class="field">
+            <label>Chunk capacity</label>
+            <input name="memory.worldPartition.chunkCapacity" type="number" min="32" value="${escapeAttr(String(settings.memory.worldPartition.chunkCapacity))}" />
+          </div>
+          <div class="field">
+            <label>Initial / max radius</label>
+            <div class="inline-pair">
+              <input name="memory.worldPartition.initialRadius" type="number" min="0" value="${escapeAttr(String(settings.memory.worldPartition.initialRadius))}" />
+              <input name="memory.worldPartition.maxRadius" type="number" min="0" value="${escapeAttr(String(settings.memory.worldPartition.maxRadius))}" />
+            </div>
+          </div>
+          <div class="field">
+            <label>Global fallback</label>
+            <select name="memory.worldPartition.fallbackToGlobalSearch">
+              ${["true", "false"].map((value) => option(value, String(settings.memory.worldPartition.fallbackToGlobalSearch), value === "true" ? "on" : "off")).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Migrate legacy JSON</label>
+            <select name="memory.worldPartition.migrateLegacyOnStart">
+              ${["true", "false"].map((value) => option(value, String(settings.memory.worldPartition.migrateLegacyOnStart), value === "true" ? "on" : "off")).join("")}
+            </select>
           </div>
           <div class="field">
             <label>OpenMemory enabled</label>
@@ -4259,6 +4303,7 @@ function buildAppSettingsPayload(form, pluginsOnly) {
       : {
           enabled: form.get("telegram.enabled") === "true",
           botToken: String(form.get("telegram.botToken") || "").trim(),
+          ownerUserIds: String(form.get("telegram.ownerUserIds") || "").split(",").map((value) => value.trim()).filter(Boolean),
           pollTimeoutSec: Number(form.get("telegram.pollTimeoutSec") || 25)
         },
     mcp: pluginsOnly
@@ -4276,6 +4321,16 @@ function buildAppSettingsPayload(form, pluginsOnly) {
           adapter: String(form.get("memory.adapter") || "local-json"),
           topK: Number(form.get("memory.topK") || 5),
           baseDir: String(form.get("memory.baseDir") || "").trim(),
+          worldPartition: {
+            crossSessionRecall: form.get("memory.worldPartition.crossSessionRecall") === "true",
+            strategy: String(form.get("memory.worldPartition.strategy") || "auto"),
+            activationThreshold: Number(form.get("memory.worldPartition.activationThreshold") || 10000),
+            chunkCapacity: Number(form.get("memory.worldPartition.chunkCapacity") || 1024),
+            initialRadius: Number(form.get("memory.worldPartition.initialRadius") || 1),
+            maxRadius: Number(form.get("memory.worldPartition.maxRadius") || 3),
+            fallbackToGlobalSearch: form.get("memory.worldPartition.fallbackToGlobalSearch") === "true",
+            migrateLegacyOnStart: form.get("memory.worldPartition.migrateLegacyOnStart") === "true"
+          },
           openMemory: {
             enabled: form.get("memory.openMemory.enabled") === "true",
             dbPath: String(form.get("memory.openMemory.dbPath") || "").trim()

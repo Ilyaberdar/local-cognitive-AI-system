@@ -16,6 +16,7 @@ import { TELEGRAM_HELP } from "./TelegramHelp";
 
 interface TelegramTransportOptions {
   token: string;
+  ownerUserIds: readonly string[];
   pollTimeoutSec: number;
 }
 
@@ -63,34 +64,7 @@ export class TelegramBotTransport {
         const updates = await this.getUpdates();
 
         for (const update of updates) {
-          this.offset = update.update_id + 1;
-
-          const text = update.message?.text?.trim();
-          const chatId = update.message?.chat?.id;
-          const userId = update.message?.from?.id;
-
-          if (!text || !chatId) {
-            continue;
-          }
-
-          const sessionId = String(chatId);
-
-          if (text.startsWith("/")) {
-            const commandReply = await this.handleCommand(sessionId, text);
-            await this.sendMessage(chatId, commandReply);
-            continue;
-          }
-
-          const result = await this.engine.process({
-            input: text,
-            actor: {
-              sessionId,
-              userId: userId ? String(userId) : undefined,
-              channel: "telegram"
-            }
-          });
-
-          await this.sendMessage(chatId, this.formatter.formatForChat(result, { maxChars: 3900 }));
+          await this.processUpdate(update);
         }
       } catch (error) {
         this.logger.warn("Telegram poll loop error", {
@@ -99,6 +73,45 @@ export class TelegramBotTransport {
         await this.delay(2000);
       }
     }
+  }
+
+  private async processUpdate(update: TelegramUpdate): Promise<void> {
+    this.offset = update.update_id + 1;
+
+    const text = update.message?.text?.trim();
+    const chatId = update.message?.chat?.id;
+    const userId = update.message?.from?.id;
+
+    if (!text || !chatId) {
+      return;
+    }
+
+    if (!this.isOwner(userId)) {
+      this.logger.warn("Ignored Telegram update from a non-owner", {
+        chatId,
+        userId: userId ?? "unknown"
+      });
+      return;
+    }
+
+    const sessionId = String(chatId);
+
+    if (text.startsWith("/")) {
+      const commandReply = await this.handleCommand(sessionId, text);
+      await this.sendMessage(chatId, commandReply);
+      return;
+    }
+
+    const result = await this.engine.process({
+      input: text,
+      actor: {
+        sessionId,
+        userId: String(userId),
+        channel: "telegram"
+      }
+    });
+
+    await this.sendMessage(chatId, this.formatter.formatForChat(result, { maxChars: 3900 }));
   }
 
   private async handleCommand(sessionId: string, text: string): Promise<string> {
@@ -450,6 +463,10 @@ export class TelegramBotTransport {
 
   private isSessionMode(value: string | undefined): value is SessionMode {
     return value === "auto" || value === "general" || value === "code" || value === "hypothesis";
+  }
+
+  private isOwner(userId: number | undefined): boolean {
+    return userId !== undefined && this.options.ownerUserIds.includes(String(userId));
   }
 
   private isLanguage(value: string | undefined): value is LanguagePreference {

@@ -10,4 +10,5 @@ export interface MemoryAdapter {
   save(entry: MemorySaveInput): Promise<MemoryEntry>;
   query(query: string, options?: MemoryQueryOptions): Promise<MemoryEntry[]>;
   recent(options?: MemoryRecentOptions): Promise<MemoryEntry[]>;
+  deleteSession(sessionId: string): Promise<void>;
 }

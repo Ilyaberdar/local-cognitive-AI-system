@@ -1,10 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
+import { randomUUID } from "crypto";
 import { AppConfig } from "../config/config";
 import { AppSettings, AppSettingsPatch } from "../types";
 
 export class AppSettingsStore {
   private readonly filePath: string;
+  private readonly defaultMemoryProfileId = randomUUID();
 
   constructor(private readonly appDataDir: string, private readonly baseConfig: AppConfig) {
     this.filePath = path.join(appDataDir, "settings.json");
@@ -16,7 +18,11 @@ export class AppSettingsStore {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<AppSettings>;
-      return this.normalize(parsed);
+      const settings = this.normalize(parsed);
+      if (!parsed.memory?.localProfileId) {
+        await this.write(settings);
+      }
+      return settings;
     } catch {
       const defaults = this.fromConfig();
       await this.write(defaults);
@@ -41,12 +47,28 @@ export class AppSettingsStore {
       telegram: {
         enabled: patch.telegram?.enabled ?? current.telegram.enabled,
         botToken: patch.telegram?.botToken ?? current.telegram.botToken,
+        ownerUserIds: patch.telegram?.ownerUserIds ?? current.telegram.ownerUserIds,
         pollTimeoutSec: patch.telegram?.pollTimeoutSec ?? current.telegram.pollTimeoutSec
       },
       memory: {
         adapter: patch.memory?.adapter ?? current.memory.adapter,
         baseDir: patch.memory?.baseDir ?? current.memory.baseDir,
         topK: patch.memory?.topK ?? current.memory.topK,
+        localProfileId: current.memory.localProfileId,
+        worldPartition: {
+          crossSessionRecall:
+            patch.memory?.worldPartition?.crossSessionRecall ?? current.memory.worldPartition.crossSessionRecall,
+          strategy: patch.memory?.worldPartition?.strategy ?? current.memory.worldPartition.strategy,
+          activationThreshold:
+            patch.memory?.worldPartition?.activationThreshold ?? current.memory.worldPartition.activationThreshold,
+          chunkCapacity: patch.memory?.worldPartition?.chunkCapacity ?? current.memory.worldPartition.chunkCapacity,
+          initialRadius: patch.memory?.worldPartition?.initialRadius ?? current.memory.worldPartition.initialRadius,
+          maxRadius: patch.memory?.worldPartition?.maxRadius ?? current.memory.worldPartition.maxRadius,
+          fallbackToGlobalSearch:
+            patch.memory?.worldPartition?.fallbackToGlobalSearch ?? current.memory.worldPartition.fallbackToGlobalSearch,
+          migrateLegacyOnStart:
+            patch.memory?.worldPartition?.migrateLegacyOnStart ?? current.memory.worldPartition.migrateLegacyOnStart
+        },
         openMemory: {
           enabled: patch.memory?.openMemory?.enabled ?? current.memory.openMemory.enabled,
           dbPath: patch.memory?.openMemory?.dbPath ?? current.memory.openMemory.dbPath
@@ -103,12 +125,15 @@ export class AppSettingsStore {
       telegram: {
         enabled: this.baseConfig.telegram.enabled,
         botToken: this.baseConfig.telegram.botToken,
+        ownerUserIds: this.baseConfig.telegram.ownerUserIds,
         pollTimeoutSec: this.baseConfig.telegram.pollTimeoutSec
       },
       memory: {
         adapter: this.baseConfig.memory.adapter,
         baseDir: this.baseConfig.memory.baseDir,
         topK: this.baseConfig.memory.topK,
+        localProfileId: this.defaultMemoryProfileId,
+        worldPartition: { ...this.baseConfig.memory.worldPartition },
         openMemory: {
           enabled: this.baseConfig.memory.openMemory.enabled,
           dbPath: this.baseConfig.memory.openMemory.dbPath
@@ -202,12 +227,21 @@ export class AppSettingsStore {
       telegram: {
         enabled: input.telegram?.enabled ?? defaults.telegram.enabled,
         botToken: input.telegram?.botToken ?? defaults.telegram.botToken,
+        ownerUserIds: this.normalizeTelegramOwnerUserIds(
+          input.telegram?.ownerUserIds,
+          defaults.telegram.ownerUserIds
+        ),
         pollTimeoutSec: input.telegram?.pollTimeoutSec ?? defaults.telegram.pollTimeoutSec
       },
       memory: {
-        adapter: input.memory?.adapter ?? defaults.memory.adapter,
+        adapter: this.normalizeMemoryAdapter(input.memory?.adapter, defaults.memory.adapter),
         baseDir: input.memory?.baseDir ?? defaults.memory.baseDir,
         topK: input.memory?.topK ?? defaults.memory.topK,
+        localProfileId:
+          typeof input.memory?.localProfileId === "string" && input.memory.localProfileId.trim()
+            ? input.memory.localProfileId
+            : defaults.memory.localProfileId,
+        worldPartition: this.normalizeWorldPartition(input.memory?.worldPartition, defaults.memory.worldPartition),
         openMemory: {
           enabled: input.memory?.openMemory?.enabled ?? defaults.memory.openMemory.enabled,
           dbPath: input.memory?.openMemory?.dbPath ?? defaults.memory.openMemory.dbPath
@@ -248,5 +282,56 @@ export class AppSettingsStore {
       timeoutMs,
       apiKey: providerId === "lmstudio" ? "lm-studio" : undefined
     };
+  }
+
+  private normalizeMemoryAdapter(
+    value: unknown,
+    fallback: AppSettings["memory"]["adapter"]
+  ): AppSettings["memory"]["adapter"] {
+    return value === "local-json" || value === "openmemory" || value === "world-partition" ? value : fallback;
+  }
+
+  private normalizeWorldPartition(
+    value: Partial<AppSettings["memory"]["worldPartition"]> | undefined,
+    defaults: AppSettings["memory"]["worldPartition"]
+  ): AppSettings["memory"]["worldPartition"] {
+    const strategy = value?.strategy;
+    const initialRadius = this.nonNegativeInteger(value?.initialRadius, defaults.initialRadius);
+    const maxRadius = Math.max(initialRadius, this.nonNegativeInteger(value?.maxRadius, defaults.maxRadius));
+
+    return {
+      crossSessionRecall:
+        typeof value?.crossSessionRecall === "boolean" ? value.crossSessionRecall : defaults.crossSessionRecall,
+      strategy: strategy === "global" || strategy === "partitioned" || strategy === "auto" ? strategy : defaults.strategy,
+      activationThreshold: this.positiveInteger(value?.activationThreshold, defaults.activationThreshold),
+      chunkCapacity: this.positiveInteger(value?.chunkCapacity, defaults.chunkCapacity, 32),
+      initialRadius,
+      maxRadius,
+      fallbackToGlobalSearch:
+        typeof value?.fallbackToGlobalSearch === "boolean" ? value.fallbackToGlobalSearch : defaults.fallbackToGlobalSearch,
+      migrateLegacyOnStart:
+        typeof value?.migrateLegacyOnStart === "boolean" ? value.migrateLegacyOnStart : defaults.migrateLegacyOnStart
+    };
+  }
+
+  private positiveInteger(value: unknown, fallback: number, minimum = 1): number {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(minimum, Math.floor(value)) : fallback;
+  }
+
+  private nonNegativeInteger(value: unknown, fallback: number): number {
+    return this.positiveInteger(value, fallback, 0);
+  }
+
+  private normalizeTelegramOwnerUserIds(value: unknown, defaults: string[]): string[] {
+    if (!Array.isArray(value)) {
+      return defaults;
+    }
+
+    return [...new Set(
+      value
+        .filter((userId): userId is string => typeof userId === "string")
+        .map((userId) => userId.trim())
+        .filter((userId) => /^(?:0|[1-9]\d*)$/.test(userId))
+    )];
   }
 }
