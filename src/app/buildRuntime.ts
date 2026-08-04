@@ -28,6 +28,7 @@ import { MemoryAdapter } from "../memory/MemoryAdapter";
 import { MemoryService } from "../memory/MemoryService";
 import { OpenMemoryAdapter } from "../memory/OpenMemoryAdapter";
 import { VectorStore } from "../memory/VectorStore";
+import { WorldPartitionMemoryAdapter } from "../memory/WorldPartitionMemoryAdapter";
 import { PluginLoader } from "../plugins/PluginLoader";
 import { LoadedPlugin } from "../plugins/types";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
@@ -693,6 +694,20 @@ const createMemoryAdapter = async (
       },
       logger
     );
+  }
+
+  if (config.memory.adapter === "world-partition") {
+    const adapter = new WorldPartitionMemoryAdapter(
+      {
+        baseDir: config.memory.baseDir,
+        topK: config.memory.topK,
+        ...config.memory.worldPartition
+      },
+      vectorStore,
+      logger
+    );
+    await adapter.initialize();
+    return adapter;
   }
 
   return new LocalJsonMemoryAdapter(

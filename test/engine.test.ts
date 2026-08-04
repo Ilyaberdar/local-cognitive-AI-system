@@ -69,6 +69,16 @@ const createTestConfig = (root: string): AppConfig => ({
     adapter: "local-json",
     baseDir: path.join(root, "memory"),
     topK: 5,
+    worldPartition: {
+      crossSessionRecall: true,
+      strategy: "auto",
+      activationThreshold: 10000,
+      chunkCapacity: 1024,
+      initialRadius: 1,
+      maxRadius: 3,
+      fallbackToGlobalSearch: true,
+      migrateLegacyOnStart: true
+    },
     openMemory: {
       enabled: false,
       dbPath: path.join(root, "openmemory.db")
@@ -87,6 +97,7 @@ const createTestConfig = (root: string): AppConfig => ({
   telegram: {
     enabled: false,
     botToken: undefined,
+    ownerUserIds: [],
     pollTimeoutSec: 1
   },
   filesystem: {
@@ -144,6 +155,31 @@ test("memory persists per session and provider selection works", async () => {
   assert.ok(result.conversationSize >= 1);
   assert.ok(result.memory.length >= 1);
   assert.ok(result.tools.some((tool) => tool.tool === "file"));
+});
+
+test("world partition memory recalls a browser profile across sessions", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-world-runtime-"));
+  const config = createTestConfig(tmpDir);
+  config.memory.adapter = "world-partition";
+  config.memory.worldPartition = {
+    ...config.memory.worldPartition,
+    strategy: "global",
+    migrateLegacyOnStart: true
+  };
+  const runtime = await buildRuntime(config, new Logger());
+
+  await runtime.engine.process({
+    input: "Remember that I prefer concise architecture proposals.",
+    actor: { sessionId: "first-chat", userId: "browser-profile", channel: "http" }
+  });
+
+  const result = await runtime.engine.process({
+    input: "What response style do I prefer?",
+    actor: { sessionId: "second-chat", userId: "browser-profile", channel: "http" }
+  });
+
+  assert.ok(result.memory.some((entry) => entry.input.includes("concise architecture proposals")));
+  assert.equal(result.conversationSize, 0);
 });
 
 test("session settings can force multi-provider debate roles", async () => {

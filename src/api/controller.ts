@@ -35,19 +35,15 @@ export const createProcessController =
         input,
         sessionId,
         sessionTitle,
-        userId,
         providerId,
         model,
-        channel,
         metadata
       } = req.body as {
         input?: unknown;
         sessionId?: unknown;
         sessionTitle?: unknown;
-        userId?: unknown;
         providerId?: unknown;
         model?: unknown;
-        channel?: unknown;
         metadata?: Record<string, unknown>;
       };
 
@@ -58,6 +54,8 @@ export const createProcessController =
         return;
       }
 
+      const resolvedChannel = "http" as const;
+      const configuredProfileId = (await runtimeManager.getSettings()).memory.localProfileId;
       const result = await processRuntimeInput(
         runtimeManager,
         sessionIndexStore,
@@ -65,14 +63,14 @@ export const createProcessController =
           input,
           sessionId: typeof sessionId === "string" ? sessionId : undefined,
           sessionTitle: typeof sessionTitle === "string" ? sessionTitle : undefined,
-          userId: typeof userId === "string" ? userId : undefined,
+          userId: configuredProfileId,
           providerId: typeof providerId === "string" ? providerId : undefined,
           model: typeof model === "string" ? model : undefined,
           metadata,
           signal: processRun.controller.signal,
           onProgress: (event) => processRunRegistry.update(requestId, event)
         },
-        channel === "telegram" || channel === "mcp" ? channel : "http"
+        resolvedChannel
       );
 
       res.status(200).json({
@@ -564,7 +562,7 @@ export const createDeleteSessionController =
       }
 
       await runtime.sessionSettingsStore.delete(sessionId);
-      await deleteSessionMemory(runtime.config.memory.baseDir, sessionId);
+      await runtime.memoryService.deleteSession(sessionId);
 
       res.status(200).json({ ok: true, sessionId });
     } catch (error) {
@@ -577,9 +575,12 @@ export const createGetSessionMessagesController =
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const runtime = runtimeManager.getRuntime();
+      const settings = await runtimeManager.getSettings();
       const entries = await runtime.memoryService.recent({
         actor: {
-          sessionId: String(req.params.sessionId)
+          sessionId: String(req.params.sessionId),
+          userId: settings.memory.localProfileId,
+          channel: "http"
         },
         limit: 60
       });
@@ -1008,37 +1009,6 @@ const isSubagentRunSummary = (value: unknown): value is SubagentRunSummary => {
     typeof record.provider === "string" &&
     (record.status === "ok" || record.status === "degraded")
   );
-};
-
-const deleteSessionMemory = async (memoryBaseDir: string, sessionId: string): Promise<void> => {
-  try {
-    const scopes = await fs.readdir(memoryBaseDir, { withFileTypes: true });
-
-    for (const scope of scopes) {
-      if (!scope.isDirectory()) {
-        continue;
-      }
-
-      const scopeDir = path.join(memoryBaseDir, scope.name);
-      const files = await fs.readdir(scopeDir, { withFileTypes: true });
-
-      for (const file of files) {
-        if (!file.isFile() || !file.name.endsWith(".json")) {
-          continue;
-        }
-
-        const filePath = path.join(scopeDir, file.name);
-        const raw = await fs.readFile(filePath, "utf8");
-        const parsed = JSON.parse(raw) as { actor?: { sessionId?: string } };
-
-        if (parsed.actor?.sessionId === sessionId) {
-          await fs.unlink(filePath);
-        }
-      }
-    }
-  } catch {
-    return;
-  }
 };
 
 const getSystemMetricsSnapshot = (): SystemMetrics => {

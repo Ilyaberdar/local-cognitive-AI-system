@@ -76,6 +76,7 @@ export class RuntimeManager {
         ...this.baseConfig.telegram,
         enabled: settings.telegram.enabled,
         botToken: settings.telegram.botToken ?? this.baseConfig.telegram.botToken,
+        ownerUserIds: settings.telegram.ownerUserIds,
         pollTimeoutSec: settings.telegram.pollTimeoutSec
       },
       filesystem: {
@@ -90,6 +91,10 @@ export class RuntimeManager {
         adapter: settings.memory.adapter,
         baseDir: settings.memory.baseDir,
         topK: settings.memory.topK,
+        worldPartition: {
+          ...this.baseConfig.memory.worldPartition,
+          ...settings.memory.worldPartition
+        },
         openMemory: {
           ...this.baseConfig.memory.openMemory,
           enabled: settings.memory.openMemory.enabled,

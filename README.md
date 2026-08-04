@@ -213,8 +213,12 @@ Use `@BotFather` and get a bot token.
 ```env
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_OWNER_USER_IDS=123456789
 TELEGRAM_POLL_TIMEOUT_SEC=25
 ```
+
+`TELEGRAM_OWNER_USER_IDS` is a comma-separated allowlist of Telegram numeric user IDs. The
+transport does not start until it contains at least one ID; only listed users can invoke the bot.
 
 ### 3. Start the server
 
@@ -475,6 +479,7 @@ flowchart LR
   TOOLS --> FILE["FileTool"]
 
   MEM --> JSON["LocalJsonMemoryAdapter"]
+  MEM --> WP["WorldPartitionMemoryAdapter"]
   MEM --> OM["OpenMemoryAdapter"]
 ```
 
@@ -576,7 +581,10 @@ npm run test
 ## Current Notes
 
 - `VS Code` plugin is still a placeholder bridge configuration, not a full editor transport.
-- `OpenMemory` is present as an adapter shape, but the default long memory path is local JSON.
+- `world-partition` is the default local long-memory adapter. It writes a per-user Morton-indexed world under `MEMORY_DIR/.world-partition-v1`, while session timelines remain separate.
+- `OpenMemory` remains an optional adapter shape.
+- With `MEMORY_PARTITION_STRATEGY=auto`, exact per-user search is used below `MEMORY_PARTITION_ACTIVATION_THRESHOLD` (default `10000`); the Morton cell search is used above it. The dashboard exposes the same controls.
+- HTTP/browser traffic uses a stable profile ID generated and persisted by the local server; the HTTP request body cannot select another profile. Telegram and MCP memory are isolated by channel and their caller `userId`.
 - Cloud provider rate limits can appear in `Models -> Runtime Providers` after `Test provider`.
 
 ## Recommended First Run
