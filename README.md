@@ -20,6 +20,38 @@ The goal is simple: one personal system you can use every day for research, codi
 - `Settings` page for provider keys, MCP, Telegram, and memory
 - session-based configuration, history, and message persistence
 
+## Screenshots
+
+### Chat Workspace
+
+![Chat Workspace with a session, generated response, and per-session setup](images/chat-workspace.png)
+
+Run everyday chats, switch modes, configure subagents, and keep each conversation in its own session.
+
+### Orchestration Tasks
+
+![Orchestration task board with Todo, In Progress, and Done columns](images/orchestration-tasks.png)
+
+Create prioritized tasks and monitor their progress through the selected workflow.
+
+### Workflow Builder
+
+![Visual workflow builder showing an entry node, agent execution, and terminal states](images/workflow-builder.png)
+
+Design and validate task workflows visually, including success and failure transitions.
+
+### Models and Providers
+
+![Runtime provider status and local model catalog](images/model-catalog.png)
+
+See cloud provider status, loaded local models, and the local model catalog in one place.
+
+### Runtime Settings
+
+![Provider, MCP, Telegram, and runtime settings](images/runtime-settings.png)
+
+Configure providers, MCP, Telegram, memory, and other local runtime defaults from the dashboard.
+
 ## Quick Start
 
 ### 1. Requirements
