@@ -5,6 +5,7 @@ import { AppSettingsStore } from "./app/AppSettingsStore";
 import { RuntimeManager } from "./app/RuntimeManager";
 import { config } from "./config/config";
 import { SessionIndexStore } from "./session/SessionIndexStore";
+import { ScheduleRunner } from "./schedules/ScheduleRunner";
 import { TelegramBotTransport } from "./transports/telegram/TelegramBotTransport";
 import { Logger } from "./utils/Logger";
 import { formatStartupSummary } from "./utils/startupSummary";
@@ -40,6 +41,11 @@ const bootstrap = async (): Promise<void> => {
       });
       server.once("error", reject);
     });
+
+    new ScheduleRunner(
+      () => runtimeManager.getRuntime().scheduleService,
+      logger
+    ).start();
   }
 
   const telegramConfig = {

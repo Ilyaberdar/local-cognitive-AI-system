@@ -11,6 +11,13 @@ document.documentElement.dataset.theme = initialTheme;
 const DEFAULT_SUBAGENT_NAMES = ["Atlas", "Nova", "Vector", "Echo", "Orion", "Lyra", "Kepler", "Sable", "Rook", "Mira"];
 const MAX_HYPOTHESIS_ADVISORS = 5;
 const MAX_HYPOTHESIS_AGENTS = 3 + MAX_HYPOTHESIS_ADVISORS;
+const DEFAULT_SCHEDULE_TIMEZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kyiv";
+  } catch {
+    return "Europe/Kyiv";
+  }
+})();
 const SUBAGENT_PENDING_MESSAGES = [
   "Routing a focused pass to {agents}...",
   "Spinning up {agents} with the current context...",
@@ -159,6 +166,20 @@ const api = {
     request("/tasks/run-next", {
       method: "POST",
       timeoutMs: 900000
+    }),
+  createSchedule: (payload) =>
+    request("/schedules", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateSchedule: (scheduleId, payload) =>
+    request(`/schedules/${scheduleId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteSchedule: (scheduleId) =>
+    request(`/schedules/${scheduleId}`, {
+      method: "DELETE"
     }),
   getWorkflowRun: (runId) => request(`/workflow-runs/${runId}`),
   stepWorkflowRun: (runId) =>
@@ -1028,6 +1049,7 @@ function normalizeHypothesisAgentsForUi(settings) {
 function renderOrchestrationRoute() {
   const workflows = state.bootstrap?.workflows ?? [];
   const tasks = state.bootstrap?.tasks ?? [];
+  const schedules = state.bootstrap?.schedules ?? [];
   const workflowRuns = state.bootstrap?.workflowRuns ?? [];
   const workflowDraft = ensureWorkflowBuilderDraft(workflows);
   const selectedRunId = state.activeWorkflowRunId;
@@ -1046,13 +1068,13 @@ function renderOrchestrationRoute() {
       ${
         activeTab === "workflow"
           ? renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun)
-          : renderTasksOrchestrationTab(workflows, tasks, workflowRuns)
+          : renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules)
       }
     </div>
   `;
 }
 
-function renderTasksOrchestrationTab(workflows, tasks, workflowRuns) {
+function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) {
   const defaultWorkflowId = workflows[0]?.id ?? "default-task-workflow";
 
   return `
@@ -1092,7 +1114,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns) {
             <textarea id="task-description" name="description" rows="5" placeholder="Describe the expected outcome, constraints, files, and verification." required></textarea>
           </div>
           <div class="footer-row field--full">
-            <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs</span>
+            <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs · ${schedules.length} daily schedules</span>
             <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Task</button>
           </div>
         </form>
@@ -1107,6 +1129,66 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns) {
           <button class="primary-button" type="button" data-action="run-next-task" ${state.loading ? "disabled" : ""}>Run Next Todo</button>
         </div>
         ${renderTaskBoard(tasks)}
+      </section>
+
+      <section class="panel schedule-panel">
+        <div class="schedule-panel__intake">
+          <div class="card-header">
+            <div>
+              <h2>Daily Schedule</h2>
+              <p class="subtle">Creates a fresh task every day while this app is running.</p>
+            </div>
+          </div>
+          <form id="schedule-form" class="form-grid">
+            <div class="field">
+              <label for="schedule-title">Task title</label>
+              <input id="schedule-title" name="title" type="text" placeholder="Daily market analysis" required />
+            </div>
+            <div class="field">
+              <label for="schedule-time">Every day at</label>
+              <input id="schedule-time" name="time" type="time" value="09:00" required />
+            </div>
+            <div class="field field--full">
+              <label for="schedule-timezone">Timezone</label>
+              <input id="schedule-timezone" name="timezone" type="text" value="${escapeAttr(DEFAULT_SCHEDULE_TIMEZONE)}" placeholder="Europe/Kyiv" required />
+            </div>
+            <div class="field">
+              <label for="schedule-priority">Priority</label>
+              <select id="schedule-priority" name="priority">
+                ${option("normal", "normal", "Normal")}
+                ${option("high", "normal", "High")}
+                ${option("low", "normal", "Low")}
+              </select>
+            </div>
+            <div class="field">
+              <label for="schedule-workflow">Workflow</label>
+              <select id="schedule-workflow" name="workflowId">
+                ${
+                  workflows.length
+                    ? workflows.map((workflow) => option(workflow.id, defaultWorkflowId, `${workflow.name} v${workflow.version}`)).join("")
+                    : option("default-task-workflow", "default-task-workflow", "Default Task Workflow")
+                }
+              </select>
+            </div>
+            <div class="field field--full">
+              <label for="schedule-description">Task description</label>
+              <textarea id="schedule-description" name="description" rows="4" placeholder="Describe the analysis, sources, expected result, and constraints." required></textarea>
+            </div>
+            <div class="footer-row field--full">
+              <span class="subtle">Missed time triggers one catch-up run when the app starts again.</span>
+              <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Daily Schedule</button>
+            </div>
+          </form>
+        </div>
+        <div class="schedule-panel__list">
+          <div class="card-header compact-header">
+            <div>
+              <h3>Active schedules</h3>
+              <p class="subtle">Pause or delete a schedule at any time.</p>
+            </div>
+          </div>
+          ${renderScheduleList(schedules)}
+        </div>
       </section>
     </div>
   `;
@@ -1224,7 +1306,7 @@ function renderTaskCard(task) {
       <div class="task-model-line">Models: ${escapeHtml(getWorkflowTargetSummary(workflow))}</div>
       <div class="task-meta">
         <span>${escapeHtml(workflow?.name ?? task.workflowId)}</span>
-        <span>${formatDate(task.updatedAt)}</span>
+        <span>${task.scheduledFor ? `Scheduled ${formatDate(task.scheduledFor)}` : formatDate(task.updatedAt)}</span>
       </div>
       <div class="task-actions task-actions--card">
         <div class="task-actions__primary">
@@ -1236,6 +1318,40 @@ function renderTaskCard(task) {
           }
         </div>
         <button class="ghost-button task-delete-button" type="button" data-action="delete-task" data-task-id="${escapeAttr(task.id)}">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderScheduleList(schedules) {
+  if (!schedules.length) {
+    return `<div class="empty compact">No daily schedules yet.</div>`;
+  }
+
+  return `<div class="schedule-list">${schedules.map(renderScheduleCard).join("")}</div>`;
+}
+
+function renderScheduleCard(schedule) {
+  const workflow = (state.bootstrap?.workflows ?? []).find((item) => item.id === schedule.workflowId);
+  const status = schedule.enabled ? "active" : "paused";
+
+  return `
+    <article class="schedule-card ${schedule.enabled ? "" : "schedule-card--paused"}">
+      <div class="task-card__top">
+        <span class="badge ${schedule.enabled ? "success" : "danger"}">${status}</span>
+        <span class="task-priority">daily · ${escapeHtml(schedule.time)} · ${escapeHtml(schedule.timezone)}</span>
+      </div>
+      <h3>${escapeHtml(schedule.title)}</h3>
+      <p>${escapeHtml(schedule.description || "No description.")}</p>
+      <div class="task-model-line">Models: ${escapeHtml(getWorkflowTargetSummary(workflow))}</div>
+      <div class="task-meta">
+        <span>Next: ${formatDate(schedule.nextRunAt)}</span>
+        <span>${schedule.lastRunAt ? `Last: ${formatDate(schedule.lastRunAt)}` : "Not run yet"}</span>
+      </div>
+      ${schedule.lastError ? `<p class="schedule-error">Last error: ${escapeHtml(schedule.lastError)}</p>` : ""}
+      <div class="task-actions task-actions--card">
+        <button class="ghost-button" type="button" data-action="toggle-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Resume"}</button>
+        <button class="ghost-button task-delete-button" type="button" data-action="delete-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading ? "disabled" : ""}>Delete</button>
       </div>
     </article>
   `;
@@ -3001,6 +3117,35 @@ function bindEvents() {
     });
   });
 
+  document.querySelector("#schedule-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get("title") || "").trim();
+    const description = String(form.get("description") || "").trim();
+    const workflowId = String(form.get("workflowId") || "").trim();
+    const priority = String(form.get("priority") || "normal");
+    const time = String(form.get("time") || "").trim();
+    const timezone = String(form.get("timezone") || "").trim();
+
+    if (!title || !description || !workflowId || !time || !timezone) {
+      return;
+    }
+
+    await runAction(async () => {
+      await api.createSchedule({
+        title,
+        description,
+        workflowId,
+        priority,
+        time,
+        timezone,
+        sessionId: state.activeSessionId
+      });
+      await refreshBootstrap();
+      pushToast("Daily schedule created.", "info");
+    });
+  });
+
   document.querySelector("[data-action='refresh-orchestration']")?.addEventListener("click", async () => {
     await runAction(async () => {
       await refreshBootstrap();
@@ -3280,6 +3425,40 @@ function bindEvents() {
         }
 
         await refreshBootstrap();
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-action='toggle-schedule']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const scheduleId = button.dataset.scheduleId;
+      const schedule = (state.bootstrap?.schedules ?? []).find((item) => item.id === scheduleId);
+
+      if (!scheduleId || !schedule) {
+        return;
+      }
+
+      await runAction(async () => {
+        await api.updateSchedule(scheduleId, { enabled: !schedule.enabled });
+        await refreshBootstrap();
+        pushToast(schedule.enabled ? "Schedule paused." : "Schedule resumed.", "info");
+      });
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-schedule']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const scheduleId = button.dataset.scheduleId;
+      const schedule = (state.bootstrap?.schedules ?? []).find((item) => item.id === scheduleId);
+
+      if (!scheduleId || !schedule || !window.confirm(`Delete daily schedule "${schedule.title}"?`)) {
+        return;
+      }
+
+      await runAction(async () => {
+        await api.deleteSchedule(scheduleId);
+        await refreshBootstrap();
+        pushToast("Daily schedule deleted.", "info");
       });
     });
   });

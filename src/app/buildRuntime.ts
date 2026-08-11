@@ -36,6 +36,8 @@ import { FileTool } from "../tools/FileTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { TaskService } from "../tasks/TaskService";
 import { TaskStore } from "../tasks/TaskStore";
+import { ScheduleService } from "../schedules/ScheduleService";
+import { ScheduleStore } from "../schedules/ScheduleStore";
 import {
   CodeAgentTarget,
   ExecutionContext,
@@ -92,6 +94,8 @@ export interface AppRuntime {
   localModelManager: LocalModelManagerRegistry;
   taskStore: TaskStore;
   taskService: TaskService;
+  scheduleStore: ScheduleStore;
+  scheduleService: ScheduleService;
   workflowStore: WorkflowStore;
   workflowRunStore: WorkflowRunStore;
   workflowRunner: WorkflowRunner;
@@ -432,6 +436,7 @@ export const buildRuntime = async (
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
   await fs.mkdir(config.outputDir, { recursive: true });
   await fs.mkdir(path.join(config.appDataDir, "tasks"), { recursive: true });
+  await fs.mkdir(path.join(config.appDataDir, "schedules"), { recursive: true });
   await fs.mkdir(path.join(config.appDataDir, "workflows"), { recursive: true });
 
   const providerRegistry = new LLMRegistry();
@@ -483,6 +488,7 @@ export const buildRuntime = async (
   const memoryAdapter = await createMemoryAdapter(config, logger);
   const memoryService = new MemoryService(memoryAdapter);
   const taskStore = new TaskStore(path.join(config.appDataDir, "tasks"));
+  const scheduleStore = new ScheduleStore(path.join(config.appDataDir, "schedules"));
   const workflowStore = new WorkflowStore(path.join(config.appDataDir, "workflows"));
   const workflowRunStore = new WorkflowRunStore(path.join(config.appDataDir, "workflows"));
   const sessionSettingsStore = new SessionSettingsStore(config.sessions, {
@@ -641,6 +647,7 @@ export const buildRuntime = async (
     ])
   );
   const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner);
+  const scheduleService = new ScheduleService(scheduleStore, taskService);
 
   return {
     engine,
@@ -656,6 +663,8 @@ export const buildRuntime = async (
     localModelManager,
     taskStore,
     taskService,
+    scheduleStore,
+    scheduleService,
     workflowStore,
     workflowRunStore,
     workflowRunner,
