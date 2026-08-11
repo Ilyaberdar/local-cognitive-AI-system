@@ -22,6 +22,10 @@ export class TaskService {
     return this.taskStore.get(taskId);
   }
 
+  async findByScheduleOccurrence(scheduleId: string, occurrenceAt: string): Promise<Task | null> {
+    return this.taskStore.findByScheduleOccurrence(scheduleId, occurrenceAt);
+  }
+
   async update(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null> {
     return this.taskStore.update(taskId, patch);
   }

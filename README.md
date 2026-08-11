@@ -34,6 +34,19 @@ Run everyday chats, switch modes, configure subagents, and keep each conversatio
 
 Create prioritized tasks and monitor their progress through the selected workflow.
 
+### Daily Schedules
+
+In `Orchestration -> Tasks`, create a daily schedule with a task description,
+workflow, local time, and IANA timezone (for example `Europe/Kyiv`). The local
+server checks schedules every 30 seconds and creates a new task for each
+occurrence, so every run keeps its own workflow trace and history. If the app
+was offline at the scheduled time, it performs one catch-up run after startup
+and then returns to the normal daily cadence.
+
+Schedules run only while the local server/Electron app is running. You can
+pause, resume, or delete them from the task board; their definitions persist in
+`data/app/schedules/schedules.json` by default.
+
 ### Workflow Builder
 
 ![Visual workflow builder showing an entry node, agent execution, and terminal states](images/workflow-builder.png)

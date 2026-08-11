@@ -217,6 +217,7 @@ export const createDashboardBootstrapController =
         loadedModels,
         allManagedModels,
         tasks,
+        schedules,
         workflows,
         workflowRuns
       ] = await Promise.all([
@@ -226,6 +227,7 @@ export const createDashboardBootstrapController =
         runtime.localModelManager.listLoadedModels(),
         runtime.localModelManager.listAllModels(),
         runtime.taskService.list(),
+        runtime.scheduleService.list(),
         runtime.workflowStore.list(),
         runtime.workflowRunStore.listRuns()
       ]);
@@ -242,6 +244,7 @@ export const createDashboardBootstrapController =
         appSettings,
         sessions,
         tasks,
+        schedules,
         workflows,
         workflowRuns,
         availableModels,

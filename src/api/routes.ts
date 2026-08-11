@@ -44,6 +44,12 @@ import {
   createUpdateTaskController
 } from "./taskControllers";
 import {
+  createCreateScheduleController,
+  createDeleteScheduleController,
+  createListSchedulesController,
+  createUpdateScheduleController
+} from "./scheduleControllers";
+import {
   createCancelWorkflowRunController,
   createCreateWorkflowController,
   createGetWorkflowController,
@@ -101,6 +107,11 @@ export const createApiRouter = (
   router.delete("/tasks/:taskId", createDeleteTaskController(runtimeManager));
   router.post("/tasks/:taskId/queue", createQueueTaskController(runtimeManager));
   router.post("/tasks/:taskId/run", createRunTaskController(runtimeManager));
+
+  router.get("/schedules", createListSchedulesController(runtimeManager));
+  router.post("/schedules", createCreateScheduleController(runtimeManager));
+  router.patch("/schedules/:scheduleId", createUpdateScheduleController(runtimeManager));
+  router.delete("/schedules/:scheduleId", createDeleteScheduleController(runtimeManager));
 
   router.get("/workflows", createListWorkflowsController(runtimeManager));
   router.post("/workflows", createCreateWorkflowController(runtimeManager));
