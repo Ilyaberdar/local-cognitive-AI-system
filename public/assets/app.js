@@ -3,10 +3,10 @@ let systemMetricsPollTimer = null;
 let workflowEditorHandle = null;
 let workflowEditorModulePromise = null;
 let workflowEditorMountGeneration = 0;
-const UI_THEMES = ["warm", "carbon", "light"];
+const UI_THEMES = ["carbon", "light"];
 const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
   ? localStorage.getItem("lcai.theme")
-  : "warm";
+  : "carbon";
 document.documentElement.dataset.theme = initialTheme;
 const DEFAULT_SUBAGENT_NAMES = ["Atlas", "Nova", "Vector", "Echo", "Orion", "Lyra", "Kepler", "Sable", "Rook", "Mira"];
 const MAX_HYPOTHESIS_ADVISORS = 5;
@@ -333,7 +333,7 @@ async function safeJson(response) {
 }
 
 function applyTheme(theme) {
-  const nextTheme = UI_THEMES.includes(theme) ? theme : "warm";
+  const nextTheme = UI_THEMES.includes(theme) ? theme : "carbon";
   state.ui.theme = nextTheme;
   document.documentElement.dataset.theme = nextTheme;
   localStorage.setItem("lcai.theme", nextTheme);
@@ -1141,7 +1141,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             </div>
           </div>
           <form id="schedule-form" class="form-grid">
-            <div class="field">
+            <div class="field field--full">
               <label for="schedule-title">Task title</label>
               <input id="schedule-title" name="title" type="text" placeholder="Market analysis" required />
             </div>
@@ -2254,7 +2254,7 @@ function renderPluginCard(name, plugin, status, fields) {
 
             return multiline
               ? `
-                <div class="field">
+                <div class="field field--full">
                   <label>${escapeHtml(label)}</label>
                   <textarea name="plugin.${name}.${key}" placeholder="${escapeAttr(pluginFieldPlaceholder(name, key))}">${escapeHtml(String(value))}</textarea>
                 </div>
@@ -2301,7 +2301,6 @@ function renderSettingsRoute() {
             <div class="field">
               <label>Theme</label>
               <select id="appearance-theme" name="appearance.theme">
-                ${option("warm", state.ui.theme, "Warm Workspace")}
                 ${option("carbon", state.ui.theme, "Carbon")}
                 ${option("light", state.ui.theme, "Light Neutral")}
               </select>
@@ -2510,10 +2509,6 @@ function renderSettingsRoute() {
                     `
                     : ""}
                 </div>
-                <div class="footer-row">
-                  <span class="subtle">Check auth, base URL, and model access before assigning this provider to a role.</span>
-                  <button class="ghost-button" type="button" data-action="test-provider" data-provider-id="${escapeAttr(providerId)}">Test provider</button>
-                </div>
                 ${
                   state.providerTestResults[providerId]
                     ? `
@@ -2524,6 +2519,10 @@ function renderSettingsRoute() {
                     `
                     : ""
                 }
+                <div class="footer-row">
+                  <span class="subtle">Check auth, base URL, and model access before assigning this provider to a role.</span>
+                  <button class="ghost-button" type="button" data-action="test-provider" data-provider-id="${escapeAttr(providerId)}">Test provider</button>
+                </div>
               </section>
             `
           )
