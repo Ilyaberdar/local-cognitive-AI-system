@@ -1,28 +1,28 @@
 :root {
   color-scheme: dark;
-  --bg: #151514;
-  --bg-elevated: #1a1917;
-  --bg-soft: #22201c;
-  --bg-panel: #1c1b18;
-  --sidebar-bg: #181715;
-  --surface-1: #1c1b18;
-  --surface-2: #22201c;
-  --surface-3: #29261f;
-  --surface-hover: #2d2a23;
-  --control-bg: #211f1b;
-  --control-active: #302c23;
-  --line: #34312b;
-  --line-strong: #4a453b;
-  --highlight: rgba(255, 248, 226, 0.055);
-  --text: #eeeae1;
-  --muted: #9e978a;
-  --accent: #d1bd83;
-  --accent-text: #f4e7bd;
-  --accent-soft: #332f25;
-  --accent-border: #625940;
-  --focus-ring: rgba(209, 189, 131, 0.18);
-  --success: #91c7a2;
-  --danger: #d78178;
+  --bg: #000000;
+  --bg-elevated: #030303;
+  --bg-soft: #090909;
+  --bg-panel: #050505;
+  --sidebar-bg: #000000;
+  --surface-1: #050505;
+  --surface-2: #090909;
+  --surface-3: #0e0e0e;
+  --surface-hover: #111111;
+  --control-bg: #090909;
+  --control-active: #121212;
+  --line: #252525;
+  --line-strong: #3d474d;
+  --highlight: rgba(255, 255, 255, 0.03);
+  --text: #edf1f3;
+  --muted: #919ba2;
+  --accent: #8fc4dc;
+  --accent-text: #d9eff9;
+  --accent-soft: #102028;
+  --accent-border: #3d6474;
+  --focus-ring: rgba(143, 196, 220, 0.2);
+  --success: #87c9a0;
+  --danger: #dd827b;
   --shadow: inset 0 1px 0 var(--highlight), 0 8px 24px rgba(0, 0, 0, 0.14);
   --radius-lg: 7px;
   --radius-md: 6px;
@@ -34,29 +34,29 @@
 
 html[data-theme="carbon"] {
   color-scheme: dark;
-  --bg: #080a0c;
-  --bg-elevated: #0c0f12;
-  --bg-soft: #12161a;
-  --bg-panel: #0e1114;
-  --sidebar-bg: #0a0d10;
-  --surface-1: #0e1114;
-  --surface-2: #14181c;
-  --surface-3: #1a1f24;
-  --surface-hover: #20262c;
-  --control-bg: #111519;
-  --control-active: #1c242a;
-  --line: #252b31;
-  --line-strong: #3a444d;
-  --highlight: rgba(255, 255, 255, 0.045);
+  --bg: #000000;
+  --bg-elevated: #030303;
+  --bg-soft: #090909;
+  --bg-panel: #050505;
+  --sidebar-bg: #000000;
+  --surface-1: #050505;
+  --surface-2: #090909;
+  --surface-3: #0e0e0e;
+  --surface-hover: #111111;
+  --control-bg: #090909;
+  --control-active: #121212;
+  --line: #252525;
+  --line-strong: #3d474d;
+  --highlight: rgba(255, 255, 255, 0.03);
   --text: #edf1f3;
-  --muted: #89939b;
-  --accent: #8eb6c9;
-  --accent-text: #cde8f3;
-  --accent-soft: #1a2930;
-  --accent-border: #3e5d6b;
-  --focus-ring: rgba(142, 182, 201, 0.18);
-  --success: #83c69d;
-  --danger: #d97f79;
+  --muted: #919ba2;
+  --accent: #8fc4dc;
+  --accent-text: #d9eff9;
+  --accent-soft: #102028;
+  --accent-border: #3d6474;
+  --focus-ring: rgba(143, 196, 220, 0.2);
+  --success: #87c9a0;
+  --danger: #dd827b;
 }
 
 html[data-theme="light"] {
@@ -3264,4 +3264,238 @@ html[data-theme="light"] .toast--danger {
 
 html[data-theme="light"] .metric-mini--warning .metric-mini__bar {
   background: #a17722;
+}
+
+/* Compact workspace scale: Chat Workspace remains the reference; these rules
+   intentionally exclude Chat Workspace and Models. */
+:is(.route--orchestration, .route--plugins, .route--settings) .panel,
+:is(.route--orchestration, .route--plugins, .route--settings) .card {
+  padding: 10px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .panel h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .panel h3,
+:is(.route--orchestration, .route--plugins, .route--settings) .card h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .subtle,
+:is(.route--orchestration, .route--plugins, .route--settings) .card-header .subtle,
+:is(.route--orchestration, .route--plugins, .route--settings) .panel .subtle {
+  min-height: 0;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) p.subtle {
+  margin: 0;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .card-header,
+:is(.route--orchestration, .route--plugins, .route--settings) .row-between {
+  gap: 8px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .form-grid {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .field-grid,
+:is(.route--orchestration, .route--plugins, .route--settings) .settings-top-grid {
+  gap: 8px;
+  align-items: start;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .field {
+  gap: 4px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .field label {
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.07em;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .field input,
+:is(.route--orchestration, .route--plugins, .route--settings) .field select {
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .field select {
+  background-position: right 8px center;
+  padding-right: 28px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .field textarea {
+  min-height: 72px;
+  padding: 7px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .action-button,
+:is(.route--orchestration, .route--plugins, .route--settings) .ghost-button,
+:is(.route--orchestration, .route--plugins, .route--settings) .primary-button {
+  min-height: 28px;
+  padding: 6px 9px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .badge {
+  gap: 4px;
+  padding: 3px 6px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .footer-row {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .footer-row .subtle {
+  min-width: 0;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .utility-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .status-block {
+  margin-top: 8px;
+  padding: 8px;
+  gap: 3px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .status-block__label {
+  font-size: 10px;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .status-block__text,
+:is(.route--orchestration, .route--plugins, .route--settings) .empty {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+:is(.route--orchestration, .route--plugins, .route--settings) .empty {
+  padding: 12px 8px;
+}
+
+.route--settings .settings-top-grid,
+.route--settings .settings-grid,
+.route--plugins .plugin-grid {
+  align-items: stretch;
+  grid-auto-flow: row;
+  grid-auto-rows: 1fr;
+}
+
+.route--settings .settings-top-grid > .card,
+.route--settings .settings-grid > .card,
+.route--plugins .plugin-grid > .card {
+  align-self: stretch;
+  block-size: 100%;
+}
+
+.route--settings .settings-grid > .settings-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.route--settings .settings-card > .form-grid {
+  align-content: start;
+}
+
+.route--settings .settings-card .field {
+  align-content: start;
+}
+
+.route--settings .settings-card > .footer-row {
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+.route--plugins .plugin-grid .form-grid,
+.route--settings .settings-grid .form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route--orchestration .orchestration-layout--tasks {
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+
+.route--orchestration .schedule-panel {
+  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.route--orchestration .schedule-panel__intake,
+.route--orchestration .schedule-panel__list,
+.route--orchestration .schedule-list,
+.route--orchestration .orchestration-main,
+.route--orchestration .orchestration-side,
+.route--orchestration .workflow-side-content,
+.route--orchestration .workflow-builder-panel,
+.route--orchestration .workflow-builder {
+  gap: 8px;
+}
+
+.route--orchestration #schedule-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route--orchestration .task-board {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.route--orchestration .task-list {
+  min-height: 180px;
+}
+
+.route--orchestration .task-card,
+.route--orchestration .workflow-card,
+.route--orchestration .node-run-card {
+  gap: 7px;
+  padding: 8px;
+}
+
+@media (max-width: 1440px) {
+  .route--orchestration .orchestration-layout--tasks {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1180px) {
+  .route--orchestration .schedule-panel,
+  .route--orchestration .task-board {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .route--plugins .plugin-grid .form-grid,
+  .route--settings .settings-grid .form-grid,
+  .route--orchestration #schedule-form {
+    grid-template-columns: 1fr;
+  }
+
+  :is(.route--orchestration, .route--plugins, .route--settings) .footer-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
