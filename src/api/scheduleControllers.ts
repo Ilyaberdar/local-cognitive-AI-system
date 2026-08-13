@@ -3,6 +3,7 @@ import { RuntimeManager } from "../app/RuntimeManager";
 import { DEFAULT_TASK_WORKFLOW_ID } from "../workflows/defaultWorkflows";
 import { ScheduleService, ScheduleValidationError } from "../schedules/ScheduleService";
 import { TaskPriority } from "../tasks/types";
+import { ScheduleFrequency, ScheduleWeekday } from "../schedules/types";
 
 const taskPriorities = new Set<TaskPriority>(["low", "normal", "high"]);
 
@@ -24,7 +25,13 @@ export const createCreateScheduleController =
     const time = readString(req.body?.time);
     const timezone = readString(req.body?.timezone);
 
-    if (!title || !time || !timezone) {
+    if (
+      !title ||
+      !time ||
+      !timezone ||
+      (req.body?.frequency !== undefined && typeof req.body.frequency !== "string") ||
+      (req.body?.weekday !== undefined && typeof req.body.weekday !== "number")
+    ) {
       res.status(400).json({ error: "Fields 'title', 'time', and 'timezone' must be non-empty strings." });
       return;
     }
@@ -36,6 +43,12 @@ export const createCreateScheduleController =
         description,
         workflowId,
         priority: normalizePriority(req.body?.priority),
+        frequency: typeof req.body?.frequency === "string"
+          ? req.body.frequency as ScheduleFrequency
+          : undefined,
+        weekday: typeof req.body?.weekday === "number"
+          ? req.body.weekday as ScheduleWeekday
+          : undefined,
         time,
         timezone,
         enabled: typeof req.body?.enabled === "boolean" ? req.body.enabled : undefined,
@@ -57,6 +70,8 @@ export const createUpdateScheduleController =
       (body.title !== undefined && typeof body.title !== "string") ||
       (body.description !== undefined && typeof body.description !== "string") ||
       (body.workflowId !== undefined && typeof body.workflowId !== "string") ||
+      (body.frequency !== undefined && typeof body.frequency !== "string") ||
+      (body.weekday !== undefined && typeof body.weekday !== "number") ||
       (body.time !== undefined && typeof body.time !== "string") ||
       (body.timezone !== undefined && typeof body.timezone !== "string") ||
       (body.sessionId !== undefined && typeof body.sessionId !== "string") ||
@@ -75,6 +90,8 @@ export const createUpdateScheduleController =
           ...(typeof body.description === "string" ? { description: body.description } : {}),
           ...(typeof body.workflowId === "string" ? { workflowId: body.workflowId } : {}),
           ...(body.priority !== undefined ? { priority: normalizePriority(body.priority) } : {}),
+          ...(typeof body.frequency === "string" ? { frequency: body.frequency as ScheduleFrequency } : {}),
+          ...(typeof body.weekday === "number" ? { weekday: body.weekday as ScheduleWeekday } : {}),
           ...(typeof body.time === "string" ? { time: body.time } : {}),
           ...(typeof body.timezone === "string" ? { timezone: body.timezone } : {}),
           ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}),

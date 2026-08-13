@@ -2505,13 +2505,17 @@ a {
   min-width: 0;
 }
 
+[data-schedule-weekday-field][hidden] {
+  display: none;
+}
+
 .schedule-card {
   display: grid;
   gap: 9px;
   padding: 10px;
   border: 1px solid var(--line);
   border-top: 2px solid var(--success);
-  background: #070707;
+  background: var(--bg-soft);
   min-width: 0;
 }
 

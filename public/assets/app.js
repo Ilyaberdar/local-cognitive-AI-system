@@ -18,6 +18,7 @@ const DEFAULT_SCHEDULE_TIMEZONE = (() => {
     return "Europe/Kyiv";
   }
 })();
+const SCHEDULE_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const SUBAGENT_PENDING_MESSAGES = [
   "Routing a focused pass to {agents}...",
   "Spinning up {agents} with the current context...",
@@ -1114,7 +1115,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             <textarea id="task-description" name="description" rows="5" placeholder="Describe the expected outcome, constraints, files, and verification." required></textarea>
           </div>
           <div class="footer-row field--full">
-            <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs · ${schedules.length} daily schedules</span>
+            <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs · ${schedules.length} schedules</span>
             <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Task</button>
           </div>
         </form>
@@ -1135,17 +1136,36 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
         <div class="schedule-panel__intake">
           <div class="card-header">
             <div>
-              <h2>Daily Schedule</h2>
-              <p class="subtle">Creates a fresh task every day while this app is running.</p>
+              <h2>Scheduled Task</h2>
+              <p class="subtle">Creates a fresh task daily or weekly while this app is running.</p>
             </div>
           </div>
           <form id="schedule-form" class="form-grid">
             <div class="field">
               <label for="schedule-title">Task title</label>
-              <input id="schedule-title" name="title" type="text" placeholder="Daily market analysis" required />
+              <input id="schedule-title" name="title" type="text" placeholder="Market analysis" required />
             </div>
             <div class="field">
-              <label for="schedule-time">Every day at</label>
+              <label for="schedule-frequency">Repeats</label>
+              <select id="schedule-frequency" name="frequency">
+                <option value="daily" selected>Every day</option>
+                <option value="weekly">Every week</option>
+              </select>
+            </div>
+            <div class="field" data-schedule-weekday-field hidden>
+              <label for="schedule-weekday">Every week on</label>
+              <select id="schedule-weekday" name="weekday">
+                <option value="1" selected>Monday</option>
+                <option value="2">Tuesday</option>
+                <option value="3">Wednesday</option>
+                <option value="4">Thursday</option>
+                <option value="5">Friday</option>
+                <option value="6">Saturday</option>
+                <option value="0">Sunday</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="schedule-time" data-schedule-time-label>Every day at</label>
               <input id="schedule-time" name="time" type="time" value="09:00" required />
             </div>
             <div class="field field--full">
@@ -1176,7 +1196,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             </div>
             <div class="footer-row field--full">
               <span class="subtle">Missed time triggers one catch-up run when the app starts again.</span>
-              <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Daily Schedule</button>
+              <button id="schedule-submit" class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Daily Schedule</button>
             </div>
           </form>
         </div>
@@ -1325,7 +1345,7 @@ function renderTaskCard(task) {
 
 function renderScheduleList(schedules) {
   if (!schedules.length) {
-    return `<div class="empty compact">No daily schedules yet.</div>`;
+    return `<div class="empty compact">No schedules yet.</div>`;
   }
 
   return `<div class="schedule-list">${schedules.map(renderScheduleCard).join("")}</div>`;
@@ -1339,7 +1359,7 @@ function renderScheduleCard(schedule) {
     <article class="schedule-card ${schedule.enabled ? "" : "schedule-card--paused"}">
       <div class="task-card__top">
         <span class="badge ${schedule.enabled ? "success" : "danger"}">${status}</span>
-        <span class="task-priority">daily · ${escapeHtml(schedule.time)} · ${escapeHtml(schedule.timezone)}</span>
+        <span class="task-priority">${escapeHtml(formatScheduleCadence(schedule))}</span>
       </div>
       <h3>${escapeHtml(schedule.title)}</h3>
       <p>${escapeHtml(schedule.description || "No description.")}</p>
@@ -1355,6 +1375,15 @@ function renderScheduleCard(schedule) {
       </div>
     </article>
   `;
+}
+
+function formatScheduleCadence(schedule) {
+  if (schedule.frequency === "weekly") {
+    const weekday = SCHEDULE_WEEKDAYS[Number(schedule.weekday)] || "day not set";
+    return `weekly · ${weekday} · ${schedule.time} · ${schedule.timezone}`;
+  }
+
+  return `daily · ${schedule.time} · ${schedule.timezone}`;
 }
 
 function getTaskBoardStatus(task) {
@@ -3117,17 +3146,45 @@ function bindEvents() {
     });
   });
 
-  document.querySelector("#schedule-form")?.addEventListener("submit", async (event) => {
+  const scheduleForm = document.querySelector("#schedule-form");
+  const scheduleFrequency = document.querySelector("#schedule-frequency");
+  const scheduleWeekdayField = document.querySelector("[data-schedule-weekday-field]");
+  const scheduleWeekday = document.querySelector("#schedule-weekday");
+  const scheduleTimeLabel = document.querySelector("[data-schedule-time-label]");
+  const scheduleSubmit = document.querySelector("#schedule-submit");
+  const syncScheduleFrequency = () => {
+    const isWeekly = scheduleFrequency?.value === "weekly";
+
+    if (scheduleWeekdayField) {
+      scheduleWeekdayField.hidden = !isWeekly;
+    }
+    if (scheduleWeekday) {
+      scheduleWeekday.required = isWeekly;
+    }
+    if (scheduleTimeLabel) {
+      scheduleTimeLabel.textContent = isWeekly ? "Every week at" : "Every day at";
+    }
+    if (scheduleSubmit) {
+      scheduleSubmit.textContent = isWeekly ? "Create Weekly Schedule" : "Create Daily Schedule";
+    }
+  };
+
+  scheduleFrequency?.addEventListener("change", syncScheduleFrequency);
+  syncScheduleFrequency();
+
+  scheduleForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const title = String(form.get("title") || "").trim();
     const description = String(form.get("description") || "").trim();
     const workflowId = String(form.get("workflowId") || "").trim();
     const priority = String(form.get("priority") || "normal");
+    const frequency = String(form.get("frequency") || "daily") === "weekly" ? "weekly" : "daily";
+    const weekday = Number(form.get("weekday"));
     const time = String(form.get("time") || "").trim();
     const timezone = String(form.get("timezone") || "").trim();
 
-    if (!title || !description || !workflowId || !time || !timezone) {
+    if (!title || !description || !workflowId || !time || !timezone || (frequency === "weekly" && !Number.isInteger(weekday))) {
       return;
     }
 
@@ -3137,12 +3194,14 @@ function bindEvents() {
         description,
         workflowId,
         priority,
+        frequency,
+        ...(frequency === "weekly" ? { weekday } : {}),
         time,
         timezone,
         sessionId: state.activeSessionId
       });
       await refreshBootstrap();
-      pushToast("Daily schedule created.", "info");
+      pushToast(frequency === "weekly" ? "Weekly schedule created." : "Daily schedule created.", "info");
     });
   });
 
@@ -3451,14 +3510,14 @@ function bindEvents() {
       const scheduleId = button.dataset.scheduleId;
       const schedule = (state.bootstrap?.schedules ?? []).find((item) => item.id === scheduleId);
 
-      if (!scheduleId || !schedule || !window.confirm(`Delete daily schedule "${schedule.title}"?`)) {
+      if (!scheduleId || !schedule || !window.confirm(`Delete schedule "${schedule.title}"?`)) {
         return;
       }
 
       await runAction(async () => {
         await api.deleteSchedule(scheduleId);
         await refreshBootstrap();
-        pushToast("Daily schedule deleted.", "info");
+        pushToast("Schedule deleted.", "info");
       });
     });
   });

@@ -5,7 +5,7 @@ import path from "path";
 import test from "node:test";
 import { ScheduleService, ScheduleValidationError } from "../src/schedules/ScheduleService";
 import { ScheduleStore } from "../src/schedules/ScheduleStore";
-import { nextDailyOccurrence } from "../src/schedules/time";
+import { nextDailyOccurrence, nextWeeklyOccurrence } from "../src/schedules/time";
 import { TaskStore } from "../src/tasks/TaskStore";
 import { CreateTaskInput, Task } from "../src/tasks/types";
 
@@ -89,6 +89,13 @@ const dailyInput = {
   sessionId: "analysis-session"
 };
 
+const weeklyInput = {
+  ...dailyInput,
+  title: "Weekly analysis",
+  frequency: "weekly" as const,
+  weekday: 3 as const
+};
+
 test("daily schedules calculate the next occurrence in their IANA timezone", () => {
   assert.equal(
     nextDailyOccurrence(new Date("2026-08-10T05:30:00.000Z"), "09:00", kyiv).toISOString(),
@@ -97,6 +104,17 @@ test("daily schedules calculate the next occurrence in their IANA timezone", () 
   assert.equal(
     nextDailyOccurrence(new Date("2026-01-10T06:30:00.000Z"), "09:00", kyiv).toISOString(),
     "2026-01-10T07:00:00.000Z"
+  );
+});
+
+test("weekly schedules calculate the next matching local weekday", () => {
+  assert.equal(
+    nextWeeklyOccurrence(new Date("2026-08-10T05:30:00.000Z"), 1, "09:00", kyiv).toISOString(),
+    "2026-08-10T06:00:00.000Z"
+  );
+  assert.equal(
+    nextWeeklyOccurrence(new Date("2026-08-10T06:00:00.000Z"), 1, "09:00", kyiv).toISOString(),
+    "2026-08-17T06:00:00.000Z"
   );
 });
 
@@ -130,6 +148,40 @@ test("a due schedule creates and runs a new task, then advances to tomorrow", as
 
   assert.deepEqual(await service.runDue(dueAt), []);
   assert.equal(taskService.created.length, 1);
+});
+
+test("a weekly schedule creates and runs a task, then advances to the following week", async () => {
+  const { service, taskService } = await createService();
+  const beforeRun = new Date("2026-08-10T05:30:00.000Z");
+  const schedule = await service.create(weeklyInput, beforeRun);
+  const dueAt = new Date("2026-08-12T06:00:01.000Z");
+
+  assert.equal(schedule.frequency, "weekly");
+  assert.equal(schedule.weekday, 3);
+  assert.equal(schedule.nextRunAt, "2026-08-12T06:00:00.000Z");
+
+  const results = await service.runDue(dueAt);
+  const updated = await service.get(schedule.id);
+
+  assert.deepEqual(results, [{
+    scheduleId: schedule.id,
+    taskId: "task-1",
+    runId: "run-task-1"
+  }]);
+  assert.equal(taskService.created[0].scheduledFor, "2026-08-12T06:00:00.000Z");
+  assert.equal(updated?.nextRunAt, "2026-08-19T06:00:00.000Z");
+});
+
+test("changing a daily schedule to weekly resets its next occurrence", async () => {
+  const { service } = await createService();
+  const now = new Date("2026-08-10T05:30:00.000Z");
+  const schedule = await service.create(dailyInput, now);
+
+  const updated = await service.update(schedule.id, { frequency: "weekly", weekday: 5 }, now);
+
+  assert.equal(updated?.frequency, "weekly");
+  assert.equal(updated?.weekday, 5);
+  assert.equal(updated?.nextRunAt, "2026-08-14T06:00:00.000Z");
 });
 
 test("paused schedules are skipped and a waiting previous task does not block tomorrow's task", async () => {
@@ -305,7 +357,7 @@ test("scheduled task lookup is durable and malformed task storage is preserved",
   assert.equal(await fs.readFile(filePath, "utf8"), "{}");
 });
 
-test("schedule input rejects invalid daily times and timezones", async () => {
+test("schedule input rejects invalid times, timezones, and weekly weekdays", async () => {
   const { service } = await createService();
 
   await assert.rejects(
@@ -315,5 +367,13 @@ test("schedule input rejects invalid daily times and timezones", async () => {
   await assert.rejects(
     () => service.create({ ...dailyInput, timezone: "not/a-timezone" }),
     (error: unknown) => error instanceof ScheduleValidationError && /IANA timezone/.test(error.message)
+  );
+  await assert.rejects(
+    () => service.create({ ...dailyInput, frequency: "weekly" }),
+    (error: unknown) => error instanceof ScheduleValidationError && /weekday/.test(error.message)
+  );
+  await assert.rejects(
+    () => service.create({ ...weeklyInput, weekday: 7 as unknown as 3 }),
+    (error: unknown) => error instanceof ScheduleValidationError && /weekday/.test(error.message)
   );
 });

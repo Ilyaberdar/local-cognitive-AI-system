@@ -1,11 +1,19 @@
 import { CreateTaskInput, Task, TaskPriority } from "../tasks/types";
 import { TaskService } from "../tasks/TaskService";
 import { ScheduleStore } from "./ScheduleStore";
-import { nextDailyOccurrence, normalizeDailyTime, normalizeTimeZone } from "./time";
+import {
+  nextDailyOccurrence,
+  nextWeeklyOccurrence,
+  normalizeDailyTime,
+  normalizeTimeZone,
+  normalizeWeekday as normalizeScheduleWeekday
+} from "./time";
 import {
   CreateScheduleInput,
   Schedule,
   ScheduleDispatchResult,
+  ScheduleFrequency,
+  ScheduleWeekday,
   UpdateScheduleInput
 } from "./types";
 
@@ -15,6 +23,7 @@ type ScheduledTaskService = Pick<
 >;
 
 const taskPriorities = new Set<TaskPriority>(["low", "normal", "high"]);
+const scheduleFrequencies = new Set<ScheduleFrequency>(["daily", "weekly"]);
 const runnableRecoveredTaskStatuses = new Set<Task["status"]>([
   "todo",
   "queued",
@@ -44,6 +53,8 @@ export class ScheduleService {
     const workflowId = requireText(input.workflowId, "workflowId");
     const time = normalizeTime(input.time);
     const timezone = normalizeTimezone(input.timezone);
+    const frequency = normalizeFrequency(input.frequency);
+    const weekday = frequency === "weekly" ? normalizeWeekday(input.weekday) : undefined;
 
     return this.scheduleStore.create({
       title,
@@ -52,11 +63,12 @@ export class ScheduleService {
       priority: normalizePriority(input.priority),
       sessionId: optionalText(input.sessionId),
       metadata: input.metadata,
-      frequency: "daily",
+      frequency,
+      weekday,
       time,
       timezone,
       enabled: input.enabled ?? true,
-      nextRunAt: nextDailyOccurrence(now, time, timezone).toISOString()
+      nextRunAt: nextScheduledOccurrence(now, frequency, weekday, time, timezone).toISOString()
     });
   }
 
@@ -73,10 +85,16 @@ export class ScheduleService {
 
     const time = input.time === undefined ? current.time : normalizeTime(input.time);
     const timezone = input.timezone === undefined ? current.timezone : normalizeTimezone(input.timezone);
+    const frequency = input.frequency === undefined ? current.frequency : normalizeFrequency(input.frequency);
+    const weekday = frequency === "weekly"
+      ? normalizeWeekday(input.weekday === undefined ? current.weekday : input.weekday)
+      : undefined;
     const enabled = input.enabled === undefined ? current.enabled : input.enabled;
     const resetNextRun =
       time !== current.time ||
       timezone !== current.timezone ||
+      frequency !== current.frequency ||
+      weekday !== current.weekday ||
       (enabled && !current.enabled);
 
     return this.scheduleStore.update(scheduleId, {
@@ -86,10 +104,14 @@ export class ScheduleService {
       ...(input.priority === undefined ? {} : { priority: normalizePriority(input.priority) }),
       ...(input.sessionId === undefined ? {} : { sessionId: optionalText(input.sessionId) }),
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+      frequency,
+      weekday,
       ...(input.time === undefined ? {} : { time }),
       ...(input.timezone === undefined ? {} : { timezone }),
       ...(input.enabled === undefined ? {} : { enabled }),
-      ...(resetNextRun ? { nextRunAt: nextDailyOccurrence(now, time, timezone).toISOString(), lastError: undefined } : {})
+      ...(resetNextRun
+        ? { nextRunAt: nextScheduledOccurrence(now, frequency, weekday, time, timezone).toISOString(), lastError: undefined }
+        : {})
     });
   }
 
@@ -119,7 +141,13 @@ export class ScheduleService {
       const claimed = await this.scheduleStore.claimDispatch(
         schedule.id,
         schedule.nextRunAt,
-        nextDailyOccurrence(now, schedule.time, schedule.timezone).toISOString()
+        nextScheduledOccurrence(
+          now,
+          schedule.frequency,
+          schedule.weekday,
+          schedule.time,
+          schedule.timezone
+        ).toISOString()
       );
 
       if (claimed) {
@@ -296,6 +324,28 @@ const normalizePriority = (value: TaskPriority | undefined): TaskPriority => {
   return value;
 };
 
+const normalizeFrequency = (value: ScheduleFrequency | undefined): ScheduleFrequency => {
+  if (value === undefined) {
+    return "daily";
+  }
+
+  if (!scheduleFrequencies.has(value)) {
+    throw new ScheduleValidationError("Field 'frequency' must be daily or weekly.");
+  }
+
+  return value;
+};
+
+const normalizeWeekday = (value: unknown): ScheduleWeekday => {
+  try {
+    return normalizeScheduleWeekday(value);
+  } catch (error) {
+    throw new ScheduleValidationError(
+      error instanceof Error ? error.message : "Field 'weekday' is invalid."
+    );
+  }
+};
+
 const normalizeTime = (value: string): string => {
   try {
     return normalizeDailyTime(value);
@@ -320,6 +370,16 @@ const isDue = (schedule: Schedule, now: Date): boolean => {
   const scheduledAt = Date.parse(schedule.nextRunAt);
   return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
 };
+
+const nextScheduledOccurrence = (
+  after: Date,
+  frequency: ScheduleFrequency,
+  weekday: ScheduleWeekday | undefined,
+  time: string,
+  timezone: string
+): Date => frequency === "weekly"
+  ? nextWeeklyOccurrence(after, normalizeWeekday(weekday), time, timezone)
+  : nextDailyOccurrence(after, time, timezone);
 
 const taskOutcomeError = (status: Task["status"], runId: string | undefined): string | undefined => {
   if (status === "done") {
