@@ -1,5 +1,8 @@
 import { TaskPriority } from "../tasks/types";
 
+export type ScheduleFrequency = "daily" | "weekly";
+export type ScheduleWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
 export interface Schedule {
   id: string;
   title: string;
@@ -8,7 +11,9 @@ export interface Schedule {
   priority: TaskPriority;
   sessionId?: string;
   metadata?: Record<string, unknown>;
-  frequency: "daily";
+  frequency: ScheduleFrequency;
+  /** Sunday is 0 and Saturday is 6. Required when frequency is weekly. */
+  weekday?: ScheduleWeekday;
   time: string;
   timezone: string;
   enabled: boolean;
@@ -28,6 +33,8 @@ export interface CreateScheduleInput {
   priority?: TaskPriority;
   sessionId?: string;
   metadata?: Record<string, unknown>;
+  frequency?: ScheduleFrequency;
+  weekday?: ScheduleWeekday;
   time: string;
   timezone: string;
   enabled?: boolean;
@@ -40,6 +47,8 @@ export interface UpdateScheduleInput {
   priority?: TaskPriority;
   sessionId?: string;
   metadata?: Record<string, unknown>;
+  frequency?: ScheduleFrequency;
+  weekday?: ScheduleWeekday;
   time?: string;
   timezone?: string;
   enabled?: boolean;

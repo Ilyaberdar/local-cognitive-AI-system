@@ -1,3 +1,5 @@
+import type { ScheduleWeekday } from "./types";
+
 export class ScheduleTimeError extends Error {}
 
 interface LocalDateTimeParts {
@@ -22,6 +24,14 @@ export const normalizeDailyTime = (value: string): string => {
   return normalized;
 };
 
+export const normalizeWeekday = (value: unknown): ScheduleWeekday => {
+  if (!Number.isInteger(value) || typeof value !== "number" || value < 0 || value > 6) {
+    throw new ScheduleTimeError("Field 'weekday' must be an integer from 0 (Sunday) to 6 (Saturday).");
+  }
+
+  return value as ScheduleWeekday;
+};
+
 export const normalizeTimeZone = (value: string): string => {
   const normalized = value.trim();
 
@@ -41,6 +51,32 @@ export const normalizeTimeZone = (value: string): string => {
  * time during a daylight-saving transition is skipped until the next day.
  */
 export const nextDailyOccurrence = (after: Date, time: string, timezone: string): Date => {
+  return nextOccurrence(after, time, timezone, () => true);
+};
+
+/** Returns the next future occurrence of a weekly local day and time. */
+export const nextWeeklyOccurrence = (
+  after: Date,
+  weekday: ScheduleWeekday | number,
+  time: string,
+  timezone: string
+): Date => {
+  const normalizedWeekday = normalizeWeekday(weekday);
+
+  return nextOccurrence(
+    after,
+    time,
+    timezone,
+    (date) => date.getUTCDay() === normalizedWeekday
+  );
+};
+
+const nextOccurrence = (
+  after: Date,
+  time: string,
+  timezone: string,
+  matchesDate: (date: Date) => boolean
+): Date => {
   const normalizedTime = normalizeDailyTime(time);
   const normalizedTimeZone = normalizeTimeZone(timezone);
   const [hour, minute] = normalizedTime.split(":").map(Number);
@@ -48,6 +84,11 @@ export const nextDailyOccurrence = (after: Date, time: string, timezone: string)
 
   for (let dayOffset = 0; dayOffset <= 370; dayOffset += 1) {
     const date = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day + dayOffset));
+
+    if (!matchesDate(date)) {
+      continue;
+    }
+
     const candidate = zonedDateTimeToUtc({
       year: date.getUTCFullYear(),
       month: date.getUTCMonth() + 1,
