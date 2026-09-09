@@ -7,6 +7,7 @@ import {
   HttpProviderOptions,
   readRateLimit,
   readResponseText,
+  readResponseError,
   resolveAbortSignal,
   resolveRequestTimeoutMs,
   readUsage
@@ -109,13 +110,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
       }
 
       const payload = (await response.json()) as Record<string, unknown>;
-      const text =
-        readResponseText(payload) || buildFallbackResponse(request, this.id, model).text;
+      const text = readResponseText(payload);
+      const error = readResponseError(payload) || (!text ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
 
       return {
         provider: this.id,
         model,
         text,
+        error,
         raw: payload,
         responseId: typeof payload.id === "string" ? payload.id : undefined,
         usage: readUsage(payload),
@@ -125,7 +127,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
-      this.logger.warn(`Falling back to mock ${this.id} response`, {
+      this.logger.warn(`${this.id} generation failed`, {
         error: error instanceof Error ? error.message : "unknown_error"
       });
       return buildFallbackResponse(

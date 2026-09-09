@@ -11,6 +11,7 @@ export interface LocalModelManager {
 
 export class LocalModelManagerRegistry {
   private readonly managers = new Map<string, LocalModelManager>();
+  private readonly pendingLoads = new Map<string, Promise<void>>();
 
   constructor(managers: LocalModelManager[]) {
     for (const manager of managers) {
@@ -34,8 +35,15 @@ export class LocalModelManagerRegistry {
     return this.sort(groups.flat());
   }
 
-  async loadModel(providerId: string, modelId: string): Promise<void> {
-    await this.get(providerId).loadModel(modelId);
+  loadModel(providerId: string, modelId: string): Promise<void> {
+    const key = JSON.stringify([providerId, modelId]);
+    const pending = this.pendingLoads.get(key);
+    if (pending) return pending;
+    const load = Promise.resolve().then(() => this.get(providerId).loadModel(modelId)).finally(() => {
+      this.pendingLoads.delete(key);
+    });
+    this.pendingLoads.set(key, load);
+    return load;
   }
 
   async unloadModel(providerId: string, identifier: string): Promise<void> {

@@ -8,7 +8,7 @@ function guardLabel(data: FsmEdgeData): string {
   if (transition.guard.type === "always") return "always";
   if (transition.guard.type === "status") return `status = ${transition.guard.equals}`;
   if (transition.guard.type === "event") return `event = ${transition.guard.equals}`;
-  return `${transition.guard.path} ${transition.guard.op}`;
+  return `${transition.guard.path} ${transition.guard.op}${transition.guard.op === "exists" ? "" : ` ${JSON.stringify(transition.guard.value) ?? "?"}`}`;
 }
 
 export function GuardEdge(props: EdgeProps) {

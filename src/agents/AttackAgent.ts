@@ -121,7 +121,8 @@ export class AttackAgent {
       arguments: normalizedArguments,
       raw: response.text,
       usage: response.usage,
-      degraded: false
+      degraded: payload.degraded,
+      error: payload.degraded ? "The model returned no usable debate content." : undefined
     };
   }
 }

@@ -26,6 +26,7 @@ export class AgentNodeExecutor implements NodeExecutor {
       input: prompt,
       providerId,
       model,
+      signal: context.signal,
       actor: {
         sessionId: context.task.sessionId ?? `task-${context.task.id}`,
         channel: "system"
@@ -40,9 +41,11 @@ export class AgentNodeExecutor implements NodeExecutor {
       }
     });
 
+    const error = result.result.error || result.tools.find((tool) => !tool.ok)?.output;
     return {
-      status: "ok",
-      event: "agent.completed",
+      status: error ? "failed" : "ok",
+      event: error ? "agent.failed" : "agent.completed",
+      error,
       summary: extractSummary(result),
       data: {
         target: {

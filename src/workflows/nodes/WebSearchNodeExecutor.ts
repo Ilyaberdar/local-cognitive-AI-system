@@ -1,3 +1,4 @@
+import { resolveAbortSignal } from "../../llm/provider-utils";
 import { NodeResult } from "../types";
 import { readConfigNumber, readConfigString, renderWorkflowTemplate } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
@@ -40,8 +41,8 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     }
 
     const results = provider === "brave"
-      ? await this.searchBrave(query, limit)
-      : await this.searchSearxng(query, limit, readConfigString(config, "baseUrl", this.options.searxngUrl ?? ""));
+      ? await this.searchBrave(query, limit, context.signal)
+      : await this.searchSearxng(query, limit, readConfigString(config, "baseUrl", this.options.searxngUrl ?? ""), context.signal);
 
     return {
       status: "ok",
@@ -51,7 +52,7 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     };
   }
 
-  private async searchBrave(query: string, limit: number): Promise<WebSearchResult[]> {
+  private async searchBrave(query: string, limit: number, signal?: AbortSignal): Promise<WebSearchResult[]> {
     if (!this.options.braveApiKey) {
       throw new Error("BRAVE_SEARCH_API_KEY is required for provider=brave.");
     }
@@ -62,7 +63,7 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     const response = await this.fetchJson(url, {
       Accept: "application/json",
       "X-Subscription-Token": this.options.braveApiKey
-    });
+    }, signal);
     const web = readRecord(response.web);
     const values = Array.isArray(web.results) ? web.results : [];
 
@@ -76,7 +77,7 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     }).filter((item) => Boolean(item.url));
   }
 
-  private async searchSearxng(query: string, limit: number, baseUrl: string): Promise<WebSearchResult[]> {
+  private async searchSearxng(query: string, limit: number, baseUrl: string, signal?: AbortSignal): Promise<WebSearchResult[]> {
     if (!baseUrl) {
       throw new Error("SEARXNG_URL or node config baseUrl is required for provider=searxng.");
     }
@@ -84,7 +85,7 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     const url = new URL("/search", ensureTrailingSlash(baseUrl));
     url.searchParams.set("q", query);
     url.searchParams.set("format", "json");
-    const response = await this.fetchJson(url, { Accept: "application/json" });
+    const response = await this.fetchJson(url, { Accept: "application/json" }, signal);
     const values = Array.isArray(response.results) ? response.results : [];
 
     return values.slice(0, limit).map((item) => {
@@ -97,10 +98,10 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     }).filter((item) => Boolean(item.url));
   }
 
-  private async fetchJson(url: URL, headers: Record<string, string>): Promise<Record<string, unknown>> {
+  private async fetchJson(url: URL, headers: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const response = await this.fetchImpl(url, {
       headers,
-      signal: AbortSignal.timeout(30_000)
+      signal: resolveAbortSignal(30_000, signal)
     });
 
     if (!response.ok) {

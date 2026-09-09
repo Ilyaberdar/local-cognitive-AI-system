@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme } = require("electron");
 const net = require("net");
 const path = require("path");
 
@@ -61,24 +61,61 @@ const startBackend = (appRoot) => {
 };
 
 const createWindow = async (url) => {
+  const isMac = process.platform === "darwin";
+  let liquidGlass = null;
+  if (isMac) {
+    try {
+      const module = require("electron-liquid-glass");
+      const candidate = module.default || module;
+      if (candidate.isGlassSupported()) liquidGlass = candidate;
+    } catch {
+      // The optional macOS addon must never prevent the application from starting.
+    }
+  }
   mainWindow = new BrowserWindow({
-    width: 1320,
+    width: 1440,
     height: 900,
     minWidth: 980,
     minHeight: 680,
     title: "Local Cognitive AI System",
+    show: false,
+    backgroundColor: isMac ? "#00000000" : "#181a1d",
+    ...(isMac ? {
+      titleBarStyle: "hiddenInset",
+      trafficLightPosition: { x: 18, y: 18 },
+      transparent: true,
+      ...(liquidGlass ? {} : { vibrancy: "sidebar", visualEffectState: "followWindow" })
+    } : {}),
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs")
     }
   });
 
   await mainWindow.loadURL(url);
+  if (isMac) mainWindow.setWindowButtonVisibility(true);
+  if (liquidGlass) {
+    try {
+      const glassId = liquidGlass.addView(mainWindow.getNativeWindowHandle(), { cornerRadius: 14, opaque: false });
+      if (glassId < 0) throw new Error("Native material unavailable");
+      console.info("[appearance] Native Liquid Glass active");
+    } catch {
+      mainWindow.setVibrancy("sidebar");
+    }
+  }
+  mainWindow.show();
 
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 };
+
+ipcMain.on("appearance:set-theme", (event, theme) => {
+  if (event.sender === mainWindow?.webContents && ["dark", "light"].includes(theme)) {
+    nativeTheme.themeSource = theme;
+  }
+});
 
 app.whenReady().then(async () => {
   try {

@@ -37,6 +37,11 @@ export const createCreateWorkflowController =
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const runtime = runtimeManager.getRuntime();
+      const validation = runtime.workflowStore.validate(req.body);
+      if (!validation.ok) {
+        res.status(400).json({ error: validation.errors.join("; "), errors: validation.errors });
+        return;
+      }
       const workflow = await runtime.workflowStore.create(req.body as WorkflowDefinition);
       res.status(201).json(workflow);
     } catch (error) {
@@ -49,6 +54,11 @@ export const createUpdateWorkflowController =
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const runtime = runtimeManager.getRuntime();
+      const validation = runtime.workflowStore.validate(req.body);
+      if (!validation.ok) {
+        res.status(400).json({ error: validation.errors.join("; "), errors: validation.errors });
+        return;
+      }
       const workflow = await runtime.workflowStore.update(
         readParam(req.params.workflowId),
         req.body as WorkflowDefinition
@@ -61,9 +71,11 @@ export const createUpdateWorkflowController =
 
 export const createValidateWorkflowController =
   (runtimeManager: RuntimeManager) =>
-  async (req: Request, res: Response): Promise<void> => {
-    const runtime = runtimeManager.getRuntime();
-    res.status(200).json(runtime.workflowStore.validate(req.body as WorkflowDefinition));
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const runtime = runtimeManager.getRuntime();
+      res.status(200).json(runtime.workflowStore.validate(req.body));
+    } catch (error) { next(error); }
   };
 
 export const createListWorkflowRunsController =
@@ -115,6 +127,21 @@ export const createCancelWorkflowRunController =
     } catch (error) {
       next(error);
     }
+  };
+
+export const createReviewWorkflowRunController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (typeof req.body?.approved !== "boolean") {
+      res.status(400).json({ error: "Field approved must be a boolean." });
+      return;
+    }
+    try {
+      res.status(200).json(await runtimeManager.getRuntime().workflowRunner.review(
+        readParam(req.params.runId), req.body.approved,
+        typeof req.body.comment === "string" ? req.body.comment : "", req.body.background === true
+      ));
+    } catch (error) { next(error); }
   };
 
 const readParam = (value: string | string[] | undefined): string =>

@@ -2,8 +2,10 @@ import { TaskStore } from "./TaskStore";
 import { CreateTaskInput, Task } from "./types";
 import { WorkflowRunStore } from "../workflows/WorkflowRunStore";
 import { WorkflowRunner } from "../workflows/WorkflowRunner";
+import { withFileLock } from "../utils/fileStore";
 
 export class TaskService {
+  private static readonly active = new Map<string, Promise<{ task: Task; runId: string }>>();
   constructor(
     private readonly taskStore: TaskStore,
     private readonly runStore: WorkflowRunStore,
@@ -31,15 +33,29 @@ export class TaskService {
   }
 
   async delete(taskId: string): Promise<boolean> {
-    return this.taskStore.delete(taskId);
+    return withFileLock(`workflow-task:${taskId}`, async () => {
+      const task = await this.taskStore.get(taskId);
+      const run = task?.lastRunId ? await this.runStore.getRun(task.lastRunId) : null;
+      if (TaskService.active.has(taskId) || (run && ["queued", "running", "waiting"].includes(run.status))) {
+        throw new Error("Cancel or finish this task before deleting it.");
+      }
+      return this.taskStore.delete(taskId);
+    });
   }
 
   async queue(taskId: string): Promise<Task | null> {
     return this.taskStore.setStatus(taskId, "todo");
   }
 
-  async runTask(taskId: string): Promise<{ task: Task; runId: string }> {
-    await this.queue(taskId);
+  runTask(taskId: string): Promise<{ task: Task; runId: string }> {
+    const existing = TaskService.active.get(taskId);
+    if (existing) return existing;
+    const operation = this.executeTask(taskId).finally(() => TaskService.active.delete(taskId));
+    TaskService.active.set(taskId, operation);
+    return operation;
+  }
+
+  private async executeTask(taskId: string): Promise<{ task: Task; runId: string }> {
     const run = await this.workflowRunner.startTask(taskId);
     const finalRun = await this.workflowRunner.runUntilStopped(run.id);
     const task = await this.requireTask(taskId);
@@ -51,13 +67,24 @@ export class TaskService {
   }
 
   async runNextQueued(): Promise<{ task: Task; runId: string } | null> {
-    const [task] = await this.taskStore.listQueued();
+    const claimed = await withFileLock("workflow-queue", async () => {
+      const task = (await this.taskStore.listQueued()).find((item) => !TaskService.active.has(item.id));
+      return task ? { work: this.runTask(task.id) } : null;
+    });
+    return claimed ? claimed.work : null;
+  }
 
-    if (!task) {
-      return null;
-    }
+  async startTask(taskId: string): Promise<{ task: Task; runId: string }> {
+    const run = await this.workflowRunner.startTask(taskId);
+    this.workflowRunner.runInBackground(run.id);
+    return { task: await this.requireTask(taskId), runId: run.id };
+  }
 
-    return this.runTask(task.id);
+  async startNextQueued(): Promise<{ task: Task; runId: string } | null> {
+    return withFileLock("workflow-queue", async () => {
+      const task = (await this.taskStore.listQueued()).find((item) => !TaskService.active.has(item.id));
+      return task ? this.startTask(task.id) : null;
+    });
   }
 
   async getRunDetail(runId: string) {

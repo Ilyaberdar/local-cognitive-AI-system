@@ -97,12 +97,10 @@ export class Judge {
       judgeTarget.providerId
     );
 
-    const normalizedPayload = this.normalizePayload(data);
+    const normalizedPayload = response.error ? null : this.normalizePayload(data);
 
     if (!normalizedPayload) {
-      const likelyProviderFailure =
-        !response.raw &&
-        typeof response.text === "string" &&
+      const likelyProviderFailure = Boolean(response.error) || !response.text.trim() ||
         response.text.startsWith(`Mock response from ${response.provider}`);
 
       return this.evaluateLocally(

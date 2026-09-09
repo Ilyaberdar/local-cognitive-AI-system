@@ -38,7 +38,9 @@ export const buildOutputStyleInstruction = (
         : "Give an exhaustive answer. Cover the topic in depth with examples, caveats, alternatives, and practical guidance.";
     case "balanced":
     default:
-      return "Give a balanced answer. Prefer practical steps over theory.";
+      return mode === "code"
+        ? "Give a balanced answer. Prefer practical steps over theory."
+        : "Answer the user's request directly with an appropriate amount of detail. Follow the requested length and format.";
   }
 };
 

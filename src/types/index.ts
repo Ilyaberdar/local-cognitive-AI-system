@@ -253,6 +253,7 @@ export interface AgentDebateResponse {
 }
 
 export interface HypothesisResult {
+  error?: string;
   verdict: string;
   confidence: number;
   reasoning: string;
@@ -300,6 +301,7 @@ export interface HypothesisResult {
 }
 
 export interface TextModeResult {
+  error?: string;
   response: string;
   toolPayload?: string;
   provider: string;
@@ -383,6 +385,18 @@ export interface ProcessProgressEvent {
   completed?: number;
   total?: number;
   at: string;
+  agents?: ProcessAgentProgress[];
+}
+
+export interface ProcessAgentProgress {
+  id: string;
+  name: string;
+  role: string;
+  provider: string;
+  model?: string;
+  status: "queued" | "running" | "completed" | "degraded" | "cancelled";
+  phase: string;
+  error?: string;
 }
 
 export interface ProcessInput {

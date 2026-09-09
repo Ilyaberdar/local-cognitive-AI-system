@@ -1,3 +1,6 @@
+import { ProcessProgressEvent } from "../src/types";
+import { normalizeDebatePayload } from "../src/agents/debatePayload";
+import { LanguageEnforcer } from "../src/llm/LanguageEnforcer";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import os from "os";
@@ -114,6 +117,11 @@ const createTestConfig = (root: string): AppConfig => ({
 test("runtime processes hypothesis requests and triggers notion plugin", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-engine-"));
   const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+  runtime.llmService.generateText = async (_request, providerId) => ({
+    provider: providerId || "ollama", model: "fixture", text: JSON.stringify({
+      summary: "Локальная память сохраняет полезные аргументы.", arguments: ["Данные доступны локально без сети."]
+    })
+  });
 
   const result = await runtime.engine.process({
     input: "Debate this hypothesis and make a note in Notion: local JSON memory is good for bootstrap.",
@@ -133,6 +141,11 @@ test("runtime processes hypothesis requests and triggers notion plugin", async (
 test("memory persists per session and provider selection works", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-memory-"));
   const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+  runtime.llmService.generateText = async (_request, providerId) => ({
+    provider: providerId || "ollama", model: "fixture", text: JSON.stringify({
+      summary: "Локальная память сохраняет полезные аргументы.", arguments: ["Данные доступны локально без сети."]
+    })
+  });
 
   await runtime.engine.process({
     input: "Remember that I prefer local-first tooling.",
@@ -223,6 +236,11 @@ test("session settings can force multi-provider debate roles", async () => {
 test("local judge reasoning respects Russian language preference", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-language-"));
   const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+  runtime.llmService.generateText = async (_request, providerId) => ({
+    provider: providerId || "ollama", model: "fixture", text: JSON.stringify({
+      summary: "Локальная память сохраняет полезные аргументы.", arguments: ["Данные доступны локально без сети."]
+    })
+  });
 
   await runtime.sessionSettingsStore.update("ru-session", {
     language: "ru",
@@ -1142,4 +1160,151 @@ test("file tool refuses to write files from fallback model output", async () => 
     }),
     /Refusing to write files from fallback model output/
   );
+});
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+};
+
+const makeReviewRuntime = async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-model-review-"));
+  const runtime = await buildRuntime(createTestConfig(root), new Logger());
+  await runtime.sessionSettingsStore.update("review", { mode: "code", codeAgents: [
+    { id: "atlas", name: "Atlas", providerId: "ollama", model: "atlas", accessMode: "default" },
+    { id: "nova", name: "Nova", providerId: "ollama", model: "nova", accessMode: "default" }
+  ] });
+  return runtime;
+};
+const plannedDraft = "<<<DRAFT>>>Draft implementation<<<END_DRAFT>>>\n<<<TASK:atlas>>>Check API<<<END_TASK>>>\n<<<TASK:nova>>>Check errors<<<END_TASK>>>";
+
+test("multi-agent chat returns the final code and reports each completion before synthesis", async () => {
+  const runtime = await makeReviewRuntime();
+  const nova = deferred<void>();
+  const atlasReported = deferred<void>();
+  const events: ProcessProgressEvent[] = [];
+  runtime.llmService.generateText = async (request) => {
+    if (request.model === "nova") await nova.promise;
+    return { provider: "ollama", model: request.model || "main", text:
+      request.systemPrompt?.includes("only implementation writer") ? plannedDraft :
+      request.model === "atlas" || request.model === "nova" ? "Reviewed the implementation." : "function add(a, b) { return a + b; }" };
+  };
+  const work = runtime.engine.process({ input: "@Atlas @Nova show an addition function", actor: { sessionId: "review" }, onProgress: (event) => {
+    events.push(event);
+    if (event.agents?.find((agent) => agent.id === "atlas")?.status === "completed") atlasReported.resolve();
+  } });
+  await atlasReported.promise;
+  const snapshot = events.at(-1)!;
+  assert.equal(snapshot.agents?.find((agent) => agent.id === "nova")?.status, "running");
+  assert.notEqual(snapshot.label, "Complete");
+  nova.resolve();
+  const result = await work;
+  assert.match(runtime.formatter.formatForChat(result), /function add\(a, b\)/);
+  assert.equal(result.result.error, undefined);
+});
+
+test("provider failures and empty main output do not execute tools or claim completion", async () => {
+  for (const text of ["", "Mock response from ollama."]) {
+    const runtime = await makeReviewRuntime();
+    runtime.llmService.generateText = async () => ({ provider: "ollama", model: "offline", text, error: "offline" });
+    const result = await runtime.engine.process({ input: "@Atlas create file failed.txt", actor: { sessionId: "review" } });
+    assert.ok(result.result.error);
+    assert.deepEqual(result.tools, []);
+    assert.doesNotMatch(runtime.formatter.formatForChat(result), /completed the task|Review the file operation above/);
+  }
+});
+
+test("failed final synthesis preserves the draft for review and skips file execution", async () => {
+  const runtime = await makeReviewRuntime();
+  runtime.llmService.generateText = async (request) => ({ provider: "ollama", model: "main",
+    text: request.systemPrompt?.includes("only implementation writer") ? plannedDraft : request.model === "atlas" ? "Reviewed" : "Failed",
+    error: request.systemPrompt?.includes("final implementation writer") ? "offline" : undefined
+  });
+  const result = await runtime.engine.process({ input: "@Atlas create file draft.txt", actor: { sessionId: "review" } });
+  assert.ok(result.result.error);
+  assert.deepEqual(result.tools, []);
+  assert.match(runtime.formatter.formatForChat(result), /Draft implementation/);
+});
+
+test("file-shaped example remains visible when no file action is requested", async () => {
+  const runtime = await makeReviewRuntime();
+  runtime.llmService.generateText = async (request) => ({ provider: "ollama", model: "fixture", text:
+    request.systemPrompt?.includes("only implementation writer") ? plannedDraft :
+    request.systemPrompt?.includes("final implementation writer") ? "<<<FILE:hello.txt>>>hello<<<END FILE>>>" :
+    request.systemPrompt?.includes("prepared changes") ? "<<<USER_SUMMARY>>>Prepared an example.<<<END_USER_SUMMARY>>>" : "Reviewed"
+  });
+  const result = await runtime.engine.process({ input: "@Atlas show the exact scaffold format for hello world", actor: { sessionId: "review" } });
+  assert.equal(result.tools.length, 0);
+  assert.match(runtime.formatter.formatForChat(result), /hello/);
+});
+
+test("requests prohibiting file writes return the answer without saving a note", async () => {
+  const runtime = await makeReviewRuntime();
+  runtime.llmService.generateText = async (request) => ({ provider: "ollama", model: "fixture", text:
+    request.systemPrompt?.includes("only implementation writer") ? plannedDraft :
+    request.systemPrompt?.includes("final implementation writer") ? "def add(a, b):\n    return a + b" : "Reviewed"
+  });
+  for (const input of [
+    "@Atlas Write a Python function add(a, b). Return only the function and three assert examples. Do not write any files.",
+    "@Atlas Покажи функцию сложения. Не сохраняй ответ в файл."
+  ]) {
+    const result = await runtime.engine.process({ input, actor: { sessionId: "review" } });
+    assert.equal(result.result.error, undefined);
+    assert.deepEqual(result.tools, []);
+    assert.match(runtime.formatter.formatForChat(result), /return a \+ b/);
+  }
+});
+
+test("malformed debate fields and translation items cannot throw or replace valid text", async () => {
+  for (const payload of [{ summary: "ok", arguments: "one" }, { summary: 42, arguments: [1] }, { summary: "ok", arguments: ["valid", 1] }]) {
+    assert.doesNotThrow(() => normalizeDebatePayload(payload as never, JSON.stringify(payload), "fallback", "balanced"));
+  }
+  const runtime = await makeReviewRuntime();
+  runtime.llmService.generateObject = async () => ({ data: { items: [1] } as never, response: { provider: "ollama", model: "fixture", text: "{}" } });
+  const text = "This is an English sentence for translation.";
+  assert.equal(await new LanguageEnforcer(runtime.llmService).normalizeText(text, "ru", { providerId: "ollama" }), text);
+});
+
+test("a broken debate participant is isolated and the healthy participant survives", async () => {
+  const runtime = await makeReviewRuntime();
+  await runtime.sessionSettingsStore.update("review", { mode: "hypothesis", codeAgents: [], debate: { enabled: true, judge: { providerId: "local" } } });
+  runtime.llmService.generateText = async (request) => {
+    if (request.systemPrompt?.includes("rigorous critic")) throw new Error("broken participant");
+    return { provider: "ollama", model: "fixture", text: JSON.stringify({ summary: "Useful evidence", arguments: ["Strong argument"] }) };
+  };
+  const result = await runtime.engine.process({ input: "Review this hypothesis", actor: { sessionId: "review" } });
+  assert.ok("arguments" in result.result);
+  assert.ok(result.result.arguments.pro.includes("Strong argument"));
+  assert.equal(result.result.diagnostics?.agents?.attack?.status, "failed");
+});
+
+test("cancellation during translation stops both general and code requests", async () => {
+  for (const mode of ["general", "code"] as const) {
+    const runtime = await makeReviewRuntime();
+    await runtime.sessionSettingsStore.update("review", { mode, language: "ru", codeAgents: [] });
+    const translating = deferred<void>();
+    const controller = new AbortController();
+    runtime.llmService.generateText = async (request) => {
+      if (request.systemPrompt?.includes("precise translator")) {
+        assert.equal(request.signal, controller.signal);
+        translating.resolve();
+        await new Promise((_resolve, reject) => request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true }));
+      }
+      return { provider: "ollama", model: "fixture", text: "This is the complete English response to translate." };
+    };
+    const work = runtime.engine.process({ input: "Explain arrays", actor: { sessionId: "review" }, signal: controller.signal });
+    const rejected = assert.rejects(work, /abort/i);
+    await translating.promise;
+    controller.abort();
+    await rejected;
+  }
+});
+
+test("sanitizer preserves multi-paragraph answers and delegation blocks but rejects truncated reasoning", () => {
+  const sanitizer = new OutputSanitizer();
+  const text = "<<<DRAFT>>>\nFinal verification should exercise edge cases.\n\nKeep this paragraph.\n<<<END_DRAFT>>>\n\n<<<TASK:atlas>>>Check API<<<END_TASK>>>\n\n<<<TASK:nova>>>Check errors<<<END_TASK>>>";
+  assert.equal(sanitizer.sanitize(text), text);
+  assert.equal(sanitizer.sanitize("<think>Only internal thinking"), "");
+  assert.equal(sanitizer.sanitize("<think>hidden</think>\nFirst paragraph.\n\nSecond paragraph."), "First paragraph.\n\nSecond paragraph.");
 });

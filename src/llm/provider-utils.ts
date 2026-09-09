@@ -39,17 +39,11 @@ export const buildFallbackResponse = (
   model: string,
   error?: string
 ): LLMResponse => {
-  const snippet = buildComposedPrompt(request).replace(/\s+/g, " ").slice(0, 240);
-
   return {
     provider,
     model,
-    text: [
-      `Mock response from ${provider}.`,
-      `Model: ${model}.`,
-      `Prompt digest: ${snippet}`
-    ].join(" "),
-    error
+    text: "",
+    error: error || "The model returned no final answer."
   };
 };
 
@@ -78,12 +72,12 @@ export const readResponseText = (payload: unknown): string => {
 
   const record = payload as Record<string, unknown>;
 
-  if (typeof record.output_text === "string") {
-    return record.output_text;
+  if (typeof record.output_text === "string" && record.output_text.trim()) {
+    return record.output_text.trim();
   }
 
-  if (typeof record.response === "string") {
-    return record.response;
+  if (typeof record.response === "string" && record.response.trim()) {
+    return record.response.trim();
   }
 
   if (Array.isArray(record.output)) {
@@ -96,6 +90,7 @@ export const readResponseText = (payload: unknown): string => {
       }
 
       const outputItem = item as Record<string, unknown>;
+      if (outputItem.type === "reasoning") continue;
       const isAssistantMessage =
         outputItem.type === "message" && outputItem.role === "assistant";
       const content = outputItem.content;
@@ -110,6 +105,7 @@ export const readResponseText = (payload: unknown): string => {
         }
 
         const contentPart = part as Record<string, unknown>;
+        if (contentPart.type === "reasoning_text") continue;
 
         if (isAssistantMessage && typeof contentPart.output_text === "string") {
           assistantMessageParts.push(contentPart.output_text);
@@ -117,10 +113,6 @@ export const readResponseText = (payload: unknown): string => {
 
         if (isAssistantMessage && typeof contentPart.text === "string") {
           assistantMessageParts.push(contentPart.text);
-        }
-
-        if (typeof contentPart.type === "string" && contentPart.type === "reasoning_text") {
-          continue;
         }
 
         if (typeof contentPart.text === "string") {
@@ -141,6 +133,22 @@ export const readResponseText = (payload: unknown): string => {
   }
 
   return "";
+};
+
+export const readResponseError = (payload: Record<string, unknown>): string | undefined => {
+  const error = payload.error;
+  if (typeof error === "string" && error) return error;
+  if (error && typeof error === "object") {
+    const details = error as Record<string, unknown>;
+    if (typeof details.message === "string") return details.message;
+    if (typeof details.code === "string") return details.code;
+    return "The provider reported a generation error.";
+  }
+  if (["failed", "cancelled", "incomplete"].includes(String(payload.status))) {
+    const details = payload.incomplete_details as Record<string, unknown> | undefined;
+    return `Model response ${payload.status}${typeof details?.reason === "string" ? `: ${details.reason}` : "."}`;
+  }
+  return undefined;
 };
 
 export const readUsage = (payload: unknown): TokenUsage | undefined => {

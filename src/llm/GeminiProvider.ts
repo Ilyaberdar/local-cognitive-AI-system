@@ -100,7 +100,7 @@ export class GeminiProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
-      this.logger.warn("Falling back to mock Gemini response", {
+      this.logger.warn("Gemini generation failed", {
         error: error instanceof Error ? error.message : "unknown_error"
       });
       return buildFallbackResponse(

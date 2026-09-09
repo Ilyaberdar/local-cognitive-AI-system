@@ -71,19 +71,23 @@ export class CognitiveEngine {
       detail: "Executing requested file and plugin actions",
       at: new Date().toISOString()
     });
-    const tools = await this.executeTools(normalizedInput, mode, result, {
+    const tools = result.error ? [] : await this.executeTools(normalizedInput, mode, result, {
       actor,
       memory,
       conversation,
       providerId,
       activeTarget,
-      sessionSettings
+      sessionSettings,
+      signal: request.signal
     });
+    if ("response" in result && result.toolPayload && !tools.some((tool) => tool.tool === "file")) {
+      result.response = result.toolPayload;
+    }
     request.signal?.throwIfAborted();
     request.onProgress?.({
-      phase: "complete",
-      label: "Complete",
-      detail: "Final response is ready",
+      phase: result.error ? "failed" : "complete",
+      label: result.error ? "Failed" : "Complete",
+      detail: result.error || "Final response is ready",
       at: new Date().toISOString()
     });
     const completedAt = new Date();

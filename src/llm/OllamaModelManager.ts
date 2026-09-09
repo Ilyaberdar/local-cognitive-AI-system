@@ -90,6 +90,7 @@ export class OllamaModelManager implements LocalModelManager {
   async loadModel(modelId: string): Promise<void> {
     await this.request("/api/generate", {
       method: "POST",
+      timeoutMs: Math.max(300000, this.options.timeoutMs),
       body: {
         model: modelId,
         prompt: "",
@@ -126,6 +127,7 @@ export class OllamaModelManager implements LocalModelManager {
     options: {
       method: "GET" | "POST";
       body?: Record<string, unknown>;
+      timeoutMs?: number;
     }
   ): Promise<T> {
     const response = await fetch(`${this.baseUrl}${pathname}`, {
@@ -134,7 +136,7 @@ export class OllamaModelManager implements LocalModelManager {
         "Content-Type": "application/json"
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      signal: AbortSignal.timeout(options.timeoutMs ?? this.options.timeoutMs)
     });
 
     if (!response.ok) {

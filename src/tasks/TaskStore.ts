@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { withFileLock } from "../utils/fileStore";
 import path from "path";
 import { randomUUID } from "crypto";
 import { CreateTaskInput, Task, TaskPriority, TaskRecord, TaskStatus } from "./types";
@@ -11,7 +12,6 @@ const priorityRank: Record<TaskPriority, number> = {
 
 export class TaskStore {
   private readonly filePath: string;
-  private operationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly baseDir: string) {
     this.filePath = path.join(baseDir, "tasks.json");
@@ -163,13 +163,9 @@ export class TaskStore {
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationQueue.then(operation, operation);
-    this.operationQueue = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
+    return withFileLock(this.filePath, operation);
   }
+
 }
 
 const isMissingFile = (error: unknown): error is NodeJS.ErrnoException =>

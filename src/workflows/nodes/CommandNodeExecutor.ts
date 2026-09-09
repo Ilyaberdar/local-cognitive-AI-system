@@ -28,24 +28,33 @@ export class CommandNodeExecutor implements NodeExecutor {
   }
 
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
+    context.signal?.throwIfAborted();
     const config = context.node.config;
     const access = readConfigString(config, "access", "default");
-
-    if (access !== "full" && this.options.accessMode !== "full") {
+    const approval = context.approval;
+    if (approval && (approval.operation !== "command" || typeof approval.executable !== "string" ||
+      typeof approval.cwd !== "string" || !Array.isArray(approval.args) ||
+      !approval.args.every((arg) => typeof arg === "string") || typeof approval.timeoutMs !== "number" ||
+      !Number.isFinite(approval.timeoutMs))) {
+      throw new Error("Stored command approval is invalid.");
+    }
+    const executable = approval
+      ? readConfigString(approval, "executable")
+      : renderWorkflowTemplate(readConfigString(config, "executable", ""), context).trim();
+    if (!executable) throw new Error("Run Command executable is required.");
+    const args = approval ? approval.args as string[] : readConfigStringArray(config, "args").map((value) => renderWorkflowTemplate(value, context));
+    const cwd = this.paths.resolve(approval ? readConfigString(approval, "cwd") : renderWorkflowTemplate(readConfigString(config, "cwd", "."), context));
+    const timeoutMs = readConfigNumber(approval ?? config, "timeoutMs", 120_000, 1_000, 900_000);
+    if (!approval && access !== "full" && this.options.accessMode !== "full") {
       return {
         status: "needs_input",
         event: "command.approval_required",
-        summary: "Run Command requires access=full or global filesystem full access.",
-        data: { permissionRequired: true, operation: "command" }
+        summary: `Approve running ${executable} in ${cwd}.`,
+        data: { permissionRequired: true, operation: "command", executable, args, cwd, timeoutMs }
       };
     }
 
-    const executable = renderWorkflowTemplate(readConfigString(config, "executable", ""), context).trim();
-    if (!executable) throw new Error("Run Command executable is required.");
-    const args = readConfigStringArray(config, "args").map((value) => renderWorkflowTemplate(value, context));
-    const cwd = this.paths.resolve(renderWorkflowTemplate(readConfigString(config, "cwd", "."), context));
-    const timeoutMs = readConfigNumber(config, "timeoutMs", 120_000, 1_000, 900_000);
-    const result = await runCommand(executable, args, cwd, timeoutMs);
+    const result = await runCommand(executable, args, cwd, timeoutMs, context.signal);
 
     return {
       status: result.exitCode === 0 ? "ok" : "failed",
@@ -69,27 +78,46 @@ const runCommand = (
   executable: string,
   args: string[],
   cwd: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> =>
   new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, shell: false, env: process.env });
+    signal?.throwIfAborted();
+    const grouped = process.platform !== "win32";
+    const child = spawn(executable, args, { cwd, shell: false, env: process.env, detached: grouped });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
+    let killTimer: NodeJS.Timeout | undefined;
     const append = (current: string, chunk: Buffer): string => `${current}${chunk.toString("utf8")}`.slice(-65_536);
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, timeoutMs);
-
+    const kill = (kind: NodeJS.Signals): void => {
+      try {
+        if (grouped && child.pid) process.kill(-child.pid, kind);
+        else child.kill(kind);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    };
+    const terminate = (): void => {
+      kill("SIGTERM");
+      if (!killTimer) killTimer = setTimeout(() => kill("SIGKILL"), 100);
+    };
+    const onAbort = (): void => { aborted = true; terminate(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => { timedOut = true; terminate(); }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      signal?.removeEventListener("abort", onAbort);
+    };
     child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
+    child.on("error", (error) => { cleanup(); reject(error); });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ exitCode: timedOut ? 124 : code ?? 1, stdout, stderr, timedOut });
+      if (aborted || timedOut) kill("SIGKILL");
+      cleanup();
+      if (aborted) reject(signal?.reason ?? new Error("Command cancelled."));
+      else resolve({ exitCode: timedOut ? 124 : code ?? 1, stdout, stderr, timedOut });
     });
   });
