@@ -27,8 +27,15 @@ export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = typeof req.body?.requestId === "string" ? req.body.requestId : randomUUID();
+    if (processRunRegistry.get(requestId)) {
+      res.status(409).json({ error: "Process request id already exists." });
+      return;
+    }
     const processRun = processRunRegistry.start(requestId);
     req.once("aborted", () => processRunRegistry.cancel(requestId));
+    res.once("close", () => {
+      if (!res.writableEnded) processRunRegistry.cancel(requestId);
+    });
 
     try {
       const {
@@ -48,6 +55,7 @@ export const createProcessController =
       };
 
       if (typeof input !== "string" || input.trim().length === 0) {
+        processRunRegistry.fail(requestId, "Input cannot be empty");
         res.status(400).json({
           error: "Field 'input' must be a non-empty string."
         });
@@ -77,7 +85,8 @@ export const createProcessController =
         ...result,
         requestId
       });
-      processRunRegistry.complete(requestId);
+      if (result.result.error) processRunRegistry.fail(requestId, result.result.error);
+      else processRunRegistry.complete(requestId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown_error";
       processRunRegistry.fail(requestId, message);
@@ -689,17 +698,15 @@ export const createProviderTestController =
         providerId
       );
 
-      const isMockFallback =
-        !response.raw &&
-        typeof response.text === "string" &&
+      const failed = response.error || !response.text.trim() ||
         response.text.startsWith(`Mock response from ${providerId}`);
 
-      if (isMockFallback) {
+      if (failed) {
         res.status(200).json({
           ok: false,
           providerId,
           model: response.model,
-          message: "Provider request failed, timed out, or returned a fallback response."
+          message: response.error || "Provider returned no usable final answer."
         });
         return;
       }

@@ -161,7 +161,9 @@ export const createRunTaskController =
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const runtime = runtimeManager.getRuntime();
-      const result = await runtime.taskService.runTask(readParam(req.params.taskId));
+      const result = req.body?.background === true
+        ? await runtime.taskService.startTask(readParam(req.params.taskId))
+        : await runtime.taskService.runTask(readParam(req.params.taskId));
       res.status(200).json(result);
     } catch (error) {
       next(error);
@@ -170,10 +172,12 @@ export const createRunTaskController =
 
 export const createRunNextTaskController =
   (runtimeManager: RuntimeManager) =>
-  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const runtime = runtimeManager.getRuntime();
-      const result = await runtime.taskService.runNextQueued();
+      const result = req.body?.background === true
+        ? await runtime.taskService.startNextQueued()
+        : await runtime.taskService.runNextQueued();
 
       if (!result) {
         res.status(200).json({ task: null, runId: null });

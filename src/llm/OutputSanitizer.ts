@@ -1,11 +1,3 @@
-const REASONING_MARKERS = [
-  "thinking process",
-  "let me think",
-  "the user wants me",
-  "analyze the request",
-  "final verification"
-];
-
 const cleanPrefix = (value: string): string =>
   value.replace(/^(final answer|answer|ответ)\s*:\s*/i, "").trim();
 
@@ -17,19 +9,11 @@ export class OutputSanitizer {
       return normalized;
     }
 
-    const blocks = normalized
-      .split(/\n{2,}/)
-      .map((block) => block.trim())
-      .filter(Boolean);
-
-    const hasReasoningMarker = REASONING_MARKERS.some((marker) =>
-      normalized.toLowerCase().includes(marker)
-    );
-
-    if (hasReasoningMarker && blocks.length > 1) {
-      return cleanPrefix(blocks[blocks.length - 1]);
-    }
-
-    return cleanPrefix(normalized);
+    // Only remove explicitly delimited reasoning, never arbitrary answer paragraphs.
+    const answer = normalized
+      .replace(/^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "")
+      .replace(/^Thinking Process:\s*\n[^]*?\n\s*\n/i, "");
+    if (/^\s*<(think|thinking|analysis)>/i.test(answer)) return "";
+    return cleanPrefix(answer);
   }
 }

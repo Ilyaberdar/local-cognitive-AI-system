@@ -15,6 +15,8 @@ export interface NodeExecutionContext {
   run: WorkflowRun;
   node: WorkflowNode;
   previousNodeRuns: NodeRun[];
+  signal?: AbortSignal;
+  approval?: Record<string, unknown>;
 }
 
 export interface NodeExecutor {

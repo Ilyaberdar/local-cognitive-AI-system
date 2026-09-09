@@ -443,7 +443,7 @@ export const buildMainSummaryPrompt = (
   language: LanguagePreference
 ): string =>
   [
-    "The implementation phase is complete.",
+    "The model has prepared a proposed implementation. File operations have not run yet.",
     "User task:",
     taskInput,
     "",
@@ -457,7 +457,7 @@ export const buildMainSummaryPrompt = (
     "",
     buildLanguageInstruction(language),
     "",
-    "Write a concise user-facing completion summary from the main model's perspective.",
+    "Write a concise summary of the prepared changes. Do not claim files were written or tests passed; tool results will report actual execution.",
     "Explain what was done, important implementation decisions, and any validation concerns that remain.",
     "Do not include source code, file contents, diffs, internal drafts, delegation tasks, raw agent output, or orchestration details.",
     "Return exactly one block:",
@@ -468,7 +468,7 @@ export const buildMainSummaryPrompt = (
 
 export const buildMainSummarySystemPrompt = (): string =>
   [
-    "You are the main model reporting the completed result to the user.",
+    "You are the main model describing prepared changes before tool execution.",
     "Return a concise reasoning summary, not implementation payload.",
     "Never output code, file blocks, DRAFT markers, TASK markers, or raw subagent responses.",
     "Use the required USER_SUMMARY markers exactly."

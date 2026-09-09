@@ -127,6 +127,14 @@ Notes:
 - LM Studio or Ollama still need to be installed and running separately.
 - Local provider URLs still point to `127.0.0.1`, for example LM Studio on
   `http://127.0.0.1:1234/v1`.
+- Desktop settings are stored in Electron's user data directory, independently
+  of the repository's `.env` and `data/app/settings.json`. Saved provider
+  settings take precedence over defaults. If an existing installation still
+  aborts generation after 20 seconds, set the local provider timeout to at least
+  `300000` ms in Settings; a reasoning model may need minutes for its final answer.
+- Model loading has a separate minimum budget of five minutes. Repeated Load
+  requests share one operation, and refreshing system metrics cannot turn a
+  successful load into an error.
 - Release builds are unsigned until Apple Developer ID / Windows code-signing
   certificates are configured.
 - macOS builds use Electron's default icon until a project `.icns` asset is
@@ -304,6 +312,10 @@ previous node from any string config field with `{{nodes.<node-id>.data.<key>}}`
   explicit full access for an unattended run.
 - `Decision`: evaluates a stored output and emits `decision.true` or
   `decision.false` for event guards.
+
+Runs retain a snapshot of their workflow, so editing the saved graph does not change an active run. Concurrent requests for the same running task or node share one execution. The task board starts workflows in the background and refreshes their status; Cancel remains available while a model is working.
+
+A waiting run exposes **Approve & continue** and **Reject** in its trace. Human review selects the matching success/failure transition. Approval for a command or file write applies only to the operation shown in the trace, even if the task is edited while waiting, and preserves configured path restrictions. Re-running a blocked task creates a fresh run from its saved workflow.
 
 Example chain:
 
@@ -550,9 +562,12 @@ Current behavior:
 - `@AgentName` selects configured agents explicitly; a generic spawn request picks the cheapest configured local/API target by heuristic
 - if no subagent config exists, spawn requests fall back to the current main provider/model
 - at most 4 code subagents run for a request
-- the first subagent acts as the final writer
-- other subagents act as advisors
-- assistant responses include a `Subagents` section showing role, provider, model, access mode, and status
+- the main model drafts and assigns bounded tasks, then writes the final response
+- configured subagents return advisory results to the main model
+- live agent cards show waiting, working, completed, failed, or interrupted states using the same activity indicator as the prompt bar
+- final responses preserve the main model output and include expandable subagent results
+- provider failures are reported explicitly and cannot trigger file/plugin actions
+- Escape interrupts generation, including translation and delegated calls
 - each subagent has an access mode:
   - `default`: file writes/deletes from subagent output require explicit approval
   - `full`: file writes/deletes may run through the configured filesystem tool boundaries
@@ -614,6 +629,12 @@ POST   /runtime/reload
 
 POST   /chat
 POST   /process
+GET    /process-runs/:requestId
+POST   /process-runs/:requestId/cancel
+POST   /tasks/:taskId/run              # { "background": true } returns before completion
+GET    /workflow-runs/:runId
+POST   /workflow-runs/:runId/review    # { "approved": true|false, "background": true }
+POST   /workflow-runs/:runId/cancel
 ```
 
 ## Useful Commands

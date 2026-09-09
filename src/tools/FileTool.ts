@@ -29,8 +29,13 @@ export class FileTool implements Tool {
   constructor(private readonly options: FileToolOptions) {}
 
   matchesIntent(input: string): boolean {
+    // Negated instructions must not become file actions through a keyword match.
+    const affirmativeInput = input
+      .split(/(?<=[.!?;])\s+|\n/)
+      .filter((clause) => !/\b(?:do\s+not|don['’]t|never)\s+(?:write|save|export|create|build|make|read|list|delete|append|edit|rewrite|overwrite|update)\b|\b(?:without|avoid)\s+(?:writing|saving|creating|editing|changing|deleting)\b|(?:^|\s)не\s+(?:пиши|записывай|записывать|сохраняй|сохранять|создавай|создавать|изменяй|изменять|меняй|удаляй|удалять|трогай)|без\s+(?:записи|сохранения|создания|изменения|удаления)/i.test(clause))
+      .join("\n");
     return /(?:save|write|export|create|build|make|read|list|delete|mkdir|append|edit|rewrite|overwrite|update).*(?:file|project|app|folder|directory|markdown|txt)|(?:в|во)\s+файл|сохрани.*файл|создай.*(?:проект|файл|папк)|прочитай.*файл|покажи.*файл|удали.*(?:файл|папк)|допиши.*файл|добавь.*(?:в|во)?.*файл|измени.*файл|обнови.*файл|перепиши.*файл/i.test(
-      input
+      affirmativeInput
     );
   }
 

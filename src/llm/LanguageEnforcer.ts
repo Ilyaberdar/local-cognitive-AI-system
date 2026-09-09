@@ -29,6 +29,7 @@ export class LanguageEnforcer {
     target: ProviderTarget,
     signal?: AbortSignal
   ): Promise<string[]> {
+    signal?.throwIfAborted();
     if (language === "auto" || items.length === 0 || !target.providerId || target.providerId === "local") {
       return items;
     }
@@ -61,14 +62,15 @@ export class LanguageEnforcer {
       target.providerId
     );
 
-    if (!data?.items || data.items.length !== toTranslate.length) {
+    if (!Array.isArray(data?.items) || data.items.length !== toTranslate.length) {
       return items;
     }
 
     const next = [...items];
 
     toTranslate.forEach(({ index }, translatedIndex) => {
-      const translated = data.items?.[translatedIndex]?.trim();
+      const candidate = data.items?.[translatedIndex];
+      const translated = typeof candidate === "string" ? candidate.trim() : "";
 
       if (translated) {
         next[index] = translated;

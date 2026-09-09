@@ -10,12 +10,12 @@ import {
   useEdgesState,
   useNodesState,
   type Connection,
-  type EdgeChange,
-  type NodeChange
+  type Edge,
+  type Node
 } from "@xyflow/react";
 import { FsmNode } from "./FsmNode";
 import { GuardEdge } from "./GuardEdge";
-import { toFlowEdges, toFlowNodes, uniqueId } from "./workflowAdapter";
+import { toFlowEdges, toFlowNodes, uniqueId, type FsmNodeData, type FsmEdgeData } from "./workflowAdapter";
 import type {
   TransitionGuard,
   WorkflowDefinition,
@@ -42,7 +42,7 @@ function cloneWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
   return structuredClone(workflow);
 }
 
-function flowEdges(workflow: WorkflowDefinition) {
+function flowEdges(workflow: WorkflowDefinition): Edge<FsmEdgeData>[] {
   return toFlowEdges(workflow).map((edge) => ({
     ...edge,
     markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 }
@@ -56,6 +56,8 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   const [edges, setEdges, applyEdgeChanges] = useEdgesState(flowEdges(draft));
   const [selected, setSelected] = useState<{ kind: "node" | "edge"; id: string } | null>(null);
   const [configError, setConfigError] = useState("");
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
 
   const commit = useCallback((mutate: (next: WorkflowDefinition) => void) => {
     const next = cloneWorkflow(draftRef.current);
@@ -75,7 +77,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
     ? draft.transitions.find((transition) => transition.id === selected.id) ?? null
     : null;
 
-  const onNodesChange = useCallback((changes: NodeChange[]) => {
+  const onNodesChange = useCallback((changes: Parameters<typeof applyNodeChanges>[0]) => {
     const removed = changes.filter((change) => change.type === "remove").map((change) => change.id);
 
     if (removed.length) {
@@ -100,7 +102,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
     });
   }, [commit]);
 
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+  const onEdgesChange = useCallback((changes: Parameters<typeof applyEdgeChanges>[0]) => {
     const removed = changes.filter((change) => change.type === "remove").map((change) => change.id);
     if (removed.length) {
       commit((next) => {
@@ -113,7 +115,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
     applyEdgeChanges(changes);
   }, [applyEdgeChanges, commit]);
 
-  const isValidConnection = useCallback((connection: Connection) => {
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return false;
     const source = draft.nodes.find((node) => node.id === connection.source);
     const target = draft.nodes.find((node) => node.id === connection.target);
@@ -199,16 +201,28 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   };
 
   return (
-    <div className="fsm-editor">
+    <div className={`fsm-editor ${inspectorOpen ? "" : "fsm-editor--inspector-hidden"}`}>
       <div className="fsm-toolbar">
         <div>
           <strong>{draft.name}</strong>
           <span>{draft.nodes.length} nodes · {draft.transitions.length} transitions</span>
         </div>
         <div className="fsm-toolbar__actions">
-          {RUNNABLE_NODE_TYPES.map((item) => (
-            <button key={item.type} type="button" onClick={() => addNode(item.type)}>+ {item.label}</button>
-          ))}
+          <details className="fsm-add-menu">
+            <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>Add step</summary>
+            <div className="fsm-add-menu__items">
+              {RUNNABLE_NODE_TYPES.map((item) => (
+                <button key={item.type} type="button" onClick={(event) => {
+                  addNode(item.type);
+                  const menu = event.currentTarget.closest("details");
+                  if (menu) menu.open = false;
+                  setInspectorOpen(true);
+                }}>{item.label}</button>
+              ))}
+            </div>
+          </details>
+          <button type="button" aria-pressed={mapOpen} onClick={() => setMapOpen((open) => !open)}>Map</button>
+          <button type="button" aria-pressed={inspectorOpen} onClick={() => setInspectorOpen((open) => !open)}>Inspector</button>
         </div>
       </div>
 
@@ -237,13 +251,13 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
             onNodeDragStop={onNodeDragStop}
             onConnect={onConnect}
             isValidConnection={isValidConnection}
-            onNodeClick={(_, node) => setSelected({ kind: "node", id: node.id })}
-            onEdgeClick={(_, edge) => setSelected({ kind: "edge", id: edge.id })}
+            onNodeClick={(_, node) => { setSelected({ kind: "node", id: node.id }); setInspectorOpen(true); }}
+            onEdgeClick={(_, edge) => { setSelected({ kind: "edge", id: edge.id }); setInspectorOpen(true); }}
             onPaneClick={() => setSelected(null)}
           >
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
             <Controls showInteractive={false} />
-            <MiniMap
+            {mapOpen ? <MiniMap<Node<FsmNodeData>>
               pannable
               zoomable
               nodeStrokeWidth={3}
@@ -259,11 +273,11 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
                 if (type === "command" || type === "decision" || type === "tool") return "var(--danger)";
                 return "var(--accent)";
               }}
-            />
+            /> : null}
           </ReactFlow>
         </div>
 
-        <aside className="fsm-inspector">
+        <aside className="fsm-inspector" hidden={!inspectorOpen}>
           <div className="fsm-inspector__header">
             <div>
               <span>Inspector</span>
@@ -356,11 +370,12 @@ function NodeFields({ node, entryNodeId, providers, configError, onConfigError, 
           defaultValue={JSON.stringify(node.config, null, 2)}
           onBlur={(event) => {
             try {
-              const parsed = JSON.parse(event.target.value) as Record<string, unknown>;
+              const parsed: unknown = JSON.parse(event.target.value);
+              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected an object");
               onConfigError("");
-              onUpdate({ config: parsed });
+              onUpdate({ config: parsed as Record<string, unknown> });
             } catch {
-              onConfigError("Config must be valid JSON.");
+              onConfigError("Config must be a JSON object.");
             }
           }}
         />
@@ -379,7 +394,10 @@ function EdgeFields({ edge, onUpdate }: {
   edge: WorkflowTransitionDefinition;
   onUpdate: (patch: Partial<WorkflowTransitionDefinition>) => void;
 }) {
+  const [valueError, setValueError] = useState("");
+  const jsonGuard = edge.guard.type === "json_path" ? edge.guard : null;
   const updateGuardType = (type: TransitionGuard["type"]) => {
+    setValueError("");
     if (type === "status") onUpdate({ guard: { type, equals: "ok" } });
     else if (type === "event") onUpdate({ guard: { type, equals: "" } });
     else if (type === "json_path") onUpdate({ guard: { type, path: "", op: "exists" } });
@@ -407,12 +425,24 @@ function EdgeFields({ edge, onUpdate }: {
       {edge.guard.type === "event" ? <Field label="Event"><input value={edge.guard.equals} onChange={(event) => onUpdate({ guard: { type: "event", equals: event.target.value } })} /></Field> : null}
       {edge.guard.type === "json_path" ? (
         <>
-          <Field label="JSON path"><input value={edge.guard.path} onChange={(event) => onUpdate({ guard: { ...edge.guard, path: event.target.value } })} /></Field>
+          <Field label="JSON path"><input value={edge.guard.path} onChange={(event) => onUpdate({ guard: { ...jsonGuard!, path: event.target.value } })} /></Field>
           <Field label="Operation">
-            <select value={edge.guard.op} onChange={(event) => onUpdate({ guard: { ...edge.guard, op: event.target.value as "eq" | "exists" | "contains" } })}>
+            <select value={edge.guard.op} onChange={(event) => onUpdate({ guard: { ...jsonGuard!, op: event.target.value as "eq" | "exists" | "contains" } })}>
               {["exists", "eq", "contains"].map((op) => <option key={op}>{op}</option>)}
             </select>
           </Field>
+          {edge.guard.op !== "exists" ? <Field label="Comparison value (JSON)">
+            <input key={`${edge.id}-${JSON.stringify(edge.guard.value)}`}
+              defaultValue={JSON.stringify(edge.guard.value) ?? ""} placeholder={'0, false, or "text"'}
+              onBlur={(event) => {
+                try {
+                  const value: unknown = JSON.parse(event.target.value);
+                  onUpdate({ guard: { ...jsonGuard!, value } });
+                  setValueError("");
+                } catch { setValueError('Enter a JSON value, such as 0, false, or "text".'); }
+              }} />
+          </Field> : null}
+          {valueError ? <div className="fsm-field-error">{valueError}</div> : null}
         </>
       ) : null}
     </div>

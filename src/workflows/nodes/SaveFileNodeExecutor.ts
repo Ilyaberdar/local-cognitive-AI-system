@@ -24,26 +24,35 @@ export class SaveFileNodeExecutor implements NodeExecutor {
   }
 
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
+    context.signal?.throwIfAborted();
     const config = context.node.config;
     const access = readConfigString(config, "access", "default");
-
-    if (access !== "full" && this.options.accessMode !== "full") {
+    const approval = context.approval;
+    if (approval && (approval.operation !== "file_write" || typeof approval.path !== "string" ||
+      typeof approval.content !== "string" || typeof approval.mode !== "string")) {
+      throw new Error("Stored file approval is invalid.");
+    }
+    const rawPath = approval
+      ? readConfigString(approval, "path")
+      : renderWorkflowTemplate(readConfigString(config, "path", ""), context).trim();
+    if (!rawPath) throw new Error("Save File path is required.");
+    const filePath = this.paths.resolve(rawPath);
+    const content = approval ? readConfigString(approval, "content") : renderWorkflowTemplate(readConfigString(config, "contentTemplate", ""), context);
+    const mode = readConfigString(approval ?? config, "mode", "overwrite");
+    if (!approval && access !== "full" && this.options.accessMode !== "full") {
       return {
         status: "needs_input",
         event: "file_write.approval_required",
-        summary: "Save File requires access=full or global filesystem full access.",
-        data: { permissionRequired: true, operation: "file_write" }
+        summary: `Approve ${mode === "append" ? "appending to" : "writing"} ${filePath}.`,
+        data: { permissionRequired: true, operation: "file_write", path: filePath, mode, content }
       };
     }
 
-    const rawPath = renderWorkflowTemplate(readConfigString(config, "path", ""), context).trim();
-    if (!rawPath) throw new Error("Save File path is required.");
-    const filePath = this.paths.resolve(rawPath);
-    const content = renderWorkflowTemplate(readConfigString(config, "contentTemplate", ""), context);
-    const mode = readConfigString(config, "mode", "overwrite");
     const before = await fs.readFile(filePath, "utf8").catch(() => "");
 
+    context.signal?.throwIfAborted();
     await fs.mkdir(path.dirname(filePath), { recursive: true });
+    context.signal?.throwIfAborted();
     if (mode === "append") await fs.appendFile(filePath, content, "utf8");
     else await fs.writeFile(filePath, content, "utf8");
     const after = mode === "append" ? `${before}${content}` : content;

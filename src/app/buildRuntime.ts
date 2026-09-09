@@ -6,6 +6,7 @@ import { HypothesisAgent } from "../agents/HypothesisAgent";
 import { HypothesisAdvisorAgent } from "../agents/HypothesisAdvisorAgent";
 import { SupportAgent } from "../agents/SupportAgent";
 import { AppConfig } from "../config/config";
+import { AgentProgressReporter } from "../core/AgentProgressReporter";
 import { CognitiveEngine } from "../core/CognitiveEngine";
 import { ModeDetector } from "../core/ModeDetector";
 import { ResponseFormatter } from "../core/ResponseFormatter";
@@ -116,7 +117,7 @@ const sumUsage = (
 });
 
 const isDegradedResponse = (response: LLMResponse): boolean =>
-  Boolean(response.error) || /^Mock response from /i.test(response.text.trim());
+  Boolean(response.error) || !response.text.trim() || /^Mock response from /i.test(response.text.trim());
 
 const AGENT_LOCAL_TIMEOUT_MS = 300000;
 const AGENT_REMOTE_TIMEOUT_MS = 180000;
@@ -149,6 +150,7 @@ const runCodeAgent = async (
   signal?: AbortSignal
 ) => {
   try {
+    signal?.throwIfAborted();
     const response = await llmService.generateText(
       {
         model: agent.model,
@@ -160,16 +162,22 @@ const runCodeAgent = async (
       agent.providerId
     );
 
-    const normalized = await languageEnforcer.normalizeText(response.text, language, {
-      providerId: agent.providerId,
-      model: agent.model
-    });
+    const degraded = isDegradedResponse(response);
+    const normalized = degraded
+      ? `Provider request failed for @${agent.name}: ${response.error || "The model returned no usable output."}`
+      : /<<<|```/.test(response.text)
+        ? response.text
+        : await languageEnforcer.normalizeText(response.text, language, {
+            providerId: agent.providerId,
+            model: agent.model
+          }, signal);
+    signal?.throwIfAborted();
 
     return {
       agent,
       response,
       normalized,
-      degraded: isDegradedResponse(response)
+      degraded
     };
   } catch (error) {
     if (signal?.aborted) {
@@ -214,12 +222,13 @@ const runCodeSwarm = async (
       ? selectConfiguredSubagents(input, context.sessionSettings.codeAgents.slice(0, 4))
       : [];
 
-  context.onProgress?.({
-    phase: "planning",
-    label: "Planning",
-    detail: reviewAgents.length ? `Preparing work for ${reviewAgents.length} delegated agent${reviewAgents.length === 1 ? "" : "s"}` : "Preparing main-model response",
-    at: new Date().toISOString()
-  });
+  const progress = new AgentProgressReporter(
+    [mainAgent, ...reviewAgents].map((agent) => ({
+      id: agent.id, name: agent.name, role: agent === mainAgent ? "main" : "advisor",
+      provider: agent.providerId, model: agent.model, status: "queued", phase: "Waiting"
+    })), context.onProgress
+  );
+  progress.update(mainAgent.id, "running", "Planning");
 
   if (reviewAgents.length === 0) {
     const mainRun = await runCodeAgent(
@@ -244,7 +253,9 @@ const runCodeSwarm = async (
       context.signal
     );
 
+    progress.update(mainAgent.id, mainRun.degraded ? "degraded" : "completed", mainRun.degraded ? "Failed" : "Complete", mainRun.response.error);
     return {
+      error: mainRun.degraded ? mainRun.response.error || "The model returned no usable output." : undefined,
       response: mainRun.normalized,
       provider: mainRun.response.provider,
       model: mainRun.response.model,
@@ -277,29 +288,17 @@ const runCodeSwarm = async (
     ),
     context.signal
   );
-  context.onProgress?.({
-    phase: "delegation",
-    label: "Delegating",
-    detail: `Main draft ready; assigning ${reviewAgents.length} agent task${reviewAgents.length === 1 ? "" : "s"}`,
-    at: new Date().toISOString()
-  });
-  const delegationPlan = parseMainDelegationPlan(draftRun.normalized, reviewAgents);
-  context.onProgress?.({
-    phase: "agents",
-    label: "Running agents",
-    detail: `Waiting for ${reviewAgents.map((agent) => `@${agent.name}`).join(", ")}`,
-    completed: 0,
-    total: reviewAgents.length,
-    at: new Date().toISOString()
-  });
+  const delegationPlan = parseMainDelegationPlan(draftRun.degraded ? "" : draftRun.normalized, reviewAgents);
+  progress.update(mainAgent.id, "queued", "Waiting for agents");
   const reviewRuns = await Promise.all(
-    reviewAgents.map((agent) => {
+    reviewAgents.map(async (agent) => {
       const assignment = delegationPlan.assignments.get(agent.id);
 
       if (!assignment) {
         const error = "The main model did not produce a valid assignment for this agent.";
 
-        return Promise.resolve({
+        progress.update(agent.id, "degraded", "No assignment", error);
+        return {
           agent,
           response: {
             provider: agent.providerId,
@@ -310,10 +309,11 @@ const runCodeSwarm = async (
           } satisfies LLMResponse,
           normalized: error,
           degraded: true
-        });
+        };
       }
 
-      return runCodeAgent(
+      progress.update(agent.id, "running", "Working");
+      const run = await runCodeAgent(
         agent,
         buildReviewAgentPrompt(
           input,
@@ -336,22 +336,12 @@ const runCodeSwarm = async (
         ),
         context.signal
       );
+      progress.update(agent.id, run.degraded ? "degraded" : "completed", run.degraded ? "Failed" : "Complete", run.response.error);
+      return run;
     })
   );
-  context.onProgress?.({
-    phase: "agents-complete",
-    label: "Agents complete",
-    detail: `${reviewRuns.filter((item) => !item.degraded).length}/${reviewRuns.length} delegated results available`,
-    completed: reviewRuns.filter((item) => !item.degraded).length,
-    total: reviewRuns.length,
-    at: new Date().toISOString()
-  });
-  context.onProgress?.({
-    phase: "synthesis",
-    label: "Synthesizing",
-    detail: "Main model is validating agent results and preparing the final implementation",
-    at: new Date().toISOString()
-  });
+  context.signal?.throwIfAborted();
+  progress.update(mainAgent.id, "running", "Synthesizing");
   const finalRun = await runCodeAgent(
     mainAgent,
     buildFinalMainPrompt(
@@ -378,41 +368,42 @@ const runCodeSwarm = async (
     ),
     context.signal
   );
-  const executionRun = !finalRun.degraded || draftRun.degraded ? finalRun : draftRun;
-  const executionOutput = extractMainExecutionOutput(
-    executionRun.normalized,
-    delegationPlan.draft
-  );
-  const summaryRun = await runCodeAgent(
-    mainAgent,
-    buildMainSummaryPrompt(
-      taskInput,
-      executionOutput,
-      reviewRuns.map((item) => ({ agent: item.agent, degraded: item.degraded })),
-      context.sessionSettings.language
-    ),
-    llmService,
-    languageEnforcer,
-    "auto",
-    buildMainSummarySystemPrompt(),
-    context.signal
-  );
-  context.onProgress?.({
-    phase: "finalizing",
-    label: "Finalizing",
-    detail: "Preparing the user-facing summary and file actions",
-    at: new Date().toISOString()
-  });
-  const fallbackSummary = /[А-Яа-яЁё]/.test(taskInput)
-    ? "Основная модель завершила задачу и обработала результаты делегированных проверок. Детали изменений показаны в блоке файловой операции выше."
-    : "The main model completed the task and processed the delegated results. Review the file operation above for the concrete changes.";
-  const userSummary = parseMainUserSummary(summaryRun.normalized) ?? fallbackSummary;
+  if (finalRun.degraded) {
+    const error = finalRun.response.error || "The main model returned no usable final output.";
+    progress.update(mainAgent.id, "degraded", "Failed", error);
+    return {
+      error,
+      response: [finalRun.normalized, ...(!draftRun.degraded ? ["Available draft (final synthesis failed):", delegationPlan.draft] : [])].join("\n\n"),
+      provider: finalRun.response.provider,
+      model: finalRun.response.model,
+      subagents: reviewRuns.map((item) => summarizeSubagentRun(item, "advisor"))
+    };
+  }
+  const executionOutput = extractMainExecutionOutput(finalRun.normalized, delegationPlan.draft);
+  const hasFilePayload = /<<<FILE:[^>]+>>>[\s\S]*?<<<END FILE>>>/.test(executionOutput);
+  let summaryRun: Awaited<ReturnType<typeof runCodeAgent>> | undefined;
+  let userResponse = executionOutput;
+  if (hasFilePayload) {
+    progress.update(mainAgent.id, "running", "Preparing summary");
+    summaryRun = await runCodeAgent(
+      mainAgent,
+      buildMainSummaryPrompt(taskInput, executionOutput,
+        reviewRuns.map((item) => ({ agent: item.agent, degraded: item.degraded })),
+        context.sessionSettings.language),
+      llmService, languageEnforcer, "auto", buildMainSummarySystemPrompt(), context.signal
+    );
+    const fallback = /[А-Яа-яЁё]/.test(taskInput)
+      ? "Модель подготовила изменения файлов. Результат применения или запрос подтверждения показан в блоке файловой операции."
+      : "The model prepared file changes. The file operation reports whether they were applied or need approval.";
+    userResponse = !summaryRun.degraded ? parseMainUserSummary(summaryRun.normalized) || fallback : fallback;
+  }
+  progress.update(mainAgent.id, "completed", "Complete");
 
   return {
-    response: userSummary,
-    toolPayload: executionOutput,
-    provider: summaryRun.response.provider,
-    model: summaryRun.response.model,
+    response: userResponse,
+    toolPayload: hasFilePayload ? executionOutput : undefined,
+    provider: finalRun.response.provider,
+    model: finalRun.response.model,
     subagents: reviewRuns.map((item) => summarizeSubagentRun(item, "advisor")),
     metrics: {
       startedAt: new Date(0).toISOString(),
@@ -421,7 +412,7 @@ const runCodeSwarm = async (
       usage: sumUsage([
         draftRun.response.usage,
         finalRun.response.usage,
-        summaryRun.response.usage,
+        summaryRun?.response.usage,
         ...reviewRuns.map((item) => item.response.usage)
       ])
     }
@@ -533,7 +524,8 @@ export const buildRuntime = async (
       context.sessionSettings.outputStyle,
       renderAttachmentContext(readAttachments(context.requestMetadata)),
       context.sessionSettings.hypothesisAgents.filter((agent) => agent.role === "advisor"),
-      context.signal
+      context.signal,
+      context.onProgress
     );
   });
 
@@ -543,6 +535,11 @@ export const buildRuntime = async (
 
   router.register("general", async (input, context) => {
     context.onProgress?.({ phase: "generating", label: "Generating", detail: "Main model is preparing a response", at: new Date().toISOString() });
+    const progress = new AgentProgressReporter([{
+      id: "main-model", name: "Main model", role: "main", provider: context.providerId,
+      model: context.activeTarget.model, status: "queued", phase: "Waiting"
+    }], context.onProgress);
+    progress.update("main-model", "running", "Generating");
     const response = await llmService.generateText(
       {
         model: context.activeTarget.model,
@@ -559,14 +556,18 @@ export const buildRuntime = async (
       },
       context.providerId
     );
-    const normalized = await languageEnforcer.normalizeText(
+    const normalized = isDegradedResponse(response) ? response.text : await languageEnforcer.normalizeText(
       response.text,
       context.sessionSettings.language,
-      context.activeTarget
+      context.activeTarget,
+      context.signal
     );
+    const error = isDegradedResponse(response) ? response.error || "The model returned no usable output." : undefined;
+    progress.update("main-model", error ? "degraded" : "completed", error ? "Failed" : "Complete", error);
 
     return {
-      response: normalized,
+      error,
+      response: error ? `Provider request failed: ${error}` : normalized,
       provider: response.provider,
       model: response.model,
       metrics: {

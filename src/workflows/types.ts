@@ -23,7 +23,7 @@ export type WorkflowRunStatus =
   | "failed"
   | "cancelled";
 
-export type NodeRunStatus = "running" | "ok" | "failed" | "skipped";
+export type NodeRunStatus = "running" | "ok" | "failed" | "skipped" | "waiting" | "cancelled";
 
 export type TransitionGuard =
   | { type: "always" }
@@ -73,6 +73,7 @@ export interface WorkflowRun {
   taskId: string;
   workflowId: string;
   workflowVersion: number;
+  workflowSnapshot?: WorkflowDefinition;
   status: WorkflowRunStatus;
   currentNodeId?: string;
   state: Record<string, unknown>;

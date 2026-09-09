@@ -1,13 +1,21 @@
+import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
+
 const app = document.querySelector("#app");
 let systemMetricsPollTimer = null;
+let sessionLoadSequence = 0;
+let workflowPollInFlight = false;
 let workflowEditorHandle = null;
 let workflowEditorModulePromise = null;
 let workflowEditorMountGeneration = 0;
-const UI_THEMES = ["carbon", "light"];
+const UI_THEMES = ["dark", "light"];
 const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
   ? localStorage.getItem("lcai.theme")
-  : "carbon";
+  : "dark";
 document.documentElement.dataset.theme = initialTheme;
+if (window.desktopAppearance) {
+  document.documentElement.dataset.desktop = window.desktopAppearance.platform;
+  window.desktopAppearance.setTheme(initialTheme);
+}
 const DEFAULT_SUBAGENT_NAMES = ["Atlas", "Nova", "Vector", "Echo", "Orion", "Lyra", "Kepler", "Sable", "Rook", "Mira"];
 const MAX_HYPOTHESIS_ADVISORS = 5;
 const MAX_HYPOTHESIS_AGENTS = 3 + MAX_HYPOTHESIS_ADVISORS;
@@ -56,11 +64,12 @@ const state = {
   ui: {
     theme: initialTheme,
     sidebarCollapsed: localStorage.getItem("lcai.sidebarCollapsed") === "true",
-    sidebarWidth: Number(localStorage.getItem("lcai.sidebarWidth") || 240),
+    sidebarWidth: Number(localStorage.getItem("lcai.sidebarWidth") || 232),
     sessionSetupCollapsed: localStorage.getItem("lcai.sessionSetupCollapsed") === "true",
-    sessionSetupWidth: Number(localStorage.getItem("lcai.sessionSetupWidth") || 360),
-    workflowSideCollapsed: localStorage.getItem("lcai.workflowSideCollapsed") === "true",
-    workflowSideWidth: Number(localStorage.getItem("lcai.workflowSideWidth") || 360),
+    sessionSetupWidth: Number(localStorage.getItem("lcai.sessionSetupWidth") || 300),
+    workflowSideCollapsed: localStorage.getItem("lcai.workflowSideCollapsed") !== "false",
+    workflowSideWidth: Number(localStorage.getItem("lcai.workflowSideWidth") || 300),
+    taskSearch: "",
     autosaveStatus: "idle",
     autosaveTimer: null,
     autosaveSeq: 0,
@@ -133,11 +142,13 @@ const api = {
   loadModel: (providerId, modelId) =>
     request("/local/models/load", {
       method: "POST",
+      timeoutMs: localModelActionTimeoutMs(providerId),
       body: JSON.stringify({ providerId, modelId })
     }),
   unloadModel: (providerId, modelIdOrInstanceId) =>
     request("/local/models/unload", {
       method: "POST",
+      timeoutMs: localModelActionTimeoutMs(providerId),
       body: JSON.stringify({ providerId, modelIdOrInstanceId })
     }),
   createTask: (payload) =>
@@ -161,12 +172,14 @@ const api = {
   runTask: (taskId) =>
     request(`/tasks/${taskId}/run`, {
       method: "POST",
-      timeoutMs: 900000
+      timeoutMs: 900000,
+      body: JSON.stringify({ background: true })
     }),
   runNextTask: () =>
     request("/tasks/run-next", {
       method: "POST",
-      timeoutMs: 900000
+      timeoutMs: 900000,
+      body: JSON.stringify({ background: true })
     }),
   createSchedule: (payload) =>
     request("/schedules", {
@@ -208,10 +221,8 @@ const api = {
       body: JSON.stringify(workflow)
     }),
   refreshManagedModels: async () => {
-    const [loadedModels, allManagedModels] = await Promise.all([
-      request("/local/models/loaded"),
-      request("/local/models/all")
-    ]);
+    const allManagedModels = await request("/local/models/all");
+    const loadedModels = allManagedModels.filter((model) => model.loaded || model.loadedInstanceIds?.length);
     return { loadedModels, allManagedModels };
   },
   getSystemMetrics: () => request("/system/metrics")
@@ -268,15 +279,18 @@ async function loadActiveSession() {
     return;
   }
 
+  const sessionId = state.activeSessionId;
+  const sequence = ++sessionLoadSequence;
   const [messages, settings] = await Promise.all([
-    api.getSessionMessages(state.activeSessionId),
-    api.getSessionSettings(state.activeSessionId)
+    api.getSessionMessages(sessionId),
+    api.getSessionSettings(sessionId)
   ]);
+  if (state.activeSessionId !== sessionId || sequence !== sessionLoadSequence) return;
   state.messages = messages;
   state.sessionSettings = settings;
 
   if (
-    state.pendingRequest &&
+    state.pendingRequest?.sessionId === sessionId &&
     messages.some(
       (message) =>
         message.role === "assistant" &&
@@ -333,10 +347,17 @@ async function safeJson(response) {
 }
 
 function applyTheme(theme) {
-  const nextTheme = UI_THEMES.includes(theme) ? theme : "carbon";
+  const nextTheme = UI_THEMES.includes(theme) ? theme : "dark";
   state.ui.theme = nextTheme;
   document.documentElement.dataset.theme = nextTheme;
   localStorage.setItem("lcai.theme", nextTheme);
+  window.desktopAppearance?.setTheme(nextTheme);
+  document.querySelectorAll("[data-action='set-theme']").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === nextTheme);
+    button.setAttribute("aria-pressed", String(button.dataset.theme === nextTheme));
+  });
+  const select = document.querySelector("#appearance-theme");
+  if (select) select.value = nextTheme;
 }
 
 function render() {
@@ -344,12 +365,24 @@ function render() {
     return;
   }
 
+  const presentation = capturePresentationState();
+  const viewKey = `${state.route}:${state.route === "orchestration" ? state.orchestrationTab : state.activeSessionId}`;
+  const viewChanged = app.dataset.view !== viewKey;
+  app.dataset.view = viewKey;
   unmountWorkflowEditor();
 
   app.innerHTML = `
-    <div class="shell ${state.ui.sidebarCollapsed ? "shell--sidebar-collapsed" : ""}" style="--sidebar-width: ${Math.max(180, Math.min(window.innerWidth * 0.5, state.ui.sidebarWidth || 240))}px;">
+    ${glassFilters()}
+    <div class="shell ${viewChanged ? "view-enter" : ""} ${state.ui.sidebarCollapsed ? "shell--sidebar-collapsed" : ""}" style="--sidebar-width: ${Math.max(180, state.ui.sidebarWidth || 232)}px;">
       ${renderSidebar()}
       <main class="main">
+        <header class="app-topbar">
+          <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || "New task" : routeTitle(state.route))}</h1></div>
+          <div class="app-topbar__actions">
+            ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
+            <span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>
+          </div>
+        </header>
         <div class="content-shell">
           <section class="route route--chat ${state.route === "chat" ? "active" : ""}">
             ${renderChatRoute()}
@@ -373,9 +406,48 @@ function render() {
   `;
 
   bindEvents();
+  restorePresentationState(presentation);
+  bindGlassLighting(app);
   mountActiveWorkflowEditor();
   if (state.route === "chat") {
     restoreStoredMessageStreamScroll();
+  }
+}
+
+// Preserve presentation state when runtime polling replaces the template.
+function capturePresentationState() {
+  const forms = [...document.querySelectorAll("#task-form, #schedule-form")].map((form) => ({
+    id: form.id, values: [...new FormData(form).entries()]
+  }));
+  const disclosures = [...document.querySelectorAll("[data-ui-disclosure]")].map((element) => ({
+    key: element.dataset.uiDisclosure, open: element.open
+  }));
+  const focused = document.activeElement;
+  return { forms, disclosures, focusId: focused?.id, start: focused?.selectionStart, end: focused?.selectionEnd };
+}
+
+function restorePresentationState(snapshot) {
+  snapshot.forms.forEach(({ id, values }) => {
+    const form = document.getElementById(id);
+    values.forEach(([name, value]) => {
+      const field = form?.elements.namedItem(name);
+      if (field && typeof value === "string") field.value = value;
+    });
+    form?.querySelector("#schedule-frequency")?.dispatchEvent(new Event("change"));
+  });
+  snapshot.disclosures.forEach(({ key, open }) => {
+    const element = document.querySelector(`[data-ui-disclosure="${CSS.escape(key)}"]`);
+    if (element) {
+      element.classList.toggle("is-restored", open);
+      element.open = open;
+    }
+  });
+  const focused = snapshot.focusId && document.getElementById(snapshot.focusId);
+  if (focused && focused.getClientRects().length) {
+    focused.focus({ preventScroll: true });
+    if (typeof snapshot.start === "number" && typeof focused.setSelectionRange === "function") {
+      try { focused.setSelectionRange(snapshot.start, snapshot.end); } catch { /* Non-text inputs have no selection. */ }
+    }
   }
 }
 
@@ -398,12 +470,16 @@ function renderSidebar() {
   const pluginCount = state.bootstrap?.plugins?.length ?? 0;
 
   return `
-    <aside class="sidebar">
-      <button class="sidebar-toggle" type="button" data-action="toggle-sidebar" title="${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}">${state.ui.sidebarCollapsed ? "›" : "‹"}</button>
+    <aside class="sidebar liquid-glass">
+      <div class="sidebar-brand">
+        <span class="brand-orbit" aria-hidden="true"></span><span class="brand-name">Cognitive</span>
+        <button class="sidebar-toggle icon-button" type="button" data-action="toggle-sidebar" aria-label="Toggle navigation" aria-expanded="${!state.ui.sidebarCollapsed}" title="${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}">${icon("sidebar")}</button>
+      </div>
       <div class="sidebar-resize-handle" data-action="resize-sidebar" title="Resize navigation"></div>
-      <nav class="nav">
-        ${renderNavButton("chat", "Chat Workspace")}
-        ${renderNavButton("orchestration", "Orchestration", "feature in test mode")}
+      <button class="new-task-button liquid-glass" type="button" data-action="new-session" title="New task" aria-label="New task">${icon("plus")}<span>New task</span></button>
+      <nav class="nav" aria-label="Main navigation">
+        ${renderNavButton("chat", "Chat")}
+        ${renderNavButton("orchestration", "Tasks & workflows", "Feature in test mode")}
         ${renderNavButton("models", "Models")}
         ${renderNavButton("plugins", "Plugins")}
         ${renderNavButton("settings", "Settings")}
@@ -411,8 +487,8 @@ function renderSidebar() {
 
       <section class="sidebar-section">
         <div class="sidebar-header">
-          <span>Sessions</span>
-          <button class="ghost-button" data-action="new-session">New</button>
+          <span>Recent</span>
+          <button class="icon-button" data-action="new-session" aria-label="New conversation" title="New conversation">${icon("plus")}</button>
         </div>
         <div class="session-list">
           ${
@@ -426,21 +502,21 @@ function renderSidebar() {
                           <span class="session-meta">${formatDate(session.updatedAt)} · ${escapeHtml(session.channel)}</span>
                         </button>
                         <button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${session.id}" aria-label="Delete chat">
-                          ×
+                          ${icon("close")}
                         </button>
                       </div>
                     `
                   )
                   .join("")
-              : `<div class="empty">No sessions yet.</div>`
+              : `<div class="empty">Your conversations appear here.</div>`
           }
         </div>
       </section>
 
       <div class="sidebar-footer">
-        <div class="status-card">
-          <strong>Runtime snapshot</strong>
-          <span>${providerCount} providers · ${pluginCount} plugins · ${(state.bootstrap?.loadedModels ?? []).length} loaded local models</span>
+        <details class="runtime-disclosure" data-ui-disclosure="runtime"><summary><span class="status-dot"></span><span>Local runtime</span></summary><div>${providerCount} providers · ${pluginCount} plugins · ${(state.bootstrap?.loadedModels ?? []).length} loaded local models</div></details>
+        <div class="theme-switch" role="group" aria-label="Appearance">
+          ${["light", "dark"].map((theme) => `<button class="icon-button ${state.ui.theme === theme ? "active" : ""}" type="button" data-action="set-theme" data-theme="${theme}" aria-label="${capitalize(theme)} Liquid Glass" aria-pressed="${state.ui.theme === theme}" title="${capitalize(theme)} Liquid Glass">${icon(theme === "light" ? "sun" : "moon")}</button>`).join("")}
         </div>
       </div>
     </aside>
@@ -526,54 +602,16 @@ function renderToasts() {
 
 function renderNavButton(route, label, note) {
   const accessibleLabel = note ? `${label} (${note})` : label;
-  const text = note
-    ? `<span class="nav-marquee-track">
-        <span class="nav-marquee-copy">${escapeHtml(label)} <span class="nav-label-note">(${escapeHtml(note)})</span></span>
-        <span class="nav-marquee-copy" aria-hidden="true">${escapeHtml(label)} <span class="nav-label-note">(${escapeHtml(note)})</span></span>
-      </span>`
-    : escapeHtml(label);
 
   return `
-    <button class="nav-button ${state.route === route ? "active" : ""}" data-action="route" data-route="${route}" aria-label="${escapeAttr(accessibleLabel)}" title="${escapeAttr(accessibleLabel)}">
-      <span class="nav-label"><span class="nav-icon" aria-hidden="true">${renderNavIcon(route)}</span><span class="nav-text ${note ? "nav-text--marquee" : ""}">${text}</span></span>
+    <button class="nav-button liquid-glass ${state.route === route ? "active" : ""}" data-action="route" data-route="${route}" aria-current="${state.route === route ? "page" : "false"}" aria-label="${escapeAttr(label)}" title="${escapeAttr(accessibleLabel)}">
+      <span class="nav-label"><span class="nav-icon" aria-hidden="true">${renderNavIcon(route)}</span><span class="nav-text">${escapeHtml(label)}</span></span>
     </button>
   `;
 }
 
 function renderNavIcon(route) {
-  const paths = {
-    chat: `
-      <rect x="4" y="5" width="16" height="14" rx="1.5"></rect>
-      <path d="M8 9h8M8 13h5"></path>
-    `,
-    models: `
-      <circle cx="8" cy="8" r="3"></circle>
-      <circle cx="16" cy="8" r="3"></circle>
-      <circle cx="12" cy="16" r="3"></circle>
-    `,
-    orchestration: `
-      <rect x="4" y="5" width="5" height="5" rx="1"></rect>
-      <rect x="15" y="5" width="5" height="5" rx="1"></rect>
-      <rect x="9.5" y="15" width="5" height="5" rx="1"></rect>
-      <path d="M9 7.5h6M17.5 10v2.5l-3 3M6.5 10v2.5l3 3"></path>
-    `,
-    plugins: `
-      <path d="M12 4l6 6-6 10-6-10 6-6z"></path>
-      <path d="M9 10h6"></path>
-    `,
-    settings: `
-      <path d="M5 7h14M5 12h14M5 17h14"></path>
-      <circle cx="9" cy="7" r="1.8"></circle>
-      <circle cx="15" cy="12" r="1.8"></circle>
-      <circle cx="11" cy="17" r="1.8"></circle>
-    `
-  };
-
-  return `
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round">
-      ${paths[route] ?? paths.chat}
-    </svg>
-  `;
+  return icon(route);
 }
 
 function renderChatRoute() {
@@ -584,7 +622,7 @@ function renderChatRoute() {
   const settings = state.sessionSettings;
   const currentSession = (state.bootstrap?.sessions ?? []).find((session) => session.id === state.activeSessionId);
   const providerOptions = getProviderOptions();
-  const pendingMessages = state.pendingRequest
+  const pendingMessages = state.pendingRequest && state.pendingRequest.sessionId === state.activeSessionId
     ? [
         {
           id: "pending:user",
@@ -593,18 +631,12 @@ function renderChatRoute() {
           createdAt: state.pendingRequest.startedAt,
           pending: true
         },
-        ...(isSubagentRequest(state.pendingRequest.input)
-          ? [
-              {
-                id: "pending:assistant",
-                role: "assistant",
-                content: renderPendingAssistantText(state.pendingRequest),
-                createdAt: state.pendingRequest.startedAt,
-                pending: true,
-                pendingKind: "subagent"
-              }
-            ]
-          : [])
+        {
+          id: "pending:assistant", role: "assistant",
+          content: renderPendingAssistantText(state.pendingRequest),
+          createdAt: state.pendingRequest.startedAt, pending: true, pendingKind: "subagent",
+          agents: state.pendingRequest.progress?.agents ?? []
+        }
       ]
     : [];
   const messages = [
@@ -614,13 +646,13 @@ function renderChatRoute() {
   const draftAttachments = getActiveDraftAttachments();
 
   return `
-    <div class="chat-layout" style="--session-panel-width: ${Math.max(280, Math.min(window.innerWidth * 0.5, state.ui.sessionSetupWidth || 360))}px;">
+    <div class="chat-layout" style="--session-panel-width: ${Math.max(280, state.ui.sessionSetupWidth || 300)}px;">
       <section class="chat-shell">
         <div class="message-stream">
           ${
             messages.length
               ? messages.map(renderMessage).join("")
-              : `<div class="empty">Start the first conversation in this session.</div>`
+              : `<div class="chat-welcome"><h2>What would you like<br />to work on?</h2><p>Ask a question, write code, or explore an idea.</p></div>`
           }
         </div>
         <button
@@ -629,22 +661,23 @@ function renderChatRoute() {
           data-action="scroll-chat-bottom"
           title="Scroll to latest message"
           aria-label="Scroll to latest message"
-        >↓</button>
+        >${icon("arrowDown")}</button>
 
-        <form class="composer" id="chat-form">
+        <form class="composer liquid-glass" id="chat-form">
           <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="image/*,.txt,.md,.markdown,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.xml,.toml,.sh,.log,.pdf,.doc,.docx" />
           ${
             draftAttachments.length
               ? `<div class="composer-attachments">${draftAttachments.map(renderDraftAttachment).join("")}</div>`
               : ""
           }
-          <textarea name="input" placeholder="Type a command, ask a question, or run a hypothesis debate...">${escapeHtml(getActiveDraft())}</textarea>
+          <textarea name="input" aria-label="Message" placeholder="Ask anything…">${escapeHtml(getActiveDraft())}</textarea>
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
+            <button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files">${icon("plus")}</button>
             ${renderChatActivityBar(settings)}
             <div class="composer-actions">
-              <button class="ghost-button" type="button" data-action="attach-files">Attach</button>
-              <button class="primary-button" type="submit">${state.chatSubmitting ? "Generating..." : "Send"}</button>
+              ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
+              <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -669,15 +702,15 @@ function renderChatActivityBar(settings) {
     ? state.pendingRequest && isSubagentRequest(state.pendingRequest.input)
       ? "Agents"
       : "Build"
-    : "Stopped");
+    : "Ready");
   const activityDetail = progress?.detail || `${provider} ${model}`;
 
   return `
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
-      <span class="activity-scan" aria-hidden="true"><span></span></span>
+      <span class="activity-scan status-dot" aria-hidden="true"><span></span></span>
       <span class="activity-label">${escapeHtml(label)}</span>
       <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
-      <span class="activity-hint">${running ? "esc interrupt" : "idle"}</span>
+      <span class="activity-hint">${running ? "esc to stop" : ""}</span>
     </div>
   `;
 }
@@ -688,6 +721,7 @@ function getProviderDisplayName(providerId) {
 }
 
 function renderPendingAssistantText(pendingRequest) {
+  if (pendingRequest.progress) return pendingRequest.progress.detail || pendingRequest.progress.label;
   const input = typeof pendingRequest === "string" ? pendingRequest : pendingRequest.input;
 
   if (isSubagentRequest(input)) {
@@ -722,6 +756,7 @@ async function cancelActiveChatRequest() {
   } finally {
     active.controller.abort();
     if (state.activeChatRequest?.requestId === active.requestId) {
+      preserveStoppedChatRequest(active, "Generation interrupted.", "cancelled");
       state.activeChatRequest = null;
       state.pendingRequest = null;
       state.chatSubmitting = false;
@@ -738,8 +773,11 @@ function startProcessProgressPolling(active) {
       return;
     }
 
+    if (active.pollInFlight) return;
+    active.pollInFlight = true;
     try {
       const run = await api.getProcessRun(active.requestId);
+      if (state.activeChatRequest?.requestId !== active.requestId || active.cancelled) return;
       if (run?.progress && state.pendingRequest) {
         state.pendingRequest.progress = run.progress;
         updateChatActivityProgress(run.progress);
@@ -749,6 +787,8 @@ function startProcessProgressPolling(active) {
       }
     } catch {
       // The first poll can race request registration; keep polling until the chat request settles.
+    } finally {
+      active.pollInFlight = false;
     }
   }, 600);
 }
@@ -761,6 +801,18 @@ function stopProcessProgressPolling(active) {
 }
 
 function updateChatActivityProgress(progress) {
+  const pendingLine = document.querySelector(".message.pending .subagent-pending-line");
+  if (pendingLine) pendingLine.textContent = progress.detail || progress.label || "Working";
+  const agentPanel = document.querySelector(".message.pending [data-agent-progress]");
+  if (agentPanel) {
+    const snapshot = JSON.stringify(progress.agents ?? []);
+    if (agentPanel.dataset.snapshot !== snapshot) {
+      const openAgents = new Set([...agentPanel.querySelectorAll("details[open]")].map((item) => item.dataset.agentId));
+      agentPanel.innerHTML = renderAgentProgress(progress.agents ?? []);
+      agentPanel.querySelectorAll("details").forEach((item) => { item.open = openAgents.has(item.dataset.agentId); });
+      agentPanel.dataset.snapshot = snapshot;
+    }
+  }
   const bar = document.querySelector(".chat-activity-bar");
   if (!bar) {
     return;
@@ -838,18 +890,18 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
     <form
       class="panel chat-settings form-grid ${collapsed ? "chat-settings--collapsed" : ""}"
       id="session-settings-form"
-      style="--session-panel-width: ${Math.max(280, Math.min(window.innerWidth * 0.5, state.ui.sessionSetupWidth || 360))}px;"
+      style="--session-panel-width: ${Math.max(280, state.ui.sessionSetupWidth || 300)}px;"
     >
       <div class="session-resize-handle" data-action="resize-session-setup" title="Resize setup"></div>
       <div class="chat-settings__header">
-        <button class="ghost-button setup-toggle" type="button" data-action="toggle-session-setup" title="${collapsed ? "Show setup" : "Hide setup"}">${collapsed ? "‹" : "›"}</button>
+        <button class="ghost-button setup-toggle icon-button" type="button" data-action="toggle-session-setup" aria-label="Toggle session setup" aria-expanded="${!collapsed}" aria-controls="session-setup-body" title="${collapsed ? "Show setup" : "Hide setup"}">${icon(collapsed ? "chevronLeft" : "chevronRight")}</button>
         <div class="chat-settings__title">
-          <h3>Session Setup</h3>
+          <h3>Session setup</h3>
           <div class="subtle" data-autosave-status>${escapeHtml(autosaveStatusLabel(state.ui.autosaveStatus))}</div>
         </div>
       </div>
 
-      <div class="chat-settings__body">
+      <div id="session-setup-body" class="chat-settings__body">
         <div class="chat-type-bar">
           ${["general", "code", "hypothesis"].map((mode) => `
             <button
@@ -857,7 +909,7 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
               type="button"
               data-action="set-chat-type"
               data-chat-type="${mode}"
-            >${escapeHtml(mode)}</button>
+            >${escapeHtml(capitalize(mode))}</button>
           `).join("")}
         </div>
 
@@ -915,7 +967,7 @@ function renderChatRightPanel(settings, currentSession, providerOptions) {
 
   const lineCount = splitFileViewerLines(fileTab.content).length;
   return `
-    <aside class="panel chat-settings file-viewer-panel" style="--session-panel-width: ${Math.max(280, Math.min(window.innerWidth * 0.5, state.ui.sessionSetupWidth || 360))}px;">
+    <aside class="panel chat-settings file-viewer-panel" style="--session-panel-width: ${Math.max(280, state.ui.sessionSetupWidth || 300)}px;">
       <div class="session-resize-handle" data-action="resize-session-setup" title="Resize panel"></div>
       <div class="file-viewer__header">
         <div>
@@ -973,7 +1025,7 @@ function renderSubagentSetup(settings, providerOptions) {
           <div class="section-label">Subagents</div>
           <div class="subtle">Use @name in chat or ask to spawn a subagent. Max 4 active.</div>
         </div>
-        <button class="ghost-button" type="button" data-action="add-code-agent" ${subagents.length >= 4 ? "disabled" : ""}>+</button>
+        <button class="ghost-button" type="button" data-action="add-code-agent" aria-label="Add subagent" title="Add subagent" ${subagents.length >= 4 ? "disabled" : ""}>${icon("plus")}</button>
       </div>
       <div class="code-agents">
         ${subagents.length ? subagents.map((agent, index) => renderCodeAgentCard(agent, index, providerOptions)).join("") : `<div class="empty compact-empty">No configured subagents. Spawn uses the main model.</div>`}
@@ -999,7 +1051,7 @@ function renderHypothesisSetup(settings, providerOptions) {
           <div class="section-label">Hypothesis models</div>
           <div class="subtle">Support, attack, and judge are used now. Add up to 5 advisors for expanded debate flow.</div>
         </div>
-        <button class="ghost-button" type="button" data-action="add-hypothesis-agent" ${agents.length >= MAX_HYPOTHESIS_AGENTS ? "disabled" : ""}>+</button>
+        <button class="ghost-button" type="button" data-action="add-hypothesis-agent" aria-label="Add advisor" title="Add advisor" ${agents.length >= MAX_HYPOTHESIS_AGENTS ? "disabled" : ""}>${icon("plus")}</button>
       </div>
       <div class="code-agents hypothesis-agents">
         ${agents.map((agent, index) => renderHypothesisAgentCard(agent, index, agent.role === "judge" ? judgeOptions : providerOptions)).join("")}
@@ -1062,9 +1114,17 @@ function renderOrchestrationRoute() {
   return `
     <div class="orchestration-shell">
       <div class="orchestration-tabs">
-        <button class="orchestration-tab ${activeTab === "tasks" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="tasks">Tasks</button>
-        <button class="orchestration-tab ${activeTab === "workflow" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="workflow">Workflow</button>
-        <button class="ghost-button" type="button" data-action="refresh-orchestration">Refresh</button>
+        <div class="segmented-control">
+          <button class="orchestration-tab ${activeTab === "tasks" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="tasks">${icon("orchestration")}Tasks</button>
+          <button class="orchestration-tab ${activeTab === "workflow" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="workflow">${icon("workflow")}Workflow</button>
+        </div>
+        <div class="orchestration-toolbar-actions">
+          ${activeTab === "tasks" ? `<label class="task-search">${icon("search")}<input id="task-search" type="search" aria-label="Search tasks" placeholder="Search tasks" value="${escapeAttr(state.ui.taskSearch)}" /></label>
+          <button class="ghost-button" type="button" data-action="toggle-task-panel" data-panel="schedules">${icon("clock")}Schedules <span class="quiet-count">${schedules.length}</span></button>
+          <button class="primary-button" type="button" data-action="toggle-task-panel" data-panel="task-create">${icon("plus")}New task</button>` : ""}
+          ${activeTab === "workflow" ? `<button class="ghost-button workflow-side-toggle ${state.ui.workflowSideCollapsed ? "" : "is-active"}" type="button" data-action="toggle-workflow-side" aria-label="Toggle workflows panel" aria-expanded="${!state.ui.workflowSideCollapsed}" aria-controls="workflow-side-panel" title="${state.ui.workflowSideCollapsed ? "Show workflows and run trace" : "Hide workflows and run trace"}">${icon("sidebar")}<span>Workflows &amp; trace</span></button>` : ""}
+          <button class="ghost-button refresh-button" type="button" data-action="refresh-orchestration" title="Refresh" aria-label="Refresh orchestration">${icon("refresh")}<span>Refresh</span></button>
+        </div>
       </div>
       ${
         activeTab === "workflow"
@@ -1080,13 +1140,9 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
 
   return `
     <div class="orchestration-layout orchestration-layout--tasks">
-      <section class="panel orchestration-intake">
-        <div class="card-header">
-          <div>
-            <h2>Create Task</h2>
-            <p class="subtle">New tasks land in Todo. The runner consumes Todo by priority.</p>
-          </div>
-        </div>
+      <details class="panel orchestration-intake task-disclosure" data-ui-disclosure="task-create">
+        <summary><span>New task</span>${icon("close")}</summary>
+        <p class="subtle">Add a task to your queue.</p>
         <form id="task-form" class="form-grid">
           <div class="field">
             <label for="task-title">Title</label>
@@ -1119,20 +1175,21 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Task</button>
           </div>
         </form>
-      </section>
+      </details>
 
       <section class="panel orchestration-main">
         <div class="card-header">
           <div>
             <h2>Tasks</h2>
-            <p class="subtle">Drag cards between columns. Agents move Todo -> In Progress -> Done while executing.</p>
+            <p class="subtle">Your workspace, one task at a time.</p>
           </div>
-          <button class="primary-button" type="button" data-action="run-next-task" ${state.loading ? "disabled" : ""}>Run Next Todo</button>
+          <button class="ghost-button" type="button" data-action="run-next-task" ${state.loading ? "disabled" : ""}>${icon("play")}Run next</button>
         </div>
         ${renderTaskBoard(tasks)}
       </section>
 
-      <section class="panel schedule-panel">
+      <details class="panel schedule-panel task-disclosure" data-ui-disclosure="schedules">
+        <summary><span>Schedules</span>${icon("close")}</summary>
         <div class="schedule-panel__intake">
           <div class="card-header">
             <div>
@@ -1209,23 +1266,21 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
           </div>
           ${renderScheduleList(schedules)}
         </div>
-      </section>
+      </details>
     </div>
   `;
 }
 
 function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
   const sideCollapsed = state.ui.workflowSideCollapsed;
-  const sideWidth = Math.max(280, Math.min(window.innerWidth * 0.55, state.ui.workflowSideWidth || 360));
+  const sideWidth = Math.max(280, state.ui.workflowSideWidth || 300);
 
   return `
-    <div class="orchestration-layout orchestration-layout--workflow ${sideCollapsed ? "orchestration-layout--workflow-side-collapsed" : ""}" style="--workflow-side-width: ${sideWidth}px;">
-      <section class="orchestration-main">
-        <div class="panel workflow-builder-panel">
-          <div class="card-header">
+    <div class="workflow-view">
+          <div class="card-header workflow-view__header">
             <div>
-              <h2>Workflow Builder</h2>
-              <p class="subtle">Edit the FSM definition used by agent task execution.</p>
+              <h2>Workflow editor</h2>
+              <p class="subtle">Connect steps. Shape how your agents work.</p>
             </div>
             <div class="task-actions">
               <button class="ghost-button" type="button" data-action="new-workflow">New</button>
@@ -1234,12 +1289,14 @@ function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
               <button class="primary-button" type="button" data-action="save-workflow" ${state.loading ? "disabled" : ""}>Save</button>
             </div>
           </div>
+      <div class="orchestration-layout orchestration-layout--workflow ${sideCollapsed ? "orchestration-layout--workflow-side-collapsed" : ""}" style="--workflow-side-width: ${sideWidth}px;">
+      <section class="orchestration-main">
+        <div class="panel workflow-builder-panel">
           ${renderWorkflowBuilder(workflowDraft)}
         </div>
       </section>
 
-      <aside class="panel orchestration-side workflow-side-panel">
-        <button class="workflow-side-toggle" type="button" data-action="toggle-workflow-side" title="${sideCollapsed ? "Show workflows" : "Hide workflows"}">${sideCollapsed ? "‹" : "›"}</button>
+      <aside id="workflow-side-panel" class="panel orchestration-side workflow-side-panel" ${sideCollapsed ? "hidden" : ""}>
         <div class="workflow-side-resize-handle" data-action="resize-workflow-side" title="Resize workflow panel"></div>
         <div class="workflow-side-content">
           <div class="card-header">
@@ -1260,7 +1317,7 @@ function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
             ${
               selectedRun
                 ? `<div class="task-actions">
-                    <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Step</button>
+                    <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading || ["running", "waiting", "done", "failed", "cancelled", "blocked"].includes(selectedRun.status) ? "disabled" : ""}>Step</button>
                     ${
                       ["done", "failed", "cancelled"].includes(selectedRun.status)
                         ? ""
@@ -1273,6 +1330,7 @@ function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
           ${renderWorkflowRunTrace(selectedRun)}
         </div>
       </aside>
+      </div>
     </div>
   `;
 }
@@ -1298,12 +1356,14 @@ function renderTaskBoard(tasks) {
         return `
           <section class="task-column" data-drop-status="${escapeAttr(status)}">
             <div class="task-column__header">
-              <strong>${label}</strong>
+              <strong><span class="column-dot column-dot--${status}"></span>${label}</strong>
               <span>${columnTasks.length}</span>
             </div>
             <div class="task-list">
               ${columnTasks.length ? columnTasks.map(renderTaskCard).join("") : `<div class="empty compact">No tasks.</div>`}
+              <div class="empty compact task-filter-empty" role="status" hidden>No matching tasks.</div>
             </div>
+            ${status === "todo" ? `<button class="add-task-inline" type="button" data-action="toggle-task-panel" data-panel="task-create">${icon("plus")}Add task</button>` : ""}
           </section>
         `;
       }).join("")}
@@ -1316,18 +1376,18 @@ function renderTaskCard(task) {
   const canRun = getTaskBoardStatus(task) === "todo" || ["blocked", "failed"].includes(task.status);
 
   return `
-    <article class="task-card priority-${escapeAttr(task.priority)}" draggable="true" data-task-id="${escapeAttr(task.id)}">
+    <article class="task-card priority-${escapeAttr(task.priority)}" draggable="true" data-task-id="${escapeAttr(task.id)}" data-search-text="${escapeAttr(`${task.title} ${task.description || ""}`.toLowerCase())}">
       <div class="task-card__top">
         <span class="badge ${statusTone(task.status)}">${escapeHtml(task.status)}</span>
         <span class="task-priority">${escapeHtml(task.priority)}</span>
       </div>
       <h3>${escapeHtml(task.title)}</h3>
       <p>${escapeHtml(task.description || "No description.")}</p>
-      <div class="task-model-line">Models: ${escapeHtml(getWorkflowTargetSummary(workflow))}</div>
+      <details class="task-card-details" data-ui-disclosure="task-${escapeAttr(task.id)}"><summary>Details</summary><div class="task-model-line">Models: ${escapeHtml(getWorkflowTargetSummary(workflow))}</div>
       <div class="task-meta">
         <span>${escapeHtml(workflow?.name ?? task.workflowId)}</span>
         <span>${task.scheduledFor ? `Scheduled ${formatDate(task.scheduledFor)}` : formatDate(task.updatedAt)}</span>
-      </div>
+      </div></details>
       <div class="task-actions task-actions--card">
         <div class="task-actions__primary">
           ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading ? "disabled" : ""}>Run</button>` : ""}
@@ -1441,7 +1501,7 @@ function renderWorkflowBuilder(workflow) {
     return `<div class="empty">No workflow draft available.</div>`;
   }
 
-  return `<div id="workflow-graph-editor" class="workflow-graph-editor" aria-label="Visual workflow editor"></div>`;
+  return `<div id="workflow-graph-editor" class="workflow-graph-editor" aria-label="Visual workflow editor" aria-busy="${state.loading}" ${state.loading ? "inert" : ""}></div>`;
 }
 
 function unmountWorkflowEditor() {
@@ -1693,6 +1753,10 @@ function renderWorkflowRunTrace(selectedRun) {
           ? `<div class="status-block danger"><div class="status-block__label">Error</div><div class="status-block__text">${escapeHtml(selectedRun.error)}</div></div>`
           : ""
       }
+      ${selectedRun.status === "waiting" ? `<div class="footer-row">
+        <button class="primary-button" type="button" data-action="review-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" data-approved="true" ${state.loading ? "disabled" : ""}>Approve & continue</button>
+        <button class="ghost-button" type="button" data-action="review-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" data-approved="false" ${state.loading ? "disabled" : ""}>Reject</button>
+      </div>` : ""}
       <div class="run-node-list">
         ${nodeRuns.length ? nodeRuns.map(renderNodeRunCard).join("") : `<div class="empty compact">Open Trace on a task to load node runs.</div>`}
       </div>
@@ -2166,7 +2230,7 @@ function renderPluginsRoute() {
 
   return `
     <form class="grid" id="plugins-form">
-      <section class="panel">
+      <section class="panel route-header">
         <div class="row-between">
           <div>
             <h2>Plugin Surface</h2>
@@ -2207,7 +2271,7 @@ function renderPluginCard(name, plugin, status, fields) {
   const testResult = state.pluginTestResults[name];
   const testTone = testResult ? (testResult.ok ? "success" : "danger") : "";
   return `
-    <section class="card">
+    <section class="card plugin-card">
       <div class="card-header">
         <div>
           <h3>${escapeHtml(capitalize(name))}</h3>
@@ -2281,7 +2345,7 @@ function renderSettingsRoute() {
 
   return `
     <form class="grid" id="app-settings-form">
-      <section class="panel">
+      <section class="panel route-header">
         <div class="row-between">
           <div>
             <h2>Provider & Runtime Settings</h2>
@@ -2301,8 +2365,8 @@ function renderSettingsRoute() {
             <div class="field">
               <label>Theme</label>
               <select id="appearance-theme" name="appearance.theme">
-                ${option("carbon", state.ui.theme, "Carbon")}
-                ${option("light", state.ui.theme, "Light Neutral")}
+                ${option("dark", state.ui.theme, "Dark Liquid Glass")}
+                ${option("light", state.ui.theme, "Light Liquid Glass")}
               </select>
             </div>
           </div>
@@ -2321,8 +2385,7 @@ function renderSettingsRoute() {
         </section>
       </div>
 
-      <section class="card">
-        <h3>MCP Server</h3>
+      <details class="card settings-disclosure" data-ui-disclosure="settings-mcp"><summary><span>MCP Server</span>${icon("chevronRight")}</summary><div class="settings-disclosure__body">
         <div class="subtle">Expose this runtime to opencode, Codex-style clients, and local development pipelines over MCP stdio.</div>
         <div class="field-grid">
           <div class="field">
@@ -2357,10 +2420,9 @@ function renderSettingsRoute() {
             }, null, 2))}</pre>
           </div>
         </div>
-      </section>
+      </div></details>
 
-      <section class="card">
-        <h3>Telegram</h3>
+      <details class="card settings-disclosure" data-ui-disclosure="settings-telegram"><summary><span>Telegram</span>${icon("chevronRight")}</summary><div class="settings-disclosure__body">
         <div class="subtle">Bot token and polling are stored here. Restart the server after changing Telegram settings.</div>
         <div class="field-grid">
           <div class="field">
@@ -2383,10 +2445,9 @@ function renderSettingsRoute() {
             <div class="subtle">Comma-separated numeric IDs. Telegram starts only when at least one owner is configured.</div>
           </div>
         </div>
-      </section>
+      </div></details>
 
-      <section class="card">
-        <h3>Long Memory</h3>
+      <details class="card settings-disclosure" data-ui-disclosure="settings-memory"><summary><span>Long Memory</span>${icon("chevronRight")}</summary><div class="settings-disclosure__body">
         <div class="field-grid">
           <div class="field">
             <label>Adapter</label>
@@ -2452,7 +2513,7 @@ function renderSettingsRoute() {
             <input name="memory.openMemory.dbPath" value="${escapeAttr(settings.memory.openMemory.dbPath)}" />
           </div>
         </div>
-      </section>
+      </div></details>
 
       <div class="settings-grid">
         ${Object.entries(settings.providers)
@@ -2571,7 +2632,7 @@ function renderMessage(message) {
         <span>${escapeHtml(message.role)}</span>
         <span>${escapeHtml(message.role === "assistant" ? formatDate(message.createdAt) : "")}</span>
       </div>
-      <div class="message-content">${toolCards}${subagentCards}${content}</div>
+      <div class="message-content">${toolCards}${subagentCards}${message.role === "assistant" && (message.pending || message.agents?.length) ? `<div data-agent-progress>${renderAgentProgress(message.agents ?? [])}</div>` : ""}${content}</div>
       ${attachments}
       ${footer}
     </article>
@@ -2719,6 +2780,33 @@ function renderMessageTools(tools) {
   }
 
   return `<div class="process-card-stack">${cards.join("")}</div>`;
+}
+
+function renderAgentProgress(agents) {
+  if (!agents.length) return "";
+  const labels = { queued: "Waiting", running: "Working", completed: "Done", degraded: "Failed", cancelled: "Interrupted" };
+  return `<div class="agent-progress-stack" aria-live="polite">${agents.map((agent) => `
+    <details class="agent-progress-card ${agent.status === "running" ? "is-running" : "is-stopped"}" data-ui-disclosure="agent-${escapeAttr(agent.id)}" data-agent-id="${escapeAttr(agent.id)}" data-status="${escapeAttr(agent.status)}">
+      <summary class="agent-progress-header">
+        <span class="activity-scan status-dot" aria-hidden="true"><span></span></span>
+        <strong>${escapeHtml(agent.name)}</strong>
+        <span class="subagent-card__role">${escapeHtml(agent.role)}</span>
+        <span class="subagent-card__status">${escapeHtml(labels[agent.status] || agent.status)}</span>
+      </summary>
+      <div class="agent-progress-detail">${escapeHtml([agent.provider, agent.model, agent.phase].filter(Boolean).join(" · "))}</div>
+      ${agent.error ? `<div class="agent-progress-detail">${escapeHtml(agent.error)}</div>` : ""}
+    </details>`).join("")}</div>`;
+}
+
+function preserveStoppedChatRequest(active, message, status) {
+  const pending = state.pendingRequest;
+  if (!pending || pending.requestId !== active.requestId || pending.sessionId !== state.activeSessionId) return;
+  state.messages.push(
+    { id: `${active.requestId}:user`, role: "user", content: pending.input, createdAt: pending.startedAt },
+    { id: `${active.requestId}:stopped`, role: "assistant", content: message, createdAt: new Date().toISOString(),
+      agents: (pending.progress?.agents ?? []).map((agent) => ["queued", "running"].includes(agent.status)
+        ? { ...agent, status, phase: status === "cancelled" ? "Interrupted" : "Failed" } : agent) }
+  );
 }
 
 function renderMessageSubagents(subagents) {
@@ -3008,6 +3096,53 @@ function renderAttachmentMeta(attachment) {
 }
 
 function bindEvents() {
+  document.querySelectorAll(".field").forEach((field, index) => {
+    const label = field.querySelector("label");
+    const control = field.querySelector('input:not([type="hidden"]), select, textarea');
+    if (label && control && !label.htmlFor) {
+      if (!control.id) control.id = `ui-field-${index}`;
+      label.htmlFor = control.id;
+    }
+  });
+  document.querySelector("[data-action='toggle-mobile-sessions']")?.addEventListener("click", (event) => {
+    const open = document.querySelector(".shell")?.classList.toggle("mobile-sessions-open");
+    event.currentTarget.setAttribute("aria-expanded", String(Boolean(open)));
+  });
+  document.querySelectorAll("[data-action='set-theme']").forEach((button) => {
+    button.addEventListener("click", () => applyTheme(button.dataset.theme));
+  });
+  document.querySelector("[data-action='stop-chat']")?.addEventListener("click", () => void cancelActiveChatRequest());
+  document.querySelectorAll("[data-action='toggle-task-panel']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = document.querySelector(`[data-ui-disclosure="${button.dataset.panel}"]`);
+      const opening = panel && !panel.open;
+      document.querySelectorAll(".task-disclosure").forEach((item) => { item.open = false; });
+      if (panel) {
+        panel.classList.remove("is-restored");
+        panel.open = opening;
+        if (opening) panel.querySelector("input")?.focus({ preventScroll: true });
+      }
+    });
+  });
+  document.querySelectorAll(".task-disclosure > summary").forEach((summary) => {
+    summary.addEventListener("click", () => summary.parentElement.classList.remove("is-restored"));
+  });
+  const filterTasks = () => {
+    const query = state.ui.taskSearch.toLowerCase().trim();
+    document.querySelectorAll(".task-card").forEach((card) => {
+      card.hidden = !card.dataset.searchText.includes(query);
+    });
+    document.querySelectorAll(".task-column").forEach((column) => {
+      const cards = [...column.querySelectorAll(".task-card")];
+      const empty = column.querySelector(".task-filter-empty");
+      if (empty) empty.hidden = !query || !cards.length || cards.some((card) => !card.hidden);
+    });
+  };
+  document.querySelector("#task-search")?.addEventListener("input", (event) => {
+    state.ui.taskSearch = event.target.value;
+    filterTasks();
+  });
+  filterTasks();
   document.querySelectorAll("[data-action='route']").forEach((button) => {
     button.addEventListener("click", () => {
       if (state.route === "chat") {
@@ -3023,7 +3158,8 @@ function bindEvents() {
     document.querySelector(".shell")?.classList.toggle("shell--sidebar-collapsed", state.ui.sidebarCollapsed);
     const button = document.querySelector("[data-action='toggle-sidebar']");
     if (button) {
-      button.textContent = state.ui.sidebarCollapsed ? "›" : "‹";
+      button.innerHTML = icon("sidebar");
+      button.setAttribute("aria-expanded", String(!state.ui.sidebarCollapsed));
       button.setAttribute("title", state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation");
     }
     window.setTimeout(syncScrollToBottomButton, 340);
@@ -3038,7 +3174,8 @@ function bindEvents() {
     panel?.classList.toggle("chat-settings--collapsed", state.ui.sessionSetupCollapsed);
     const button = document.querySelector("[data-action='toggle-session-setup']");
     if (button) {
-      button.textContent = state.ui.sessionSetupCollapsed ? "‹" : "›";
+      button.innerHTML = icon(state.ui.sessionSetupCollapsed ? "chevronLeft" : "chevronRight");
+      button.setAttribute("aria-expanded", String(!state.ui.sessionSetupCollapsed));
       button.setAttribute("title", state.ui.sessionSetupCollapsed ? "Show setup" : "Hide setup");
     }
     window.setTimeout(syncScrollToBottomButton, 340);
@@ -3049,7 +3186,13 @@ function bindEvents() {
   document.querySelector("[data-action='toggle-workflow-side']")?.addEventListener("click", () => {
     state.ui.workflowSideCollapsed = !state.ui.workflowSideCollapsed;
     localStorage.setItem("lcai.workflowSideCollapsed", String(state.ui.workflowSideCollapsed));
-    render();
+    document.querySelector(".orchestration-layout--workflow")?.classList.toggle("orchestration-layout--workflow-side-collapsed", state.ui.workflowSideCollapsed);
+    const panel = document.querySelector("#workflow-side-panel");
+    if (panel) panel.hidden = state.ui.workflowSideCollapsed;
+    const button = document.querySelector("[data-action='toggle-workflow-side']");
+    button?.classList.toggle("is-active", !state.ui.workflowSideCollapsed);
+    button?.setAttribute("aria-expanded", String(!state.ui.workflowSideCollapsed));
+    button?.setAttribute("title", state.ui.workflowSideCollapsed ? "Show workflows and run trace" : "Hide workflows and run trace");
   });
 
   const workflowLayout = document.querySelector(".orchestration-layout--workflow");
@@ -3085,6 +3228,7 @@ function bindEvents() {
         state.activeSessionId = session.id;
         await loadActiveSession();
         state.notice = "";
+        window.location.hash = "/chat";
       });
     });
   });
@@ -3107,6 +3251,7 @@ function bindEvents() {
         await persistActiveSessionSetup({ refreshBootstrap: false });
         state.activeSessionId = button.dataset.sessionId;
         await loadActiveSession();
+        window.location.hash = "/chat";
       });
     });
   });
@@ -3141,6 +3286,9 @@ function bindEvents() {
         priority,
         sessionId: state.activeSessionId
       });
+      document.querySelector("#task-form")?.reset();
+      const intake = document.querySelector('[data-ui-disclosure="task-create"]');
+      if (intake) intake.open = false;
       await refreshBootstrap();
     });
   });
@@ -3559,9 +3707,12 @@ function bindEvents() {
         state.activeWorkflowRunId = runId;
         state.workflowRunDetail = await api.getWorkflowRun(runId);
         state.orchestrationTab = "workflow";
+        state.ui.workflowSideCollapsed = false;
       });
     });
   });
+
+  bindWorkflowReviewActions();
 
   document.querySelector("[data-action='step-workflow-run']")?.addEventListener("click", async (event) => {
     const runId = event.currentTarget.dataset.runId;
@@ -3734,20 +3885,26 @@ function bindEvents() {
     const form = new FormData(event.currentTarget);
     const input = String(form.get("input") || "").trim();
 
-    if (!input) {
+    if (!input || state.chatSubmitting || state.activeChatRequest) {
       return;
     }
 
+    const requestId = createUiEntityId("chat");
+    const controller = new AbortController();
+    const activeRequest = { requestId, controller, cancelled: false, progressTimer: null };
+    const sessionId = state.activeSessionId;
+    state.activeChatRequest = activeRequest;
+    state.chatSubmitting = true;
+    event.currentTarget.querySelector("button[type='submit']").disabled = true;
     try {
-      const requestId = createUiEntityId("chat");
-      const controller = new AbortController();
-      const activeRequest = { requestId, controller, cancelled: false, progressTimer: null };
       const attachments = getActiveDraftAttachments();
       await persistActiveSessionSetup({ refreshBootstrap: false });
+      if (activeRequest.cancelled || state.activeChatRequest?.requestId !== requestId) return;
       state.route = "chat";
       window.location.hash = "/chat";
       state.pendingRequest = {
         requestId,
+        sessionId,
         input,
         startedAt: new Date().toISOString(),
         pendingText: isSubagentRequest(input) ? chooseSubagentPendingText(input) : undefined
@@ -3755,7 +3912,7 @@ function bindEvents() {
       state.activeChatRequest = activeRequest;
       state.chatSubmitting = true;
       if (state.activeSessionId) {
-        state.drafts[state.activeSessionId] = "";
+        state.drafts[sessionId] = "";
       }
       const wasNearBottom = state.ui.messageStreamPinnedToBottom || isMessageStreamNearBottom();
       render();
@@ -3767,7 +3924,7 @@ function bindEvents() {
       const response = await api.sendChat({
         requestId,
         input,
-        sessionId: state.activeSessionId,
+        sessionId,
         metadata: attachments.length
           ? {
               attachments
@@ -3777,26 +3934,23 @@ function bindEvents() {
       if (activeRequest.cancelled) {
         return;
       }
-      state.activeSessionId = response.sessionId;
-      if (state.activeSessionId) {
-        state.draftAttachments[state.activeSessionId] = [];
-      }
+      state.draftAttachments[sessionId] = [];
       await refreshBootstrap();
-      await loadActiveSession();
+      if (state.activeSessionId === sessionId) await loadActiveSession();
     } catch (error) {
-      if (!state.activeChatRequest?.cancelled && !(error instanceof Error && /cancelled/i.test(error.message))) {
-        pushToast(error instanceof Error ? error.message : "Action failed", "danger");
+      if (state.activeChatRequest?.requestId === requestId && !activeRequest.cancelled) {
+        const message = error instanceof Error ? error.message : "Action failed";
+        preserveStoppedChatRequest(activeRequest, message, "degraded");
+        pushToast(message, "danger");
       }
-      state.pendingRequest = null;
     } finally {
-      if (state.activeChatRequest) {
-        stopProcessProgressPolling(state.activeChatRequest);
-      }
-      state.activeChatRequest = null;
-      state.chatSubmitting = false;
-      render();
-      if (state.ui.messageStreamPinnedToBottom) {
-        requestAnimationFrame(() => scrollChatToBottom("auto"));
+      stopProcessProgressPolling(activeRequest);
+      if (state.activeChatRequest?.requestId === requestId) {
+        state.activeChatRequest = null;
+        state.pendingRequest = null;
+        state.chatSubmitting = false;
+        render();
+        if (state.ui.messageStreamPinnedToBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
       }
     }
   });
@@ -3945,6 +4099,7 @@ function bindEvents() {
       }
 
       const key = `load:${providerId}:${modelId}`;
+      if (state.modelActions[key]) return;
       const scrollSnapshot = captureScrollState();
       state.modelActions[key] = true;
       render();
@@ -3952,10 +4107,14 @@ function bindEvents() {
 
       try {
         await api.loadModel(providerId, modelId);
-        const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
-        state.bootstrap.loadedModels = managed.loadedModels;
-        state.bootstrap.allManagedModels = managed.allManagedModels;
-        state.bootstrap.systemMetrics = systemMetrics;
+        try {
+          const managed = await waitForManagedModelState(providerId, modelId, true);
+          state.bootstrap.loadedModels = managed.loadedModels;
+          state.bootstrap.allManagedModels = managed.allManagedModels;
+        } catch {
+          pushToast("Model loaded, but its catalog status could not be refreshed yet.", "warning");
+        }
+        try { state.bootstrap.systemMetrics = await api.getSystemMetrics(); } catch { /* Metrics do not determine load success. */ }
         state.notice = "";
       } catch (error) {
         pushToast(error instanceof Error ? error.message : "Load failed", "danger");
@@ -3978,6 +4137,7 @@ function bindEvents() {
       }
 
       const key = `unload:${providerId}:${modelId}`;
+      if (state.modelActions[key]) return;
       const scrollSnapshot = captureScrollState();
       state.modelActions[key] = true;
       render();
@@ -3988,13 +4148,10 @@ function bindEvents() {
         optimisticallyUnloadModel(providerId, modelKey, modelId);
         invalidateSessionModelSelection(providerId, modelKey);
         render();
-        const [managed, systemMetrics] = await Promise.all([
-          waitForManagedModelState(providerId, modelKey, false),
-          api.getSystemMetrics()
-        ]);
+        const managed = await waitForManagedModelState(providerId, modelKey, false);
         state.bootstrap.loadedModels = managed.loadedModels;
         state.bootstrap.allManagedModels = managed.allManagedModels;
-        state.bootstrap.systemMetrics = systemMetrics;
+        try { state.bootstrap.systemMetrics = await api.getSystemMetrics(); } catch { /* Metrics do not determine unload success. */ }
         state.notice = "";
       } catch (error) {
         pushToast(error instanceof Error ? error.message : "Unload failed", "danger");
@@ -4468,7 +4625,7 @@ function invalidateSessionModelSelection(providerId, modelKey) {
 async function waitForManagedModelState(providerId, modelKey, loaded) {
   let latest = await api.refreshManagedModels();
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt <= 5; attempt += 1) {
     const model = latest.allManagedModels.find(
       (item) => item.providerId === providerId && item.id === modelKey
     );
@@ -4480,6 +4637,7 @@ async function waitForManagedModelState(providerId, modelKey, loaded) {
       return latest;
     }
 
+    if (attempt === 5) break;
     await new Promise((resolve) => window.setTimeout(resolve, 450));
     latest = await api.refreshManagedModels();
   }
@@ -4493,9 +4651,37 @@ async function waitForManagedModelState(providerId, modelKey, loaded) {
         ? { ...model, loaded: false, loadedInstanceIds: [] }
         : model
     );
+  } else {
+    throw new Error("The loaded model has not appeared in the catalog yet.");
   }
 
   return latest;
+}
+
+async function pollWorkflowProgress() {
+  if (workflowPollInFlight || state.route !== "orchestration" || state.loading) return;
+  if (!(state.bootstrap?.workflowRuns ?? []).some((run) => ["queued", "running"].includes(run.status))) return;
+  workflowPollInFlight = true;
+  try {
+    const [tasks, runs] = await Promise.all([request("/tasks"), request("/workflow-runs")]);
+    state.bootstrap.tasks = tasks;
+    state.bootstrap.workflowRuns = runs;
+    if (state.activeWorkflowRunId) state.workflowRunDetail = await api.getWorkflowRun(state.activeWorkflowRunId);
+    if (state.route !== "orchestration" || state.loading) return;
+    if (state.orchestrationTab === "tasks") render();
+    else {
+      const trace = document.querySelector(".run-trace");
+      const run = runs.find((item) => item.id === state.activeWorkflowRunId);
+      if (trace && run) {
+        // Keep the editor and its unsaved fields mounted while updating the trace.
+        const holder = document.createElement("div");
+        holder.innerHTML = renderWorkflowRunTrace(run);
+        trace.replaceWith(holder.firstElementChild);
+        bindWorkflowReviewActions();
+      }
+    }
+  } catch { /* Retry on the next dashboard tick. */ }
+  finally { workflowPollInFlight = false; }
 }
 
 async function pollSystemMetrics() {
@@ -4519,13 +4705,14 @@ function syncSystemMetricsPolling() {
     systemMetricsPollTimer = null;
   }
 
-  if (state.route !== "models") {
+  if (!["models", "orchestration"].includes(state.route)) {
     return;
   }
 
   systemMetricsPollTimer = window.setInterval(() => {
     void pollSystemMetrics();
-  }, 5000);
+    void pollWorkflowProgress();
+  }, state.route === "orchestration" ? 1000 : 5000);
 }
 
 function buildAppSettingsPayload(form, pluginsOnly) {
@@ -4648,19 +4835,21 @@ function dismissToast(id, rerender = true) {
   }
 
   state.toasts = state.toasts.filter((toast) => toast.id !== id);
-  if (rerender) {
-    render();
-  }
+  document.querySelectorAll(".toast[data-toast-id]").forEach((toast) => {
+    if (toast.dataset.toastId === id) toast.remove();
+  });
 }
 
 function routeTitle(route) {
   switch (route) {
+    case "orchestration":
+      return "Tasks & workflows";
     case "models":
-      return "Model cockpit";
+      return "Models";
     case "plugins":
-      return "Plugin surface";
+      return "Plugins";
     case "settings":
-      return "Runtime settings";
+      return "Settings";
     default:
       return "Conversation workspace";
   }
@@ -4846,6 +5035,11 @@ function providerModelHelp(providerId) {
 
 function defaultProviderTimeoutMs(providerId) {
   return isLocalProvider(providerId) ? 300000 : 60000;
+}
+
+function localModelActionTimeoutMs(providerId) {
+  const configured = Number(state.bootstrap?.appSettings?.providers?.[providerId]?.timeoutMs);
+  return Math.max(300000, Number.isFinite(configured) ? configured : 0) + 30000;
 }
 
 function providerTimeoutHelp(providerId) {
@@ -5296,6 +5490,7 @@ async function persistActiveSessionSetup(options = {}) {
     return null;
   }
 
+  const sessionId = state.activeSessionId;
   const snapshot = readSessionSetupSnapshot();
   if (!snapshot) {
     return null;
@@ -5303,7 +5498,7 @@ async function persistActiveSessionSetup(options = {}) {
 
   const currentSession = getCurrentSessionSummary();
   if (options.renameSession !== false && snapshot.title && snapshot.title !== currentSession?.title) {
-    await api.renameSession(state.activeSessionId, snapshot.title);
+    await api.renameSession(sessionId, snapshot.title);
     if (currentSession) {
       currentSession.title = snapshot.title;
       currentSession.updatedAt = new Date().toISOString();
@@ -5311,11 +5506,11 @@ async function persistActiveSessionSetup(options = {}) {
   }
 
   const savedSettings = await api.updateSessionSettings(
-    state.activeSessionId,
+    sessionId,
     sessionSettingsToPatch(snapshot.settings)
   );
 
-  if (options.saveSeq === undefined || state.ui.autosaveSeq === options.saveSeq) {
+  if (state.activeSessionId === sessionId && (options.saveSeq === undefined || state.ui.autosaveSeq === options.saveSeq)) {
     state.sessionSettings = savedSettings;
   }
 
@@ -5397,14 +5592,14 @@ function syncScrollToBottomButton() {
 
 function renderSessionModelControl(name, providerId, value, options, datalistId) {
   if (providerId === "local") {
-    return `<input name="${escapeAttr(name)}" value="" placeholder="local judge" disabled />`;
+    return `<input name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}" value="" placeholder="local judge" disabled />`;
   }
 
   const resolvedValue = value || getProviderConfiguredModel(providerId) || "";
 
   if (isLocalProvider(providerId)) {
     return `
-      <select name="${escapeAttr(name)}">
+      <select name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
         ${renderModelSelectOptions(options, resolvedValue, "Select model")}
       </select>
     `;
@@ -5413,6 +5608,7 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
   return `
     <input
       name="${escapeAttr(name)}"
+      aria-label="${escapeAttr(sessionModelLabel(name))}"
       list="${escapeAttr(datalistId)}"
       value="${escapeAttr(resolvedValue)}"
       placeholder="${escapeAttr(providerModelPlaceholder(providerId))}"
@@ -5768,4 +5964,21 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/'/g, "&#39;");
+}
+
+function bindWorkflowReviewActions() {
+  document.querySelectorAll("[data-action='review-workflow-run']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (state.loading) return;
+      const runId = button.dataset.runId;
+      await runAction(async () => {
+        await request(`/workflow-runs/${encodeURIComponent(runId)}/review`, {
+          method: "POST", body: JSON.stringify({ approved: button.dataset.approved === "true", background: true }), timeoutMs: 900000
+        });
+        await refreshBootstrap();
+        state.workflowRunDetail = await api.getWorkflowRun(runId);
+      });
+    });
+  });
+
 }

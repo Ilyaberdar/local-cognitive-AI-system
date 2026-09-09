@@ -34,7 +34,7 @@ export class LMStudioManager implements LocalModelManager {
     this.nativeBaseUrl = options.baseUrl.replace(/\/v1\/?$/, "");
   }
 
-  async listAllModels(): Promise<ManagedModel[]> {
+  async listAllModels(timeoutMs = this.options.timeoutMs): Promise<ManagedModel[]> {
     let payload: {
       data?: NativeModelRecord[];
       models?: NativeModelRecord[];
@@ -45,7 +45,8 @@ export class LMStudioManager implements LocalModelManager {
         data?: NativeModelRecord[];
         models?: NativeModelRecord[];
       }>("/api/v1/models", {
-        method: "GET"
+        method: "GET",
+        timeoutMs
       });
     } catch {
       return [];
@@ -79,14 +80,17 @@ export class LMStudioManager implements LocalModelManager {
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
-  async listLoadedModels(): Promise<ManagedModel[]> {
-    const models = await this.listAllModels();
+  async listLoadedModels(timeoutMs = this.options.timeoutMs): Promise<ManagedModel[]> {
+    const models = await this.listAllModels(timeoutMs);
     return models.filter((model) => model.loaded || model.loadedInstanceIds.length > 0);
   }
 
   async loadModel(modelKey: string): Promise<void> {
+    const loaded = await this.listLoadedModels(Math.min(10000, this.options.timeoutMs));
+    if (loaded.some((model) => model.id === modelKey || model.loadedInstanceIds.includes(modelKey))) return;
     await this.request("/api/v1/models/load", {
       method: "POST",
+      timeoutMs: Math.max(300000, this.options.timeoutMs),
       body: {
         model: modelKey
       }
@@ -122,6 +126,7 @@ export class LMStudioManager implements LocalModelManager {
     options: {
       method: "GET" | "POST";
       body?: Record<string, unknown>;
+      timeoutMs?: number;
     }
   ): Promise<T> {
     const response = await fetch(`${this.nativeBaseUrl}${pathname}`, {
@@ -135,7 +140,7 @@ export class LMStudioManager implements LocalModelManager {
           : {})
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      signal: AbortSignal.timeout(options.timeoutMs ?? this.options.timeoutMs)
     });
 
     if (!response.ok) {

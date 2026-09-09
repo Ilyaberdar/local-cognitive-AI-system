@@ -44,7 +44,7 @@ export const normalizeDebatePayload = (
   raw: string,
   fallbackSummary: string,
   outputStyle: OutputStyle
-): { summary: string; arguments: string[] } => {
+): { summary: string; arguments: string[]; degraded: boolean } => {
   const maxArguments =
     outputStyle === "compact"
       ? 3
@@ -54,9 +54,11 @@ export const normalizeDebatePayload = (
           ? 12
           : 4;
   const parsed = data ?? tryParseJson<DebatePayload>(raw);
-  const parsedArguments = parsed?.arguments?.map((item) => item?.trim()).filter(Boolean) ?? [];
+  const parsedArguments = Array.isArray(parsed?.arguments)
+    ? parsed.arguments.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+    : [];
   const extractedArguments = extractArrayField(raw, "arguments");
-  const fallbackArguments = extractBulletLines(raw);
+  const fallbackArguments = parsed ? [] : extractBulletLines(raw);
 
   const argumentsList = [...parsedArguments, ...extractedArguments, ...fallbackArguments]
     .map((item) => item.trim())
@@ -65,13 +67,14 @@ export const normalizeDebatePayload = (
     .slice(0, maxArguments);
 
   const summary =
-    parsed?.summary?.trim() ||
+    (typeof parsed?.summary === "string" ? parsed.summary.trim() : "") ||
     extractStringField(raw, "summary") ||
     argumentsList[0] ||
     fallbackSummary;
 
   return {
     summary,
-    arguments: argumentsList.length ? argumentsList : [summary]
+    arguments: argumentsList.length ? [...new Set(argumentsList)] : [summary],
+    degraded: !argumentsList.length && summary === fallbackSummary
   };
 };

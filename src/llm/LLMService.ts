@@ -13,13 +13,17 @@ export class LLMService {
   ) {}
 
   async generateText(request: LLMRequest, providerId?: string): Promise<LLMResponse> {
+    request.signal?.throwIfAborted();
     const targetProviderId = providerId ?? this.defaultProviderId;
     const provider = this.registry.get(targetProviderId);
     const response = await provider.generateText(request);
+    request.signal?.throwIfAborted();
+    const text = this.sanitizer.sanitize(response.text);
 
     return {
       ...response,
-      text: this.sanitizer.sanitize(response.text)
+      text,
+      error: response.error || (!text ? "The model returned an empty response." : undefined)
     };
   }
 

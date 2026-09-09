@@ -14,6 +14,7 @@ export class ProcessRunRegistry {
   private readonly runs = new Map<string, ProcessRunState>();
 
   start(id: string): ProcessRunState {
+    if (this.runs.has(id)) throw new Error("Process request id already exists.");
     const now = new Date().toISOString();
     const run: ProcessRunState = {
       id,
@@ -34,12 +35,12 @@ export class ProcessRunRegistry {
       return;
     }
 
-    run.progress = progress;
+    run.progress = { ...progress, agents: progress.agents ?? run.progress?.agents };
     run.updatedAt = progress.at;
   }
 
   complete(id: string): void {
-    this.setStatus(id, "completed");
+    if (this.runs.get(id)?.status === "running") this.setStatus(id, "completed");
   }
 
   fail(id: string, error: string): void {
@@ -79,6 +80,13 @@ export class ProcessRunRegistry {
     }
     run.status = status;
     run.updatedAt = new Date().toISOString();
+    if (status !== "running" && run.progress?.agents) {
+      run.progress = { ...run.progress, agents: run.progress.agents.map((agent) =>
+        ["queued", "running"].includes(agent.status)
+          ? { ...agent, status: status === "cancelled" ? "cancelled" : "degraded", phase: status === "cancelled" ? "Interrupted" : "Stopped" }
+          : agent
+      ) };
+    }
   }
 
   private prune(): void {

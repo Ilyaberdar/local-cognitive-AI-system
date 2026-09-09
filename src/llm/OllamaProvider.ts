@@ -109,7 +109,7 @@ export class OllamaProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
-      this.logger.warn("Falling back to mock Ollama response", {
+      this.logger.warn("Ollama generation failed", {
         error: error instanceof Error ? error.message : "unknown_error"
       });
       return buildFallbackResponse(

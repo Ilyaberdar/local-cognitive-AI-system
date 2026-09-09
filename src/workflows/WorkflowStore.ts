@@ -1,3 +1,4 @@
+import { withFileLock, writeJsonAtomically, isMissingFile } from "../utils/fileStore";
 import fs from "fs/promises";
 import path from "path";
 import { defaultTaskWorkflow } from "./defaultWorkflows";
@@ -16,72 +17,110 @@ export class WorkflowStore {
   }
 
   async list(): Promise<WorkflowDefinition[]> {
-    const record = await this.read();
-    return [...record.workflows].sort((left, right) =>
-      left.name.localeCompare(right.name) || right.version - left.version
-    );
+    return withFileLock(this.filePath, async () => {
+      const record = await this.read();
+      return [...record.workflows].sort((left, right) =>
+        left.name.localeCompare(right.name) || right.version - left.version
+      );
+    });
   }
 
   async get(workflowId: string, version?: number): Promise<WorkflowDefinition | null> {
-    const record = await this.read();
-    const candidates = record.workflows.filter((workflow) => workflow.id === workflowId);
+    return withFileLock(this.filePath, async () => {
+      const record = await this.read();
+      const candidates = record.workflows.filter((workflow) => workflow.id === workflowId);
 
-    if (version !== undefined) {
-      return candidates.find((workflow) => workflow.version === version) ?? null;
-    }
+      if (version !== undefined) {
+        return candidates.find((workflow) => workflow.version === version) ?? null;
+      }
 
-    return candidates.sort((left, right) => right.version - left.version)[0] ?? null;
+      return candidates.sort((left, right) => right.version - left.version)[0] ?? null;
+    });
   }
 
   async create(workflow: WorkflowDefinition): Promise<WorkflowDefinition> {
-    const validation = this.validate(workflow);
+    return withFileLock(this.filePath, async () => {
+      const validation = this.validate(workflow);
 
-    if (!validation.ok) {
-      throw new Error(`Invalid workflow: ${validation.errors.join("; ")}`);
-    }
+      if (!validation.ok) {
+        throw new Error(`Invalid workflow: ${validation.errors.join("; ")}`);
+      }
 
-    const record = await this.read();
-    const now = new Date().toISOString();
-    const next = {
-      ...workflow,
-      createdAt: workflow.createdAt || now,
-      updatedAt: now
-    };
+      const record = await this.read();
+      if (record.workflows.some((item) => item.id === workflow.id && item.version === workflow.version)) {
+        throw new Error("Workflow id and version already exist.");
+      }
+      const now = new Date().toISOString();
+      const next = {
+        ...workflow,
+        createdAt: workflow.createdAt || now,
+        updatedAt: now
+      };
 
-    record.workflows.push(next);
-    await this.write(record);
-    return next;
+      record.workflows.push(next);
+      await this.write(record);
+      return next;
+    });
   }
 
   async update(workflowId: string, workflow: WorkflowDefinition): Promise<WorkflowDefinition> {
-    const validation = this.validate(workflow);
+    return withFileLock(this.filePath, async () => {
+      const validation = this.validate(workflow);
 
-    if (!validation.ok) {
-      throw new Error(`Invalid workflow: ${validation.errors.join("; ")}`);
-    }
+      if (!validation.ok) {
+        throw new Error(`Invalid workflow: ${validation.errors.join("; ")}`);
+      }
 
-    const record = await this.read();
-    const next = {
-      ...workflow,
-      id: workflowId,
-      updatedAt: new Date().toISOString()
-    };
-    const index = record.workflows.findIndex(
-      (item) => item.id === workflowId && item.version === workflow.version
-    );
+      const record = await this.read();
+      const next = {
+        ...workflow,
+        id: workflowId,
+        updatedAt: new Date().toISOString()
+      };
+      const index = record.workflows.findIndex(
+        (item) => item.id === workflowId && item.version === workflow.version
+      );
 
-    if (index >= 0) {
-      record.workflows[index] = next;
-    } else {
-      record.workflows.push(next);
-    }
+      if (index >= 0) {
+        record.workflows[index] = next;
+      } else {
+        record.workflows.push(next);
+      }
 
-    await this.write(record);
-    return next;
+      await this.write(record);
+      return next;
+    });
   }
 
-  validate(workflow: WorkflowDefinition): WorkflowValidationResult {
+  validate(input: unknown): WorkflowValidationResult {
     const errors: string[] = [];
+    if (!isRecord(input) || typeof input.id !== "string" || typeof input.name !== "string" ||
+      typeof input.entryNodeId !== "string" || !Array.isArray(input.nodes) || !Array.isArray(input.transitions)) {
+      return { ok: false, errors: ["Workflow requires string id, name, entryNodeId and arrays nodes and transitions."] };
+    }
+    for (const node of input.nodes) {
+      if (!isRecord(node) || typeof node.id !== "string" || typeof node.label !== "string" ||
+        typeof node.type !== "string" || !isRecord(node.config) || !isRecord(node.position) ||
+        !Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) {
+        errors.push("Each node requires string id, label, type, an object config and a finite position.");
+      }
+    }
+    for (const transition of input.transitions) {
+      if (!isRecord(transition) || typeof transition.id !== "string" || typeof transition.from !== "string" ||
+        typeof transition.to !== "string" || !Number.isFinite(transition.priority) || !isRecord(transition.guard)) {
+        errors.push("Each transition requires string id, from, to, a finite priority and an object guard.");
+        continue;
+      }
+      const guard = transition.guard;
+      const valid = guard.type === "always" ||
+        (guard.type === "status" && ["ok", "failed", "blocked", "needs_input"].includes(String(guard.equals))) ||
+        (guard.type === "event" && typeof guard.equals === "string" && Boolean(guard.equals.trim())) ||
+        (guard.type === "json_path" && typeof guard.path === "string" && Boolean(guard.path.trim()) &&
+          (guard.op === "exists" || (["eq", "contains"].includes(String(guard.op)) && guard.value !== undefined)));
+      if (!valid) errors.push(`Transition ${transition.id} has an invalid guard or is missing a comparison value.`);
+    }
+    if (errors.length) return { ok: false, errors };
+    const workflow = input as unknown as WorkflowDefinition;
     const nodeIds = new Set(workflow.nodes.map((node) => node.id));
     const transitionIds = new Set(workflow.transitions.map((transition) => transition.id));
     const supportedTypes = new Set([
@@ -188,11 +227,13 @@ export class WorkflowStore {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<WorkflowDefinitionRecord>;
-      const workflows = Array.isArray(parsed.workflows) ? parsed.workflows : [];
+      if (!parsed || !Array.isArray(parsed.workflows)) throw new Error("Expected a workflows array.");
+      const workflows = parsed.workflows;
       return {
         workflows: this.ensureDefaults(workflows)
       };
-    } catch {
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
       const initial = {
         workflows: [defaultTaskWorkflow()]
       };
@@ -211,7 +252,7 @@ export class WorkflowStore {
 
   private async write(record: WorkflowDefinitionRecord): Promise<void> {
     await fs.mkdir(this.baseDir, { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(record, null, 2), "utf8");
+    await writeJsonAtomically(this.filePath, record);
   }
 }
 
@@ -286,3 +327,6 @@ const validateNodeConfig = (node: WorkflowNode): string[] => {
 
   return errors;
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);

@@ -101,7 +101,7 @@ export class AnthropicProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
-      this.logger.warn("Falling back to mock Anthropic response", {
+      this.logger.warn("Anthropic generation failed", {
         error: error instanceof Error ? error.message : "unknown_error"
       });
       return buildFallbackResponse(

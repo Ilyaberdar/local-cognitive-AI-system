@@ -353,30 +353,4 @@
   padding: 0 2px;
 }
 
-@media (max-width: 720px) {
-  .fsm-workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .fsm-canvas {
-    min-height: 520px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .fsm-inspector {
-    max-height: 340px;
-  }
-}
-
-@media (max-width: 720px) {
-  .fsm-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .fsm-workspace,
-  .fsm-canvas {
-    min-height: 460px;
-  }
-}
+/* The application skin adapts the editor to its actual container width. */

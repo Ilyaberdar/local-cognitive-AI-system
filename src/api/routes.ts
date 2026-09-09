@@ -57,6 +57,7 @@ import {
   createListWorkflowRunsController,
   createListWorkflowsController,
   createStepWorkflowRunController,
+  createReviewWorkflowRunController,
   createUpdateWorkflowController,
   createValidateWorkflowController
 } from "./workflowControllers";
@@ -121,6 +122,7 @@ export const createApiRouter = (
   router.get("/workflow-runs", createListWorkflowRunsController(runtimeManager));
   router.get("/workflow-runs/:runId", createGetWorkflowRunController(runtimeManager));
   router.post("/workflow-runs/:runId/step", createStepWorkflowRunController(runtimeManager));
+  router.post("/workflow-runs/:runId/review", createReviewWorkflowRunController(runtimeManager));
   router.post("/workflow-runs/:runId/cancel", createCancelWorkflowRunController(runtimeManager));
 
   router.post("/chat", createProcessController(runtimeManager, sessionIndexStore));
