@@ -41,6 +41,10 @@ const bootstrapMcp = async (): Promise<void> => {
   });
 
   const transport = new StdioServerTransport();
+  const dispose = async () => { await runtimeManager.dispose(); await server.close(); };
+  process.once("SIGINT", () => { void dispose().finally(() => process.exit(0)); });
+  process.once("SIGTERM", () => { void dispose().finally(() => process.exit(0)); });
+  process.stdin.once("end", () => { void dispose(); });
   await server.connect(transport);
   logger.info("MCP stdio transport started", {
     defaultSessionId

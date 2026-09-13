@@ -2,12 +2,14 @@ import type { Edge, Node } from "@xyflow/react";
 import type {
   WorkflowDefinition,
   WorkflowNodeDefinition,
+  WorkflowNodeProgress,
   WorkflowTransitionDefinition
 } from "./types";
 
 export type FsmNodeData = Record<string, unknown> & {
   definition: WorkflowNodeDefinition;
   isEntry: boolean;
+  run?: WorkflowNodeProgress;
 };
 
 export type FsmEdgeData = Record<string, unknown> & {

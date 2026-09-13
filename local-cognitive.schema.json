@@ -18,7 +18,9 @@
             },
             "transport": {
               "type": "string",
-              "enum": ["stdio"],
+              "enum": [
+                "stdio"
+              ],
               "default": "stdio"
             },
             "defaultSessionId": {
@@ -27,6 +29,42 @@
               "default": "mcp-default"
             }
           }
+        }
+      }
+    },
+    "localModels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "modelsDir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contextSize": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 131072,
+          "default": 4096
+        },
+        "gpuLayers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memoryLimitPercent": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 90,
+          "default": 75
+        },
+        "loadTimeoutMs": {
+          "type": "integer",
+          "minimum": 10000,
+          "default": 300000
+        },
+        "generationTimeoutMs": {
+          "type": "integer",
+          "minimum": 10000,
+          "default": 600000
         }
       }
     }

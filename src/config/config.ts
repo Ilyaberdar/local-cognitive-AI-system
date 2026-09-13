@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import type { LocalModelOptions } from "../local/types";
 
 dotenv.config();
 
@@ -8,13 +9,16 @@ type MemoryAdapterName = "local-json" | "openmemory" | "world-partition";
 type MemoryPartitionStrategy = "auto" | "global" | "partitioned";
 
 export interface ProviderHttpConfig {
+  enabled?: boolean;
   baseUrl: string;
   model: string;
   timeoutMs: number;
   apiKey?: string;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 export interface AppConfig {
+  localModels?: Omit<LocalModelOptions, "dataDir" | "enabled">;
   server: {
     enabled: boolean;
     host: string;
@@ -35,6 +39,7 @@ export interface AppConfig {
     defaultProvider: string;
   };
   providers: {
+    llamacpp?: ProviderHttpConfig;
     ollama: ProviderHttpConfig;
     lmstudio: ProviderHttpConfig;
     openai: ProviderHttpConfig;
@@ -156,11 +161,24 @@ const readFileConfig = (): Record<string, unknown> => {
 const fileConfig = readFileConfig();
 const fileMcp = isRecord(fileConfig.mcp) ? fileConfig.mcp : {};
 const fileMcpServer = isRecord(fileMcp.server) ? fileMcp.server : {};
+const fileLocalModels = isRecord(fileConfig.localModels) ? fileConfig.localModels : {};
+const localValue = (key: string, environment: string): string | undefined =>
+  process.env[environment] ?? (["string", "number"].includes(typeof fileLocalModels[key]) ? String(fileLocalModels[key]) : undefined);
 
 const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 60000);
 const defaultLocalTimeoutMs = Number(process.env.LOCAL_PROVIDER_TIMEOUT_MS ?? 300000);
 
 export const config: AppConfig = {
+  localModels: {
+    modelsDir: resolveDir(localValue("modelsDir", "LOCAL_MODELS_DIR") ?? path.join(process.env.APP_DATA_DIR ?? "./data/app", "local-models", "models"), "./data/app/local-models/models"),
+    runtimeDir: resolveDir(process.env.LLAMA_RUNTIME_DIR ?? `./resources/llama/${process.platform}-${process.arch}`, "./resources/llama"),
+    executablePath: toOptional(process.env.LLAMA_SERVER_PATH),
+    contextSize: Math.min(131072, positiveNumber(localValue("contextSize", "LLAMA_CONTEXT_SIZE"), 4096, 512)),
+    gpuLayers: nonNegativeNumber(localValue("gpuLayers", "LLAMA_GPU_LAYERS"), process.platform === "darwin" ? 99 : 0),
+    loadTimeoutMs: positiveNumber(localValue("loadTimeoutMs", "LLAMA_LOAD_TIMEOUT_MS"), 300000),
+    generationTimeoutMs: positiveNumber(localValue("generationTimeoutMs", "LLAMA_GENERATION_TIMEOUT_MS"), 600000),
+    memoryLimitPercent: Math.min(90, positiveNumber(localValue("memoryLimitPercent", "LLAMA_MEMORY_LIMIT_PERCENT"), 75, 10))
+  },
   server: {
     enabled: toBoolean(process.env.HTTP_ENABLED, true),
     host: process.env.HOST ?? "127.0.0.1",
@@ -185,9 +203,15 @@ export const config: AppConfig = {
     overrides: {}
   },
   llm: {
-    defaultProvider: process.env.DEFAULT_PROVIDER ?? "ollama"
+    defaultProvider: process.env.DEFAULT_PROVIDER ?? "llamacpp"
   },
   providers: {
+    llamacpp: {
+      enabled: true,
+      baseUrl: "",
+      model: process.env.LLAMA_MODEL ?? "",
+      timeoutMs: Number(process.env.LLAMA_GENERATION_TIMEOUT_MS ?? 600000)
+    },
     ollama: {
       baseUrl: process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
       model: process.env.OLLAMA_MODEL ?? "llama3.2",
@@ -269,3 +293,18 @@ export const config: AppConfig = {
     publicDir: resolveDir(process.env.UI_PUBLIC_DIR ?? "./public", "./public")
   }
 };
+
+/** Paths belong to the backend; the runtime URL and service credential are never settings. */
+export const localModelOptions = (source: AppConfig): LocalModelOptions => ({
+  enabled: source.providers.llamacpp?.enabled !== false,
+  dataDir: path.join(source.appDataDir, "local-models"),
+  modelsDir: path.join(source.appDataDir, "local-models", "models"),
+  runtimeDir: path.resolve(process.env.LLAMA_RUNTIME_DIR ?? `resources/llama/${process.platform}-${process.arch}`),
+  executablePath: process.env.LLAMA_SERVER_PATH,
+  contextSize: 4096,
+  gpuLayers: process.platform === "darwin" ? 99 : 0,
+  loadTimeoutMs: 300000,
+  generationTimeoutMs: 600000,
+  memoryLimitPercent: 75,
+  ...source.localModels
+});

@@ -354,3 +354,9 @@
 }
 
 /* The application skin adapts the editor to its actual container width. */
+.fsm-model-warning, .fsm-model-hint { font-size: 10px; line-height: 1.5; }
+.fsm-model-warning { color: var(--warning); }
+.fsm-model-hint { color: var(--muted); }
+.fsm-node__progress { display: flex; align-items: center; gap: 6px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; line-height: 1.4; }
+.fsm-node__progress.is-active { color: var(--accent); }
+.fsm-node__progress > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

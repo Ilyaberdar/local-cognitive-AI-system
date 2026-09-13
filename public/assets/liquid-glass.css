@@ -48,6 +48,7 @@
   --radius-md: 16px;
   --radius-sm: 10px;
   --sidebar-width: 232px;
+  --sidebar-collapsed-width: 72px;
   --layout-gap: 16px;
   --panel-padding: 20px;
   --control-height: 34px;
@@ -98,6 +99,9 @@ html, body {
   -webkit-font-smoothing: antialiased;
   background: var(--bg);
 }
+/* Reserve an inset for both the native window buttons and macOS's wider
+   screen-sharing indicator, which can extend to x=86 in the title bar. */
+html[data-desktop="darwin"] { --sidebar-collapsed-width: 104px; }
 html[data-desktop="darwin"], html[data-desktop="darwin"] body { background: transparent; }
 html[data-desktop="darwin"] .shell { background: transparent; }
 html[data-desktop="darwin"] .sidebar { padding-top: 46px; }
@@ -217,8 +221,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .theme-switch .ui-icon { width: 15px; height: 15px; }
 .theme-switch .active { color: var(--text); background: var(--highlight); box-shadow: inset 0 1px 0 var(--glass-rim); }
 .sidebar-resize-handle { right: 0; width: 4px; }
-.shell--sidebar-collapsed { --sidebar-width: 72px !important; }
-.shell--sidebar-collapsed .sidebar { width: 72px; padding: 18px 9px 16px; align-items: center; }
+.shell--sidebar-collapsed { --sidebar-width: var(--sidebar-collapsed-width) !important; }
+.shell--sidebar-collapsed .sidebar { width: var(--sidebar-collapsed-width); padding: 18px 9px 16px; align-items: center; }
 .shell--sidebar-collapsed .sidebar-brand { justify-content: center; width: 100%; }
 .shell--sidebar-collapsed :is(.brand-orbit, .brand-name, .new-task-button > span, .sidebar-section) { display: none; }
 .shell--sidebar-collapsed .sidebar-toggle { margin: 0; }
@@ -345,6 +349,24 @@ summary::-webkit-details-marker { display: none; }
 .ghost-button { color: var(--muted); background: transparent; }
 .primary-button { background: var(--text); color: var(--bg); border-color: transparent; box-shadow: inset 0 1px 0 var(--highlight); font-weight: 550; }
 .primary-button:hover { background: var(--text); color: var(--bg); opacity: .9; border-color: transparent; }
+/* Content controls borrow the original navigation glass material. Scope every
+   state to .main so the sidebar, including New task, retains its own styling.
+   A static highlight keeps idle controls free of continuous repainting. */
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary) {
+  background: radial-gradient(ellipse at 20% 0%, var(--glass-shine), transparent 68%), var(--glass-fill);
+  color: var(--text); border: 1px solid var(--glass-rim); border-radius: 999px;
+  box-shadow: var(--glass-shadow);
+}
+html[data-theme="light"] .main :is(.chat-type-button, .orchestration-tab, .right-panel-tab):not(.active):not(:hover):not(:active) {
+  background: transparent; color: var(--muted); border-color: transparent; box-shadow: none;
+}
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):is(:hover, :active):not(:disabled) {
+  background: radial-gradient(ellipse at 20% 0%, var(--glass-shine), transparent 68%), var(--glass-fill);
+  color: var(--text); border-color: var(--glass-rim); opacity: 1;
+}
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):focus-visible { box-shadow: none; }
+html[data-theme="light"] .main button:disabled { opacity: .45; }
+html[data-theme="light"] .main :is(.danger-button, .task-delete-button, .fsm-inspector button.danger):hover { color: var(--danger); }
 .ghost-button:hover, .action-button:hover, .chip-button:hover { background: var(--surface-hover); border-color: var(--line-strong); color: var(--text); transform: translateY(-1px); }
 .action-button:active, .ghost-button:active, .primary-button:active, .chip-button:active { transform: scale(.97); }
 .danger-button, .task-delete-button { background: transparent; border-color: transparent; color: var(--faint); }
@@ -395,7 +417,7 @@ code, pre, .mono { font-family: var(--font-mono); }
 .segmented-control { display: inline-flex; flex: 0 0 auto; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 13px; background: var(--highlight); }
 .orchestration-tab { display: inline-flex; align-items: center; gap: 7px; border: 1px solid transparent; border-radius: 10px; padding: 7px 12px; font-size: 11px; font-weight: 480; color: var(--muted); background: transparent; box-shadow: none; }
 .orchestration-tab .ui-icon { width: 14px; height: 14px; }
-.orchestration-tab.active { color: var(--text); border-color: var(--line-strong); background: var(--surface-3); box-shadow: inset 0 1px 0 var(--highlight); }
+.orchestration-tab:hover, .orchestration-tab.active { color: var(--text); border-color: var(--line-strong); background: var(--control-active); box-shadow: inset 0 1px 0 var(--highlight); }
 .orchestration-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .orchestration-toolbar-actions > button { min-height: var(--control-height); margin: 0; }
 .workflow-side-toggle { position: static; width: auto; height: auto; }
@@ -491,14 +513,21 @@ code, pre, .mono { font-family: var(--font-mono); }
 .fsm-add-menu__items { position: absolute; top: calc(100% + 7px); right: 0; width: 170px; display: grid; gap: 3px; padding: 7px; z-index: 20; border: 1px solid var(--glass-rim); border-radius: 14px; background: var(--surface-2); box-shadow: var(--glass-shadow); }
 .fsm-add-menu__items button { text-align: left; padding: 8px 10px; border: 0; background: transparent; }
 .fsm-add-menu__items button:hover { background: var(--surface-hover); transform: none; }
+/* Menu choices are plain rows in both themes, not individual glass buttons. */
+html[data-theme="light"] .main .fsm-add-menu__items button {
+  background: transparent; border: 0; border-radius: 9px; box-shadow: none;
+}
+html[data-theme="light"] .main .fsm-add-menu__items button:is(:hover, :active):not(:disabled) {
+  background: var(--surface-hover); border: 0; box-shadow: none; transform: none;
+}
 .fsm-add-menu[open] .fsm-add-menu__items { animation: surface-enter 180ms var(--motion); }
 .fsm-workspace { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 0; border-radius: 22px; border: 1px solid var(--line); background: var(--bg); }
 .fsm-editor--inspector-hidden .fsm-workspace { grid-template-columns: minmax(0, 1fr); }
 .fsm-canvas .react-flow { background: var(--bg); }
 .fsm-canvas .react-flow__minimap { width: 140px; height: 96px; }
 .fsm-canvas { background: var(--bg); border-color: var(--line); }
-.fsm-canvas .react-flow__background { opacity: .55; }
-.fsm-canvas .react-flow__edge-path { stroke: var(--faint); stroke-width: 1.1; }
+.fsm-canvas .react-flow__background { opacity: 1; }
+.fsm-canvas .react-flow__edge-path { stroke: var(--muted); stroke-width: 1.7; }
 .fsm-canvas .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent); stroke-width: 1.8; }
 .fsm-canvas .react-flow__controls, .fsm-canvas .react-flow__minimap { border-radius: 13px; border: 1px solid var(--line-strong); box-shadow: var(--glass-shadow); overflow: hidden; }
 .fsm-canvas .react-flow__controls-button { background: var(--surface-1); border-color: var(--line); color: var(--muted); }

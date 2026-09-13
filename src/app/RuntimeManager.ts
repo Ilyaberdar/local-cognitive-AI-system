@@ -1,14 +1,17 @@
 import path from "path";
 import { buildRuntime, AppRuntime } from "./buildRuntime";
-import { AppConfig } from "../config/config";
+import { AppConfig, localModelOptions } from "../config/config";
 import { Logger } from "../utils/Logger";
 import { AppSettings, AppSettingsPatch } from "../types";
 import { AppSettingsStore } from "./AppSettingsStore";
 import { extractNotionId } from "../utils/notion";
+import { LocalModelService } from "../local/LocalModelService";
 
 export class RuntimeManager {
   private runtime: AppRuntime | null = null;
-  private reloadPromise: Promise<AppRuntime> | null = null;
+  private operations: Promise<unknown> = Promise.resolve();
+  private localModelService?: LocalModelService;
+  private disposed = false;
 
   constructor(
     private readonly baseConfig: AppConfig,
@@ -33,34 +36,62 @@ export class RuntimeManager {
   }
 
   async updateSettings(patch: AppSettingsPatch): Promise<{ runtime: AppRuntime; settings: AppSettings }> {
-    const settings = await this.settingsStore.update(patch);
-    const runtime = await this.reload(settings);
-    return { runtime, settings };
+    return this.enqueue(async () => {
+      const previous = await this.settingsStore.get();
+      const settings = await this.settingsStore.preview(patch);
+      try {
+        const runtime = await this.build(settings);
+        await this.settingsStore.restore(settings);
+        return { runtime, settings };
+      } catch (error) {
+        await this.settingsStore.restore(previous);
+        if (!this.disposed) await this.build(previous);
+        throw error;
+      }
+    });
   }
 
   async reload(settingsOverride?: AppSettings): Promise<AppRuntime> {
-    if (this.reloadPromise) {
-      return this.reloadPromise;
-    }
+    return this.enqueue(async () => this.build(settingsOverride ?? await this.settingsStore.get()));
+  }
 
-    this.reloadPromise = (async () => {
-      const settings = settingsOverride ?? (await this.settingsStore.get());
-      const mergedConfig = this.applySettings(settings);
-      const runtime = await buildRuntime(mergedConfig, this.logger);
-      this.runtime = runtime;
-      return runtime;
-    })();
+  private enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const operation = this.operations.then(() => {
+      if (this.disposed) throw new Error("Runtime has been disposed");
+      return action();
+    });
+    this.operations = operation.catch(() => {});
+    return operation;
+  }
 
-    try {
-      return await this.reloadPromise;
-    } finally {
-      this.reloadPromise = null;
-    }
+  private async build(settings: AppSettings): Promise<AppRuntime> {
+    if (this.disposed) throw new Error("Runtime has been disposed");
+    const mergedConfig = this.applySettings(settings);
+    if (!this.localModelService) {
+      const service = new LocalModelService(localModelOptions(mergedConfig), this.logger);
+      try { await service.init(); } catch (error) { await service.dispose(); throw error; }
+      if (this.disposed) { await service.dispose(); throw new Error("Runtime has been disposed"); }
+      this.localModelService = service;
+    } else await this.localModelService.reconfigure(localModelOptions(mergedConfig));
+    if (this.disposed) throw new Error("Runtime has been disposed");
+    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService);
+    this.runtime = runtime;
+    return runtime;
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    // Abort active inference before awaiting a settings operation queued behind it.
+    const disposing = this.localModelService?.dispose();
+    await this.operations;
+    await disposing;
   }
 
   private applySettings(settings: AppSettings): AppConfig {
+    const { dataDir: _dataDir, enabled: _enabled, ...baseLocalModels } = localModelOptions(this.baseConfig);
     return {
       ...this.baseConfig,
+      localModels: { ...baseLocalModels, ...settings.localModels },
       llm: {
         defaultProvider: settings.llm.defaultProvider
       },
@@ -102,6 +133,12 @@ export class RuntimeManager {
         }
       },
       providers: {
+        llamacpp: {
+          baseUrl: "",
+          model: settings.providers.llamacpp?.model ?? "",
+          timeoutMs: settings.localModels?.generationTimeoutMs ?? 600000,
+          enabled: settings.providers.llamacpp?.enabled !== false
+        },
         ollama: {
           ...this.baseConfig.providers.ollama,
           ...settings.providers.ollama

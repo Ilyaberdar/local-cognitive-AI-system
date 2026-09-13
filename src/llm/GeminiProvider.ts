@@ -25,7 +25,7 @@ export class GeminiProvider implements LLMProvider {
   }
 
   isConfigured(): boolean {
-    return Boolean(this.options.apiKey);
+    return this.options.enabled !== false && Boolean(this.options.apiKey);
   }
 
   getDescriptor(): ProviderDescriptor {

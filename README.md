@@ -4,7 +4,7 @@ Local multi-model AI workspace with:
 
 - browser dashboard on `localhost`
 - Telegram access
-- local LLMs via LM Studio or Ollama
+- built-in local GGUF inference with llama.cpp; optional LM Studio and Ollama during the transition
 - cloud LLMs via OpenAI, Anthropic, Gemini
 - debate mode with support / attack / judge roles
 - plugins for Notion and filesystem actions
@@ -15,7 +15,7 @@ The goal is simple: one personal system you can use every day for research, codi
 ## What You Get
 
 - `Chat Workspace` for normal chat, hypothesis debates, and code mode
-- `Models` page for LM Studio loaded models, provider status, and runtime checks
+- `Models` panel with a Hugging Face download catalog, installed library, memory controls, and device compatibility warnings
 - `Plugins` page for Notion and filesystem setup
 - `Settings` page for provider keys, MCP, Telegram, and memory
 - session-based configuration, history, and message persistence
@@ -72,15 +72,14 @@ Configure providers, MCP, Telegram, memory, and other local runtime defaults fro
 
 - Node.js `>= 18.18.0`
 - npm
-- one of:
-  - LM Studio
-  - Ollama
+- No external model application is required for the built-in provider.
 
 ### 2. Install
 
 ```bash
 npm install
 cp .env.example .env
+npm run prepare:llama
 ```
 
 ### 3. Start
@@ -94,6 +93,47 @@ Open:
 ```text
 http://127.0.0.1:3000
 ```
+
+Open **Models → Catalog**, choose a quantization, and download it. **On device**
+shows verified local files. **Load model** loads weights into memory; **Unload**
+releases memory while keeping the download. **Use in chat** selects the model
+for the current conversation, and **Set default** changes the application default.
+Installed models are available to code/debate agents and workflow nodes even
+when unloaded; the first request loads them automatically. Local requests share
+one queue, while cloud providers can run alongside them.
+
+Downloads support pause, resume, cancellation, SHA-256 verification, and complete
+multi-file GGUF variants. Public text models are supported; gated repositories,
+MLX, and safetensors are not direct imports. Device memory estimates include
+weights, context/KV cache, recurrent state and working space. The configured
+memory percentage is a warning threshold, not a loading cap. Models above it
+can still load; only weights exceeding all device memory are blocked. macOS
+estimates account for reclaimable file cache. The native loader validates model
+architecture support, including Qwen3.5/3.8; projector and encoder-only files
+cannot be used as standalone chat models. Estimates do not guarantee fit or
+generation quality.
+
+The desktop build bundles pinned llama.cpp **b10809 / 0.4.0** with native libraries
+and license notices. Build scripts verify the archive hash; user launches never
+compile or download the runtime. Models live in the app's user-data directory,
+outside the installation, and remain available offline. Settings support another
+storage directory; files are copied and verified before switching, and the
+previous files remain as a backup. Existing LM Studio/Ollama targets are preserved; migration
+does not rewrite conversation history or completed workflow snapshots.
+
+Run ordinary regression tests with `npm test`. Real inference is an explicit
+opt-in and downloads the four pinned recommended variants (about 1.8 GB):
+
+```bash
+LLAMA_CPP_INTEGRATION=1 LLAMA_TEST_DATA_DIR=/tmp/llama-acceptance npm run test:llama
+node scripts/verify-packaged-runtime.mjs "release/mac-arm64/Local Cognitive AI System.app"
+```
+
+The real test covers downloads, load/unload, final answers, JSON parsing, queued
+models, chat, workflow review/completion, and an offline restart. Without the
+opt-in it is reported as skipped, not as a successful inference test. Platform
+archives for macOS Intel and Windows CPU are pinned; acceptance on those machines
+must be performed separately before claiming support there.
 
 ## Desktop Builds
 
@@ -124,17 +164,16 @@ Artifacts are written to `release/`.
 
 Notes:
 
-- LM Studio or Ollama still need to be installed and running separately.
-- Local provider URLs still point to `127.0.0.1`, for example LM Studio on
-  `http://127.0.0.1:1234/v1`.
+- The built-in provider runs without LM Studio or Ollama. Those optional
+  integrations still require their own application and endpoint when selected.
 - Desktop settings are stored in Electron's user data directory, independently
   of the repository's `.env` and `data/app/settings.json`. Saved provider
   settings take precedence over defaults. If an existing installation still
   aborts generation after 20 seconds, set the local provider timeout to at least
   `300000` ms in Settings; a reasoning model may need minutes for its final answer.
-- Model loading has a separate minimum budget of five minutes. Repeated Load
-  requests share one operation, and refreshing system metrics cannot turn a
-  successful load into an error.
+- Built-in loading has its own timeout (five minutes by default). Generation
+  has a separate ten-minute default. A single local queue serializes model
+  switches and generation across chats, agents, and workflows.
 - Release builds are unsigned until Apple Developer ID / Windows code-signing
   certificates are configured.
 - macOS builds use Electron's default icon until a project `.icns` asset is
@@ -607,6 +646,21 @@ GET    /health
 GET    /meta
 GET    /dashboard/bootstrap
 GET    /models
+GET    /local/catalog
+GET    /local/catalog/model
+GET    /local/models/all
+GET    /local/models/loaded
+POST   /local/models/load
+POST   /local/models/unload
+POST   /local/models/import
+DELETE /local/models/:modelId
+GET    /local/runtime
+GET    /local/events
+GET    /local/downloads
+POST   /local/downloads
+POST   /local/downloads/:downloadId/pause
+POST   /local/downloads/:downloadId/resume
+POST   /local/downloads/:downloadId/cancel
 GET    /lmstudio/models/loaded
 GET    /lmstudio/models/all
 POST   /lmstudio/models/load
@@ -652,16 +706,14 @@ npm run test
 - `OpenMemory` remains an optional adapter shape.
 - With `MEMORY_PARTITION_STRATEGY=auto`, exact per-user search is used below `MEMORY_PARTITION_ACTIVATION_THRESHOLD` (default `10000`); the Morton cell search is used above it. The dashboard exposes the same controls.
 - HTTP/browser traffic uses a stable profile ID generated and persisted by the local server; the HTTP request body cannot select another profile. Telegram and MCP memory are isolated by channel and their caller `userId`.
-- Cloud provider rate limits can appear in `Models -> Runtime Providers` after `Test provider`.
+- Cloud provider rate limits can appear in `Models -> Connected providers` after `Test provider`.
 
 ## Recommended First Run
 
 If you want a stable first experience:
 
-1. Start with LM Studio only.
-2. Configure one or two local models.
-3. Test `Chat Workspace`.
-4. Then add `Notion`.
-5. Then add `OpenAI` or `Anthropic` as support / attack / judge roles.
-
-That sequence gives the fastest path to a working daily-driver setup.
+1. Download Qwen2.5 1.5B Instruct from `Models -> Catalog` for a small first chat.
+2. Select `Use in chat` or `Set default` in `On device`.
+3. Use the installed model in a workflow or configure local subagents.
+4. Add cloud providers or plugins as needed. Small models have limited reasoning
+   and instruction following; choose a more capable compatible model for demanding tasks.

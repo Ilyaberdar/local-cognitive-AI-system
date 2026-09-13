@@ -1,6 +1,10 @@
-import { ProcessAgentProgress, ProcessProgressEvent } from "../types";
+import { LLMRequest, ProcessAgentProgress, ProcessProgressEvent } from "../types";
 
 export class AgentProgressReporter {
+  inference(id: string): NonNullable<LLMRequest["onProgress"]> {
+    return (event) => this.update(id, event.phase === "queued" ? "queued" : "running",
+      event.phase === "queued" ? `Waiting${event.queuePosition ? ` · ${event.queuePosition} in queue` : ""}` : event.phase === "loading" ? "Loading model" : "Generating");
+  }
   constructor(
     private readonly agents: ProcessAgentProgress[],
     private readonly onProgress?: (event: ProcessProgressEvent) => void

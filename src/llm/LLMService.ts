@@ -3,6 +3,7 @@ import { Logger } from "../utils/Logger";
 import { tryParseJson } from "../utils/Json";
 import { OutputSanitizer } from "./OutputSanitizer";
 import { LLMRegistry } from "./LLMRegistry";
+import { currentInferenceProgress } from "./InferenceProgress";
 
 export class LLMService {
   constructor(
@@ -16,7 +17,10 @@ export class LLMService {
     request.signal?.throwIfAborted();
     const targetProviderId = providerId ?? this.defaultProviderId;
     const provider = this.registry.get(targetProviderId);
-    const response = await provider.generateText(request);
+    if (!provider.isConfigured()) {
+      return { provider: provider.id, model: request.model ?? provider.defaultModel, text: "", error: `Provider ${provider.name} is disabled or not configured.` };
+    }
+    const response = await provider.generateText({ ...request, onProgress: request.onProgress ?? currentInferenceProgress() });
     request.signal?.throwIfAborted();
     const text = this.sanitizer.sanitize(response.text);
 
@@ -43,7 +47,7 @@ export class LLMService {
         ...request,
         prompt: schemaHint,
         responseFormat:
-          targetProviderId === "openai"
+          this.registry.get(targetProviderId).getDescriptor().capabilities?.jsonMode
             ? {
                 type: "json_object" as const
               }

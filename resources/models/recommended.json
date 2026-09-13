@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "runtimeBuild": "b10809",
+  "items": [
+    {
+      "id": "bartowski/SmolLM2-135M-Instruct-GGUF",
+      "repoId": "bartowski/SmolLM2-135M-Instruct-GGUF",
+      "name": "SmolLM2 135M Instruct",
+      "author": "bartowski",
+      "revision": "09816acd5d99df7be770d85ea30822623dab342c",
+      "license": "apache-2.0",
+      "description": "A very small text model for a quick first download. Best for simple prompts; limited reasoning and instruction following.",
+      "gated": false,
+      "recommended": true,
+      "verified": false,
+      "variants": [
+        { "id": "SmolLM2-135M-Instruct-Q4_K_M.gguf", "name": "Q4_K_M", "quantization": "Q4_K_M", "sizeBytes": 105454432,
+          "files": [{ "path": "SmolLM2-135M-Instruct-Q4_K_M.gguf", "sizeBytes": 105454432, "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d" }] },
+        { "id": "SmolLM2-135M-Instruct-Q8_0.gguf", "name": "Q8_0", "quantization": "Q8_0", "sizeBytes": 144811360,
+          "files": [{ "path": "SmolLM2-135M-Instruct-Q8_0.gguf", "sizeBytes": 144811360, "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83" }] }
+      ]
+    },
+    {
+      "id": "unsloth/Qwen3-0.6B-GGUF", "repoId": "unsloth/Qwen3-0.6B-GGUF", "name": "Qwen3 0.6B", "author": "unsloth",
+      "revision": "50968a4468ef4233ed78cd7c3de230dd1d61a56b", "license": "apache-2.0", "gated": false, "recommended": true, "verified": false,
+      "description": "A compact multilingual reasoning model. Thinking can take longer; small output budgets may finish before its final answer.",
+      "variants": [{ "id": "Qwen3-0.6B-Q4_K_M.gguf", "name": "Q4_K_M", "quantization": "Q4_K_M", "sizeBytes": 396705472,
+        "files": [{ "path": "Qwen3-0.6B-Q4_K_M.gguf", "sizeBytes": 396705472, "sha256": "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a" }] }]
+    },
+    {
+      "id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "repoId": "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "name": "Qwen2.5 1.5B Instruct", "author": "Qwen",
+      "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9", "license": "apache-2.0", "gated": false, "recommended": true, "verified": false,
+      "description": "A multilingual instruction model for chat and lightweight agent workflows. More capable than the smallest starter models.",
+      "variants": [{ "id": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "name": "Q4_K_M", "quantization": "Q4_K_M", "sizeBytes": 1117320736,
+        "files": [{ "path": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "sizeBytes": 1117320736, "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e" }] }]
+    }
+  ]
+}

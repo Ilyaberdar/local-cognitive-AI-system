@@ -3,7 +3,9 @@ import { createApiRouter } from "./api/routes";
 import path from "path";
 import { AppSettingsStore } from "./app/AppSettingsStore";
 import { RuntimeManager } from "./app/RuntimeManager";
-import { config } from "./config/config";
+import { AppConfig, config as defaultConfig } from "./config/config";
+import { Server } from "node:http";
+import { LocalModelError } from "./local/types";
 import { SessionIndexStore } from "./session/SessionIndexStore";
 import { ScheduleRunner } from "./schedules/ScheduleRunner";
 import { TelegramBotTransport } from "./transports/telegram/TelegramBotTransport";
@@ -12,13 +14,34 @@ import { formatStartupSummary } from "./utils/startupSummary";
 
 const logger = new Logger();
 
-const bootstrap = async (): Promise<void> => {
+export interface BackendHandle {
+  runtimeManager: RuntimeManager;
+  server?: Server;
+  dispose(): Promise<void>;
+}
+
+export const startBackend = async (config: AppConfig = defaultConfig): Promise<BackendHandle> => {
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
   const runtimeManager = new RuntimeManager(config, appSettingsStore, logger);
   const runtime = await runtimeManager.init();
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = new SessionIndexStore(config.appDataDir);
 
+  let server: Server | undefined;
+  let scheduler: ScheduleRunner | undefined;
+  let telegram: TelegramBotTransport | undefined;
+  let disposing: Promise<void> | undefined;
+  const dispose = (): Promise<void> => disposing ??= (async () => {
+    scheduler?.stop();
+    telegram?.stop();
+    await runtimeManager.dispose();
+    if (server) {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
+  })();
+
+  try {
   if (config.server.enabled) {
     const app = express();
     app.use(express.json({ limit: "8mb" }));
@@ -29,23 +52,24 @@ const bootstrap = async (): Promise<void> => {
     });
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
       logger.error("Unhandled request error", { message: error.message });
-      res.status(500).json({
-        error: "Internal server error",
+      res.status(error instanceof LocalModelError ? error.statusCode : 500).json({
+        error: error instanceof LocalModelError ? error.message : "Internal server error",
         message: error.message
       });
     });
 
     await new Promise<void>((resolve, reject) => {
-      const server = app.listen(config.server.port, config.server.host, () => {
+      server = app.listen(config.server.port, config.server.host, () => {
         resolve();
       });
       server.once("error", reject);
     });
 
-    new ScheduleRunner(
+    scheduler = new ScheduleRunner(
       () => runtimeManager.getRuntime().scheduleService,
       logger
-    ).start();
+    );
+    scheduler.start();
   }
 
   const telegramConfig = {
@@ -56,7 +80,7 @@ const bootstrap = async (): Promise<void> => {
   };
 
   if (telegramConfig.enabled && telegramConfig.botToken && telegramConfig.ownerUserIds.length > 0) {
-    const telegram = new TelegramBotTransport(
+    telegram = new TelegramBotTransport(
       {
         token: telegramConfig.botToken,
         ownerUserIds: telegramConfig.ownerUserIds,
@@ -66,9 +90,10 @@ const bootstrap = async (): Promise<void> => {
       runtime.formatter,
       runtime.sessionSettingsStore,
       runtime.modelCatalog,
-      runtime.lmStudioManager,
+      runtime.localModelManager,
       runtime.providerDescriptors,
-      logger
+      logger,
+      () => runtimeManager.getRuntime()
     );
 
     telegram.start();
@@ -90,9 +115,15 @@ const bootstrap = async (): Promise<void> => {
       }
     })
   );
+  return { runtimeManager, server, dispose };
+  } catch (error) { await dispose(); throw error; }
 };
 
-void bootstrap().catch((error) => {
+if (require.main === module) void startBackend().then((backend) => {
+  const stop = () => { void backend.dispose().then(() => process.exit(0), () => process.exit(1)); };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+}).catch((error) => {
   logger.error("Bootstrap failed", {
     message: error instanceof Error ? error.message : "unknown_error"
   });

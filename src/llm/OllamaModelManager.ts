@@ -29,7 +29,7 @@ export class OllamaModelManager implements LocalModelManager {
 
     try {
       payload = await this.request<{ models?: OllamaModelRecord[] }>("/api/tags", {
-        method: "GET"
+        method: "GET", timeoutMs: Math.min(5000, this.options.timeoutMs)
       });
     } catch {
       return [];
@@ -63,7 +63,7 @@ export class OllamaModelManager implements LocalModelManager {
 
     try {
       payload = await this.request<{ models?: OllamaModelRecord[] }>("/api/ps", {
-        method: "GET"
+        method: "GET", timeoutMs: Math.min(5000, this.options.timeoutMs)
       });
     } catch {
       return [];

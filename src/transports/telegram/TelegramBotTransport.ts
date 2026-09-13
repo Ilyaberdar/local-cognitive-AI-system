@@ -1,5 +1,5 @@
 import { CognitiveEngine } from "../../core/CognitiveEngine";
-import { LMStudioManager } from "../../llm/LMStudioManager";
+import { LocalModelManagerRegistry } from "../../llm/LocalModelManager";
 import { ModelCatalogService } from "../../llm/ModelCatalogService";
 import { ResponseFormatter } from "../../core/ResponseFormatter";
 import { SessionSettingsStore } from "../../session/SessionSettingsStore";
@@ -20,6 +20,15 @@ interface TelegramTransportOptions {
   pollTimeoutSec: number;
 }
 
+interface TelegramRuntime {
+  engine: CognitiveEngine;
+  formatter: ResponseFormatter;
+  sessionSettingsStore: SessionSettingsStore;
+  modelCatalog: ModelCatalogService;
+  localModelManager: LocalModelManagerRegistry;
+  providerDescriptors: ProviderDescriptor[];
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -36,17 +45,25 @@ interface TelegramUpdate {
 export class TelegramBotTransport {
   private offset = 0;
   private active = false;
+  private readonly lifetime = new AbortController();
 
   constructor(
     private readonly options: TelegramTransportOptions,
-    private readonly engine: CognitiveEngine,
-    private readonly formatter: ResponseFormatter,
-    private readonly sessionSettingsStore: SessionSettingsStore,
-    private readonly modelCatalog: ModelCatalogService,
-    private readonly lmStudioManager: LMStudioManager,
-    private readonly providers: ProviderDescriptor[],
-    private readonly logger: Logger
+    private readonly initialEngine: CognitiveEngine,
+    private readonly initialFormatter: ResponseFormatter,
+    private readonly initialSessionSettingsStore: SessionSettingsStore,
+    private readonly initialModelCatalog: ModelCatalogService,
+    private readonly initialLocalModelManager: LocalModelManagerRegistry,
+    private readonly initialProviders: ProviderDescriptor[],
+    private readonly logger: Logger,
+    private readonly currentRuntime?: () => TelegramRuntime
   ) {}
+
+  private get engine() { return this.currentRuntime?.().engine ?? this.initialEngine; }
+  private get formatter() { return this.currentRuntime?.().formatter ?? this.initialFormatter; }
+  private get sessionSettingsStore() { return this.currentRuntime?.().sessionSettingsStore ?? this.initialSessionSettingsStore; }
+  private get localModelManager() { return this.currentRuntime?.().localModelManager ?? this.initialLocalModelManager; }
+  private get providers() { return this.currentRuntime?.().providerDescriptors ?? this.initialProviders; }
 
   start(): void {
     if (this.active) {
@@ -58,15 +75,19 @@ export class TelegramBotTransport {
     void this.pollLoop();
   }
 
+  stop(): void { this.active = false; this.lifetime.abort(); }
+
   private async pollLoop(): Promise<void> {
     while (this.active) {
       try {
         const updates = await this.getUpdates();
 
         for (const update of updates) {
+          if (!this.active) break;
           await this.processUpdate(update);
         }
       } catch (error) {
+        if (!this.active) break;
         this.logger.warn("Telegram poll loop error", {
           error: error instanceof Error ? error.message : "unknown_error"
         });
@@ -144,7 +165,7 @@ export class TelegramBotTransport {
           .join("\n")
           .slice(0, 3900);
       case "/models": {
-        const models = await this.lmStudioManager.listLoadedModels();
+        const models = await this.localModelManager.listLoadedModels();
         if (models.length === 0) {
           return "Loaded Models\n\nNo loaded models found.";
         }
@@ -160,7 +181,7 @@ export class TelegramBotTransport {
           .join("\n");
       }
       case "/all_models": {
-        const models = await this.lmStudioManager.listAllModels();
+        const models = await this.localModelManager.listAllModels();
         if (models.length === 0) {
           return "All Models\n\nNo models found.";
         }
@@ -180,8 +201,8 @@ export class TelegramBotTransport {
           return "Usage: /load_model <modelOrAlias>";
         }
 
-        await this.lmStudioManager.loadModel(modelId);
-        return `Loading model: ${modelId}`;
+        await this.localModelManager.loadModel(await this.modelProvider(modelId), modelId);
+        return `Model loaded: ${modelId}`;
       }
       case "/unload_model": {
         const modelId = await this.resolveModelId(args.join(" ").trim(), true);
@@ -189,8 +210,8 @@ export class TelegramBotTransport {
           return "Usage: /unload_model <modelOrAlias|instanceId>";
         }
 
-        await this.lmStudioManager.unloadModel(modelId);
-        return `Unload requested: ${modelId}`;
+        await this.localModelManager.unloadModel(await this.modelProvider(modelId), modelId);
+        return `Model unloaded: ${modelId}`;
       }
       case "/settings":
         return this.formatSettings(await this.sessionSettingsStore.get(sessionId));
@@ -332,6 +353,12 @@ export class TelegramBotTransport {
     return lines.join("\n");
   }
 
+  private async modelProvider(modelId: string): Promise<string> {
+    const candidates = (await this.localModelManager.listAllModels()).filter(model => model.id === modelId || model.loadedInstanceIds.includes(modelId));
+    if (candidates.length !== 1) throw new Error("Select an unambiguous installed model.");
+    return candidates[0].providerId;
+  }
+
   private async resolveModelId(
     raw: string,
     allowPassthrough = false
@@ -341,7 +368,7 @@ export class TelegramBotTransport {
       return undefined;
     }
 
-    const models = await this.lmStudioManager.listAllModels();
+    const models = await this.localModelManager.listAllModels();
     const aliasMap = buildAliasMap(models);
 
     if (aliasMap.has(normalized)) {
@@ -425,7 +452,8 @@ export class TelegramBotTransport {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout((this.options.pollTimeoutSec + 15) * 1000)])
       }
     );
 

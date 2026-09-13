@@ -6,3 +6,8 @@ contextBridge.exposeInMainWorld("desktopAppearance", {
     if (theme === "dark" || theme === "light") ipcRenderer.send("appearance:set-theme", theme);
   }
 });
+
+contextBridge.exposeInMainWorld("desktopModels", {
+  importModel: () => ipcRenderer.invoke("models:select-files"),
+  selectDirectory: () => ipcRenderer.invoke("models:select-directory")
+});

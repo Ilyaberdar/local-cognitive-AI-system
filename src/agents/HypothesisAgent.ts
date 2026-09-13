@@ -1,3 +1,4 @@
+import { withInferenceProgress } from "../llm/InferenceProgress";
 import { AgentProgressReporter } from "../core/AgentProgressReporter";
 import { Judge } from "../judge/Judge";
 import {
@@ -86,7 +87,7 @@ export class HypothesisAgent {
       progress.update(id, "running", "Analyzing");
       let response: AgentDebateResponse;
       try {
-        response = await generate();
+        response = await withInferenceProgress(progress.inference(id), generate);
         signal?.throwIfAborted();
       } catch (error) {
         signal?.throwIfAborted();
@@ -115,8 +116,8 @@ export class HypothesisAgent {
     progress.update("judge", "running", "Judging");
     let result: HypothesisResult;
     try {
-      result = await this.judge.evaluate(input, [enrichedSupport, enrichedAttack], debate.judge,
-        debate.profile, language, outputStyle, attachmentContext, signal);
+      result = await withInferenceProgress(progress.inference("judge"), () => this.judge.evaluate(input, [enrichedSupport, enrichedAttack], debate.judge,
+        debate.profile, language, outputStyle, attachmentContext, signal));
     } catch (error) {
       signal?.throwIfAborted();
       result = await this.judge.evaluate(input, [enrichedSupport, enrichedAttack], { providerId: "local" },

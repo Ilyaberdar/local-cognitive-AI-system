@@ -50,6 +50,14 @@ export interface ProviderOption {
   name: string;
   models: string[];
   defaultModel?: string;
+  installedOnly?: boolean;
+  modelLabels?: Record<string, string>;
+}
+
+export interface WorkflowNodeProgress {
+  nodeId: string;
+  status: string;
+  progress?: { phase: string; label: string };
 }
 
 export interface WorkflowEditorProps {
@@ -57,5 +65,6 @@ export interface WorkflowEditorProps {
   providers: ProviderOption[];
   validation?: { ok: boolean; errors: string[] } | null;
   colorMode: "light" | "dark";
+  nodeRuns?: WorkflowNodeProgress[];
   onChange: (workflow: WorkflowDefinition) => void;
 }

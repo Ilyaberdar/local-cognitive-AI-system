@@ -6,5 +6,11 @@
       "transport": "stdio",
       "defaultSessionId": "mcp-default"
     }
+  },
+  "localModels": {
+    "contextSize": 4096,
+    "memoryLimitPercent": 75,
+    "loadTimeoutMs": 300000,
+    "generationTimeoutMs": 600000
   }
 }

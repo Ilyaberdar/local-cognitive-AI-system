@@ -27,6 +27,7 @@ export class AgentNodeExecutor implements NodeExecutor {
       providerId,
       model,
       signal: context.signal,
+      onProgress: context.onProgress,
       actor: {
         sessionId: context.task.sessionId ?? `task-${context.task.id}`,
         channel: "system"

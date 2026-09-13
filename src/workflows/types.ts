@@ -106,6 +106,7 @@ export interface StoredNodeResult {
 }
 
 export interface NodeRun {
+  progress?: import("../types").ProcessProgressEvent;
   id: string;
   runId: string;
   taskId: string;

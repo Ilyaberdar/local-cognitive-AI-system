@@ -26,3 +26,8 @@ screenshots/
 .tmp/
 !.gitkeep
 test-tmp
+/resources/llama/darwin-*/
+/resources/llama/win32-*/
+/resources/llama/linux-*/
+/data/app/local-models/
+/test-results/

@@ -1,4 +1,5 @@
 import { CognitiveEngine } from "../../core/CognitiveEngine";
+import { ProcessProgressEvent } from "../../types";
 import { Task } from "../../tasks/types";
 import {
   NodeResult,
@@ -16,6 +17,7 @@ export interface NodeExecutionContext {
   node: WorkflowNode;
   previousNodeRuns: NodeRun[];
   signal?: AbortSignal;
+  onProgress?: (event: ProcessProgressEvent) => void;
   approval?: Record<string, unknown>;
 }
 

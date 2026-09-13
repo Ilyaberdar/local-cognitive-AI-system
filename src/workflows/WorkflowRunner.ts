@@ -74,17 +74,34 @@ export class WorkflowRunner {
     });
     if (!prepared.nodeRun) return prepared.run;
     const { run, task, workflow, node, previousNodeRuns, nodeRun } = prepared;
+    let progressWrite: Promise<unknown> = Promise.resolve();
+    let lastProgressAt = 0;
+    let lastPhase = "";
+    let finished = false;
     let result: NodeResult;
     try {
       controller.signal.throwIfAborted();
       result = await this.executors.get(node.type).execute({
         task, workflow, run, node, previousNodeRuns, signal: controller.signal,
+        onProgress: (event) => {
+          if (finished || controller.signal.aborted) return;
+          const now = Date.now();
+          if (event.phase === lastPhase && now - lastProgressAt < 500) return;
+          lastPhase = event.phase;
+          lastProgressAt = now;
+          progressWrite = progressWrite.then(async () => {
+            if (finished || controller.signal.aborted) return;
+            await this.runStore.updateNodeRun(nodeRun.id, { progress: event });
+          }).catch(() => {});
+        },
         approval: run.state.approvedNodeId === node.id ? readRecord(run.state.approvedOperation) : undefined
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown_error";
       result = { status: "failed", event: "node.failed", summary: message, data: {}, error: message };
     }
+    finished = true;
+    await progressWrite;
     await this.runStore.updateNodeRun(nodeRun.id, {
       status: controller.signal.aborted ? "cancelled" : result.status === "needs_input" ? "waiting" : result.status === "failed" ? "failed" : "ok",
       output: result, error: result.error, completedAt: new Date().toISOString()

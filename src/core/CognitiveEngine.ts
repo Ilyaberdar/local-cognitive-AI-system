@@ -6,6 +6,7 @@ import { ProcessInput, ProcessResult, SessionSettings, ToolExecutionResult } fro
 import { ModeDetector } from "./ModeDetector";
 import { Router } from "./Router";
 import { ToolRequestBuilder } from "./ToolRequestBuilder";
+import { resolveProviderTarget } from "../llm/ProviderTargetResolver";
 
 export class CognitiveEngine {
   constructor(
@@ -32,10 +33,7 @@ export class CognitiveEngine {
       channel: request.actor?.channel ?? "http"
     } as const;
     const sessionSettings = await this.sessionSettingsStore.get(actor.sessionId);
-    const activeTarget = {
-      providerId: request.providerId ?? sessionSettings.defaultTarget.providerId ?? this.defaultProviderId,
-      model: request.model ?? sessionSettings.defaultTarget.model
-    };
+    const activeTarget = resolveProviderTarget(request, sessionSettings.defaultTarget ?? { providerId: this.defaultProviderId });
     const providerId = activeTarget.providerId;
     const memory = await this.memoryService.retrieve(normalizedInput, { actor });
     const conversation = await this.memoryService.recent({ actor, limit: 12 });

@@ -92,6 +92,16 @@ export interface ProviderRuntimeSettings {
   timeoutMs: number;
   version?: string;
   maxTokens?: number;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+export interface LocalModelSettings {
+  modelsDir: string;
+  contextSize: number;
+  gpuLayers: number;
+  loadTimeoutMs: number;
+  generationTimeoutMs: number;
+  memoryLimitPercent: number;
 }
 
 export interface PluginRuntimeSettings {
@@ -100,6 +110,8 @@ export interface PluginRuntimeSettings {
 }
 
 export interface AppSettings {
+  schemaVersion?: number;
+  localModels?: LocalModelSettings;
   llm: {
     defaultProvider: string;
   };
@@ -132,6 +144,7 @@ export interface AppSettings {
 }
 
 export interface AppSettingsPatch {
+  localModels?: Partial<LocalModelSettings>;
   llm?: {
     defaultProvider?: string;
   };
@@ -349,6 +362,8 @@ export interface LLMRequest {
   temperature?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onProgress?: (event: { phase: "queued" | "loading" | "generating"; model: string; queuePosition?: number }) => void;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   previousResponseId?: string;
   responseFormat?: {
     type: "json_object";
@@ -448,6 +463,12 @@ export interface ProviderDescriptor {
   name: string;
   configured: boolean;
   defaultModel: string;
+  capabilities?: {
+    local: boolean;
+    managed: boolean;
+    jsonMode: boolean;
+    reasoning: boolean;
+  };
 }
 
 export interface ProviderModel {
