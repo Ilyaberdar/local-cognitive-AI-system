@@ -1,6 +1,6 @@
 {
   "llm": {
-    "defaultProvider": "lmstudio"
+    "defaultProvider": "llamacpp"
   },
   "mcp": {
     "server": {
@@ -60,6 +60,12 @@
       "apiKey": "",
       "model": "gemini-2.5-flash",
       "timeoutMs": 20000
+    },
+    "llamacpp": {
+      "enabled": true,
+      "baseUrl": "",
+      "model": "",
+      "timeoutMs": 600000
     }
   },
   "plugins": {
@@ -93,5 +99,14 @@
         "notes": "Reserved for future editor bridge."
       }
     }
+  },
+  "schemaVersion": 1,
+  "localModels": {
+    "modelsDir": "/absolute/path/to/models",
+    "contextSize": 4096,
+    "gpuLayers": 99,
+    "memoryLimitPercent": 75,
+    "loadTimeoutMs": 300000,
+    "generationTimeoutMs": 600000
   }
 }

@@ -1,0 +1,22 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+const supplied = process.argv[2];
+if (!supplied) throw new Error('Usage: node scripts/verify-packaged-runtime.mjs <application.app | resources directory>');
+const resources = path.resolve(supplied.endsWith('.app') ? path.join(supplied, 'Contents/Resources') : supplied);
+const platform = `${process.platform}-${process.arch}`;
+const manifest = JSON.parse(await fs.readFile(path.join(resources, 'llama/runtime-manifest.json'), 'utf8'));
+const target = manifest.platforms[platform];
+if (!target) throw new Error(`Packaged runtime does not support ${platform}`);
+await fs.access(path.join(resources, 'llama/THIRD_PARTY_NOTICES.txt'));
+await fs.access(path.join(resources, 'models/recommended.json'));
+const directory = path.join(resources, 'llama', platform);
+const metadata = JSON.parse(await fs.readFile(path.join(directory, 'runtime.json'), 'utf8'));
+if (metadata.sha256 !== target.sha256 || metadata.build !== manifest.build) throw new Error('Packaged runtime metadata mismatch');
+const executable = path.join(directory, target.executable);
+const checked = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 30000 });
+if (checked.error || checked.status !== 0) throw checked.error ?? new Error(checked.stderr);
+const output = checked.stdout + checked.stderr;
+if (!output.includes(manifest.version) && !output.includes(manifest.build.replace(/^b/, ''))) throw new Error(`Unexpected binary version: ${output}`);
+console.log(JSON.stringify({ resources, platform, build: manifest.build, version: output.trim(), result: 'passed' }, null, 2));

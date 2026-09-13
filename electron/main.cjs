@@ -3,6 +3,11 @@ const net = require("net");
 const path = require("path");
 
 let mainWindow;
+let backendHandle;
+let shutdownComplete = false;
+if (process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.resolve(process.env.LOCAL_COGNITIVE_TEST_DATA_DIR));
+const hasInstanceLock = app.requestSingleInstanceLock();
+if (!hasInstanceLock) app.quit();
 
 const findFreePort = () =>
   new Promise((resolve, reject) => {
@@ -35,13 +40,17 @@ const waitForServer = async (url, attempts = 80) => {
 
 const configureRuntimeEnvironment = async () => {
   const appRoot = app.getAppPath();
-  const dataRoot = app.getPath("userData");
+  const dataRoot = process.env.LOCAL_COGNITIVE_TEST_DATA_DIR || app.getPath("userData");
   const port = await findFreePort();
 
   process.chdir(appRoot);
   process.env.HTTP_ENABLED = "true";
   process.env.HOST = "127.0.0.1";
   process.env.PORT = String(port);
+  const resourceRoot = app.isPackaged ? process.resourcesPath : path.join(appRoot, "resources");
+  process.env.LLAMA_RUNTIME_DIR = path.join(resourceRoot, "llama", `${process.platform}-${process.arch}`);
+  process.env.LOCAL_MODEL_CATALOG_PATH = path.join(resourceRoot, "models", "recommended.json");
+  process.env.LOCAL_MODELS_DIR = path.join(dataRoot, "models");
   process.env.APP_DATA_DIR = path.join(dataRoot, "app");
   process.env.MEMORY_DIR = path.join(dataRoot, "memory");
   process.env.SESSION_DIR = path.join(dataRoot, "sessions");
@@ -57,7 +66,7 @@ const configureRuntimeEnvironment = async () => {
 
 const startBackend = (appRoot) => {
   const entry = path.join(appRoot, "dist", "src", "index.js");
-  require(entry);
+  return require(entry).startBackend();
 };
 
 const createWindow = async (url) => {
@@ -117,10 +126,10 @@ ipcMain.on("appearance:set-theme", (event, theme) => {
   }
 });
 
-app.whenReady().then(async () => {
+if (hasInstanceLock) app.whenReady().then(async () => {
   try {
     const runtime = await configureRuntimeEnvironment();
-    startBackend(runtime.appRoot);
+    backendHandle = await startBackend(runtime.appRoot);
     await waitForServer(runtime.url);
     await createWindow(runtime.url);
   } catch (error) {
@@ -142,4 +151,31 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("second-instance", () => {
+  if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+});
+app.on("before-quit", (event) => {
+  if (shutdownComplete || !backendHandle) return;
+  event.preventDefault();
+  void backendHandle.dispose().catch(error => console.error("Shutdown failed", error)).finally(() => {
+    shutdownComplete = true;
+    app.quit();
+  });
+});
+ipcMain.handle("models:select-files", async (event) => {
+  if (event.sender !== mainWindow?.webContents) return [];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Import local model", properties: ["openFile", "multiSelections"],
+    filters: [{ name: "GGUF models", extensions: ["gguf"] }]
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  // The renderer never supplies arbitrary filesystem paths to the backend.
+  return backendHandle.runtimeManager.getRuntime().localModelService.importModel(result.filePaths);
+});
+ipcMain.handle("models:select-directory", async (event) => {
+  if (event.sender !== mainWindow?.webContents) return null;
+  const result = await dialog.showOpenDialog(mainWindow, { title: "Model storage", properties: ["openDirectory", "createDirectory"] });
+  return result.canceled ? null : result.filePaths[0];
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { selectConfiguredSubagents } from "../src/agents/code/codeAgentRouting";
 import {
+  buildMainDraftSystemPrompt,
   buildReviewAgentPrompt,
   buildSingleAgentSystemPrompt,
   extractMainExecutionOutput,
@@ -28,6 +29,14 @@ const agents: CodeAgentTarget[] = [
     accessMode: "full"
   }
 ];
+
+test("main-model delegation is allowed while reviewer prompts forbid nested delegation", () => {
+  const main = buildMainDraftSystemPrompt(agents[0], agents, "compact");
+  assert.match(main, /assign bounded supporting tasks/);
+  assert.doesNotMatch(main, /Never assign tasks/);
+  const reviewer = buildSingleAgentSystemPrompt(agents[0], "Review addition", "Review addition", "compact");
+  assert.match(reviewer, /Never assign tasks/);
+});
 
 test("text prompt renderer keeps language, filesystem, and style instructions", () => {
   const prompt = buildTextPrompt(

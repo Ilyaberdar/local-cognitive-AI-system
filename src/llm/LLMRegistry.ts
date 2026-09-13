@@ -29,6 +29,7 @@ export class LLMRegistry {
 
     const models = await Promise.all(
       providers.map(async (provider) => {
+        if (!provider.isConfigured()) return [];
         if (!provider.listModels) {
           return [
             {
@@ -42,6 +43,7 @@ export class LLMRegistry {
         try {
           return await provider.listModels();
         } catch {
+          if (provider.getDescriptor().capabilities?.managed || !provider.defaultModel) return [];
           return [
             {
               id: provider.defaultModel,
@@ -56,8 +58,9 @@ export class LLMRegistry {
     const deduped = new Map<string, ProviderModel>();
 
     for (const providerModels of models.flat()) {
-      if (!deduped.has(providerModels.id)) {
-        deduped.set(providerModels.id, providerModels);
+      const key = JSON.stringify([providerModels.providerId, providerModels.id]);
+      if (providerModels.id && !deduped.has(key)) {
+        deduped.set(key, providerModels);
       }
     }
 

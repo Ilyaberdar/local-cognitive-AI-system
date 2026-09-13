@@ -16,10 +16,13 @@
     "mcp:stdio": "node dist/src/mcp.js",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "electron": "npm run build && electron .",
-    "dist:mac": "npm run build && electron-builder --mac dmg --arm64 --x64",
-    "dist:mac:arm64": "npm run build && electron-builder --mac dmg --arm64",
-    "dist:mac:x64": "npm run build && electron-builder --mac dmg --x64",
-    "dist:win": "npm run build && electron-builder --win nsis --x64"
+    "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run build && electron-builder --mac dmg --arm64 --x64",
+    "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run build && electron-builder --mac dmg --arm64",
+    "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run build && electron-builder --mac dmg --x64",
+    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64",
+    "prepare:llama": "node scripts/prepare-llama-runtime.mjs",
+    "verify:llama": "node scripts/verify-packaged-runtime.mjs",
+    "test:llama": "npm run build && node --test dist/test/llamaCpp.integration.test.js"
   },
   "engines": {
     "node": ">=18.18.0"
@@ -71,6 +74,15 @@
             "arm64"
           ]
         }
+      ],
+      "extraResources": [
+        {
+          "from": "resources/llama/darwin-${arch}",
+          "to": "llama/darwin-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        }
       ]
     },
     "win": {
@@ -82,13 +94,39 @@
             "x64"
           ]
         }
+      ],
+      "extraResources": [
+        {
+          "from": "resources/llama/win32-${arch}",
+          "to": "llama/win32-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "resources/llama",
+        "to": "llama",
+        "filter": [
+          "runtime-manifest.json",
+          "THIRD_PARTY_NOTICES.txt"
+        ]
+      },
+      {
+        "from": "resources/models",
+        "to": "models",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "optionalDependencies": {
     "electron-liquid-glass": "1.1.1"

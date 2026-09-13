@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
+import { createLocalModelRouter } from "./localModelControllers";
 import {
   createCreateSessionController,
   createCancelProcessRunController,
@@ -84,6 +85,7 @@ export const createApiRouter = (
   router.get("/local/models/all", createGetAllLocalModelsController(runtimeManager));
   router.post("/local/models/load", createLoadLocalModelController(runtimeManager));
   router.post("/local/models/unload", createUnloadLocalModelController(runtimeManager));
+  router.use(createLocalModelRouter(() => runtimeManager.getRuntime().localModelService));
 
   router.get("/sessions", createListSessionsController(sessionIndexStore));
   router.post("/sessions", createCreateSessionController(sessionIndexStore));

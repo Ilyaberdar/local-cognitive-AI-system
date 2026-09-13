@@ -1,4 +1,5 @@
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
+import { createModelManager } from "./model-manager.js";
 
 const app = document.querySelector("#app");
 let systemMetricsPollTimer = null;
@@ -53,6 +54,7 @@ const state = {
   modelActions: {},
   pluginTestResults: {},
   providerTestResults: {},
+  localModelTest: null,
   savedButtons: {},
   activeWorkflowRunId: null,
   workflowRunDetail: null,
@@ -125,15 +127,18 @@ const api = {
   updateAppSettings: (payload) =>
     request("/app/settings", {
       method: "PUT",
+      timeoutMs: payload.localModels?.modelsDir ? 900000 : 60000,
       body: JSON.stringify(payload)
     }),
   testPlugin: (pluginName) =>
     request(`/plugins/${pluginName}/test`, {
       method: "POST"
     }),
-  testProvider: (providerId) =>
+  testProvider: (providerId, model) =>
     request(`/providers/${providerId}/test`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify({ model }),
+      timeoutMs: providerId === "llamacpp" ? 0 : Math.max(defaultProviderTimeoutMs(providerId), Number(state.bootstrap?.appSettings?.providers?.[providerId]?.timeoutMs) || 0) + 30000
     }),
   reloadRuntime: () =>
     request("/runtime/reload", {
@@ -228,6 +233,57 @@ const api = {
   getSystemMetrics: () => request("/system/metrics")
 };
 
+const modelManager = createModelManager({
+  request,
+  getContext: () => ({
+    models: state.bootstrap?.allManagedModels ?? [],
+    runtime: state.bootstrap?.localModels?.runtime,
+    systemMetrics: state.bootstrap?.systemMetrics,
+    settings: state.bootstrap?.appSettings,
+    testing: Boolean(state.localModelTest),
+    currentTarget: state.sessionSettings?.defaultTarget
+  }),
+  isVisible: () => state.route === "models",
+  notify: (message, tone) => {
+    const scroll = captureScrollState();
+    pushToast(message, tone);
+    render();
+    restoreScrollState(scroll);
+  },
+  onLibraryChange: (models, runtime) => {
+    if (!state.bootstrap) return;
+    const localModels = models.filter((model) => model.providerId === "llamacpp");
+    state.bootstrap.allManagedModels = [...(state.bootstrap.allManagedModels ?? []).filter((model) => model.providerId !== "llamacpp"), ...localModels];
+    state.bootstrap.loadedModels = state.bootstrap.allManagedModels.filter((model) => model.loaded || model.loadedInstanceIds?.length || model.state === "ready");
+    state.bootstrap.availableModels = [...(state.bootstrap.availableModels ?? []).filter((model) => model.providerId !== "llamacpp"), ...localModels];
+    if (runtime) state.bootstrap.localModels = { ...state.bootstrap.localModels, models: localModels, runtime };
+    updateLocalModelTestProgress();
+  },
+  onUse: async (model) => {
+    if (!state.activeSessionId || !state.sessionSettings) await ensureSession();
+    const sessionId = state.activeSessionId;
+    window.clearTimeout(state.ui.autosaveTimer);
+    await state.ui.autosavePromise.catch(() => undefined);
+    const saved = await api.updateSessionSettings(sessionId, {
+      defaultTarget: { providerId: "llamacpp", model: model.libraryId || model.id }
+    });
+    if (state.activeSessionId !== sessionId) return;
+    state.sessionSettings = saved;
+    render();
+    window.location.hash = "#/chat";
+  },
+  onDefault: async (model) => {
+    const response = await api.updateAppSettings({
+      llm: { defaultProvider: "llamacpp" },
+      providers: { llamacpp: { model: model.libraryId || model.id, enabled: true } }
+    });
+    state.bootstrap.appSettings = response.settings;
+    state.bootstrap.providers = response.providers;
+  }
+});
+
+window.addEventListener("beforeunload", () => modelManager.dispose());
+
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
   render();
@@ -305,7 +361,7 @@ async function request(url, options = {}) {
   const controller = options.controller ?? new AbortController();
   const { controller: _providedController, timeoutMs: _timeoutMs, ...fetchOptions } = options;
   const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 30000;
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutId = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
 
   try {
     const response = await fetch(url, {
@@ -334,7 +390,7 @@ async function request(url, options = {}) {
 
     throw error;
   } finally {
-    window.clearTimeout(timeoutId);
+    if (timeoutId !== null) window.clearTimeout(timeoutId);
   }
 }
 
@@ -352,6 +408,7 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = nextTheme;
   localStorage.setItem("lcai.theme", nextTheme);
   window.desktopAppearance?.setTheme(nextTheme);
+  workflowEditorHandle?.setColorMode(nextTheme);
   document.querySelectorAll("[data-action='set-theme']").forEach((button) => {
     button.classList.toggle("active", button.dataset.theme === nextTheme);
     button.setAttribute("aria-pressed", String(button.dataset.theme === nextTheme));
@@ -406,6 +463,7 @@ function render() {
   `;
 
   bindEvents();
+  modelManager.bind(document.querySelector("#local-model-manager"));
   restorePresentationState(presentation);
   bindGlassLighting(app);
   mountActiveWorkflowEditor();
@@ -696,14 +754,14 @@ function renderChatActivityBar(settings) {
   const running = Boolean(state.chatSubmitting || state.pendingRequest);
   const target = settings?.defaultTarget ?? {};
   const provider = getProviderDisplayName(target.providerId);
-  const model = target.model || "default";
+  const model = getModelDisplayName(target.providerId, target.model) || "default";
   const progress = state.pendingRequest?.progress;
   const label = progress?.label || (running
     ? state.pendingRequest && isSubagentRequest(state.pendingRequest.input)
       ? "Agents"
       : "Build"
     : "Ready");
-  const activityDetail = progress?.detail || `${provider} ${model}`;
+  const activityDetail = formatLocalModelReferences(progress?.detail) || `${provider} ${model}`;
 
   return `
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
@@ -802,7 +860,7 @@ function stopProcessProgressPolling(active) {
 
 function updateChatActivityProgress(progress) {
   const pendingLine = document.querySelector(".message.pending .subagent-pending-line");
-  if (pendingLine) pendingLine.textContent = progress.detail || progress.label || "Working";
+  if (pendingLine) pendingLine.textContent = formatLocalModelReferences(progress.detail) || progress.label || "Working";
   const agentPanel = document.querySelector(".message.pending [data-agent-progress]");
   if (agentPanel) {
     const snapshot = JSON.stringify(progress.agents ?? []);
@@ -824,7 +882,7 @@ function updateChatActivityProgress(progress) {
     label.textContent = progress.label || "Working";
   }
   if (detail) {
-    detail.textContent = progress.detail || "Processing";
+    detail.textContent = formatLocalModelReferences(progress.detail) || "Processing";
   }
 }
 
@@ -860,7 +918,7 @@ function resolvePendingSubagentNames(input) {
 }
 
 function estimateAgentCost(agent) {
-  const providerScore = ["lmstudio", "ollama"].includes(agent.providerId)
+  const providerScore = isLocalProvider(agent.providerId)
     ? 0
     : agent.providerId === "gemini"
       ? 20
@@ -1532,7 +1590,9 @@ async function mountActiveWorkflowEditor() {
     const providers = getProviderOptions().map((provider) => ({
       ...provider,
       models: getSelectableSessionModels(provider.id, getProviderConfiguredModel(provider.id)),
-      defaultModel: getProviderConfiguredModel(provider.id)
+      defaultModel: getProviderConfiguredModel(provider.id),
+      installedOnly: provider.id === "llamacpp",
+      modelLabels: Object.fromEntries(getModelOptions(provider.id).map((modelId) => [modelId, getModelDisplayName(provider.id, modelId)]))
     }));
 
     container.innerHTML = "";
@@ -1540,6 +1600,7 @@ async function mountActiveWorkflowEditor() {
       workflow: cloneWorkflow(workflow),
       providers,
       validation: state.workflowBuilder?.validation ?? null,
+      nodeRuns: getActiveWorkflowNodeRuns(workflow.id),
       colorMode: state.ui.theme === "light" ? "light" : "dark",
       onChange: (nextWorkflow) => {
         state.workflowBuilder.draft = cloneWorkflow(nextWorkflow);
@@ -1627,14 +1688,17 @@ function renderWorkflowModelControl(index, providerId, model, fallbackTarget) {
   const effectiveProviderId = providerId || fallbackTarget.providerId;
   const defaultModel = getProviderConfiguredModel(effectiveProviderId) || fallbackTarget.model || "";
   const options = getSelectableSessionModels(effectiveProviderId, model, defaultModel);
-  const placeholder = defaultModel ? `Provider default: ${defaultModel}` : "Use provider default";
+  const placeholder = defaultModel ? `Provider default: ${getModelDisplayName(effectiveProviderId, defaultModel)}` : "Use provider default";
 
   if (isLocalProvider(effectiveProviderId)) {
+    const unavailable = model && !options.includes(model);
     return `
       <select name="node-model-${index}">
         <option value="">${escapeHtml(placeholder)}</option>
-        ${options.map((value) => option(value, model, value)).join("")}
+        ${unavailable ? `<option value="${escapeAttr(model)}" selected disabled>${escapeHtml(model)} · unavailable</option>` : ""}
+        ${options.map((value) => option(value, model, getModelDisplayName(effectiveProviderId, value))).join("")}
       </select>
+      ${unavailable ? '<div class="mm-unavailable-target">The saved model is unavailable. Download it or select an installed model.</div>' : ""}
     `;
   }
 
@@ -1660,6 +1724,7 @@ function getWorkflowFallbackTarget() {
 }
 
 function formatProviderTarget(providerId, model) {
+  if (providerId === "llamacpp") return model ? `Local models / ${getModelDisplayName(providerId, model)}` : "Local models";
   return model ? `${providerId}/${model}` : providerId || "runtime default";
 }
 
@@ -1764,6 +1829,11 @@ function renderWorkflowRunTrace(selectedRun) {
   `;
 }
 
+function getActiveWorkflowNodeRuns(workflowId) {
+  const detail = state.workflowRunDetail;
+  return detail?.run?.workflowId === workflowId ? detail.nodeRuns ?? [] : [];
+}
+
 function renderNodeRunCard(nodeRun) {
   const output = nodeRun.output;
   const target = output?.data?.target;
@@ -1775,7 +1845,7 @@ function renderNodeRunCard(nodeRun) {
         <strong>${escapeHtml(nodeRun.nodeId)}</strong>
         <span class="badge ${statusTone(nodeRun.status)}">${escapeHtml(nodeRun.status)}</span>
       </div>
-      <p>${escapeHtml(output?.summary ?? nodeRun.error ?? "Node is still running.")}</p>
+      <p>${["running", "queued"].includes(nodeRun.status) && nodeRun.progress ? '<span class="activity-scan" aria-hidden="true"></span> ' : ""}${escapeHtml(output?.summary ?? nodeRun.error ?? nodeRun.progress?.label ?? "Node is still running.")}</p>
       <div class="task-meta">
         <span>${escapeHtml(targetLabel || output?.event || "no-event")}</span>
         <span>${formatDate(nodeRun.completedAt ?? nodeRun.startedAt)}</span>
@@ -2089,117 +2159,25 @@ function readWorkflowDraftOrToast() {
 }
 
 function renderModelsRoute() {
-  const loaded = state.bootstrap?.loadedModels ?? [];
-  const allManaged = [...(state.bootstrap?.allManagedModels ?? [])].sort((left, right) => {
-    if (left.loaded !== right.loaded) {
-      return left.loaded ? -1 : 1;
-    }
-
-    return (left.displayName || left.id).localeCompare(right.displayName || right.id);
-  });
+  const externalModels = (state.bootstrap?.allManagedModels ?? []).filter((model) => model.providerId !== "llamacpp");
   const providerDefaults = state.bootstrap?.appSettings?.providers ?? {};
-  const systemMetrics = state.bootstrap?.systemMetrics;
-
+  const providers = (state.bootstrap?.providers ?? []).filter((provider) => provider.id !== "llamacpp");
   return `
     <div class="grid">
-      <section class="panel runtime-summary">
-        <div class="row-between">
-          <div>
-            <h2>Runtime Providers</h2>
-            <div class="subtle">Read-only snapshot of provider aliases, defaults, and endpoints.</div>
-          </div>
-          ${renderSystemMetricsPanel(systemMetrics, loaded)}
-        </div>
-        <div class="runtime-provider-grid">
-        ${(state.bootstrap?.providers ?? [])
-          .map(
-            (provider) => {
+      ${modelManager.render()}
+      <details class="panel mm-legacy-providers" data-ui-disclosure="external-model-providers">
+        <summary><div><strong>Connected providers</strong><span class="subtle">Cloud APIs, LM Studio and Ollama · ${providers.length} providers</span></div>${icon("chevronRight")}</summary>
+        <div class="mm-legacy-body">
+          <div class="runtime-provider-grid">
+            ${providers.map((provider) => {
               const status = getRuntimeProviderStatus(provider.id);
-              return `
-              <article class="list-item runtime-provider-item">
-                <div class="runtime-provider-head">
-                  <strong>${escapeHtml(provider.name)}</strong>
-                  <span class="badge ${status.tone}">${status.label}</span>
-                </div>
-                <div class="subtle">${escapeHtml(provider.id)}</div>
-                <div class="runtime-provider-meta">
-                  <span class="mono">${escapeHtml(providerDefaults[provider.id]?.model ?? provider.defaultModel)}</span>
-                  <span class="runtime-provider-separator">•</span>
-                  <span class="mono">${escapeHtml(providerDefaults[provider.id]?.baseUrl ?? "n/a")}</span>
-                </div>
-                ${renderRuntimeProviderQuota(provider.id, status.label)}
-              </article>
-            `;
-            }
-          )
-          .join("")}
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="row-between">
-          <div>
-            <h2>Loaded Local Models</h2>
-            <div class="subtle">LM Studio and Ollama models currently ready for routing, debate, and judge roles.</div>
+              return `<article class="list-item runtime-provider-item"><div class="runtime-provider-head"><strong>${escapeHtml(provider.name)}</strong><span class="badge ${status.tone}">${status.label}</span></div><div class="runtime-provider-meta"><span class="mono">${escapeHtml(providerDefaults[provider.id]?.model ?? provider.defaultModel ?? "No default model")}</span><span class="mono">${escapeHtml(providerDefaults[provider.id]?.baseUrl ?? "")}</span></div>${renderRuntimeProviderQuota(provider.id, status.label)}</article>`;
+            }).join("")}
           </div>
-          <button class="ghost-button" data-action="refresh-models">Refresh models</button>
+          <div class="row-between"><div><h3>External local models</h3><span class="subtle">Manage models in your connected LM Studio and Ollama runtimes.</span></div><button class="ghost-button" data-action="refresh-models">Refresh models</button></div>
+          <div class="catalog-grid">${externalModels.map((model) => `<article class="card compact-card catalog-card"><div class="card-header"><div><h3>${escapeHtml(model.displayName || model.id)}</h3><div class="mono">${escapeHtml(model.id)}</div></div><span class="badge ${model.loaded ? "success" : ""}">${escapeHtml(model.providerName || model.providerId)} · ${model.loaded ? "loaded" : "available"}</span></div><div class="subtle">${formatManagedModelSize(model.sizeBytes)}</div><div class="footer-row"><span class="subtle">${model.loaded ? "Ready for chat and workflows." : "Available in the connected runtime."}</span>${model.loaded ? renderModelActionButton("unload", model.loadedInstanceIds?.[0] || model.id, model.providerId, model.id) : renderModelActionButton("load", model.id, model.providerId)}</div></article>`).join("") || '<div class="empty compact">No models found in connected local runtimes.</div>'}</div>
         </div>
-        <div class="list loaded-models-list">
-          ${
-            loaded.length
-              ? loaded
-                  .map(
-                    (model) => `
-                      <div class="list-item loaded-model-item">
-                        <div class="loaded-model-copy">
-                            <strong>${escapeHtml(model.displayName || model.id)}</strong>
-                            <div class="mono">${escapeHtml(model.id)}</div>
-                            <div class="subtle">${escapeHtml(model.providerName || model.providerId || "local")} · ${escapeHtml(model.loadedInstanceIds.join(", ") || "loaded")}</div>
-                        </div>
-                        <button class="ghost-button danger-button" data-action="unload-model" data-provider-id="${escapeAttr(model.providerId || "lmstudio")}" data-model-id="${escapeAttr(model.loadedInstanceIds[0] || model.id)}" data-model-key="${escapeAttr(model.id)}">Unload</button>
-                      </div>
-                    `
-                  )
-                  .join("")
-              : `<div class="empty">No loaded local models found.</div>`
-          }
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="row-between">
-          <div>
-            <h2>Local Model Catalog</h2>
-            <div class="subtle">Load or unload LM Studio and Ollama models without leaving the dashboard.</div>
-          </div>
-        </div>
-        <div class="catalog-grid">
-          ${allManaged
-            .map(
-              (model) => `
-                <div class="card compact-card catalog-card">
-                  <div class="card-header">
-                    <div>
-                      <h3>${escapeHtml(model.displayName || model.id)}</h3>
-                      <div class="mono">${escapeHtml(model.id)}</div>
-                    </div>
-                    <span class="badge ${model.loaded ? "success" : "warning"}">${escapeHtml(model.providerName || model.providerId || "local")} · ${model.loaded ? "loaded" : "available"}</span>
-                  </div>
-                  <div class="subtle">${formatManagedModelSize(model.sizeBytes)}</div>
-                  <div class="footer-row">
-                    <span class="subtle">${model.loaded ? "Ready for chat and debate." : `Can be loaded into ${escapeHtml(model.providerName || model.providerId || "local runtime")}.`}</span>
-                    ${
-                      model.loaded
-                        ? renderModelActionButton("unload", model.loadedInstanceIds[0] || model.id, model.providerId || "lmstudio", model.id)
-                        : renderModelActionButton("load", model.id, model.providerId || "lmstudio")
-                    }
-                  </div>
-                </div>
-              `
-            )
-            .join("")}
-        </div>
-      </section>
+      </details>
     </div>
   `;
 }
@@ -2518,7 +2496,7 @@ function renderSettingsRoute() {
       <div class="settings-grid">
         ${Object.entries(settings.providers)
           .map(
-            ([providerId, provider]) => `
+            ([providerId, provider]) => providerId === "llamacpp" ? renderBuiltInProviderSettings(provider, settings.localModels) : `
               <section class="card compact-card settings-card">
                 <div class="card-header">
                   <div>
@@ -2591,6 +2569,53 @@ function renderSettingsRoute() {
       </div>
     </form>
   `;
+}
+
+function renderBuiltInProviderSettings(provider, local = {}) {
+  return `<section class="card compact-card settings-card">
+    <div class="card-header"><div><h3>Local models</h3><div class="subtle">Built-in inference on this device</div></div><span class="badge ${provider.enabled ? "success" : "warning"}">${provider.enabled ? "enabled" : "disabled"}</span></div>
+    <div class="mm-provider-note">The app manages the runtime automatically. Choose downloaded models from your library; an API key or server address is not required.<a href="#/models" class="mm-source-link">Open model library →</a></div>
+    <div class="form-grid">
+      <div class="field"><label>Enabled</label><select name="provider.llamacpp.enabled">${["true", "false"].map((value) => option(value, String(provider.enabled), value === "true" ? "on" : "off")).join("")}</select></div>
+      <div class="field"><label>Default model</label>${renderProviderSettingsModelControl("llamacpp", state.localModelTest?.model ?? provider.model ?? "")}<div class="subtle">Installed models stay selectable after Unload.</div></div>
+      <div class="field field--full"><label>Model storage folder</label><input name="localModels.modelsDir" value="${escapeAttr(local.modelsDir || "")}" placeholder="App-managed model library" /><div class="footer-row"><span class="subtle">Models are copied and verified before switching storage. Previous files remain as a backup. Pause downloads first.</span>${window.desktopModels?.selectDirectory ? '<button type="button" class="ghost-button" data-action="select-model-directory">Choose folder</button>' : ""}</div></div>
+      <div class="field"><label>Context size (tokens)</label><input name="localModels.contextSize" type="number" min="512" max="131072" step="512" value="${escapeAttr(local.contextSize ?? 4096)}" /><div class="subtle">Larger contexts need more memory.</div></div>
+      <div class="field"><label>Memory warning threshold (%)</label><input name="localModels.memoryLimitPercent" type="number" min="10" max="90" step="1" value="${escapeAttr(local.memoryLimitPercent ?? 75)}" /><div class="subtle">Warn above this share of device memory. Models can still load above the threshold.</div></div>
+      <div class="field"><label>Load timeout (ms)</label><input name="localModels.loadTimeoutMs" type="number" min="10000" max="1800000" step="1000" value="${escapeAttr(local.loadTimeoutMs ?? 300000)}" /></div>
+      <div class="field"><label>Generation timeout (ms)</label><input name="localModels.generationTimeoutMs" type="number" min="10000" max="3600000" step="1000" value="${escapeAttr(local.generationTimeoutMs ?? 600000)}" /><div class="subtle">Allows time for local reasoning and longer responses.</div></div>
+      <input type="hidden" name="localModels.gpuLayers" value="${escapeAttr(local.gpuLayers ?? 99)}" />
+      <input type="hidden" name="provider.llamacpp.timeoutMs" value="${escapeAttr(provider.timeoutMs ?? 600000)}" />
+    </div>
+    <div data-local-test-feedback aria-live="polite">${renderLocalModelTestFeedback()}</div>
+    <div class="footer-row"><span class="subtle">Test runs a response with the selected model. Save settings to make it the default.</span><button class="ghost-button" type="button" data-action="test-provider" data-provider-id="llamacpp" ${state.localModelTest ? "disabled" : ""}>${state.localModelTest ? "Testing model…" : "Test model"}</button></div>
+  </section>`;
+}
+
+function renderLocalModelTestFeedback() {
+  if (state.localModelTest) {
+    const runtime = state.bootstrap?.localModels?.runtime;
+    const phase = runtime?.status === "loading" ? "Loading model into memory"
+      : runtime?.status === "stopping" ? "Switching local model"
+      : runtime?.queueLength ? `Local runtime busy · ${runtime.queueLength} waiting`
+      : runtime?.busy && runtime.modelId === state.localModelTest.model ? "Generating test response"
+      : "Preparing model test";
+    return `<div class="status-block"><div class="status-block__label">${escapeHtml(phase)}</div><div class="status-block__text">${escapeHtml(getModelDisplayName("llamacpp", state.localModelTest.model))}</div></div>`;
+  }
+  const result = state.providerTestResults.llamacpp;
+  return result ? `<div class="status-block ${providerTestTone(result)}"><div class="status-block__label">${result.ok ? "Model ready" : "Model issue"}</div><div class="status-block__text">${escapeHtml(formatProviderTestResult(result))}</div></div>` : "";
+}
+
+function updateLocalModelTestProgress() {
+  const feedback = document.querySelector("[data-local-test-feedback]");
+  if (feedback) {
+    const content = renderLocalModelTestFeedback();
+    if (feedback.innerHTML !== content) feedback.innerHTML = content;
+  }
+  const button = document.querySelector('[data-action="test-provider"][data-provider-id="llamacpp"]');
+  if (button) {
+    button.disabled = Boolean(state.localModelTest);
+    button.textContent = state.localModelTest ? "Testing model…" : "Test model";
+  }
 }
 
 function renderMessage(message) {
@@ -2763,11 +2788,12 @@ function stableMentionHue(name) {
 
 function renderRuntimeMetaLine(label, value) {
   const isFinalResponse = label.trim().toLowerCase() === "final response";
+  const displayValue = label.trim().toLowerCase() === "model" ? formatLocalModelReferences(value) : value;
 
   return `
     <div class="message-runtime-line ${isFinalResponse ? "is-final-response" : ""}">
       <span>${escapeHtml(label)}</span>
-      <strong class="runtime-gradient-text">${escapeHtml(value)}</strong>
+      <strong class="runtime-gradient-text">${escapeHtml(displayValue)}</strong>
     </div>
   `;
 }
@@ -2793,7 +2819,7 @@ function renderAgentProgress(agents) {
         <span class="subagent-card__role">${escapeHtml(agent.role)}</span>
         <span class="subagent-card__status">${escapeHtml(labels[agent.status] || agent.status)}</span>
       </summary>
-      <div class="agent-progress-detail">${escapeHtml([agent.provider, agent.model, agent.phase].filter(Boolean).join(" · "))}</div>
+      <div class="agent-progress-detail">${escapeHtml([agent.provider, getModelDisplayName(agent.provider, agent.model), formatLocalModelReferences(agent.phase)].filter(Boolean).join(" · "))}</div>
       ${agent.error ? `<div class="agent-progress-detail">${escapeHtml(agent.error)}</div>` : ""}
     </details>`).join("")}</div>`;
 }
@@ -2839,7 +2865,7 @@ function renderSubagentCard(agent) {
       </summary>
       <div class="subagent-card__meta">
         <span>${escapeHtml(agent.provider || "provider")}</span>
-        <span>${escapeHtml(agent.model || "model")}</span>
+        <span>${escapeHtml(getModelDisplayName(agent.provider, agent.model) || "model")}</span>
         <span>access=${escapeHtml(agent.accessMode || "default")}</span>
       </div>
       <pre class="subagent-card__output">${escapeHtml(output)}</pre>
@@ -4060,7 +4086,7 @@ function bindEvents() {
     const form = new FormData(event.currentTarget);
     const payload = buildAppSettingsPayload(form, false);
 
-    await runAction(async () => {
+    const saved = await runAction(async () => {
       const response = await api.updateAppSettings(payload);
       state.bootstrap.providers = response.providers;
       state.bootstrap.plugins = response.plugins;
@@ -4069,11 +4095,21 @@ function bindEvents() {
       state.bootstrap.pluginStatuses = await request("/plugins/status");
       state.notice = "";
     });
-    flashSavedButton("app-settings");
+    if (saved) flashSavedButton("app-settings");
   });
 
   document.querySelector("#appearance-theme")?.addEventListener("change", (event) => {
     applyTheme(event.currentTarget.value);
+  });
+
+  document.querySelector("[data-action='select-model-directory']")?.addEventListener("click", async () => {
+    try {
+      const directory = await window.desktopModels.selectDirectory();
+      const field = document.querySelector('[name="localModels.modelsDir"]');
+      if (directory && field) field.value = directory;
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Unable to select model folder.", "danger");
+    }
   });
 
   document.querySelector("[data-action='reload-runtime']")?.addEventListener("click", async () => {
@@ -4177,9 +4213,27 @@ function bindEvents() {
   document.querySelectorAll("[data-action='test-provider']").forEach((button) => {
     button.addEventListener("click", async () => {
       const providerId = button.dataset.providerId;
+      const model = button.form?.elements.namedItem(`provider.${providerId}.model`)?.value?.trim();
+
+      if (providerId === "llamacpp") {
+        if (state.localModelTest) return;
+        state.localModelTest = { model: model ?? getProviderConfiguredModel(providerId) };
+        delete state.providerTestResults[providerId];
+        updateLocalModelTestProgress();
+        modelManager.start();
+        try {
+          state.providerTestResults[providerId] = await api.testProvider(providerId, model);
+        } catch (error) {
+          state.providerTestResults[providerId] = { ok: false, providerId, model, message: error instanceof Error ? error.message : "Model test failed." };
+        } finally {
+          state.localModelTest = null;
+          updateLocalModelTestProgress();
+        }
+        return;
+      }
 
       await runAction(async () => {
-        state.providerTestResults[providerId] = await api.testProvider(providerId);
+        state.providerTestResults[providerId] = await api.testProvider(providerId, model);
         state.notice = "";
       });
     });
@@ -4597,6 +4651,8 @@ function optimisticallyUnloadModel(providerId, modelKey, instanceId) {
 }
 
 function invalidateSessionModelSelection(providerId, modelKey) {
+  // The built-in library survives unloading; its targets must keep their model ID.
+  if (providerId === "llamacpp") return;
   if (!state.sessionSettings) {
     return;
   }
@@ -4668,6 +4724,7 @@ async function pollWorkflowProgress() {
     state.bootstrap.workflowRuns = runs;
     if (state.activeWorkflowRunId) state.workflowRunDetail = await api.getWorkflowRun(state.activeWorkflowRunId);
     if (state.route !== "orchestration" || state.loading) return;
+    workflowEditorHandle?.setNodeRuns(getActiveWorkflowNodeRuns(state.workflowBuilder?.draft?.id));
     if (state.orchestrationTab === "tasks") render();
     else {
       const trace = document.querySelector(".run-trace");
@@ -4690,10 +4747,8 @@ async function pollSystemMetrics() {
   }
 
   try {
-    const scrollSnapshot = captureScrollState();
     state.bootstrap.systemMetrics = await api.getSystemMetrics();
-    render();
-    restoreScrollState(scrollSnapshot);
+    modelManager.updateLiveView();
   } catch {
     // keep the dashboard usable even if metrics polling fails
   }
@@ -4765,6 +4820,16 @@ function buildAppSettingsPayload(form, pluginsOnly) {
   };
 
   if (!pluginsOnly) {
+    if (form.has("localModels.modelsDir")) {
+      payload.localModels = {
+        modelsDir: String(form.get("localModels.modelsDir") || "").trim(),
+        contextSize: Number(form.get("localModels.contextSize") || 4096),
+        gpuLayers: Number(form.get("localModels.gpuLayers") || 99),
+        memoryLimitPercent: Number(form.get("localModels.memoryLimitPercent") || 75),
+        loadTimeoutMs: Number(form.get("localModels.loadTimeoutMs") || 300000),
+        generationTimeoutMs: Number(form.get("localModels.generationTimeoutMs") || 600000)
+      };
+    }
     for (const provider of state.bootstrap.providers ?? []) {
       payload.providers[provider.id] = {
         enabled: form.get(`provider.${provider.id}.enabled`) === "true",
@@ -4773,6 +4838,13 @@ function buildAppSettingsPayload(form, pluginsOnly) {
         model: String(form.get(`provider.${provider.id}.model`) || "").trim(),
         timeoutMs: Number(form.get(`provider.${provider.id}.timeoutMs`) || defaultProviderTimeoutMs(provider.id))
       };
+
+      if (provider.id === "llamacpp") {
+        delete payload.providers[provider.id].baseUrl;
+        delete payload.providers[provider.id].apiKey;
+        if (!form.has("provider.llamacpp.model")) payload.providers[provider.id].model = getProviderConfiguredModel("llamacpp");
+        payload.providers[provider.id].timeoutMs = payload.localModels?.generationTimeoutMs || payload.providers[provider.id].timeoutMs;
+      }
 
       if (provider.id === "anthropic") {
         payload.providers[provider.id].version = String(form.get(`provider.${provider.id}.version`) || "").trim();
@@ -4805,8 +4877,10 @@ async function runAction(fn) {
 
   try {
     await fn();
+    return true;
   } catch (error) {
     pushToast(error instanceof Error ? error.message : "Action failed", "danger");
+    return false;
   } finally {
     state.loading = false;
     render();
@@ -4865,12 +4939,21 @@ function getProviderOptions() {
 function getModelOptions(providerId) {
   const matchesProvider = (model) => !providerId || model.providerId === providerId;
   const fromCatalog = (state.bootstrap?.availableModels ?? [])
-    .filter(matchesProvider)
+    .filter((model) => matchesProvider(model) && model.providerId !== "llamacpp")
     .map((model) => model.id);
   const fromManaged = (state.bootstrap?.allManagedModels ?? [])
     .filter(matchesProvider)
     .map((model) => model.id);
   return [...new Set([...fromCatalog, ...fromManaged])].sort();
+}
+
+function getModelDisplayName(providerId, modelId) {
+  const model = (state.bootstrap?.allManagedModels ?? []).find((item) => item.providerId === providerId && (item.id === modelId || item.libraryId === modelId));
+  return providerId === "llamacpp" && model ? `${model.displayName || model.id}${model.quantization && !(model.displayName || "").includes(model.quantization) ? ` · ${model.quantization}` : ""}` : modelId;
+}
+
+function formatLocalModelReferences(value) {
+  return String(value ?? "").replace(/\bgguf-[a-z0-9]+\b/g, (modelId) => getModelDisplayName("llamacpp", modelId));
 }
 
 function getLoadedModelOptions(providerId) {
@@ -4885,6 +4968,7 @@ function getProviderSuggestedModels(providerId) {
   switch (providerId) {
     case "openai":
       return [
+        "gpt-6-astra",
         "gpt-5.1",
         "gpt-5-mini",
         "gpt-5-nano",
@@ -4909,6 +4993,7 @@ function getProviderSuggestedModels(providerId) {
       ];
     case "lmstudio":
     case "ollama":
+    case "llamacpp":
       return localModels;
     default:
       return [];
@@ -4925,6 +5010,12 @@ function getRuntimeProviderStatus(providerId) {
     };
   }
 
+  if (providerId === "llamacpp") {
+    const runtime = state.bootstrap?.localModels?.runtime;
+    if (runtime?.status === "unavailable" || runtime?.status === "error") return { label: "runtime unavailable", tone: "warning" };
+    return getModelOptions(providerId).length ? { label: "ready", tone: "success" } : { label: "download a model", tone: "warning" };
+  }
+
   if (!provider.baseUrl || !provider.model) {
     return {
       label: "not configured",
@@ -4932,7 +5023,7 @@ function getRuntimeProviderStatus(providerId) {
     };
   }
 
-  if (providerId === "lmstudio" || providerId === "ollama") {
+  if (isLocalProvider(providerId)) {
     return {
       label: "configured",
       tone: "success"
@@ -5028,16 +5119,19 @@ function providerModelHelp(providerId) {
     case "lmstudio":
     case "ollama":
       return "Local models come from your current runtime catalog.";
+    case "llamacpp":
+      return "Choose an installed model from the model library. It loads automatically when a chat or workflow needs it.";
     default:
       return "";
   }
 }
 
 function defaultProviderTimeoutMs(providerId) {
-  return isLocalProvider(providerId) ? 300000 : 60000;
+  return providerId === "llamacpp" ? 600000 : isLocalProvider(providerId) ? 300000 : 60000;
 }
 
 function localModelActionTimeoutMs(providerId) {
+  if (providerId === "llamacpp") return 0;
   const configured = Number(state.bootstrap?.appSettings?.providers?.[providerId]?.timeoutMs);
   return Math.max(300000, Number.isFinite(configured) ? configured : 0) + 30000;
 }
@@ -5052,7 +5146,7 @@ function getSelectableSessionModels(providerId, ...selected) {
   const providerModel = providerId ? state.bootstrap?.appSettings?.providers?.[providerId]?.model : undefined;
   const normalizedSelected = selected.filter(Boolean);
   const models = isLocalProvider(providerId)
-    ? getLoadedModelOptions(providerId)
+    ? providerId === "llamacpp" ? getModelOptions(providerId) : getLoadedModelOptions(providerId)
     : [
         !isLocalCatalogModel(providerModel) ? providerModel : undefined,
         ...getProviderSuggestedModels(providerId),
@@ -5198,6 +5292,11 @@ function getDefaultModelForProvider(providerId) {
   }
 
   if (isLocalProvider(providerId)) {
+    if (providerId === "llamacpp") {
+      const installed = getModelOptions(providerId);
+      const configured = getProviderConfiguredModel(providerId);
+      return installed.includes(configured) ? configured : installed[0] || "";
+    }
     return getLoadedModelOptions(providerId)[0] || getProviderConfiguredModel(providerId) || "";
   }
 
@@ -5212,10 +5311,19 @@ function renderProviderSettingsModelControl(providerId, value) {
   const options = getProviderSettingsModelOptions(providerId, value || getProviderConfiguredModel(providerId));
   const selectedValue = value || getProviderConfiguredModel(providerId) || "";
 
+  if (!isLocalProvider(providerId)) {
+    return `<input name="provider.${escapeAttr(providerId)}.model" value="${escapeAttr(selectedValue)}" list="provider-models-${escapeAttr(providerId)}" placeholder="${escapeAttr(providerModelPlaceholder(providerId))}" /><datalist id="provider-models-${escapeAttr(providerId)}">${renderDatalistOptions(options)}</datalist>`;
+  }
+
+  const installed = providerId === "llamacpp" ? getModelOptions(providerId) : options;
+  const unavailable = selectedValue && !installed.includes(selectedValue);
   return `
     <select name="provider.${escapeAttr(providerId)}.model">
-      ${renderModelSelectOptions(options, selectedValue, "Select model")}
+      <option value="">Select model</option>
+      ${unavailable ? `<option value="${escapeAttr(selectedValue)}" selected disabled>${escapeHtml(selectedValue)} · unavailable</option>` : ""}
+      ${installed.map((modelId) => option(modelId, selectedValue, getModelDisplayName(providerId, modelId))).join("")}
     </select>
+    ${unavailable ? '<div class="mm-unavailable-target">The saved model is unavailable in this library.</div>' : ""}
   `;
 }
 
@@ -5254,7 +5362,7 @@ function pluginFieldPlaceholder(pluginName, key) {
 }
 
 function formatProviderTestResult(result) {
-  const message = String(result?.message || "");
+  const message = formatLocalModelReferences(result?.message);
 
   if (/status 429/i.test(message)) {
     return "Issue: rate limit or quota exceeded.";
@@ -5598,10 +5706,14 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
   const resolvedValue = value || getProviderConfiguredModel(providerId) || "";
 
   if (isLocalProvider(providerId)) {
+    const unavailable = resolvedValue && !options.includes(resolvedValue);
     return `
       <select name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
-        ${renderModelSelectOptions(options, resolvedValue, "Select model")}
+        <option value="">${providerId === "llamacpp" && !options.length ? "Download a model in Models" : "Select model"}</option>
+        ${unavailable ? `<option value="${escapeAttr(resolvedValue)}" selected disabled>${escapeHtml(resolvedValue)} · unavailable</option>` : ""}
+        ${options.map((modelId) => option(modelId, resolvedValue, getModelDisplayName(providerId, modelId))).join("")}
       </select>
+      ${unavailable ? '<div class="mm-unavailable-target">This saved model is unavailable. Select a model from the library.</div>' : ""}
     `;
   }
 
@@ -5887,11 +5999,11 @@ function isCloudProvider(providerId) {
 }
 
 function isLocalProvider(providerId) {
-  return ["lmstudio", "ollama"].includes(providerId);
+  return (state.bootstrap?.providers ?? []).find((provider) => provider.id === providerId)?.capabilities?.local ?? ["lmstudio", "ollama", "llamacpp"].includes(providerId);
 }
 
 function isLocalCatalogModel(modelId) {
-  return getModelOptions().includes(modelId);
+  return (state.bootstrap?.allManagedModels ?? []).some((model) => model.id === modelId && isLocalProvider(model.providerId));
 }
 
 function option(value, currentValue, label = value) {

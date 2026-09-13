@@ -25,14 +25,16 @@ export class LocalModelManagerRegistry {
 
   async listAllModels(providerId?: string): Promise<ManagedModel[]> {
     const managers = this.selectManagers(providerId);
-    const groups = await Promise.all(managers.map((manager) => manager.listAllModels()));
-    return this.sort(groups.flat());
+    if (providerId) return this.sort(await managers[0].listAllModels());
+    const groups = await Promise.allSettled(managers.map((manager) => manager.listAllModels()));
+    return this.sort(groups.flatMap((result) => result.status === "fulfilled" ? result.value : []));
   }
 
   async listLoadedModels(providerId?: string): Promise<ManagedModel[]> {
     const managers = this.selectManagers(providerId);
-    const groups = await Promise.all(managers.map((manager) => manager.listLoadedModels()));
-    return this.sort(groups.flat());
+    if (providerId) return this.sort(await managers[0].listLoadedModels());
+    const groups = await Promise.allSettled(managers.map((manager) => manager.listLoadedModels()));
+    return this.sort(groups.flatMap((result) => result.status === "fulfilled" ? result.value : []));
   }
 
   loadModel(providerId: string, modelId: string): Promise<void> {

@@ -5,7 +5,11 @@ import { selectConfiguredSubagents } from "../agents/code/codeAgentRouting";
 import { HypothesisAgent } from "../agents/HypothesisAgent";
 import { HypothesisAdvisorAgent } from "../agents/HypothesisAdvisorAgent";
 import { SupportAgent } from "../agents/SupportAgent";
-import { AppConfig } from "../config/config";
+import { AppConfig, localModelOptions } from "../config/config";
+import { LocalModelService } from "../local/LocalModelService";
+import { LlamaCppProvider } from "../llm/LlamaCppProvider";
+import { LlamaCppModelManager } from "../llm/LlamaCppModelManager";
+import { withInferenceProgress } from "../llm/InferenceProgress";
 import { AgentProgressReporter } from "../core/AgentProgressReporter";
 import { CognitiveEngine } from "../core/CognitiveEngine";
 import { ModeDetector } from "../core/ModeDetector";
@@ -43,6 +47,7 @@ import {
   CodeAgentTarget,
   ExecutionContext,
   LLMResponse,
+  LLMRequest,
   ProviderDescriptor,
   SubagentRunSummary,
   ToolDescriptor
@@ -82,6 +87,7 @@ import { WorkflowRunStore } from "../workflows/WorkflowRunStore";
 import { WorkflowStore } from "../workflows/WorkflowStore";
 
 export interface AppRuntime {
+  localModelService: LocalModelService;
   engine: CognitiveEngine;
   providerDescriptors: ProviderDescriptor[];
   tools: ToolDescriptor[];
@@ -123,7 +129,7 @@ const AGENT_LOCAL_TIMEOUT_MS = 300000;
 const AGENT_REMOTE_TIMEOUT_MS = 180000;
 
 const agentRequestTimeoutMs = (providerId: string): number =>
-  ["lmstudio", "ollama"].includes(providerId) ? AGENT_LOCAL_TIMEOUT_MS : AGENT_REMOTE_TIMEOUT_MS;
+  providerId === "llamacpp" ? 600000 : ["lmstudio", "ollama"].includes(providerId) ? AGENT_LOCAL_TIMEOUT_MS : AGENT_REMOTE_TIMEOUT_MS;
 
 const summarizeSubagentRun = (
   run: Awaited<ReturnType<typeof runCodeAgent>>,
@@ -147,8 +153,9 @@ const runCodeAgent = async (
   languageEnforcer: LanguageEnforcer,
   language: "auto" | "ru" | "en",
   systemPrompt: string,
-  signal?: AbortSignal
-) => {
+  signal?: AbortSignal,
+  onProgress?: LLMRequest["onProgress"]
+) => withInferenceProgress(onProgress, async () => {
   try {
     signal?.throwIfAborted();
     const response = await llmService.generateText(
@@ -197,7 +204,7 @@ const runCodeAgent = async (
       degraded: true
     };
   }
-};
+});
 
 const runCodeSwarm = async (
   input: string,
@@ -250,7 +257,7 @@ const runCodeSwarm = async (
         taskInput,
         context.sessionSettings.outputStyle
       ),
-      context.signal
+      context.signal, progress.inference(mainAgent.id)
     );
 
     progress.update(mainAgent.id, mainRun.degraded ? "degraded" : "completed", mainRun.degraded ? "Failed" : "Complete", mainRun.response.error);
@@ -286,9 +293,38 @@ const runCodeSwarm = async (
       reviewAgents,
       context.sessionSettings.outputStyle
     ),
-    context.signal
+    context.signal, progress.inference(mainAgent.id)
   );
   const delegationPlan = parseMainDelegationPlan(draftRun.degraded ? "" : draftRun.normalized, reviewAgents);
+  let assignmentRepairResponse: LLMResponse | undefined;
+  if (!draftRun.degraded && delegationPlan.assignments.size < reviewAgents.length) {
+    progress.update(mainAgent.id, "running", "Preparing assignments");
+    const missing = reviewAgents.filter(agent => !delegationPlan.assignments.has(agent.id));
+    const repair = await withInferenceProgress(progress.inference(mainAgent.id), () => llmService.generateObject<{
+      assignments?: Array<{ id?: string; task?: string }>;
+    }>({
+      model: mainAgent.model,
+      systemPrompt: "You are the main model assigning bounded review tasks to the selected agents. Output JSON only.",
+      prompt: [
+        "Your draft did not include a valid assignment for every selected agent.",
+        `User request: ${input}`,
+        `Your draft: ${delegationPlan.draft}`,
+        `Agents needing assignments: ${missing.map(agent => `${agent.id} (@${agent.name})`).join(", ")}.`,
+        'Return {"assignments":[{"id":"exact agent id","task":"specific review task derived from the user request"}]}.',
+        "Provide one task per listed agent. They inspect or critique your draft; they do not write files or the final answer."
+      ].join("\n"),
+      signal: context.signal,
+      timeoutMs: agentRequestTimeoutMs(mainAgent.providerId)
+    }, mainAgent.providerId));
+    assignmentRepairResponse = repair.response;
+    if (!repair.response.error && Array.isArray(repair.data?.assignments)) {
+      for (const assignment of repair.data.assignments) {
+        if (assignment && missing.some(agent => agent.id === assignment.id) && typeof assignment.task === "string" && assignment.task.trim()) {
+          delegationPlan.assignments.set(assignment.id!, assignment.task.trim());
+        }
+      }
+    }
+  }
   progress.update(mainAgent.id, "queued", "Waiting for agents");
   const reviewRuns = await Promise.all(
     reviewAgents.map(async (agent) => {
@@ -334,7 +370,7 @@ const runCodeSwarm = async (
           reviewAgents,
           context.sessionSettings.outputStyle
         ),
-        context.signal
+        context.signal, progress.inference(agent.id)
       );
       progress.update(agent.id, run.degraded ? "degraded" : "completed", run.degraded ? "Failed" : "Complete", run.response.error);
       return run;
@@ -366,7 +402,7 @@ const runCodeSwarm = async (
       reviewAgents,
       context.sessionSettings.outputStyle
     ),
-    context.signal
+    context.signal, progress.inference(mainAgent.id)
   );
   if (finalRun.degraded) {
     const error = finalRun.response.error || "The main model returned no usable final output.";
@@ -390,7 +426,7 @@ const runCodeSwarm = async (
       buildMainSummaryPrompt(taskInput, executionOutput,
         reviewRuns.map((item) => ({ agent: item.agent, degraded: item.degraded })),
         context.sessionSettings.language),
-      llmService, languageEnforcer, "auto", buildMainSummarySystemPrompt(), context.signal
+      llmService, languageEnforcer, "auto", buildMainSummarySystemPrompt(), context.signal, progress.inference(mainAgent.id)
     );
     const fallback = /[А-Яа-яЁё]/.test(taskInput)
       ? "Модель подготовила изменения файлов. Результат применения или запрос подтверждения показан в блоке файловой операции."
@@ -411,6 +447,7 @@ const runCodeSwarm = async (
       durationMs: 0,
       usage: sumUsage([
         draftRun.response.usage,
+        assignmentRepairResponse?.usage,
         finalRun.response.usage,
         summaryRun?.response.usage,
         ...reviewRuns.map((item) => item.response.usage)
@@ -421,7 +458,8 @@ const runCodeSwarm = async (
 
 export const buildRuntime = async (
   config: AppConfig,
-  logger: Logger
+  logger: Logger,
+  sharedLocalModelService?: LocalModelService
 ): Promise<AppRuntime> => {
   await fs.mkdir(config.memory.baseDir, { recursive: true });
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
@@ -431,6 +469,13 @@ export const buildRuntime = async (
   await fs.mkdir(path.join(config.appDataDir, "workflows"), { recursive: true });
 
   const providerRegistry = new LLMRegistry();
+  // RuntimeManager supplies the long-lived owner. Direct test/headless builders remain supported.
+  const localModelService = sharedLocalModelService ?? new LocalModelService(localModelOptions(config), logger);
+  if (!sharedLocalModelService) await localModelService.init();
+  providerRegistry.register(new LlamaCppProvider(localModelService, {
+    model: config.providers.llamacpp?.model ?? "",
+    enabled: config.providers.llamacpp?.enabled !== false
+  }));
   providerRegistry.register(new OllamaProvider(config.providers.ollama, logger));
   providerRegistry.register(
     new OpenAICompatibleProvider(
@@ -473,8 +518,9 @@ export const buildRuntime = async (
     timeoutMs: config.providers.ollama.timeoutMs
   });
   const localModelManager = new LocalModelManagerRegistry([
-    lmStudioManager,
-    ollamaManager
+    new LlamaCppModelManager(localModelService),
+    ...(config.providers.lmstudio.enabled !== false ? [lmStudioManager] : []),
+    ...(config.providers.ollama.enabled !== false ? [ollamaManager] : [])
   ]);
   const memoryAdapter = await createMemoryAdapter(config, logger);
   const memoryService = new MemoryService(memoryAdapter);
@@ -486,6 +532,7 @@ export const buildRuntime = async (
     providerId: config.llm.defaultProvider,
     model: resolveDefaultModel(config, config.llm.defaultProvider)
   }, {
+    llamacpp: config.providers.llamacpp?.model,
     ollama: config.providers.ollama.model,
     lmstudio: config.providers.lmstudio.model,
     openai: config.providers.openai.model,
@@ -540,43 +587,45 @@ export const buildRuntime = async (
       model: context.activeTarget.model, status: "queued", phase: "Waiting"
     }], context.onProgress);
     progress.update("main-model", "running", "Generating");
-    const response = await llmService.generateText(
-      {
-        model: context.activeTarget.model,
-        prompt: buildTextPrompt(
-          "general",
-          input,
-          context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
-            "- No relevant memory found.",
-          context.sessionSettings.language,
-          context.sessionSettings.outputStyle,
-          renderAttachmentContext(readAttachments(context.requestMetadata))
-        ),
-        signal: context.signal
-      },
-      context.providerId
-    );
-    const normalized = isDegradedResponse(response) ? response.text : await languageEnforcer.normalizeText(
-      response.text,
-      context.sessionSettings.language,
-      context.activeTarget,
-      context.signal
-    );
-    const error = isDegradedResponse(response) ? response.error || "The model returned no usable output." : undefined;
-    progress.update("main-model", error ? "degraded" : "completed", error ? "Failed" : "Complete", error);
+    return withInferenceProgress(progress.inference("main-model"), async () => {
+      const response = await llmService.generateText(
+        {
+          model: context.activeTarget.model,
+          prompt: buildTextPrompt(
+            "general",
+            input,
+            context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
+              "- No relevant memory found.",
+            context.sessionSettings.language,
+            context.sessionSettings.outputStyle,
+            renderAttachmentContext(readAttachments(context.requestMetadata))
+          ),
+          signal: context.signal
+        },
+        context.providerId
+      );
+      const normalized = isDegradedResponse(response) ? response.text : await languageEnforcer.normalizeText(
+        response.text,
+        context.sessionSettings.language,
+        context.activeTarget,
+        context.signal
+      );
+      const error = isDegradedResponse(response) ? response.error || "The model returned no usable output." : undefined;
+      progress.update("main-model", error ? "degraded" : "completed", error ? "Failed" : "Complete", error);
 
-    return {
-      error,
-      response: error ? `Provider request failed: ${error}` : normalized,
-      provider: response.provider,
-      model: response.model,
-      metrics: {
-        startedAt: new Date(0).toISOString(),
-        completedAt: new Date(0).toISOString(),
-        durationMs: 0,
-        usage: response.usage
-      }
-    };
+      return {
+        error,
+        response: error ? `Provider request failed: ${error}` : normalized,
+        provider: response.provider,
+        model: response.model,
+        metrics: {
+          startedAt: new Date(0).toISOString(),
+          completedAt: new Date(0).toISOString(),
+          durationMs: 0,
+          usage: response.usage
+        }
+      };
+    });
   });
 
   const toolRegistry = new ToolRegistry();
@@ -617,6 +666,7 @@ export const buildRuntime = async (
     new NodeExecutorRegistry([
       new EntryNodeExecutor(),
       new AgentNodeExecutor(engine, {
+        llamacpp: config.providers.llamacpp?.model,
         ollama: config.providers.ollama.model,
         lmstudio: config.providers.lmstudio.model,
         openai: config.providers.openai.model,
@@ -651,6 +701,7 @@ export const buildRuntime = async (
   const scheduleService = new ScheduleService(scheduleStore, taskService);
 
   return {
+    localModelService,
     engine,
     providerDescriptors: providerRegistry.list(),
     tools: toolRegistry.list(),
@@ -676,6 +727,8 @@ export const buildRuntime = async (
 
 const resolveDefaultModel = (config: AppConfig, providerId: string): string | undefined => {
   switch (providerId) {
+    case "llamacpp":
+      return config.providers.llamacpp?.model || undefined;
     case "ollama":
       return config.providers.ollama.model;
     case "lmstudio":

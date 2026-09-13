@@ -24,7 +24,7 @@ export class OllamaProvider implements LLMProvider {
   }
 
   isConfigured(): boolean {
-    return true;
+    return this.options.enabled !== false;
   }
 
   getDescriptor(): ProviderDescriptor {
@@ -34,7 +34,7 @@ export class OllamaProvider implements LLMProvider {
         name: this.name,
         ...this.options
       },
-      true
+      this.isConfigured()
     );
   }
 
@@ -44,7 +44,7 @@ export class OllamaProvider implements LLMProvider {
       headers: {
         "Content-Type": "application/json"
       },
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      signal: AbortSignal.timeout(Math.min(this.options.timeoutMs, 5000))
     });
 
     if (!response.ok) {

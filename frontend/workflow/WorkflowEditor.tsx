@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -58,6 +58,34 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   const [configError, setConfigError] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDetailsElement>(null);
+  const displayedNodes = useMemo(() => {
+    const runByNode = new Map((props.nodeRuns ?? []).map((run) => [run.nodeId, run]));
+    return nodes.map((node) => ({ ...node, data: { ...node.data, run: runByNode.get(node.id) } }));
+  }, [nodes, props.nodeRuns]);
+
+  useEffect(() => {
+    const dismissOutside = (event: PointerEvent) => {
+      const menu = addMenuRef.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
+        menu.open = false;
+      }
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      const menu = addMenuRef.current;
+      if (event.key === "Escape" && menu?.open) {
+        menu.open = false;
+        menu.querySelector("summary")?.focus();
+      }
+    };
+    // Capture outside presses even when canvas controls stop propagation.
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, []);
 
   const commit = useCallback((mutate: (next: WorkflowDefinition) => void) => {
     const next = cloneWorkflow(draftRef.current);
@@ -208,14 +236,14 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
           <span>{draft.nodes.length} nodes · {draft.transitions.length} transitions</span>
         </div>
         <div className="fsm-toolbar__actions">
-          <details className="fsm-add-menu">
+          <details className="fsm-add-menu" ref={addMenuRef}>
             <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>Add step</summary>
-            <div className="fsm-add-menu__items">
+            <div className="fsm-add-menu__items" onClick={() => {
+              if (addMenuRef.current) addMenuRef.current.open = false;
+            }}>
               {RUNNABLE_NODE_TYPES.map((item) => (
-                <button key={item.type} type="button" onClick={(event) => {
+                <button key={item.type} type="button" onClick={() => {
                   addNode(item.type);
-                  const menu = event.currentTarget.closest("details");
-                  if (menu) menu.open = false;
                   setInspectorOpen(true);
                 }}>{item.label}</button>
               ))}
@@ -236,11 +264,13 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
       <div className="fsm-workspace">
         <div className="fsm-canvas">
           <ReactFlow
-            nodes={nodes}
+            nodes={displayedNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             colorMode={props.colorMode}
+            proOptions={{ hideAttribution: true }}
+            defaultMarkerColor="var(--muted)"
             fitView
             fitViewOptions={{ padding: 0.25, maxZoom: 1.15 }}
             minZoom={0.25}
@@ -255,7 +285,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
             onEdgeClick={(_, edge) => { setSelected({ kind: "edge", id: edge.id }); setInspectorOpen(true); }}
             onPaneClick={() => setSelected(null)}
           >
-            <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+            <Background variant={BackgroundVariant.Dots} gap={20} size={1} bgColor="var(--bg)" color="var(--line-strong)" />
             <Controls showInteractive={false} />
             {mapOpen ? <MiniMap<Node<FsmNodeData>>
               pannable
@@ -352,14 +382,24 @@ function NodeFields({ node, entryNodeId, providers, configError, onConfigError, 
       {node.type === "agent" ? (
         <>
           <Field label="Provider">
-            <select value={providerId} onChange={(event) => onConfigUpdate({ providerId: event.target.value, model: "" })}>
+            <select aria-label="Provider" value={providerId} onChange={(event) => onConfigUpdate({ providerId: event.target.value, model: "" })}>
               <option value="">Task/session default</option>
+              {providerId && !provider ? <option value={providerId} disabled>{providerId} · unavailable</option> : null}
               {providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </Field>
           <Field label="Model">
-            <input list={`fsm-models-${node.id}`} value={model} placeholder={provider?.defaultModel ?? "Provider default"} onChange={(event) => onConfigUpdate({ model: event.target.value })} />
-            <datalist id={`fsm-models-${node.id}`}>{(provider?.models ?? []).map((item) => <option key={item} value={item} />)}</datalist>
+            {provider?.installedOnly ? <>
+              <select aria-label="Model" aria-describedby={`fsm-model-note-${node.id}`} value={model} onChange={(event) => onConfigUpdate({ model: event.target.value })}>
+                <option value="">{provider.defaultModel ? `Provider default: ${provider.modelLabels?.[provider.defaultModel] || provider.defaultModel}` : "Choose an installed model"}</option>
+                {model && !provider.models.includes(model) ? <option value={model} disabled>{model} · unavailable</option> : null}
+                {provider.models.map((item) => <option key={item} value={item}>{provider.modelLabels?.[item] || item}</option>)}
+              </select>
+              {model && !provider.models.includes(model) ? <span id={`fsm-model-note-${node.id}`} className="fsm-model-warning">This saved model is not on this device. Download it or select an installed model.</span> : !provider.models.length ? <span id={`fsm-model-note-${node.id}`} className="fsm-model-warning">Download a model in Models before running this node.</span> : <span id={`fsm-model-note-${node.id}`} className="fsm-model-hint">Installed models load automatically when this node runs.</span>}
+            </> : <>
+              <input aria-label="Model" list={`fsm-models-${node.id}`} value={model} placeholder={provider?.defaultModel ?? "Provider default"} onChange={(event) => onConfigUpdate({ model: event.target.value })} />
+              <datalist id={`fsm-models-${node.id}`}>{(provider?.models ?? []).map((item) => <option key={item} value={item} />)}</datalist>
+            </>}
           </Field>
         </>
       ) : null}

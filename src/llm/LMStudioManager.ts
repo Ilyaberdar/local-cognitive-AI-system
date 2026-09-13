@@ -34,7 +34,7 @@ export class LMStudioManager implements LocalModelManager {
     this.nativeBaseUrl = options.baseUrl.replace(/\/v1\/?$/, "");
   }
 
-  async listAllModels(timeoutMs = this.options.timeoutMs): Promise<ManagedModel[]> {
+  async listAllModels(timeoutMs = Math.min(5000, this.options.timeoutMs)): Promise<ManagedModel[]> {
     let payload: {
       data?: NativeModelRecord[];
       models?: NativeModelRecord[];
@@ -80,7 +80,7 @@ export class LMStudioManager implements LocalModelManager {
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
-  async listLoadedModels(timeoutMs = this.options.timeoutMs): Promise<ManagedModel[]> {
+  async listLoadedModels(timeoutMs = Math.min(5000, this.options.timeoutMs)): Promise<ManagedModel[]> {
     const models = await this.listAllModels(timeoutMs);
     return models.filter((model) => model.loaded || model.loadedInstanceIds.length > 0);
   }

@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "child_process";
+import { execFile } from "child_process";
 import { randomUUID } from "crypto";
 import fs from "fs/promises";
 import os from "os";
@@ -22,6 +22,7 @@ import { processRuntimeInput } from "../transports/shared/runtimeActions";
 import { extractNotionId } from "../utils/notion";
 import { readAttachments } from "../utils/attachments";
 import { processRunRegistry } from "./ProcessRunRegistry";
+import { getSystemMemory } from "../utils/systemMemory";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -259,6 +260,7 @@ export const createDashboardBootstrapController =
         availableModels,
         loadedModels,
         allManagedModels,
+        localModels: runtime.localModelService.snapshot(),
         systemMetrics: getSystemMetricsSnapshot()
       });
     } catch (error) {
@@ -459,7 +461,7 @@ export const createUpdateSessionSettingsController =
                 id: typeof agent.id === "string" ? agent.id : `agent-${index + 1}`,
                 name: typeof agent.name === "string" ? agent.name : `Agent${index + 1}`,
                 providerId:
-                  typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
+                  typeof agent.providerId === "string" ? agent.providerId : runtime.config.llm.defaultProvider,
                 model: typeof agent.model === "string" ? agent.model : undefined,
                 accessMode: agent.accessMode === "full" ? "full" : "default"
               }))
@@ -471,7 +473,7 @@ export const createUpdateSessionSettingsController =
                 id: typeof agent.id === "string" ? agent.id : `agent-${index + 1}`,
                 name: typeof agent.name === "string" ? agent.name : `Agent${index + 1}`,
                 providerId:
-                  typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
+                  typeof agent.providerId === "string" ? agent.providerId : runtime.config.llm.defaultProvider,
                 model: typeof agent.model === "string" ? agent.model : undefined,
                 accessMode: agent.accessMode === "full" ? "full" : "default"
               }))
@@ -490,7 +492,7 @@ export const createUpdateSessionSettingsController =
                     ? agent.role
                     : "advisor",
                 providerId:
-                  typeof agent.providerId === "string" ? agent.providerId : "lmstudio",
+                  typeof agent.providerId === "string" ? agent.providerId : runtime.config.llm.defaultProvider,
                 model: typeof agent.model === "string" ? agent.model : undefined
               }))
           : undefined,
@@ -692,7 +694,7 @@ export const createProviderTestController =
 
       const response = await runtime.llmService.generateText(
         {
-          model: providerSettings.model,
+          model: typeof req.body?.model === "string" ? req.body.model : providerSettings.model,
           prompt: "Reply exactly with: ok"
         },
         providerId
@@ -1025,10 +1027,10 @@ const getSystemMetricsSnapshot = (): SystemMetrics => {
   const cpuCores = Math.max(1, os.cpus().length);
   const loadAverage1m = os.loadavg()[0] ?? 0;
   const cpuPercent = Math.max(0, Math.min(100, (loadAverage1m / cpuCores) * 100));
-  const macMetrics = readMacMemoryMetrics();
-  const memoryTotalBytes = macMetrics?.memoryTotalBytes ?? os.totalmem();
-  const memoryUsedBytes = macMetrics?.memoryUsedBytes ?? memoryTotalBytes - os.freemem();
-  const memoryCachedBytes = macMetrics?.memoryCachedBytes;
+  const memory = getSystemMemory();
+  const memoryTotalBytes = memory.total;
+  const memoryUsedBytes = Math.max(0, memory.total - memory.free);
+  const memoryCachedBytes = memory.cached;
   const ramPercent =
     memoryTotalBytes > 0 ? Math.max(0, Math.min(100, (memoryUsedBytes / memoryTotalBytes) * 100)) : 0;
 
@@ -1041,50 +1043,6 @@ const getSystemMetricsSnapshot = (): SystemMetrics => {
     cpuCores,
     loadAverage1m
   };
-};
-
-const readMacMemoryMetrics = ():
-  | {
-      memoryTotalBytes: number;
-      memoryUsedBytes: number;
-      memoryCachedBytes: number;
-    }
-  | null => {
-  if (process.platform !== "darwin") {
-    return null;
-  }
-
-  try {
-    const vmStatOutput = execFileSync("/usr/bin/vm_stat", { encoding: "utf8" });
-    const totalMemOutput = execFileSync("/usr/sbin/sysctl", ["-n", "hw.memsize"], { encoding: "utf8" });
-    const pageSizeMatch = vmStatOutput.match(/page size of (\d+) bytes/);
-    const pageSize = Number(pageSizeMatch?.[1] || 4096);
-    const totalBytes = Number(String(totalMemOutput).trim());
-
-    const getPages = (label: string): number => {
-      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const match = vmStatOutput.match(new RegExp(`${escaped}:\\s+(\\d+)\\.`));
-      return Number(match?.[1] || 0);
-    };
-
-    const free = getPages("Pages free");
-    const fileBacked = getPages("File-backed pages");
-
-    const memoryCachedBytes = Math.max(0, fileBacked) * pageSize;
-    const memoryUsedBytes = Math.max(0, totalBytes - free * pageSize - memoryCachedBytes);
-
-    if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
-      return null;
-    }
-
-    return {
-      memoryTotalBytes: totalBytes,
-      memoryUsedBytes,
-      memoryCachedBytes
-    };
-  } catch {
-    return null;
-  }
 };
 
 const buildPluginStatus = (

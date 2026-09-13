@@ -28,7 +28,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   isConfigured(): boolean {
-    return Boolean(this.options.baseUrl && this.options.model);
+    return this.options.enabled !== false && Boolean(this.options.baseUrl && this.options.model && (this.id !== "openai" || this.options.apiKey));
   }
 
   getDescriptor(): ProviderDescriptor {
@@ -46,7 +46,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             }
           : {})
       },
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      signal: AbortSignal.timeout(Math.min(this.options.timeoutMs, 5000))
     });
 
     if (!response.ok) {
@@ -89,6 +89,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           input: request.prompt,
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
+          ...((request.reasoningEffort ?? this.options.reasoningEffort) ? { reasoning: { effort: request.reasoningEffort ?? this.options.reasoningEffort } } : {}),
           ...(typeof request.maxTokens === "number"
             ? {
                 max_output_tokens: request.maxTokens
@@ -106,7 +107,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`${this.id} request failed with status ${response.status}`);
+        const body = await response.text();
+        let detail = body.slice(0, 1500);
+        try { detail = readResponseError(JSON.parse(body)) ?? detail; } catch { /* Keep plain HTTP error details. */ }
+        throw new Error(`${this.id} request failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);
       }
 
       const payload = (await response.json()) as Record<string, unknown>;

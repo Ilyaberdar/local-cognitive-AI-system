@@ -106,6 +106,8 @@ export class WorkflowRunStore {
         return null;
       }
 
+      if (patch.progress && nodeRun.status !== "running") return nodeRun;
+
       Object.assign(nodeRun, patch);
       await this.writeNodeRuns(record);
       return nodeRun;

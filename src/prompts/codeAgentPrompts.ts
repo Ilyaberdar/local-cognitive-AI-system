@@ -37,7 +37,7 @@ const buildNoSubagentBoilerplateInstruction = (): string =>
     "If the request is not actionable, ask one concise clarifying question instead of acknowledging readiness."
   ].join("\n");
 
-export const buildSubagentNameInstruction = (agents: CodeAgentTarget[]): string => {
+export const buildSubagentNameInstruction = (agents: CodeAgentTarget[], allowDelegation = false): string => {
   const names = agents.map((agent) => `@${agent.name}`).join(", ");
 
   return [
@@ -45,7 +45,7 @@ export const buildSubagentNameInstruction = (agents: CodeAgentTarget[]): string 
     "These @names are routing labels for the orchestration layer, not libraries, modules, decorators, frameworks, or task subjects.",
     "If you mention any agent in the answer, use only its @Name form.",
     "Never write generic numbered labels such as Subagent 1, Sub-agent 1, Подагент 1, Сабагент 1, Агент 1, or Agent 1.",
-    "Never assign tasks to these agents in your answer. Execute your own pass instead."
+    ...(allowDelegation ? [] : ["Never assign tasks to these agents in your answer. Execute your own pass instead."])
   ].join("\n");
 };
 
@@ -328,7 +328,7 @@ export const buildMainDraftSystemPrompt = (
 ): string =>
   [
     "You are the main model and the only implementation writer for this run.",
-    buildSubagentNameInstruction(reviewers),
+    buildSubagentNameInstruction(reviewers, true),
     buildSubagentAccessInstruction(agent),
     buildNoSubagentBoilerplateInstruction(),
     buildCodeWriterRoleInstruction(outputStyle),

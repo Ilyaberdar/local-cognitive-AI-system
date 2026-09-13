@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
+import { resolveProviderTarget } from "../llm/ProviderTargetResolver";
 import {
   CodeAgentTarget,
   HypothesisAgentTarget,
@@ -39,27 +40,15 @@ export class SessionSettingsStore {
     const next = this.normalize({
       ...current,
       ...patch,
-      defaultTarget: {
-        ...current.defaultTarget,
-        ...patch.defaultTarget
-      },
+      defaultTarget: this.normalizeTarget(patch.defaultTarget, current.defaultTarget),
       codeAgents: patch.subagents ?? patch.codeAgents ?? current.codeAgents,
       hypothesisAgents: patch.hypothesisAgents ?? current.hypothesisAgents,
       debate: {
         ...current.debate,
         ...patch.debate,
-        support: {
-          ...current.debate.support,
-          ...patch.debate?.support
-        },
-        attack: {
-          ...current.debate.attack,
-          ...patch.debate?.attack
-        },
-        judge: {
-          ...current.debate.judge,
-          ...patch.debate?.judge
-        }
+        support: this.normalizeTarget(patch.debate?.support, current.debate.support),
+        attack: this.normalizeTarget(patch.debate?.attack, current.debate.attack),
+        judge: this.normalizeTarget(patch.debate?.judge, current.debate.judge)
       }
     });
 
@@ -111,18 +100,7 @@ export class SessionSettingsStore {
     target: Partial<ProviderTarget> | undefined,
     fallback: ProviderTarget
   ): ProviderTarget {
-    const providerId = target?.providerId ?? fallback.providerId;
-
-    if (providerId === "local") {
-      return {
-        providerId: "local"
-      };
-    }
-
-    return {
-      providerId,
-      model: target?.model ?? fallback.model ?? this.providerDefaults[providerId]
-    };
+    return resolveProviderTarget(target, fallback, this.providerDefaults);
   }
 
   private buildDefaultSettings(): SessionSettings {

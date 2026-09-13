@@ -1,0 +1,36 @@
+{
+  "version": "0.4.0",
+  "build": "b10809",
+  "commit": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
+  "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b10809",
+  "platforms": {
+    "darwin-arm64": {
+      "backend": "metal",
+      "executable": "llama-server",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-macos-arm64.tar.gz",
+      "sha256": "7d692df9e1e386e62f1c12b843903218041e6cd74c9415aa39a7ed3176f9eaa2",
+      "validation": "Native Metal inference and unsigned packaged app verified on macOS arm64, 2026-09-13"
+    },
+    "darwin-x64": {
+      "backend": "cpu",
+      "executable": "llama-server",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-macos-x64.tar.gz",
+      "sha256": "13b34aa8a5d87341a21065a83f54a8167e1aaa6fe0d66065de01632a1ed64be6",
+      "validation": "not tested on target hardware"
+    },
+    "win32-x64": {
+      "backend": "cpu",
+      "executable": "llama-server.exe",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-win-cpu-x64.zip",
+      "sha256": "9df3158ed228a641a4b127942d7f459f24c9e13f04682659d05c00c80099b6b5",
+      "validation": "not tested on target hardware"
+    },
+    "linux-x64": {
+      "backend": "cpu",
+      "executable": "llama-server",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-ubuntu-x64.tar.gz",
+      "sha256": "5e34434ddc6d03cd1584f403201aff0d4bd1a5793a72ff7e286532dfd1e4b941",
+      "validation": "not tested on target hardware"
+    }
+  }
+}

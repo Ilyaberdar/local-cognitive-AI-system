@@ -1,12 +1,14 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderRateLimit, TokenUsage } from "../types";
 
 export interface HttpProviderOptions {
+  enabled?: boolean;
   id: string;
   name: string;
   baseUrl: string;
   model: string;
   timeoutMs: number;
   apiKey?: string;
+  reasoningEffort?: LLMRequest["reasoningEffort"];
 }
 
 export const createDescriptor = (
@@ -16,7 +18,13 @@ export const createDescriptor = (
   id: options.id,
   name: options.name,
   configured,
-  defaultModel: options.model
+  defaultModel: options.model,
+  capabilities: {
+    local: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
+    managed: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
+    jsonMode: ["openai", "llamacpp"].includes(options.id),
+    reasoning: options.id === "openai"
+  }
 });
 
 export const buildComposedPrompt = (request: LLMRequest): string =>
