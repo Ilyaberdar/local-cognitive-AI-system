@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("desktopAppearance", {
 
 contextBridge.exposeInMainWorld("desktopModels", {
   importModel: () => ipcRenderer.invoke("models:select-files"),
+  importProjector: modelId => ipcRenderer.invoke("models:select-projector", modelId),
   selectDirectory: () => ipcRenderer.invoke("models:select-directory")
 });
 

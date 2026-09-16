@@ -3,6 +3,7 @@ import path from "path";
 import { createHash, randomUUID } from "crypto";
 import { LibraryModel, DownloadJob, LocalModelError } from "./types";
 import { writeJsonAtomically } from "../utils/fileStore";
+import { allModelArtifacts, modelDiskBytes } from "./ModelArtifacts";
 
 export const validateArtifactPath = (filePath: string): string => {
   if (!filePath || filePath.length > 1000 || /[\\\x00-\x1f:*?"<>|]/.test(filePath) || path.posix.isAbsolute(filePath) ||
@@ -38,12 +39,13 @@ export class ModelLibraryStore {
       if (library.version !== 1 || downloads.version !== 1 || !Array.isArray(library.items) || !Array.isArray(downloads.items)) throw new LocalModelError("Unsupported local library manifest version.");
       for (const item of library.items as LibraryModel[]) {
         this.validateRecord(item);
-        this.models.set(item.id, { ...item, loaded: false, loadedInstanceIds: [], state: "unloaded", busy: false });
+        this.models.set(item.id, { ...item, sizeBytes: modelDiskBytes(item), vision: Boolean(item.projector), loaded: false, loadedInstanceIds: [], state: "unloaded", busy: false });
       }
       for (const item of downloads.items as DownloadJob[]) {
         this.validateId(item.id); this.validateId(item.libraryId);
         if (!Array.isArray(item.files)) throw new LocalModelError("Invalid download manifest.");
-        item.files.forEach((file) => validateArtifactPath(file.path));
+        allModelArtifacts(item).forEach((file) => this.validateArtifact(file));
+        if (item.projector && item.files.some(file => file.path === item.projector!.path)) throw new LocalModelError("Invalid projector download manifest.");
         const interrupted = ["queued", "downloading", "verifying"].includes(item.state);
         this.jobs.set(item.id, { ...item, state: interrupted ? "paused" : item.state, speedBytesPerSecond: 0,
           error: interrupted ? "Download paused after the application restarted. Resume to continue from the saved bytes." : item.error });
@@ -80,12 +82,20 @@ export class ModelLibraryStore {
     const relative = model.files[0]?.path;
     if (!relative) throw new LocalModelError("The installed model has no files.");
     const folder = this.modelDirectory(model.id);
-    for (const file of model.files) {
+    for (const file of allModelArtifacts(model)) {
       const candidate = await this.safePath(folder, file.path);
       const stat = await fs.stat(candidate);
       if (!stat.isFile() || stat.size !== file.sizeBytes) throw new LocalModelError("An installed model file is missing or changed. Re-download the model.", 409);
     }
     return this.safePath(folder, relative);
+  }
+
+  async verifiedProjectorPath(model: LibraryModel): Promise<string | undefined> {
+    if (!model.projector) return undefined;
+    const candidate = await this.safePath(this.modelDirectory(model.id), model.projector.path);
+    const stat = await fs.stat(candidate);
+    if (!stat.isFile() || stat.size !== model.projector.sizeBytes) throw new LocalModelError("The vision adapter is missing or changed. Attach its original mmproj GGUF again.", 409, "projector_missing");
+    return candidate;
   }
 
   async safePath(folder: string, relative: string, createParent = false): Promise<string> {
@@ -123,7 +133,12 @@ export class ModelLibraryStore {
   private validateRecord(model: LibraryModel): void {
     this.validateId(model.id);
     if (model.providerId !== "llamacpp" || !Array.isArray(model.files) || !model.files.length || !model.owned) throw new LocalModelError("Invalid installed model manifest.");
-    for (const file of model.files) { validateArtifactPath(file.path); if (!Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 24 || !/^[a-f0-9]{64}$/i.test(file.sha256)) throw new LocalModelError("Invalid model artifact manifest."); }
+    const files = allModelArtifacts(model);
+    if (new Set(files.map(file => file.path)).size !== files.length) throw new LocalModelError("Model and projector artifact paths must be distinct.");
+    for (const file of files) this.validateArtifact(file);
+  }
+  private validateArtifact(file: { path: string; sizeBytes: number; sha256: string }): void {
+    validateArtifactPath(file.path); if (!Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 24 || !/^[a-f0-9]{64}$/i.test(file.sha256)) throw new LocalModelError("Invalid model artifact manifest.");
   }
   private assertOwned(): void { if (!this.lockToken) throw new LocalModelError("Another application process owns this local model library. Close it before loading or changing models.", 409, "library_owned"); }
   private persist(name: string, items: unknown[]): Promise<void> {

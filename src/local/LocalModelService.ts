@@ -11,7 +11,8 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
 import { LlamaCppRuntime } from "./LlamaCppRuntime";
-import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot } from "./types";
+import { allModelArtifacts, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
+import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, ModelArtifact } from "./types";
 
 export class LocalModelService implements LocalModelManager {
   readonly providerId = "llamacpp";
@@ -84,8 +85,8 @@ export class LocalModelService implements LocalModelManager {
     const models = this.store.listModels().map((model): LibraryModel => {
       const current = runtime.modelId === model.id;
       const state = current ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[runtime.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : "unloaded";
-      return { ...model, state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
-        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(model.sizeBytes ?? 0, this.options, model.metadata, this.freeDiskBytes, true),
+      return { ...model, sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
+        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true),
         error: state === "error" ? runtime.error : undefined };
     });
     return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence };
@@ -109,7 +110,7 @@ export class LocalModelService implements LocalModelManager {
     const variant = model.variants.find((item) => item.id === target.variantId);
     if (!variant) throw new LocalModelError("This quantization is not in the pinned model revision. Refresh model details.", 404);
     // Download eligibility depends on storage; memory warnings apply to inference.
-    return this.downloads.start(model, variant);
+    return this.downloads.start(model, variant, target.projectorPath);
   }
   async pauseDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.pause(id); }
   async resumeDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.resume(id); }
@@ -138,7 +139,8 @@ export class LocalModelService implements LocalModelManager {
     await this.init(); this.assertLibrary();
     const modelId = request.model?.trim();
     if (!modelId) throw new LocalModelError("Choose an installed model in Models before starting a local chat or workflow.", 400, "model_not_selected");
-    this.store.getModel(modelId);
+    const model = this.store.getModel(modelId);
+    if (request.images?.length && !model.projector) throw new LocalModelError("This local model has no vision adapter. Attach its matching mmproj GGUF in Models, or choose a vision-capable model before sending images.", 400, "vision_unavailable");
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
     return this.scheduler.run(modelId, async () => {
       try {
@@ -157,37 +159,94 @@ export class LocalModelService implements LocalModelManager {
     await this.init(); this.assertLibrary();
     return this.scheduler.run("__import", () => this.importFiles(paths), this.lifetime.signal);
   }
+  async attachProjector(modelId: string, filePath: string): Promise<LibraryModel> {
+    await this.init(); this.assertLibrary(); this.store.getModel(modelId);
+    if (this.scheduler.isModelBusy(modelId)) throw new LocalModelError("This model is in use or queued. Interrupt its requests before changing the vision adapter.", 409, "model_busy");
+    return this.scheduler.run("__projector", () => this.installProjector(modelId, filePath), this.lifetime.signal);
+  }
+
   private async importFiles(paths: string[]): Promise<LibraryModel> {
-    if (!Array.isArray(paths) || !paths.length || paths.length > 100 || paths.some((file) => typeof file !== "string" || !path.isAbsolute(file) || !/\.gguf$/i.test(file))) throw new LocalModelError("Select an absolute path to a GGUF file, or every shard of one GGUF model.");
-    const artifacts = [];
+    if (!Array.isArray(paths) || !paths.length || paths.length > 101 || paths.some((file) => typeof file !== "string" || !path.isAbsolute(file) || !/\.gguf$/i.test(file))) throw new LocalModelError("Select one main GGUF model (all its shards) and, optionally, one matching vision mmproj GGUF.");
+    if (new Set(paths.map(file => path.basename(file))).size !== paths.length) throw new LocalModelError("The selected model files must have distinct filenames.");
+    const sources = [];
     for (const file of paths) {
       const stat = await fs.stat(file);
       if (!stat.isFile()) throw new LocalModelError("The import path is not a regular file.");
-      await readGGUFMetadata(file);
-      artifacts.push({ path: path.basename(file), sizeBytes: stat.size, sha256: await sha256File(file, this.lifetime.signal) });
+      const metadata = await readGGUFMetadata(file);
+      sources.push({ source: file, metadata, artifact: { path: path.basename(file), sizeBytes: stat.size, sha256: await sha256File(file, this.lifetime.signal) } });
     }
-    const variants = groupVariants(artifacts.map((file) => ({ rfilename: file.path, size: file.sizeBytes, lfs: { sha256: file.sha256, size: file.sizeBytes } })));
-    if (variants.length !== 1 || variants[0].files.length !== paths.length) throw new LocalModelError("Import exactly one GGUF model with all its shards. Choose quantizations separately.");
+    const projectors = sources.filter(file => isProjectorMetadata(file.metadata));
+    const mainFiles = sources.filter(file => !isProjectorMetadata(file.metadata));
+    if (projectors.length > 1 || !mainFiles.length) throw new LocalModelError("Import one main GGUF model and at most one matching vision adapter. To attach an adapter to an installed model, use Attach vision adapter.");
+    if (projectors[0]) assertVisionProjector(projectors[0].metadata);
+    const projector = projectors[0]?.artifact;
+    const variants = groupVariants(mainFiles.map(({ artifact: file }) => ({ rfilename: file.path, size: file.sizeBytes, lfs: { sha256: file.sha256, size: file.sizeBytes } })));
+    if (variants.length !== 1 || variants[0].files.length !== mainFiles.length) throw new LocalModelError("Import exactly one GGUF model with all its shards. Choose quantizations separately.");
     const variant = variants[0];
     const id = modelLibraryId("import", variant.files.map((file) => file.sha256).join(":"), variant.id);
-    const existing = this.store.listModels().find((model) => model.id === id); if (existing) return existing;
+    const existing = this.store.listModels().find((model) => model.id === id);
+    if (existing) return projector ? this.installProjector(id, projectors[0].source) : this.snapshot().models.find(model => model.id === id)!;
+    const totalBytes = variant.sizeBytes + (projector?.sizeBytes ?? 0);
     const free = await getFreeDiskBytes(this.store.modelsDir);
-    if (free !== undefined && free < variant.sizeBytes + 64 * 1024 ** 2) throw new LocalModelError("Not enough disk space to copy the selected model into the library.", 409);
+    if (free !== undefined && free < totalBytes + 64 * 1024 ** 2) throw new LocalModelError("Not enough disk space to copy the selected model and vision adapter into the library.", 409);
     const staging = this.store.stagingDirectory(`import-${randomUUID()}`);
     await fs.mkdir(staging, { recursive: true });
     try {
-      for (const artifact of variant.files) {
+      for (const artifact of allModelArtifacts({ files: variant.files, projector })) {
         const source = paths.find((file) => path.basename(file) === artifact.path)!;
         const target = await this.store.safePath(staging, artifact.path, true);
         await fs.copyFile(source, target, fs.constants.COPYFILE_EXCL);
-        if (await sha256File(target, this.lifetime.signal) !== artifact.sha256) throw new LocalModelError("A model file changed during import. Try again.", 409);
+        if ((await fs.stat(target)).size !== artifact.sizeBytes || await sha256File(target, this.lifetime.signal) !== artifact.sha256) throw new LocalModelError("A model file changed during import. Try again.", 409);
       }
       const metadata = await readGGUFMetadata(await this.store.safePath(staging, variant.files[0].path));
       const model: LibraryModel = { id, libraryId: id, displayName: metadata.name || path.basename(variant.id, ".gguf"), providerId: "llamacpp", providerName: "Local models",
         variantId: variant.id, quantization: variant.quantization, license: "imported — see original model license", installedAt: new Date().toISOString(), owned: true,
-        sizeBytes: variant.sizeBytes, files: variant.files, metadata, loaded: false, loadedInstanceIds: [], state: "unloaded" };
+        sizeBytes: totalBytes, files: variant.files, projector, vision: Boolean(projector), metadata, loaded: false, loadedInstanceIds: [], state: "unloaded" };
       await fs.rename(staging, this.store.modelDirectory(id)); await this.store.putModel(model); this.emit(); return this.snapshot().models.find((item) => item.id === id)!;
     } finally { await fs.rm(staging, { recursive: true, force: true }); }
+  }
+
+  private async installProjector(modelId: string, filePath: string): Promise<LibraryModel> {
+    if (typeof filePath !== "string" || !path.isAbsolute(filePath) || !/\.gguf$/i.test(filePath)) throw new LocalModelError("Select an absolute path to a vision mmproj GGUF.");
+    if (this.scheduler.isModelBusy(modelId)) throw new LocalModelError("This model was queued for inference. Wait before changing its vision adapter.", 409, "model_busy");
+    const model = this.store.getModel(modelId);
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) throw new LocalModelError("The vision adapter path is not a regular file.");
+    assertVisionProjector(await readGGUFMetadata(filePath));
+    const sha256 = await sha256File(filePath, this.lifetime.signal);
+    if (model.projector?.sha256 === sha256) {
+      const existing = await this.store.verifiedProjectorPath(model).catch(() => undefined);
+      if (existing && await sha256File(existing, this.lifetime.signal) === sha256) return this.snapshot().models.find(item => item.id === modelId)!;
+    }
+    const free = await getFreeDiskBytes(this.store.modelsDir);
+    if (free !== undefined && free < stat.size + 64 * 1024 ** 2) throw new LocalModelError("Not enough disk space to copy the vision adapter. The current adapter was preserved.", 409, "disk_full");
+    const basename = path.basename(filePath).replace(/[\\\x00-\x1f:*?"<>|]/g, "_").slice(-160);
+    const projector: ModelArtifact = { path: `projectors/${sha256.slice(0, 24)}-${randomUUID().slice(0, 8)}-${basename}`, sizeBytes: stat.size, sha256 };
+    const staging = this.store.stagingDirectory(`projector-${randomUUID()}`);
+    let copiedPath: string | undefined;
+    let committed = false;
+    await fs.mkdir(staging, { recursive: true });
+    try {
+      const staged = await this.store.safePath(staging, "adapter.gguf", true);
+      await fs.copyFile(filePath, staged, fs.constants.COPYFILE_EXCL);
+      if ((await fs.stat(staged)).size !== stat.size || await sha256File(staged, this.lifetime.signal) !== sha256) throw new LocalModelError("The vision adapter changed during import. The current adapter was preserved.", 409);
+      this.lifetime.signal.throwIfAborted();
+      const destination = await this.store.safePath(this.store.modelDirectory(modelId), projector.path, true);
+      await fs.rename(staged, destination); copiedPath = destination;
+      if (this.runtime.currentModelId === modelId) await this.runtime.stop();
+      this.lifetime.signal.throwIfAborted();
+      try { await this.store.putModel({ ...model, projector, vision: true, sizeBytes: modelDiskBytes({ files: model.files, projector }) }); }
+      catch (error) { await this.store.putModel(model).catch(() => {}); throw error; }
+      committed = true;
+      if (model.projector) {
+        try { await fs.unlink(await this.store.safePath(this.store.modelDirectory(modelId), model.projector.path)); }
+        catch (error) { this.logger.warn("Could not remove the replaced vision adapter", { modelId, error: error instanceof Error ? error.message : String(error) }); }
+      }
+      this.emit(); return this.snapshot().models.find(item => item.id === modelId)!;
+    } finally {
+      if (copiedPath && !committed) await fs.unlink(copiedPath).catch(() => {});
+      await fs.rm(staging, { recursive: true, force: true });
+    }
   }
 
   dispose(): Promise<void> {
@@ -202,9 +261,9 @@ export class LocalModelService implements LocalModelManager {
     this.assertLibrary();
     if (!this.options.enabled) throw new LocalModelError("Local models are disabled in Settings.", 503);
     const model = this.store.getModel(id);
-    const compatibility = evaluateCompatibility(model.sizeBytes ?? 0, this.options, model.metadata, undefined, true);
+    const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true);
     if (!compatibility.canLoad) throw new LocalModelError(compatibility.reasons.join(" "), 409, "model_incompatible");
-    await this.runtime.load(id, await this.store.verifiedModelPath(model), signal);
+    await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model));
   }
   private decorateCatalog(model: CatalogModel): CatalogModel {
     return { ...model, variants: model.variants.map((variant) => ({ ...variant, compatibility: evaluateCompatibility(variant.sizeBytes, this.options, undefined, this.freeDiskBytes) })) };
@@ -272,8 +331,8 @@ export class LocalModelService implements LocalModelManager {
           if (await sha256File(target, this.lifetime.signal) !== file.expectedHash) throw new LocalModelError("A model file changed or failed integrity checking during the move. The original library was preserved.", 409);
         }
       };
-      for (const model of models) await copyOwnedFolder(oldStore.modelDirectory(model.id), nextStore.modelDirectory(model.id), model.files, false);
-      for (const job of pendingJobs) await copyOwnedFolder(oldStore.stagingDirectory(job.id), nextStore.stagingDirectory(job.id), job.files, true);
+      for (const model of models) await copyOwnedFolder(oldStore.modelDirectory(model.id), nextStore.modelDirectory(model.id), allModelArtifacts(model), false);
+      for (const job of pendingJobs) await copyOwnedFolder(oldStore.stagingDirectory(job.id), nextStore.stagingDirectory(job.id), allModelArtifacts(job), true);
       this.lifetime.signal.throwIfAborted();
       await this.runtime.reconfigure(options);
       this.store = nextStore; this.options = options;

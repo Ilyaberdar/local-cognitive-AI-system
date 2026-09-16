@@ -15,6 +15,7 @@ export class LlamaCppRuntime {
   private token = "";
   private state: LocalRuntimeSnapshot["status"] = "stopped";
   private modelId?: string;
+  private projectorPath?: string;
   private error?: string;
   private logTail = "";
   private stopping?: Promise<void>;
@@ -36,10 +37,10 @@ export class LlamaCppRuntime {
   }
   async reconfigure(options: LocalModelOptions): Promise<void> { await this.stop(); this.options = options; this.lifetime = new AbortController(); await this.init(); }
 
-  async load(modelId: string, modelPath: string, signal?: AbortSignal): Promise<void> {
+  async load(modelId: string, modelPath: string, signal?: AbortSignal, projectorPath?: string): Promise<void> {
     signal?.throwIfAborted();
     if (!this.options.enabled) throw new LocalModelError("Local models are disabled.", 503);
-    if (this.state === "ready" && this.modelId === modelId && this.child) return;
+    if (this.state === "ready" && this.modelId === modelId && this.projectorPath === projectorPath && this.child) return;
     await this.stop();
     try { await fs.access(this.executable(), fs.constants.X_OK); } catch { await this.init(); throw new LocalModelError(this.error ?? "The llama.cpp runtime is unavailable.", 503); }
     const port = await freePort();
@@ -47,10 +48,12 @@ export class LlamaCppRuntime {
     this.token = randomBytes(32).toString("hex");
     this.endpoint = `http://127.0.0.1:${port}/v1`;
     this.modelId = modelId;
+    this.projectorPath = projectorPath;
     this.logTail = "";
     this.setState("loading");
     const args = ["--model", modelPath, "--alias", modelId, "--host", "127.0.0.1", "--port", String(port),
       "--ctx-size", String(this.options.contextSize), "--n-gpu-layers", String(this.options.gpuLayers), "--parallel", "1", "--jinja", "--no-webui", "--no-agent"];
+    if (projectorPath) args.push("--mmproj", projectorPath);
     const compiledHost = path.join(__dirname, "RuntimeProcessHost.js");
     const compiled = await fs.access(compiledHost).then(() => true, () => false);
     const hostArgs = compiled ? [compiledHost] : [require.resolve("tsx/cli"), path.join(__dirname, "RuntimeProcessHost.ts")];
@@ -98,6 +101,7 @@ export class LlamaCppRuntime {
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     if (!this.endpoint || !this.child || this.state !== "ready" || request.model !== this.modelId) throw new LocalModelError("The selected local model is not ready.", 503);
+    if (request.images?.length && !this.projectorPath) throw new LocalModelError("This local model has no vision adapter. Attach its matching mmproj GGUF before sending images.", 400, "vision_unavailable");
     const provider = new OpenAICompatibleProvider({ id: "llamacpp", name: "Local models", model: this.modelId!,
       baseUrl: this.endpoint, apiKey: this.token, timeoutMs: this.options.generationTimeoutMs }, this.logger);
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
@@ -128,7 +132,7 @@ export class LlamaCppRuntime {
       });
     }
     await this.nativeCleanup;
-    this.child = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined;
+    this.child = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined; this.projectorPath = undefined;
     this.setState("stopped");
   }
   private executable(): string { return this.options.executablePath || path.join(this.options.runtimeDir, process.platform === "win32" ? "llama-server.exe" : "llama-server"); }

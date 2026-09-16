@@ -33,6 +33,7 @@ export class AgentNodeExecutor implements NodeExecutor {
         channel: "system"
       },
       metadata: {
+        attachments: context.task.attachments,
         mode,
         taskId: context.task.id,
         workflowId: context.workflow.id,

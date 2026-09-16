@@ -51,6 +51,7 @@ export const createCreateTaskController =
         description,
         workflowId,
         priority,
+        attachments: req.body?.attachments,
         sessionId: typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined,
         scheduledFor: typeof req.body?.scheduledFor === "string" ? req.body.scheduledFor : undefined,
         metadata: isRecord(req.body?.metadata) ? req.body.metadata : undefined
@@ -85,6 +86,7 @@ export const createUpdateTaskController =
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const patch: Record<string, unknown> = {};
+      if (req.body?.attachments !== undefined) patch.attachments = req.body.attachments;
 
       if (typeof req.body?.title === "string") {
         patch.title = req.body.title.trim();

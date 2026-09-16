@@ -175,12 +175,22 @@ app.on("before-quit", (event) => {
 ipcMain.handle("models:select-files", async (event) => {
   if (event.sender !== mainWindow?.webContents) return [];
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "Import local model", properties: ["openFile", "multiSelections"],
+    title: "Import a model and optional vision adapter", message: "Select the main GGUF weights (all shards) and, optionally, one matching mmproj GGUF.", properties: ["openFile", "multiSelections"],
     filters: [{ name: "GGUF models", extensions: ["gguf"] }]
   });
   if (result.canceled || !result.filePaths.length) return null;
   // The renderer never supplies arbitrary filesystem paths to the backend.
   return backendHandle.runtimeManager.getRuntime().localModelService.importModel(result.filePaths);
+});
+ipcMain.handle("models:select-projector", async (event, modelId) => {
+  if (event.sender !== mainWindow?.webContents) return null;
+  if (typeof modelId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/i.test(modelId)) throw new Error("Invalid local model identifier.");
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Attach vision adapter", message: "Select the mmproj GGUF made for this exact model. Changing the adapter unloads the model.",
+    properties: ["openFile"], filters: [{ name: "Vision adapter GGUF", extensions: ["gguf"] }]
+  });
+  if (result.canceled || result.filePaths.length !== 1) return null;
+  return backendHandle.runtimeManager.getRuntime().localModelService.attachProjector(modelId, result.filePaths[0]);
 });
 ipcMain.handle("models:select-directory", async (event) => {
   if (event.sender !== mainWindow?.webContents) return null;

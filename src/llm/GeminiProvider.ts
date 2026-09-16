@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { decodeImage, validateImages } from "./InferenceImages";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -45,6 +46,7 @@ export class GeminiProvider implements LLMProvider {
     const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
+      const images = validateImages(request.images);
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -60,7 +62,10 @@ export class GeminiProvider implements LLMProvider {
           contents: [
             {
               role: "user",
-              parts: [{ text: request.prompt }]
+              parts: [{ text: request.prompt }, ...images.map(image => {
+                const decoded = decodeImage(image);
+                return { inline_data: { mime_type: decoded.mimeType, data: decoded.data } };
+              })]
             }
           ],
           generationConfig: {

@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { decodeImage, validateImages } from "./InferenceImages";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -51,6 +52,7 @@ export class AnthropicProvider implements LLMProvider {
     const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
+      const images = validateImages(request.images);
       const response = await fetch(`${this.options.baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
@@ -65,7 +67,12 @@ export class AnthropicProvider implements LLMProvider {
           messages: [
             {
               role: "user",
-              content: request.prompt
+              content: images.length ? [
+                ...images.map(image => { const decoded = decodeImage(image); return {
+                  type: "image", source: { type: "base64", media_type: decoded.mimeType, data: decoded.data }
+                }; }),
+                { type: "text", text: request.prompt }
+              ] : request.prompt
             }
           ]
         }),

@@ -56,6 +56,7 @@ export interface CatalogModel {
   gated: boolean;
   tags?: string[];
   variants: CatalogVariant[];
+  projectors?: ModelArtifact[];
   recommended?: boolean;
   verified?: boolean;
   cached?: boolean;
@@ -89,6 +90,7 @@ export interface GGUFMetadata {
   ssmInnerSize?: number;
   ssmStateSize?: number;
   ssmGroupCount?: number;
+  hasVisionEncoder?: boolean;
 }
 
 export interface LibraryModel extends ManagedModel {
@@ -102,6 +104,7 @@ export interface LibraryModel extends ManagedModel {
   installedAt: string;
   owned: boolean;
   files: ModelArtifact[];
+  projector?: ModelArtifact;
   metadata?: GGUFMetadata;
   state: "unloaded" | "loading" | "ready" | "unloading" | "error";
   busy?: boolean;
@@ -113,6 +116,7 @@ export interface DownloadTarget {
   repoId: string;
   revision: string;
   variantId: string;
+  projectorPath?: string;
 }
 
 export interface DownloadJob extends DownloadTarget {
@@ -122,6 +126,7 @@ export interface DownloadJob extends DownloadTarget {
   quantization: string;
   license: string;
   files: ModelArtifact[];
+  projector?: ModelArtifact;
   state: "queued" | "downloading" | "paused" | "verifying" | "completed" | "failed" | "cancelled";
   downloadedBytes: number;
   totalBytes: number;

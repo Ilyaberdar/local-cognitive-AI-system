@@ -14,6 +14,46 @@ import { ResponseFormatter } from "../src/core/ResponseFormatter";
 import { resolveRequestTimeoutMs } from "../src/llm/provider-utils";
 import { FileTool } from "../src/tools/FileTool";
 import { Logger } from "../src/utils/Logger";
+import { currentInferenceImages } from "../src/llm/InferenceImages";
+
+test("chat images survive follow-ups, stay session-scoped, and task removal prevents replay", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-image-history-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const runtime = await buildRuntime(createTestConfig(root), new Logger());
+  const observed: Array<{ prompt: string; names: Array<string | undefined> }> = [];
+  runtime.llmService.generateText = async request => {
+    observed.push({ prompt: request.prompt, names: (currentInferenceImages() ?? []).map(image => image.name) });
+    return { provider: "ollama", model: "fixture", text: "I can see the image." };
+  };
+  const actor = { sessionId: "images", userId: "person", channel: "http" as const };
+  await runtime.sessionSettingsStore.update("images", { mode: "general", language: "en" });
+  await runtime.sessionSettingsStore.update("different", { mode: "general", language: "en" });
+  const attachment = { id: "image-a", name: "picture.png", mimeType: "image/png", kind: "image", sizeBytes: 68,
+    dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVRsAAAAASUVORK5CYII=" };
+  await runtime.engine.process({ input: "Describe this image.", actor, metadata: { attachments: [attachment] } });
+  await runtime.engine.process({ input: "What is its colour?", actor });
+  assert.deepEqual(observed.slice(0, 2).map(item => item.names), [["picture.png"], ["picture.png"]]);
+  assert.match(observed[1].prompt, /Image pixels are included/);
+  const snapshot = runtime.localModelService.snapshot();
+  t.mock.method(runtime.localModelService, "snapshot", () => ({ ...snapshot, models: [
+    { id: "text-fixture", vision: false }, { id: "vision-fixture", vision: true }
+  ] }));
+  await runtime.engine.process({ input: "Continue using a text model.", actor, providerId: "llamacpp", model: "text-fixture" });
+  assert.deepEqual(observed.at(-1)?.names, [], "Earlier images cannot block text-only inference");
+  assert.match(observed.at(-1)!.prompt, /Image pixels are unavailable to this model/);
+  await runtime.engine.process({ input: "Look at the image again.", actor, providerId: "llamacpp", model: "vision-fixture" });
+  assert.deepEqual(observed.at(-1)?.names, ["picture.png"], "Switching models must preserve the original attachment");
+  await runtime.engine.process({ input: "Inspect a newly attached image.", actor, providerId: "llamacpp", model: "text-fixture", metadata: { attachments: [attachment] } });
+  assert.deepEqual(observed.at(-1)?.names, ["picture.png"], "Explicit images still reach the provider capability check");
+  await runtime.engine.process({ input: "An unrelated question.", actor: { ...actor, sessionId: "different" } });
+  assert.deepEqual(observed.at(-1)?.names, []);
+  await runtime.engine.process({ input: "Run task with removed attachments.", actor, metadata: { taskId: "task-example", attachments: [] } });
+  assert.deepEqual(observed.at(-1)?.names, []);
+  await runtime.engine.process({ input: "Start a fresh topic.", actor, metadata: { includePreviousAttachments: false } });
+  assert.deepEqual(observed.at(-1)?.names, []);
+  await runtime.engine.process({ input: "Continue the new topic.", actor });
+  assert.deepEqual(observed.at(-1)?.names, []);
+});
 
 const createTestConfig = (root: string): AppConfig => ({
   server: {

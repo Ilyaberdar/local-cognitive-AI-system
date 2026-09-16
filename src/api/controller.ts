@@ -582,6 +582,7 @@ export const createGetSessionMessagesController =
               role: "user",
               content: entry.input,
               createdAt: entry.createdAt,
+              includePreviousAttachments: (entry.metadata?.requestMetadata as Record<string, unknown> | undefined)?.includePreviousAttachments === false ? false : undefined,
               attachments: readAttachments(
                 (entry.metadata?.requestMetadata as Record<string, unknown> | undefined) ?? undefined
               )

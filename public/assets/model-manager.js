@@ -25,7 +25,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   const state = {
     tab: "catalog", source: "recommended", query: "", cursor: null, catalog: [], catalogLoading: false,
     catalogLoaded: false, catalogError: "", catalogWarning: "", runtime: null, downloads: [], connected: false, connectionError: "",
-    detail: null, detailRepoId: "", detailLoading: false, detailError: "", variantId: "",
+    detail: null, detailRepoId: "", detailLoading: false, detailError: "", variantId: "", projectorPath: "",
     actions: new Set(), deleteId: "", started: false, eventSequence: 0
   };
   let root = null;
@@ -69,9 +69,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     };
   }
 
-  function renderCompatibility(item, expanded = false) {
+  function renderCompatibility(item, expanded = false, projector = null) {
     const result = compatibility(item);
-    return `<div class="mm-compatibility mm-compatibility--${result.tone}" title="${escape(result.messages.join(" "))}"><span class="mm-status-dot" aria-hidden="true"></span><span>${escape(result.label)}</span></div>${expanded && (result.messages.length || result.memory) ? `<div class="mm-compatibility-detail ${result.tone}">${result.memory ? `<div>Estimated memory: <strong>${bytes(result.memory)}</strong>${result.totalMemory ? ` · Device memory: ${bytes(result.totalMemory)}` : ""}${result.disk ? ` · Required disk space: ${bytes(result.disk)}` : ""}</div>` : ""}${result.messages.length ? `<ul>${result.messages.map((message) => `<li>${escape(message)}</li>`).join("")}</ul>` : ""}</div>` : ""}`;
+    return `<div class="mm-compatibility mm-compatibility--${result.tone}" title="${escape(result.messages.join(" "))}"><span class="mm-status-dot" aria-hidden="true"></span><span>${projector ? "Main model: " : ""}${escape(result.label)}</span></div>${expanded && (result.messages.length || result.memory || projector) ? `<div class="mm-compatibility-detail ${result.tone}">${result.memory ? `<div>${projector ? "Main-model memory estimate" : "Estimated memory"}: <strong>${bytes(result.memory)}</strong>${result.totalMemory ? ` · Device memory: ${bytes(result.totalMemory)}` : ""}${result.disk ? ` · ${projector ? "Main-model disk estimate" : "Required disk space"}: ${bytes(result.disk)}` : ""}</div>` : ""}${projector ? `<div>Vision adapter: ${bytes(projector.sizeBytes)} additional disk space. Additional memory for image processing is checked when loading.</div>` : ""}${result.messages.length ? `<ul>${result.messages.map((message) => `<li>${escape(message)}</li>`).join("")}</ul>` : ""}</div>` : ""}`;
   }
 
   function renderRuntime() {
@@ -123,7 +123,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     return `<article class="mm-model-card">
       <div class="mm-card-heading"><div class="mm-model-mark">${icon("models")}</div><div><h3>${escape(nameOf(item))}</h3><div class="subtle">${escape(author)}</div></div>${installed ? '<span class="badge success">On device</span>' : ""}</div>
       ${item.description ? `<p class="mm-description">${escape(item.description)}</p>` : ""}
-      <div class="mm-tags"><span>GGUF</span>${item.parameterCount || item.parameters ? `<span>${escape(item.parameterCount || item.parameters)}</span>` : ""}${item.license ? `<span title="Model license">${escape(item.license)}</span>` : ""}${totalOf(preview) ? `<span>${bytes(totalOf(preview))}${variantsOf(item).length > 1 ? "+" : ""}</span>` : ""}${item.gated ? '<span class="warning">Access required</span>' : ""}</div>
+      <div class="mm-tags"><span>GGUF</span><span>${asArray(item.projectors).length ? "Images with adapter" : item.projectors ? "Text only" : "Check image support"}</span>${item.parameterCount || item.parameters ? `<span>${escape(item.parameterCount || item.parameters)}</span>` : ""}${item.license ? `<span title="Model license">${escape(item.license)}</span>` : ""}${totalOf(preview) ? `<span>${bytes(totalOf(preview))}${variantsOf(item).length > 1 ? "+" : ""}</span>` : ""}${item.gated ? '<span class="warning">Access required</span>' : ""}</div>
       ${preview.compatibility ? renderCompatibility(preview) : '<div class="subtle mm-card-note">Choose a quantization to check memory and disk requirements.</div>'}
       <div class="mm-card-footer"><a href="https://huggingface.co/${encodeRepo(repoId)}" target="_blank" rel="noopener noreferrer" class="mm-source-link">Model card ↗</a>${actionButton("details", repoId, "View model", { symbol: "chevronRight" })}</div>
     </article>`;
@@ -132,7 +132,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   function renderCatalog() {
     return `<div id="mm-catalog" role="tabpanel" aria-labelledby="mm-tab-catalog">
       <form class="mm-search" id="mm-search-form"><label class="mm-search-input" for="mm-search-input">${icon("search")}<input id="mm-search-input" name="query" type="search" value="${escape(state.query)}" placeholder="Search Hugging Face GGUF models" autocomplete="off" aria-label="Search Hugging Face models" /></label><button class="ghost-button" type="submit" ${state.catalogLoading ? "disabled" : ""}>Search</button></form>
-      <div class="mm-catalog-toolbar"><div class="mm-source-tabs" aria-label="Catalog source"><button type="button" data-mm-action="recommended" aria-pressed="${state.source === "recommended"}">Recommended</button><button type="button" data-mm-action="browse" aria-pressed="${state.source === "search"}">Hugging Face</button></div><span class="subtle">Text models · Download one variant</span></div>
+      <div class="mm-catalog-toolbar"><div class="mm-source-tabs" aria-label="Catalog source"><button type="button" data-mm-action="recommended" aria-pressed="${state.source === "recommended"}">Recommended</button><button type="button" data-mm-action="browse" aria-pressed="${state.source === "search"}">Hugging Face</button></div><span class="subtle">GGUF models · Text and images</span></div>
       ${state.catalogWarning ? `<div class="mm-catalog-warning" role="status">${escape(state.catalogWarning)}</div>` : ""}
       ${state.catalogError ? `<div class="mm-empty mm-empty--error" role="status">${icon("models")}<h3>Catalog is unavailable</h3><p>${escape(state.catalogError)}</p><p>Models on this device remain available offline.</p>${actionButton("retry-catalog", "", "Try again")}</div>` : ""}
       ${state.catalogLoading && !state.catalog.length ? '<div class="mm-empty" role="status"><span class="activity-scan" aria-hidden="true"></span><p>Loading model catalog…</p></div>' : ""}
@@ -145,26 +145,28 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   function renderLibraryCard(model) {
     const id = idOf(model);
     const status = modelState(model);
-    const busy = ["loading", "unloading"].includes(status) || state.actions.has(`load:${id}`) || state.actions.has(`unload:${id}`);
+    const busy = ["loading", "unloading"].includes(status) || state.actions.has(`load:${id}`) || state.actions.has(`unload:${id}`) || state.actions.has(`projector:${id}`);
     const loaded = status === "ready";
     const used = Boolean(model.busy) || Number(model.activeRequests || model.inUse || 0) > 0;
     const fit = compatibility(model);
     return `<article class="mm-model-card mm-library-card" data-mm-library-id="${escape(id)}">
       <div class="mm-card-heading"><div class="mm-model-mark ${loaded ? "is-loaded" : ""}">${icon("models")}</div><div><h3>${escape(nameOf(model))}</h3><div class="subtle">${escape(model.repoId || model.providerName || "Local models")}</div></div><span class="badge ${loaded ? "success" : status === "error" ? "danger" : ""}">${busy ? '<span class="activity-scan" aria-hidden="true"></span>' : ""}${escape(MODEL_LABELS[status] || status)}</span></div>
-      <div class="mm-tags"><span>${bytes(totalOf(model))}</span>${model.quantization ? `<span>${escape(model.quantization)}</span>` : ""}${model.license ? `<span>${escape(model.license)}</span>` : ""}${isDefault(model) ? '<span class="mm-tag-selected">App default</span>' : ""}${isCurrent(model) ? '<span class="mm-tag-selected">Current chat</span>' : ""}${used ? '<span>In use</span>' : ""}</div>
+      <div class="mm-tags"><span>${bytes(totalOf(model))}</span><span>${model.vision === true ? "Images" : "Text only"}</span>${model.quantization ? `<span>${escape(model.quantization)}</span>` : ""}${model.license ? `<span>${escape(model.license)}</span>` : ""}${isDefault(model) ? '<span class="mm-tag-selected">App default</span>' : ""}${isCurrent(model) ? '<span class="mm-tag-selected">Current chat</span>' : ""}${used ? '<span>In use</span>' : ""}</div>
       <div class="mm-library-status">${renderCompatibility(model)}
       ${fit.memory ? `<div class="subtle mm-memory-estimate">Estimated memory: ${bytes(fit.memory)}${fit.totalMemory ? ` · ${bytes(fit.totalMemory)} on device` : ""}</div>` : ""}
       ${fit.messages.length ? `<details class="mm-memory-details"><summary>Compatibility details</summary>${renderCompatibility(model, true)}</details>` : ""}
+      ${model.projector ? `<div class="subtle mm-projector-note">Vision adapter: ${escape(model.projector.path)} · ${bytes(model.projector.sizeBytes)}</div>` : ""}
+      ${loaded && window.desktopModels?.importProjector ? '<div class="subtle mm-projector-note">Changing the vision adapter unloads this model. It loads again with the next request.</div>' : ""}
       ${model.error ? `<div class="mm-inline-error">${escape(typeof model.error === "string" ? model.error : model.error.message)}</div>` : ""}</div>
       <div class="mm-library-actions">${actionButton(loaded ? "unload" : "load", id, loaded ? "Unload" : "Load model", { primary: !loaded, disabled: busy || used || (!loaded && fit.loadBlocked), symbol: loaded ? "stop" : "play", title: loaded ? "Free memory and keep the downloaded files" : fit.loadBlocked ? fit.messages.join(" ") : "Load this model into memory" })}${actionButton("use", id, isCurrent(model) ? "Open chat" : "Use in chat", { disabled: busy || (!loaded && fit.loadBlocked), symbol: "chat" })}</div>
-      <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? "Ready for chat, agents and workflows" : fit.loadBlocked ? "Downloaded · Cannot run on this device" : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: "Delete from device" })}</div></div>
+      <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? "Ready for chat, agents and workflows" : fit.loadBlocked ? "Downloaded · Cannot run on this device" : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${window.desktopModels?.importProjector ? actionButton("projector", id, model.projector ? "Change vision adapter" : "Add vision adapter", { disabled: busy || used, title: "Choose the matching mmproj GGUF file for this model" }) : ""}${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: "Delete from device" })}</div></div>
       ${state.deleteId === id ? `<div class="mm-delete-confirm" role="alert"><p>Delete <strong>${escape(nameOf(model))}</strong> and free ${bytes(totalOf(model))}? You can download it again. Saved chats and workflows keep their model reference.</p><div class="mm-inline-actions">${actionButton("delete", id, "Delete from device")}${actionButton("delete-dismiss", id, "Keep model")}</div></div>` : ""}</div>
     </article>`;
   }
 
   function renderLibrary() {
     const installed = [...models()].sort((left, right) => Number(modelState(right) === "ready") - Number(modelState(left) === "ready") || nameOf(left).localeCompare(nameOf(right)));
-    return `<div id="mm-device" role="tabpanel" aria-labelledby="mm-tab-device"><div class="mm-library-intro"><span class="subtle">Downloaded files stay on this device. Load model uses memory; Unload frees it.</span><div class="mm-inline-actions">${window.desktopModels?.importModel ? actionButton("import", "", "Import GGUF", { symbol: "plus" }) : ""}${actionButton("refresh", "", "Refresh", { symbol: "refresh" })}</div></div>${installed.length ? `<div class="mm-library-grid">${installed.map(renderLibraryCard).join("")}</div>` : `<div class="mm-empty">${icon("models")}<h3>Your local library starts here</h3><p>Download a model from the catalog, then use it in chats, agents and workflows — including workflows with cloud models.</p>${actionButton("tab", "catalog", "Browse catalog", { primary: true })}</div>`}</div>`;
+    return `<div id="mm-device" role="tabpanel" aria-labelledby="mm-tab-device"><div class="mm-library-intro"><span class="subtle">Downloaded files stay on this device. Load model uses memory; Unload frees it.</span><div class="mm-inline-actions">${window.desktopModels?.importModel ? actionButton("import", "", "Import GGUF", { symbol: "plus", title: "Choose model weights and, optionally, a matching mmproj vision adapter" }) : ""}${actionButton("refresh", "", "Refresh", { symbol: "refresh" })}</div></div>${installed.length ? `<div class="mm-library-grid">${installed.map(renderLibraryCard).join("")}</div>` : `<div class="mm-empty">${icon("models")}<h3>Your local library starts here</h3><p>Download a model from the catalog, then use it in chats, agents and workflows — including workflows with cloud models.</p>${actionButton("tab", "catalog", "Browse catalog", { primary: true })}</div>`}</div>`;
   }
 
   function renderDetail() {
@@ -172,6 +174,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const detail = state.detail;
     const variants = variantsOf(detail);
     const variant = variants.find((item) => String(item.id || item.variantId) === state.variantId) || variants[0];
+    const projectors = asArray(detail?.projectors);
+    const projector = projectors.find((item) => item.path === state.projectorPath);
+    const downloadSize = totalOf(variant) + Number(projector?.sizeBytes || 0);
     const result = compatibility(variant);
     const repoId = state.detailRepoId;
     const gated = detail?.gated || detail?.private;
@@ -179,15 +184,16 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const active = variant && state.downloads.some((job) => job.repoId === repoId && job.variantId === (variant.id || variant.variantId) && ACTIVE_DOWNLOADS.has(job.status || job.state));
     return `<dialog class="mm-detail-dialog" id="mm-detail-dialog" aria-labelledby="mm-detail-title"><div class="mm-detail-head"><div><div class="mm-eyebrow">Local model</div><h2 id="mm-detail-title">${escape(detail ? nameOf(detail) : repoId.split("/").at(-1))}</h2><a class="mm-source-link" href="https://huggingface.co/${encodeRepo(repoId)}" target="_blank" rel="noopener noreferrer">${escape(repoId)} ↗</a></div><button type="button" class="icon-button" data-mm-action="close-detail" aria-label="Close model details">${icon("close")}</button></div>
       <div class="mm-detail-body">${state.detailLoading ? '<div class="mm-empty" role="status"><span class="activity-scan" aria-hidden="true"></span><p>Checking available files and device compatibility…</p></div>' : state.detailError ? `<div class="mm-inline-error" role="alert">${escape(state.detailError)}</div>` : `
-        <div class="mm-tags"><span>GGUF · Text generation</span>${detail?.license ? `<span>License: ${escape(detail.license)}</span>` : '<span>License not specified</span>'}${detail?.revision ? `<span title="${escape(detail.revision)}">Revision ${escape(detail.revision.slice(0, 8))}</span>` : ""}</div>
+        <div class="mm-tags"><span>GGUF · ${projector ? "Images" : "Text only"}</span>${detail?.license ? `<span>License: ${escape(detail.license)}</span>` : '<span>License not specified</span>'}${detail?.revision ? `<span title="${escape(detail.revision)}">Revision ${escape(detail.revision.slice(0, 8))}</span>` : ""}</div>
         ${detail?.description ? `<p class="mm-description">${escape(detail.description)}</p>` : ""}
         <div class="mm-detail-section"><h3>Download variant</h3><p class="subtle">Smaller quantizations use less disk space and memory. Only the selected variant and its required parts are downloaded.</p>
           ${variants.length ? `<label class="field" for="mm-variant"><span class="subtle">Quantization</span><select id="mm-variant" name="variant">${variants.map((item) => { const id = item.id || item.variantId; return `<option value="${escape(id)}" ${String(id) === String(variant?.id || variant?.variantId) ? "selected" : ""}>${escape(item.quantization || item.name || id)} · ${bytes(totalOf(item))}${compatibility(item).blocked ? " · incompatible" : ""}</option>`; }).join("")}</select></label>` : '<div class="mm-inline-error">This repository has no downloadable text-model variants supported by this runtime.</div>'}
-          ${variant ? `<div class="mm-variant-metrics"><div><span>Download size</span><strong>${bytes(totalOf(variant))}</strong></div><div><span>Estimated memory</span><strong>${bytes(result.memory)}</strong></div><div><span>Files</span><strong>${asArray(variant.files).length || 1}</strong></div></div>${renderCompatibility(variant, true)}` : ""}
+          ${projectors.length ? `<label class="field" for="mm-projector"><span class="subtle">Vision adapter (optional)</span><select id="mm-projector" name="projectorPath"><option value="" ${!projector ? "selected" : ""}>Text only — no vision adapter</option>${projectors.map((item) => `<option value="${escape(item.path)}" ${item.path === state.projectorPath ? "selected" : ""}>${escape(item.path)} · ${bytes(item.sizeBytes)}</option>`).join("")}</select></label><p class="subtle mm-projector-note">${projectors.length > 1 ? "Several adapters are available. Choose the one that matches this model to enable images." : "Choose the matching adapter above to enable images, or choose Text only if you do not need images."} The adapter adds to disk and memory use; compatibility is checked before downloading and loading.</p>` : '<p class="subtle mm-projector-note">No vision adapter is listed in this repository. This download supports text; a matching adapter can be added from your library later.</p>'}
+          ${variant ? `<div class="mm-variant-metrics"><div><span>Download size</span><strong>${bytes(downloadSize)}</strong></div><div><span>${projector ? "Main-model memory estimate" : "Estimated memory"}</span><strong>${bytes(result.memory)}</strong></div><div><span>Files</span><strong>${(asArray(variant.files).length || 1) + Number(Boolean(projector))}</strong></div></div>${renderCompatibility(variant, true, projector)}` : ""}
           ${gated ? '<div class="mm-compatibility-detail warning">This model requires access on Hugging Face. Choose a public model from the catalog for direct download.</div>' : ""}
-          ${variant?.files?.length ? `<details class="mm-file-details"><summary>Included files (${variant.files.length})</summary><ul>${variant.files.map((file) => `<li><span>${escape(typeof file === "string" ? file : file.path || file.filename || file.name)}</span><span>${typeof file === "object" ? bytes(file.sizeBytes ?? file.size) : ""}</span></li>`).join("")}</ul></details>` : ""}
+          ${variant?.files?.length ? `<details class="mm-file-details"><summary>Included files (${variant.files.length + Number(Boolean(projector))})</summary><ul>${[...variant.files, ...(projector ? [projector] : [])].map((file) => `<li><span>${escape(typeof file === "string" ? file : file.path || file.filename || file.name)}</span><span>${typeof file === "object" ? bytes(file.sizeBytes ?? file.size) : ""}</span></li>`).join("")}</ul></details>` : ""}
         </div>`}
-      </div><div class="mm-detail-footer"><div class="subtle">${installed ? "This variant is already on your device." : active ? "Download is already in progress. You can manage it in Downloads." : "Files are checked before the model is added to your library."}</div>${actionButton("download", repoId, installed ? "Installed" : active ? "Downloading" : `Download${variant ? ` · ${bytes(totalOf(variant))}` : ""}`, { primary: true, disabled: state.detailLoading || Boolean(state.detailError) || !variant || result.downloadBlocked || Boolean(gated) || installed || active, symbol: "arrowDown" })}</div>
+      </div><div class="mm-detail-footer"><div class="subtle">${installed ? "This variant is already on your device. Add or change its vision adapter in On device." : active ? "Download is already in progress. You can manage it in Downloads." : "Files are checked before the model is added to your library."}</div>${actionButton("download", repoId, installed ? "Installed" : active ? "Downloading" : `Download${variant ? ` · ${bytes(downloadSize)}` : ""}`, { primary: true, disabled: state.detailLoading || Boolean(state.detailError) || !variant || result.downloadBlocked || Boolean(gated) || installed || active, symbol: "arrowDown" })}</div>
     </dialog>`;
   }
 
@@ -281,7 +287,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   async function openDetail(repoId) {
     const sequence = ++detailSequence;
     state.detailRepoId = repoId;
-    state.detail = null; state.detailLoading = true; state.detailError = ""; state.variantId = "";
+    state.detail = null; state.detailLoading = true; state.detailError = ""; state.variantId = ""; state.projectorPath = "";
     repaint();
     try {
       const catalogModel = state.catalog.find((item) => repoOf(item) === repoId);
@@ -290,6 +296,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       const detail = await request(`/local/catalog/model?${params}`, { timeoutMs: 60000 });
       if (sequence !== detailSequence || state.detailRepoId !== repoId) return;
       state.detail = detail;
+      if (asArray(detail.projectors).length === 1) state.projectorPath = detail.projectors[0].path;
       const variants = variantsOf(detail);
       const preferred = variants.find((item) => !compatibility(item).blocked && compatibility(item).tone === "success") || variants.find((item) => !compatibility(item).blocked) || variants[0];
       state.variantId = String(preferred?.id || preferred?.variantId || "");
@@ -331,7 +338,8 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (type !== "snapshot" && sequence && sequence <= state.eventSequence) return;
     if (sequence) state.eventSequence = sequence;
     const data = payload.snapshot || payload.data || payload;
-    const previousModels = JSON.stringify(models().map((model) => [model.id, modelState(model), model.busy, model.error]));
+    const modelSignature = () => JSON.stringify(models().map((model) => [model.id, modelState(model), model.busy, model.error, model.vision, model.projector?.path]));
+    const previousModels = modelSignature();
     state.connectionError = "";
     if (data.runtime) state.runtime = data.runtime;
     if (Array.isArray(data.downloads)) state.downloads = data.downloads;
@@ -340,7 +348,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (!data.runtime && !Array.isArray(data.downloads) && !Array.isArray(data.models) && !Array.isArray(data.library)) {
       // Events are hints; the snapshot endpoint provides a complete consistent state.
       void refresh();
-    } else if (state.detailRepoId || previousModels === JSON.stringify(models().map((model) => [model.id, modelState(model), model.busy, model.error]))) updateLiveView();
+    } else if (state.detailRepoId || previousModels === modelSignature()) updateLiveView();
     else scheduleRepaint();
   }
 
@@ -371,10 +379,11 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     try {
       if (action === "refresh") await refresh();
       else if (action === "import") { const model = await window.desktopModels.importModel(); if (model) { await refresh(); notify(`${nameOf(model)} was added to the library.`, "info"); } }
+      else if (action === "projector") { const model = await window.desktopModels.importProjector(id); if (model) { await refresh(); notify(`${nameOf(model)} now has a vision adapter. It will load with the next request.`, "info"); } }
       else if (action === "download") {
         const variant = variantsOf(state.detail).find((item) => String(item.id || item.variantId) === state.variantId);
         if (!variant || compatibility(variant).downloadBlocked || state.detail.gated || state.detail.private) return;
-        await request("/local/downloads", { method: "POST", body: JSON.stringify({ repoId: state.detailRepoId, revision: state.detail.revision, variantId: variant.id || variant.variantId }), timeoutMs: 60000 });
+        await request("/local/downloads", { method: "POST", body: JSON.stringify({ repoId: state.detailRepoId, revision: state.detail.revision, variantId: variant.id || variant.variantId, ...(state.projectorPath ? { projectorPath: state.projectorPath } : {}) }), timeoutMs: 60000 });
         state.detailRepoId = "";
         await refresh();
       } else if (["pause", "resume", "cancel"].includes(action)) {
@@ -413,6 +422,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     root.querySelector("#mm-search-input")?.addEventListener("input", (event) => { state.query = event.target.value; });
     root.querySelector("#mm-search-form")?.addEventListener("submit", (event) => { event.preventDefault(); state.source = "search"; void loadCatalog(); });
     root.querySelector("#mm-variant")?.addEventListener("change", (event) => { state.variantId = event.target.value; repaint(); });
+    root.querySelector("#mm-projector")?.addEventListener("change", (event) => { state.projectorPath = event.target.value; repaint(); });
     const dialog = root.querySelector("#mm-detail-dialog");
     if (dialog && isVisible()) {
       dialog.showModal();

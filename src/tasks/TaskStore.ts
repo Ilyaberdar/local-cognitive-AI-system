@@ -3,6 +3,7 @@ import { withFileLock } from "../utils/fileStore";
 import path from "path";
 import { randomUUID } from "crypto";
 import { CreateTaskInput, Task, TaskPriority, TaskRecord, TaskStatus } from "./types";
+import { AttachmentError, validateAttachments } from "../utils/attachments";
 
 const priorityRank: Record<TaskPriority, number> = {
   high: 3,
@@ -73,6 +74,7 @@ export class TaskStore {
         sessionId: input.sessionId,
         scheduledFor: input.scheduledFor,
         metadata: input.metadata,
+        attachments: input.attachments === undefined ? undefined : validateAttachments(input.attachments),
         createdAt: now,
         updatedAt: now
       };
@@ -92,8 +94,13 @@ export class TaskStore {
         return null;
       }
 
+      if (patch.attachments !== undefined && ["in_progress", "running", "waiting"].includes(task.status)) {
+        throw new AttachmentError("Stop this workflow before changing its attachments.", 409);
+      }
+
       Object.assign(task, {
         ...patch,
+        ...(patch.attachments !== undefined ? { attachments: validateAttachments(patch.attachments) } : {}),
         updatedAt: new Date().toISOString()
       });
       await this.write(record);

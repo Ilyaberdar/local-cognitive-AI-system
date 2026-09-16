@@ -4,6 +4,7 @@ import { tryParseJson } from "../utils/Json";
 import { OutputSanitizer } from "./OutputSanitizer";
 import { LLMRegistry } from "./LLMRegistry";
 import { currentInferenceProgress } from "./InferenceProgress";
+import { currentInferenceImages, validateImages } from "./InferenceImages";
 
 export class LLMService {
   constructor(
@@ -20,7 +21,8 @@ export class LLMService {
     if (!provider.isConfigured()) {
       return { provider: provider.id, model: request.model ?? provider.defaultModel, text: "", error: `Provider ${provider.name} is disabled or not configured.` };
     }
-    const response = await provider.generateText({ ...request, onProgress: request.onProgress ?? currentInferenceProgress() });
+    const images = validateImages(request.images ?? currentInferenceImages());
+    const response = await provider.generateText({ ...request, images, onProgress: request.onProgress ?? currentInferenceProgress() });
     request.signal?.throwIfAborted();
     const text = this.sanitizer.sanitize(response.text);
 

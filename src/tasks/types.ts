@@ -1,3 +1,5 @@
+import { ChatAttachment } from "../types";
+
 export type TaskStatus =
   | "todo"
   | "in_progress"
@@ -13,6 +15,7 @@ export type TaskStatus =
 export type TaskPriority = "low" | "normal" | "high";
 
 export interface Task {
+  attachments?: ChatAttachment[];
   id: string;
   title: string;
   description: string;
@@ -29,6 +32,7 @@ export interface Task {
 }
 
 export interface CreateTaskInput {
+  attachments?: ChatAttachment[];
   title: string;
   description: string;
   workflowId: string;

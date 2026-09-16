@@ -9,10 +9,10 @@ export class LlamaCppProvider implements LLMProvider {
   constructor(private readonly service: LocalModelService, private readonly options: { model: string; enabled?: boolean }) { this.defaultModel = options.model; }
   isConfigured(): boolean { return this.options.enabled !== false && this.service.available; }
   getDescriptor(): ProviderDescriptor { return { id: this.id, name: this.name, defaultModel: this.defaultModel, configured: this.isConfigured(),
-    capabilities: { local: true, managed: true, jsonMode: true, reasoning: false } }; }
+    capabilities: { local: true, managed: true, jsonMode: true, reasoning: false, vision: true } }; }
   async listModels(): Promise<ProviderModel[]> {
     if (this.options.enabled === false) return [];
-    return (await this.service.listAllModels()).map((model) => ({ id: model.id, providerId: this.id, providerName: this.name, displayName: model.displayName }));
+    return (await this.service.listAllModels()).map((model) => ({ id: model.id, providerId: this.id, providerName: this.name, displayName: model.displayName, vision: Boolean(model.projector) }));
   }
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     if (this.options.enabled === false) return { provider: this.id, model: request.model ?? this.defaultModel, text: "", error: "Local models are disabled in Settings." };

@@ -46,6 +46,8 @@ const ACCESS_MODES = [
   { id: "full", label: "Full access", icon: "shieldAlert", description: "Run actions without asking, with access to files and the internet" }
 ];
 
+const ATTACHMENT_ACCEPT = "image/png,image/jpeg,image/webp,.txt,.md,.markdown,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.xml,.toml,.sh,.log,.pdf,.docx";
+
 const state = {
   route: "chat",
   loading: false,
@@ -61,6 +63,8 @@ const state = {
   messages: [],
   drafts: {},
   draftAttachments: {},
+  taskDraftAttachments: [],
+  attachmentImports: {},
   pendingRequest: null,
   modelActions: {},
   pluginTestResults: {},
@@ -314,6 +318,7 @@ const modelManager = createModelManager({
     state.bootstrap.availableModels = [...(state.bootstrap.availableModels ?? []).filter((model) => model.providerId !== "llamacpp"), ...localModels];
     if (runtime) state.bootstrap.localModels = { ...state.bootstrap.localModels, models: localModels, runtime };
     updateLocalModelTestProgress();
+    updateAttachmentGuidance();
   },
   onUse: async (model) => {
     if (!state.activeSessionId || !state.sessionSettings) await ensureSession();
@@ -763,6 +768,8 @@ function renderChatRoute() {
     ...pendingMessages
   ];
   const draftAttachments = getActiveDraftAttachments();
+  const attachmentGuidance = getImageAttachmentGuidance(draftAttachments, settings);
+  const preparingAttachments = Boolean(state.attachmentImports[`chat:${state.activeSessionId}`]);
 
   return `
     <div class="chat-layout ${reviewPanel.expanded() ? "review-expanded" : ""}" style="--session-panel-width: ${state.ui.rightPanelWidth}px;">
@@ -784,22 +791,23 @@ function renderChatRoute() {
 
         <div class="chat-approval-slot" data-chat-approval>${renderChatApproval()}</div>
         <form class="composer liquid-glass" id="chat-form">
-          <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="image/*,.txt,.md,.markdown,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.xml,.toml,.sh,.log,.pdf,.doc,.docx" />
+          <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="${ATTACHMENT_ACCEPT}" />
           ${
             draftAttachments.length
-              ? `<div class="composer-attachments">${draftAttachments.map(renderDraftAttachment).join("")}</div>`
+              ? `<div class="composer-attachments">${draftAttachments.map((attachment) => renderDraftAttachment(attachment)).join("")}</div>`
               : ""
           }
+          <div class="attachment-guidance ${attachmentGuidance.blocked ? "is-blocked" : ""}" data-attachment-guidance role="status" ${!preparingAttachments && !attachmentGuidance.message ? "hidden" : ""}>${escapeHtml(preparingAttachments ? "Preparing attachments…" : attachmentGuidance.message)}</div>
           <textarea name="input" aria-label="Message" placeholder="Ask anything…">${escapeHtml(getActiveDraft())}</textarea>
           ${voiceInput.renderStrip()}
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
-            <button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files">${icon("plus")}</button>
+            <button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files" ${preparingAttachments ? "disabled" : ""}>${icon("plus")}</button>
             ${renderChatActivityBar(settings)}
             <div class="composer-actions">
               ${voiceInput.renderButton()}
               ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
-              <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting || state.accessSaving ? "disabled" : ""}>${icon("arrowUp")}</button>
+              <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -819,13 +827,15 @@ function renderChatActivityBar(settings) {
   const target = settings?.defaultTarget ?? {};
   const provider = getProviderDisplayName(target.providerId);
   const model = getModelDisplayName(target.providerId, target.model) || "default";
+  const modelInfo = getTargetModel(target);
+  const capability = modelInfo?.vision === true ? "Images" : modelInfo?.vision === false ? "Text only" : "";
   const progress = state.pendingRequest?.progress;
   const label = progress?.label || (running
     ? state.pendingRequest && isSubagentRequest(state.pendingRequest.input)
       ? "Agents"
       : "Build"
     : "Ready");
-  const activityDetail = formatLocalModelReferences(progress?.detail) || `${provider} ${model}`;
+  const activityDetail = formatLocalModelReferences(progress?.detail) || `${provider} ${model}${capability ? ` · ${capability}` : ""}`;
 
   return `
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
@@ -1341,9 +1351,10 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             <label for="task-description">Description</label>
             <textarea id="task-description" name="description" rows="5" placeholder="Describe the expected outcome, constraints, files, and verification." required></textarea>
           </div>
+          <div class="field field--full">${renderTaskAttachments(null)}</div>
           <div class="footer-row field--full">
             <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs · ${schedules.length} schedules</span>
-            <button class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Task</button>
+            <button class="primary-button" type="submit" ${state.loading || state.attachmentImports["task:new"] ? "disabled" : ""}>Create Task</button>
           </div>
         </form>
       </details>
@@ -1354,7 +1365,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             <h2>Tasks</h2>
             <p class="subtle">Your workspace, one task at a time.</p>
           </div>
-          <button class="ghost-button" type="button" data-action="run-next-task" ${state.loading ? "disabled" : ""}>${icon("play")}Run next</button>
+          <button class="ghost-button" type="button" data-action="run-next-task" ${state.loading || Object.keys(state.attachmentImports).some((key) => key.startsWith("task:")) ? "disabled" : ""}>${icon("play")}Run next</button>
         </div>
         ${renderTaskBoard(tasks)}
       </section>
@@ -1558,10 +1569,10 @@ function renderTaskCard(task) {
       <div class="task-meta">
         <span>${escapeHtml(workflow?.name ?? task.workflowId)}</span>
         <span>${task.scheduledFor ? `Scheduled ${formatDate(task.scheduledFor)}` : formatDate(task.updatedAt)}</span>
-      </div></details>
+      </div>${renderTaskAttachments(task)}</details>
       <div class="task-actions task-actions--card">
         <div class="task-actions__primary">
-          ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading ? "disabled" : ""}>Run</button>` : ""}
+          ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading || state.attachmentImports[`task:${task.id}`] ? "disabled" : ""}>Run</button>` : ""}
           ${
             task.lastRunId
               ? `<button class="ghost-button" type="button" data-action="select-workflow-run" data-run-id="${escapeAttr(task.lastRunId)}">Trace</button>`
@@ -3153,14 +3164,16 @@ function compactPath(value) {
   return `.../${parts.slice(-4).join("/")}`;
 }
 
-function renderDraftAttachment(attachment) {
+function renderDraftAttachment(attachment, options = {}) {
   return `
     <div class="draft-attachment">
+      ${attachment.kind === "image" && attachment.dataUrl ? `<img class="draft-attachment__image" src="${escapeAttr(attachment.dataUrl)}" alt="" />` : ""}
       <div class="draft-attachment__copy">
         <strong>${escapeHtml(attachment.name)}</strong>
         <span>${escapeHtml(renderAttachmentMeta(attachment))}</span>
+        ${renderAttachmentWarning(attachment)}
       </div>
-      <button class="ghost-button draft-attachment__remove" type="button" data-action="remove-draft-attachment" data-attachment-id="${escapeAttr(attachment.id)}">×</button>
+      <button class="ghost-button draft-attachment__remove" type="button" data-action="${options.task ? "remove-task-attachment" : "remove-draft-attachment"}" data-attachment-id="${escapeAttr(attachment.id)}" ${options.task ? `data-task-id="${escapeAttr(options.taskId || "")}"` : ""} aria-label="${escapeAttr(`Remove ${attachment.name}`)}" ${options.disabled ? "disabled" : ""}>×</button>
     </div>
   `;
 }
@@ -3176,26 +3189,41 @@ function renderMessageAttachment(attachment) {
       <div class="message-attachment__copy">
         <strong>${escapeHtml(attachment.name)}</strong>
         <span>${escapeHtml(renderAttachmentMeta(attachment))}</span>
+        ${renderAttachmentWarning(attachment)}
       </div>
     </div>
   `;
 }
 
 function renderAttachmentMeta(attachment) {
-  const parts = [attachment.kind, `${Math.max(1, Math.round(attachment.sizeBytes / 1024))} KB`];
-
-  if (attachment.mimeType) {
-    parts.unshift(attachment.mimeType);
-  }
-
+  const labels = { "image/png": "PNG image", "image/jpeg": "JPEG image", "image/webp": "WebP image", "application/pdf": "PDF · Extracted text", "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX · Extracted text" };
+  const extension = attachment.name?.split(".").at(-1);
+  const label = labels[attachment.mimeType] || (extension && extension.length <= 8 ? extension.toUpperCase() : attachment.kind === "text" ? "Text" : "File");
+  const parts = [label, `${Math.max(1, Math.round(attachment.sizeBytes / 1024))} KB`];
   return parts.join(" · ");
+}
+
+function renderAttachmentWarning(attachment) {
+  const warning = attachment.warning || (attachment.truncated ? "Text was shortened to fit the attachment limit." : "");
+  return warning ? `<span class="attachment-warning">${escapeHtml(warning)}</span>` : "";
+}
+
+function renderTaskAttachments(task) {
+  const taskId = task?.id || "";
+  const pending = Boolean(state.attachmentImports[`task:${taskId || "new"}`]);
+  const attachments = task ? task.attachments || [] : state.taskDraftAttachments;
+  const running = isTaskAttachmentLocked(task) || state.loading;
+  return `<div class="task-attachments"><div class="task-attachments__header"><span class="subtle">Files for this workflow · ${attachments.length}/5</span><button type="button" class="ghost-button" data-action="attach-task-files" data-task-id="${escapeAttr(taskId)}" ${pending || running || attachments.length >= 5 ? "disabled" : ""}>${icon("plus")}${pending ? "Preparing…" : "Attach files"}</button><input type="file" multiple class="sr-only" data-task-attachment-input data-task-id="${escapeAttr(taskId)}" accept="${ATTACHMENT_ACCEPT}" /></div>${attachments.length ? `<div class="composer-attachments task-attachment-list">${attachments.map((attachment) => renderDraftAttachment(attachment, { task: true, taskId, disabled: pending || running })).join("")}</div>` : ""}<div class="subtle attachment-help">PNG, JPEG, WebP, text, PDF or DOCX · Up to 5 files, 5 MB each.${attachments.some((attachment) => attachment.kind === "image") ? " Workflow agents need an image-capable model to read images." : ""}</div></div>`;
 }
 
 async function submitChatMessage(input, attachments, options = {}) {
   if (voiceInput.busy(state.activeSessionId)) return;
-  if (!input || state.chatSubmitting || state.activeChatRequest || state.accessSaving || (options.sessionId && options.sessionId !== state.activeSessionId)) {
+  if (!input || state.chatSubmitting || state.activeChatRequest || state.accessSaving || state.attachmentImports?.[`chat:${state.activeSessionId}`] || (options.sessionId && options.sessionId !== state.activeSessionId)) {
     return;
   }
+  const setupSnapshot = readSessionSetupSnapshot();
+  const attachmentGuidance = getImageAttachmentGuidance(attachments, setupSnapshot?.settings || state.sessionSettings);
+  if (attachmentGuidance.blocked) { pushToast(attachmentGuidance.message, "danger"); render(); return; }
 
   const requestId = createUiEntityId("chat");
   const controller = new AbortController();
@@ -3207,7 +3235,6 @@ async function submitChatMessage(input, attachments, options = {}) {
   const submitButton = document.querySelector("#chat-form button[type='submit']");
   if (submitButton) submitButton.disabled = true;
   let completed = false;
-  const setupSnapshot = readSessionSetupSnapshot();
   try {
     window.clearTimeout(state.ui.autosaveTimer);
     await state.ui.autosavePromise.catch(() => undefined);
@@ -3238,12 +3265,7 @@ async function submitChatMessage(input, attachments, options = {}) {
       requestId,
       input,
       sessionId,
-      metadata: attachments.length
-        ? {
-            attachments,
-            ...(options.reviewSelection ? { reviewSelection: options.reviewSelection } : {})
-          }
-        : undefined
+      metadata: buildChatAttachmentMetadata(attachments, options.reviewSelection)
     }, controller);
     if (activeRequest.cancelled) {
       return;
@@ -3457,7 +3479,7 @@ function bindEvents() {
     const workflowId = String(form.get("workflowId") || "").trim();
     const priority = String(form.get("priority") || "normal");
 
-    if (!title || !description) {
+    if (!title || !description || state.loading || state.attachmentImports["task:new"]) {
       return;
     }
 
@@ -3467,8 +3489,10 @@ function bindEvents() {
         description,
         workflowId,
         priority,
+        attachments: state.taskDraftAttachments,
         sessionId: state.activeSessionId
       });
+      state.taskDraftAttachments = [];
       document.querySelector("#task-form")?.reset();
       const intake = document.querySelector('[data-ui-disclosure="task-create"]');
       if (intake) intake.open = false;
@@ -3856,7 +3880,7 @@ function bindEvents() {
     button.addEventListener("click", async () => {
       const taskId = button.dataset.taskId;
 
-      if (!taskId) {
+      if (!taskId || state.attachmentImports[`task:${taskId}`]) {
         return;
       }
 
@@ -3870,6 +3894,7 @@ function bindEvents() {
   });
 
   document.querySelector("[data-action='run-next-task']")?.addEventListener("click", async () => {
+    if (Object.keys(state.attachmentImports).some((key) => key.startsWith("task:"))) return;
     await runAction(async () => {
       const result = await api.runNextTask();
       state.activeWorkflowRunId = result.runId;
@@ -4090,24 +4115,27 @@ function bindEvents() {
   });
 
   document.querySelector("#chat-attachment-input")?.addEventListener("change", async (event) => {
-    const files = [...(event.currentTarget.files ?? [])];
+    const input = event.currentTarget;
+    const files = [...(input.files ?? [])];
+    const sessionId = state.activeSessionId;
+    input.value = "";
+    if (files.length && sessionId) await addChatAttachments(files, sessionId);
+  });
 
-    if (!files.length || !state.activeSessionId) {
-      return;
-    }
-
-    try {
-      const attachments = await buildAttachments(files);
-      state.draftAttachments[state.activeSessionId] = [
-        ...getActiveDraftAttachments(),
-        ...attachments
-      ].slice(0, 5);
-      render();
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Failed to read attachments", "danger");
-    } finally {
-      event.currentTarget.value = "";
-    }
+  document.querySelectorAll("[data-action='attach-task-files']").forEach((button) => {
+    button.addEventListener("click", () => button.closest(".task-attachments")?.querySelector("[data-task-attachment-input]")?.click());
+  });
+  document.querySelectorAll("[data-task-attachment-input]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      const files = [...(input.files ?? [])];
+      input.value = "";
+      if (files.length) await addTaskAttachments(files, input.dataset.taskId || "");
+    });
+  });
+  document.querySelectorAll("[data-action='remove-task-attachment']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await removeTaskAttachment(button.dataset.taskId || "", button.dataset.attachmentId);
+    });
   });
 
   document.querySelectorAll("[data-action='remove-draft-attachment']").forEach((button) => {
@@ -4147,10 +4175,12 @@ function bindEvents() {
   const sessionSettingsForm = document.querySelector("#session-settings-form");
   sessionSettingsForm?.addEventListener("input", (event) => {
     if (event.target?.matches?.("input, textarea")) {
+      updateAttachmentGuidance();
       scheduleSessionSetupAutosave();
     }
   });
   sessionSettingsForm?.addEventListener("change", () => {
+    updateAttachmentGuidance();
     scheduleSessionSetupAutosave();
   });
 
@@ -5423,6 +5453,120 @@ function getActiveDraftAttachments() {
   return state.draftAttachments[state.activeSessionId] ?? [];
 }
 
+function buildChatAttachmentMetadata(attachments, reviewSelection) {
+  if (!attachments.length && !reviewSelection) return undefined;
+  return {
+    ...(attachments.length ? { attachments } : {}),
+    ...(reviewSelection ? { reviewSelection } : {})
+  };
+}
+
+function getTargetModel(target = {}) {
+  const providerId = target.providerId || state.bootstrap?.appSettings?.llm?.defaultProvider;
+  const modelId = target.model || state.bootstrap?.appSettings?.providers?.[providerId]?.model;
+  return [...(state.bootstrap?.allManagedModels || []), ...(state.bootstrap?.availableModels || [])]
+    .find((model) => model.providerId === providerId && (model.id === modelId || model.libraryId === modelId));
+}
+
+function getImageAttachmentGuidance(attachments, settings) {
+  if (!attachments.some((attachment) => attachment.kind === "image")) return { blocked: false, message: "" };
+  if (getEffectiveSetupMode(settings || {}) !== "general") {
+    return { blocked: false, message: "Images require image-capable agents. Each selected agent's model is checked when it runs." };
+  }
+  const target = settings?.defaultTarget || {};
+  const providerId = target.providerId || state.bootstrap?.appSettings?.llm?.defaultProvider;
+  const model = getTargetModel(target);
+  if (isLocalProvider(providerId) && model?.vision === false) {
+    return { blocked: true, message: "This local model is text only. Choose an image-capable model or add its matching vision adapter in Models before sending images." };
+  }
+  return model?.vision === true
+    ? { blocked: false, message: "Images will be sent to the selected model." }
+    : { blocked: false, message: "Images need an image-capable model. Support for this provider's selected model is checked when the request runs." };
+}
+
+function updateAttachmentGuidance() {
+  const settings = readSessionSetupSnapshot()?.settings || state.sessionSettings;
+  const guidance = getImageAttachmentGuidance(getActiveDraftAttachments(), settings);
+  const pending = Boolean(state.attachmentImports?.[`chat:${state.activeSessionId}`]);
+  const element = document.querySelector("[data-attachment-guidance]");
+  if (element) {
+    element.textContent = pending ? "Preparing attachments…" : guidance.message;
+    element.hidden = !pending && !guidance.message;
+    element.classList.toggle("is-blocked", guidance.blocked);
+  }
+  const submit = document.querySelector("#chat-form button[type='submit']");
+  if (submit) submit.disabled = Boolean(state.chatSubmitting || state.accessSaving || pending || guidance.blocked);
+  const activityModel = document.querySelector(".chat-activity-bar .activity-model");
+  if (activityModel && !state.chatSubmitting && !state.pendingRequest) {
+    const target = settings?.defaultTarget || {};
+    const model = getTargetModel(target);
+    const capability = model?.vision === true ? "Images" : model?.vision === false ? "Text only" : "";
+    activityModel.textContent = `${getProviderDisplayName(target.providerId)} ${getModelDisplayName(target.providerId, target.model) || "default"}${capability ? ` · ${capability}` : ""}`;
+    activityModel.title = activityModel.textContent;
+  }
+}
+
+async function addChatAttachments(files, sessionId) {
+  const key = `chat:${sessionId}`;
+  if (state.attachmentImports[key]) return;
+  state.attachmentImports[key] = true;
+  render();
+  try {
+    const attachments = await buildAttachments(files, 5 - (state.draftAttachments[sessionId] || []).length);
+    if (state.bootstrap?.sessions && !state.bootstrap.sessions.some((session) => session.id === sessionId)) return;
+    state.draftAttachments[sessionId] = [...(state.draftAttachments[sessionId] || []), ...attachments].slice(0, 5);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Failed to read attachments", "danger");
+  } finally {
+    delete state.attachmentImports[key];
+    render();
+  }
+}
+
+async function addTaskAttachments(files, taskId) {
+  const key = `task:${taskId || "new"}`;
+  const task = (state.bootstrap?.tasks || []).find((item) => item.id === taskId);
+  if (state.loading || state.attachmentImports[key] || isTaskAttachmentLocked(task) || (taskId && !task)) return;
+  state.attachmentImports[key] = true;
+  render();
+  try {
+    const previous = taskId ? task.attachments || [] : state.taskDraftAttachments;
+    const added = await buildAttachments(files, 5 - previous.length);
+    if (!added.length) return;
+    const attachments = [...previous, ...added];
+    if (!taskId) state.taskDraftAttachments = attachments;
+    else { await api.updateTask(taskId, { attachments }); await refreshBootstrap(); }
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Failed to save task attachments", "danger");
+  } finally {
+    delete state.attachmentImports[key];
+    render();
+  }
+}
+
+async function removeTaskAttachment(taskId, attachmentId) {
+  const key = `task:${taskId || "new"}`;
+  const task = (state.bootstrap?.tasks || []).find((item) => item.id === taskId);
+  if (state.loading || state.attachmentImports[key] || isTaskAttachmentLocked(task) || (taskId && !task)) return;
+  const attachments = (taskId ? task.attachments || [] : state.taskDraftAttachments).filter((attachment) => attachment.id !== attachmentId);
+  if (!taskId) { state.taskDraftAttachments = attachments; render(); return; }
+  state.attachmentImports[key] = true;
+  render();
+  try {
+    await api.updateTask(taskId, { attachments });
+    await refreshBootstrap();
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Failed to remove task attachment", "danger");
+  } finally {
+    delete state.attachmentImports[key];
+    render();
+  }
+}
+
+function isTaskAttachmentLocked(task) {
+  return ["in_progress", "running", "waiting"].includes(task?.status);
+}
+
 function isTextAttachment(file) {
   const textLikeExtensions = [
     ".txt",
@@ -5458,37 +5602,87 @@ function fileToDataUrl(file) {
   });
 }
 
-async function buildAttachments(files) {
-  const attachments = [];
-
-  for (const file of files.slice(0, 5)) {
-    if (file.size > 5 * 1024 * 1024) {
-      pushToast(`${file.name} is larger than 5 MB and was skipped.`, "danger");
-      continue;
+async function prepareImageAttachment(file) {
+  let image;
+  let objectUrl;
+  try {
+    if (typeof createImageBitmap === "function") {
+      image = await createImageBitmap(file, { imageOrientation: "from-image" });
+    } else {
+      objectUrl = URL.createObjectURL(file);
+      image = await new Promise((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error("The image could not be decoded."));
+        element.src = objectUrl;
+      });
     }
-
-    const attachment = {
-      id:
-        typeof crypto !== "undefined" && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: file.name,
-      mimeType: file.type || "application/octet-stream",
-      sizeBytes: file.size,
-      kind: file.type.startsWith("image/") ? "image" : isTextAttachment(file) ? "text" : "binary"
-    };
-
-    if (attachment.kind === "text") {
-      attachment.textContent = (await file.text()).slice(0, 20000);
+    const originalWidth = image.width || image.naturalWidth;
+    const originalHeight = image.height || image.naturalHeight;
+    if (!originalWidth || !originalHeight) throw new Error("The image has invalid dimensions.");
+    const canvas = document.createElement("canvas");
+    const scale = Math.min(1, 2048 / Math.max(originalWidth, originalHeight));
+    let width = Math.max(1, Math.round(originalWidth * scale));
+    let height = Math.max(1, Math.round(originalHeight * scale));
+    const encode = (mimeType, quality) => new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("The image could not be encoded.")), mimeType, quality));
+    for (let attempt = 0; attempt < 8; attempt++) {
+      canvas.width = width; canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Image processing is unavailable in this browser.");
+      context.drawImage(image, 0, 0, width, height);
+      if (attempt === 0 && file.type === "image/png") {
+        const png = await encode("image/png");
+        if (png.size <= 1024 * 1024) return { dataUrl: await fileToDataUrl(png), mimeType: png.type, sizeBytes: png.size };
+      }
+      for (const quality of [0.9, 0.75, 0.6, 0.45]) {
+        const blob = await encode(file.type === "image/jpeg" ? "image/jpeg" : "image/webp", quality);
+        if (blob.size <= 1024 * 1024) return { dataUrl: await fileToDataUrl(blob), mimeType: blob.type, sizeBytes: blob.size };
+      }
+      width = Math.max(1, Math.floor(width * 0.75));
+      height = Math.max(1, Math.floor(height * 0.75));
     }
-
-    if (attachment.kind === "image" && file.size <= 350 * 1024) {
-      attachment.dataUrl = await fileToDataUrl(file);
-    }
-
-    attachments.push(attachment);
+    throw new Error("The image could not be reduced below 1 MB. Choose a smaller image.");
+  } finally {
+    image?.close?.();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
+}
 
+async function buildAttachments(files, availableSlots = 5) {
+  const attachments = [];
+  const limit = Math.max(0, Math.min(5, availableSlots));
+  if (files.length > limit) pushToast(`Up to 5 files can be attached. ${files.length - limit} additional file(s) were not added.`, "warning");
+  for (const file of files.slice(0, limit)) {
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error("The input file is larger than 5 MB.");
+      const name = file.name.toLowerCase();
+      if (name.endsWith(".doc")) throw new Error("Legacy .doc files are not supported. Save the document as DOCX or PDF.");
+      const imageType = ["image/png", "image/jpeg", "image/webp"].includes(file.type);
+      const documentType = /\.(pdf|docx)$/i.test(name) || ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(file.type);
+      if (file.type.startsWith("image/") && !imageType) throw new Error("Images must be PNG, JPEG or WebP.");
+      if (!imageType && !documentType && !isTextAttachment(file)) throw new Error("This file type is not supported. Attach an image, text file, PDF or DOCX.");
+      const attachment = {
+        id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name, mimeType: file.type || (name.endsWith(".pdf") ? "application/pdf" : name.endsWith(".docx") ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "text/plain"), sizeBytes: file.size, kind: imageType ? "image" : "text"
+      };
+      if (imageType) Object.assign(attachment, await prepareImageAttachment(file));
+      else if (documentType) {
+        const result = await request("/attachments/extract", { method: "POST", timeoutMs: 60000, body: JSON.stringify({ name: file.name, dataUrl: await fileToDataUrl(file) }) });
+        attachment.textContent = String(result?.textContent || "");
+        if (result?.truncated) attachment.truncated = true;
+        if (result?.warning) attachment.warning = result.warning;
+        if (!attachment.textContent.trim()) throw new Error(attachment.warning || "No readable text was found. For scanned documents, attach page images to an image-capable model.");
+      } else {
+        const text = await file.text();
+        if (!text.trim()) throw new Error("This file has no readable text.");
+        attachment.textContent = text.slice(0, 12000);
+        if (text.length > 12000) { attachment.truncated = true; attachment.warning = "Text was shortened to the first 12,000 characters."; }
+      }
+      attachments.push(attachment);
+    } catch (error) {
+      pushToast(`${file.name}: ${error instanceof Error ? error.message : "Could not prepare this attachment."}`, "danger");
+    }
+  }
   return attachments;
 }
 

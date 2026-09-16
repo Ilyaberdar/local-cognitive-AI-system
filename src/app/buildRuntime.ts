@@ -661,7 +661,10 @@ export const buildRuntime = async (
     toolRegistry,
     new ToolRequestBuilder(),
     logger,
-    config.llm.defaultProvider
+    config.llm.defaultProvider,
+    target => target.providerId === "llamacpp"
+      ? localModelService.snapshot().models.find(model => model.id === (target.model || config.providers.llamacpp?.model))?.vision
+      : undefined
   );
   const workflowRunner = new WorkflowRunner(
     taskStore,
