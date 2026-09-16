@@ -6,6 +6,7 @@ import { RuntimeManager } from "./app/RuntimeManager";
 import { AppConfig, config as defaultConfig } from "./config/config";
 import { Server } from "node:http";
 import { LocalModelError } from "./local/types";
+import { AttachmentError } from "./utils/attachments";
 import { SessionIndexStore } from "./session/SessionIndexStore";
 import { ScheduleRunner } from "./schedules/ScheduleRunner";
 import { TelegramBotTransport } from "./transports/telegram/TelegramBotTransport";
@@ -52,8 +53,9 @@ export const startBackend = async (config: AppConfig = defaultConfig): Promise<B
     });
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
       logger.error("Unhandled request error", { message: error.message });
-      res.status(error instanceof LocalModelError ? error.statusCode : 500).json({
-        error: error instanceof LocalModelError ? error.message : "Internal server error",
+      const known = error instanceof LocalModelError || error instanceof AttachmentError;
+      res.status(known ? error.statusCode : 500).json({
+        error: known ? error.message : "Internal server error",
         message: error.message
       });
     });

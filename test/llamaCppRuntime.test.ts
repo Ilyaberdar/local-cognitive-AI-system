@@ -102,10 +102,11 @@ const server = http.createServer(async (req,res) => {
  if(req.headers.authorization !== 'Bearer ' + process.env.LLAMA_API_KEY) {res.statusCode=401;res.end('{}');return;}
  let body=''; for await (const chunk of req) body += chunk;
  const payload = body ? JSON.parse(body) : {};
+ fs.writeFileSync(model + '.request.json', JSON.stringify({url:req.url,payload}));
  if(payload.input === 'crash') {process.exit(7); return;}
- res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({status:'completed',output_text:'Local final answer',id:'ephemeral'}));
+ res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(req.url === '/v1/chat/completions' ? {choices:[{message:{role:'assistant',content:'An image description'},finish_reason:'stop'}]} : {status:'completed',output_text:'Local final answer',id:'ephemeral'}));
 });
-server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model + '.process.json', JSON.stringify({pid:process.pid,port:server.address().port})));
+server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model + '.process.json', JSON.stringify({pid:process.pid,port:server.address().port,args})));
 `, { mode: 0o755 });
   const options: LocalModelOptions = { enabled: true, dataDir: directory, modelsDir: directory, runtimeDir: directory, executablePath: executable,
     contextSize: 2048, gpuLayers: 0, loadTimeoutMs: 5000, generationTimeoutMs: 5000, memoryLimitPercent: 75 };
@@ -119,10 +120,25 @@ server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model +
   assert.equal(runtime.snapshot().modelId, "tiny"); assert.equal("token" in runtime.snapshot(), false);
   const response = await runtime.generateText({ model: "tiny", prompt: "hello" });
   assert.equal(response.text, "Local final answer"); assert.equal(response.responseId, undefined);
+  const images = [{ name: "image.png", dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVRsAAAAASUVORK5CYII=" }];
+  await assert.rejects(runtime.generateText({ model: "tiny", prompt: "Describe the image", images }), /no vision adapter/);
   await runtime.load("tiny", modelPath);
   assert.equal(JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8")).pid, first.pid);
   await runtime.stop(); assert.equal(runtime.status, "stopped");
   assert.throws(() => process.kill(first.pid, 0), /ESRCH/);
+  const projector = path.join(directory, "mmproj vision.gguf");
+  await runtime.load("tiny", modelPath, undefined, projector);
+  const vision = JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8"));
+  assert.equal(vision.args[vision.args.indexOf("--mmproj") + 1], projector);
+  assert.equal((await runtime.generateText({ model: "tiny", prompt: "Describe the image", images })).text, "An image description");
+  const visionRequest = JSON.parse(await fs.readFile(`${modelPath}.request.json`, "utf8"));
+  assert.equal(visionRequest.url, "/v1/chat/completions");
+  assert.ok(visionRequest.payload.messages.some((message: { content: unknown }) => Array.isArray(message.content) && message.content.some(item => item.type === "image_url" && item.image_url.url === images[0].dataUrl)));
+  await runtime.load("tiny", modelPath, undefined, projector);
+  assert.equal(JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8")).pid, vision.pid);
+  await runtime.load("tiny", modelPath, undefined, path.join(directory, "mmproj replacement.gguf"));
+  assert.notEqual(JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8")).pid, vision.pid);
+  await runtime.stop();
   await runtime.load("tiny", modelPath);
   const crashed = await runtime.generateText({ model: "tiny", prompt: "crash" }).catch((error: Error) => ({ error: error.message }));
   assert.ok(crashed.error);

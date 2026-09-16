@@ -398,6 +398,19 @@ html[data-theme="light"] .main :is(.danger-button, .task-delete-button, .fsm-ins
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; box-shadow: none;
 }
 .process-card { padding: 14px; }
+.draft-attachment__image { width: 42px; height: 42px; object-fit: cover; border-radius: 7px; flex: 0 0 42px; }
+.draft-attachment__copy .attachment-warning, .message-attachment__copy .attachment-warning { color: var(--warning); white-space: normal; overflow-wrap: anywhere; }
+.attachment-guidance { padding: 5px 4px 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.attachment-guidance[hidden] { display: none; }
+.attachment-guidance.is-blocked { color: var(--warning); }
+.task-attachments { display: grid; gap: 9px; min-width: 0; margin-top: 9px; }
+.task-attachments__header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.task-attachments__header .ghost-button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 11px; }
+.task-attachments__header .ui-icon { width: 13px; height: 13px; }
+.task-attachment-list { display: grid; margin: 0; min-width: 0; }
+.task-attachment-list .draft-attachment { max-width: none; width: 100%; }
+.task-attachment-list .draft-attachment__copy { flex: 1; }
+.attachment-help { font-size: 10px !important; line-height: 1.5; overflow-wrap: anywhere; }
 .subagent-card summary { padding: 10px 12px; }
 .subagent-card__output, .tool-output, .config-snippet, .diff-preview { background: var(--control-bg); color: var(--text); border-color: var(--line); border-radius: 10px; font-family: var(--font-mono); }
 code, pre, .mono { font-family: var(--font-mono); }

@@ -3,6 +3,7 @@ import { createOpenWorkspaceEditorController } from "./workspaceReview";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { createLocalModelRouter } from "./localModelControllers";
+import { createAttachmentRouter } from "./attachmentControllers";
 import {
   createCreateSessionController,
   createCancelProcessRunController,
@@ -70,6 +71,7 @@ export const createApiRouter = (
   sessionIndexStore: SessionIndexStore
 ): Router => {
   const router = Router();
+  router.use(createAttachmentRouter());
 
   router.get("/health", (_req, res) => {
     res.status(200).json({ ok: true });

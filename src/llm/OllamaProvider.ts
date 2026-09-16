@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { decodeImage, validateImages } from "./InferenceImages";
 import {
   buildComposedPrompt,
   buildFallbackResponse,
@@ -72,6 +73,7 @@ export class OllamaProvider implements LLMProvider {
     const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
+      const images = validateImages(request.images);
       const response = await fetch(`${this.options.baseUrl}/api/generate`, {
         method: "POST",
         headers: {
@@ -80,6 +82,7 @@ export class OllamaProvider implements LLMProvider {
         body: JSON.stringify({
           model,
           prompt: buildComposedPrompt(request),
+          ...(images.length ? { images: images.map(image => decodeImage(image).data) } : {}),
           stream: false,
           ...(typeof request.maxTokens === "number"
             ? {

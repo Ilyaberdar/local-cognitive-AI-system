@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { validateImages } from "./InferenceImages";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -74,7 +75,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
-      const response = await fetch(`${this.options.baseUrl}/responses`, {
+      const images = validateImages(request.images);
+      const useChat = images.length > 0 && this.id !== "openai";
+      const response = await fetch(`${this.options.baseUrl}/${useChat ? "chat/completions" : "responses"}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -84,9 +87,24 @@ export class OpenAICompatibleProvider implements LLMProvider {
               }
             : {})
         },
-        body: JSON.stringify({
+        body: JSON.stringify(useChat ? {
           model,
-          input: request.prompt,
+          messages: [
+            ...(request.systemPrompt ? [{ role: "system", content: request.systemPrompt }] : []),
+            { role: "user", content: [
+              { type: "text", text: request.prompt },
+              ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
+            ] }
+          ],
+          max_tokens: request.maxTokens,
+          temperature: request.temperature,
+          ...(request.responseFormat ? { response_format: request.responseFormat } : {})
+        } : {
+          model,
+          input: images.length ? [{ role: "user", content: [
+            { type: "input_text", text: request.prompt },
+            ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" }))
+          ] }] : request.prompt,
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
           ...((request.reasoningEffort ?? this.options.reasoningEffort) ? { reasoning: { effort: request.reasoningEffort ?? this.options.reasoningEffort } } : {}),

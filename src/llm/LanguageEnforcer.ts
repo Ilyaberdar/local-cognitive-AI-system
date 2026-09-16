@@ -47,6 +47,7 @@ export class LanguageEnforcer {
           language
         )}. Output valid JSON only.`,
         model: target.model,
+        images: [],
         signal,
         prompt: [
           `Translate every item into ${this.languageName(language)}.`,

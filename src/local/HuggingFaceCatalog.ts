@@ -3,6 +3,7 @@ import path from "path";
 import { CatalogModel, CatalogPage, CatalogVariant, LocalModelError, ModelArtifact } from "./types";
 import { validateArtifactPath } from "./ModelLibraryStore";
 import { writeJsonAtomically } from "../utils/fileStore";
+import { isProjectorPath } from "./ModelArtifacts";
 
 const origin = "https://huggingface.co";
 const repoPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,150}$/;
@@ -28,7 +29,7 @@ export class HuggingFaceCatalog {
     const seedPath = process.env.LOCAL_MODEL_CATALOG_PATH || path.resolve(process.cwd(), "resources/models/recommended.json");
     try {
       const seed = JSON.parse(await fs.readFile(seedPath, "utf8")) as { items?: CatalogModel[] };
-      this.recommended = (seed.items ?? []).filter((model) => this.isValidModel(model));
+      this.recommended = (seed.items ?? []).filter((model) => this.isValidModel(model)).map(model => ({ ...model, projectors: model.projectors ?? [] }));
     } catch { this.recommended = []; }
     try {
       const entries = JSON.parse(await fs.readFile(path.join(this.dataDir, "catalog-cache.json"), "utf8")) as CatalogModel[];
@@ -49,7 +50,7 @@ export class HuggingFaceCatalog {
       if (!response.ok) throw new Error(`Hugging Face search returned ${response.status}.`);
       const records = await response.json() as HfRecord[];
       if (!Array.isArray(records)) throw new Error("Unexpected Hugging Face search response.");
-      const items = records.filter((record) => !["image-text-to-text", "text-to-image", "automatic-speech-recognition", "feature-extraction"].includes(record.pipeline_tag ?? ""))
+      const items = records.filter((record) => !["text-to-image", "automatic-speech-recognition", "feature-extraction"].includes(record.pipeline_tag ?? ""))
         .map((record) => this.fromRecord(record)).filter((model) => repoPattern.test(model.repoId));
       const nextLink = response.headers.get("link")?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
       const nextCursor = nextLink ? new URL(nextLink).searchParams.get("cursor") ?? undefined : undefined;
@@ -64,17 +65,19 @@ export class HuggingFaceCatalog {
   async getModel(repoId: string, revision?: string): Promise<CatalogModel> {
     validateRepository(repoId); if (revision) validateRevision(revision);
     const cached = revision ? this.cache.get(`${repoId}@${revision}`) : undefined;
-    if (cached) return structuredClone({ ...cached, cached: true });
+    // Older cached records excluded projectors; refresh their pinned metadata once.
+    if (cached && Array.isArray(cached.projectors)) return structuredClone({ ...cached, cached: true });
     const url = `${origin}/api/models/${repoId}${revision ? `/revision/${revision}` : ""}?blobs=true`;
     const response = await this.fetcher(url, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new LocalModelError(`Hugging Face model details returned ${response.status}. The repository may require access or be unavailable.`, 502);
     const record = await response.json() as HfRecord;
-    if (["image-text-to-text", "text-to-image", "automatic-speech-recognition", "feature-extraction"].includes(record.pipeline_tag ?? "")) throw new LocalModelError("Only text-generation GGUF models are supported in this release.");
+    if (["text-to-image", "automatic-speech-recognition", "feature-extraction"].includes(record.pipeline_tag ?? "")) throw new LocalModelError("Select a text-generation or vision-language GGUF model.");
     const model = this.fromRecord(record);
     if (model.repoId !== repoId) throw new LocalModelError("The repository identity changed. Refresh the catalog before downloading.");
     validateRevision(model.revision);
     if (revision && revision !== model.revision) throw new LocalModelError("Hugging Face returned a different revision. Refresh the model details.");
     model.variants = groupVariants(record.siblings ?? []);
+    model.projectors = collectProjectors(record.siblings ?? []);
     this.cache.set(`${repoId}@${model.revision}`, model);
     const write = this.writes.then(() => writeJsonAtomically(path.join(this.dataDir, "catalog-cache.json"), [...this.cache.values()].slice(-100)));
     this.writes = write.catch(() => {}); await write;
@@ -96,6 +99,11 @@ export class HuggingFaceCatalog {
         validateArtifactPath(file.path);
         if (!/^[a-f0-9]{64}$/i.test(file.sha256) || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 24) return false;
       }
+      if (model.projectors !== undefined && !Array.isArray(model.projectors)) return false;
+      for (const file of model.projectors ?? []) {
+        validateArtifactPath(file.path);
+        if (!/^[a-f0-9]{64}$/i.test(file.sha256) || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 24) return false;
+      }
       return true;
     } catch { return false; }
   }
@@ -105,7 +113,7 @@ export const groupVariants = (siblings: NonNullable<HfRecord["siblings"]>): Cata
   const groups = new Map<string, { files: ModelArtifact[]; parts?: number; indices: Set<number> }>();
   for (const item of siblings) {
     const file = item.rfilename ?? "";
-    if (!/\.gguf$/i.test(file) || /(?:^|\/)(?:mmproj|projector|adapter)[-_.]/i.test(file)) continue;
+    if (!/\.gguf$/i.test(file) || isProjectorPath(file) || /(?:^|\/)adapter[-_.]/i.test(file)) continue;
     try { validateArtifactPath(file); } catch { continue; }
     const sizeBytes = item.lfs?.size ?? item.size; const sha256 = item.lfs?.sha256;
     if (!sizeBytes || !Number.isSafeInteger(sizeBytes) || !sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) continue;
@@ -123,3 +131,13 @@ export const groupVariants = (siblings: NonNullable<HfRecord["siblings"]>): Cata
       return { id, name: quantization, quantization, sizeBytes: group.files.reduce((sum, file) => sum + file.sizeBytes, 0), files: group.files.sort((a, b) => a.path.localeCompare(b.path)) };
     }).sort((a, b) => a.sizeBytes - b.sizeBytes);
 };
+
+export const collectProjectors = (siblings: NonNullable<HfRecord["siblings"]>): ModelArtifact[] =>
+  siblings.flatMap(item => {
+    const file = item.rfilename ?? "";
+    if (!/\.gguf$/i.test(file) || !isProjectorPath(file) || /-\d{5}-of-\d{5}\.gguf$/i.test(file)) return [];
+    try { validateArtifactPath(file); } catch { return []; }
+    const sizeBytes = item.lfs?.size ?? item.size; const sha256 = item.lfs?.sha256;
+    return Number.isSafeInteger(sizeBytes) && sizeBytes! >= 24 && typeof sha256 === "string" && /^[a-f0-9]{64}$/i.test(sha256)
+      ? [{ path: file, sizeBytes: sizeBytes!, sha256: sha256.toLowerCase() }] : [];
+  }).sort((left, right) => left.sizeBytes - right.sizeBytes || left.path.localeCompare(right.path));

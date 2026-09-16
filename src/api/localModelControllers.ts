@@ -13,7 +13,8 @@ export const createLocalModelRouter = (getService: () => LocalModelService): Rou
   router.get("/local/catalog", route(async (req, res) => res.json(await getService().listCatalog(typeof req.query.q === "string" ? req.query.q : undefined, typeof req.query.cursor === "string" ? req.query.cursor : undefined, typeof req.query.source === "string" ? req.query.source : undefined))));
   router.get("/local/catalog/model", route(async (req, res) => res.json(await getService().getCatalogModel(string(req.query.repoId, "repoId"), typeof req.query.revision === "string" && req.query.revision ? req.query.revision : undefined))));
   router.get("/local/downloads", route(async (_req, res) => res.json(getService().listDownloads())));
-  router.post("/local/downloads", route(async (req, res) => res.status(202).json(await getService().startDownload({ repoId: string(req.body?.repoId, "repoId"), revision: string(req.body?.revision, "revision"), variantId: string(req.body?.variantId, "variantId") }))));
+  router.post("/local/downloads", route(async (req, res) => res.status(202).json(await getService().startDownload({ repoId: string(req.body?.repoId, "repoId"), revision: string(req.body?.revision, "revision"), variantId: string(req.body?.variantId, "variantId"),
+    projectorPath: req.body?.projectorPath == null ? undefined : string(req.body.projectorPath, "projectorPath") }))));
   router.post("/local/downloads/:id/pause", route(async (req, res) => res.json(await getService().pauseDownload(String(req.params.id)))));
   router.post("/local/downloads/:id/resume", route(async (req, res) => res.json(await getService().resumeDownload(String(req.params.id)))));
   router.post("/local/downloads/:id/cancel", route(async (req, res) => res.json(await getService().cancelDownload(String(req.params.id)))));
@@ -23,6 +24,7 @@ export const createLocalModelRouter = (getService: () => LocalModelService): Rou
     res.status(201).json(await getService().importModel(paths));
   }));
   router.delete("/local/models/:libraryId", route(async (req, res) => { await getService().deleteModel(String(req.params.libraryId)); res.json({ ok: true }); }));
+  router.post("/local/models/:libraryId/projector", route(async (req, res) => res.json(await getService().attachProjector(String(req.params.libraryId), string(req.body?.path, "path")))));
   router.get("/local/runtime", route(async (_req, res) => res.json(getService().snapshot())));
   router.get("/local/events", (req, res) => {
     res.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" }); res.flushHeaders();

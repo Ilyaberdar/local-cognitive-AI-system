@@ -44,6 +44,8 @@ export interface ChatAttachment {
   kind: "text" | "image" | "binary";
   textContent?: string;
   dataUrl?: string;
+  truncated?: boolean;
+  warning?: string;
 }
 
 export interface CodeAgentTarget extends ProviderTarget {
@@ -364,12 +366,19 @@ export interface ChatMessage {
   createdAt: string;
   metrics?: GenerationMetrics;
   attachments?: ChatAttachment[];
+  includePreviousAttachments?: boolean;
   tools?: ToolExecutionResult[];
   subagents?: SubagentRunSummary[];
 }
 
+export interface LLMImage {
+  name?: string;
+  dataUrl: string;
+}
+
 export interface LLMRequest {
   prompt: string;
+  images?: LLMImage[];
   systemPrompt?: string;
   model?: string;
   maxTokens?: number;
@@ -484,16 +493,19 @@ export interface ProviderDescriptor {
     managed: boolean;
     jsonMode: boolean;
     reasoning: boolean;
+    vision?: boolean;
   };
 }
 
 export interface ProviderModel {
+  vision?: boolean;
   id: string;
   providerId: string;
   providerName: string;
 }
 
 export interface ManagedModel {
+  vision?: boolean;
   id: string;
   displayName: string;
   providerId: string;

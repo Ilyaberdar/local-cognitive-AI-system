@@ -140,7 +140,7 @@ export const readGGUFMetadata = async (filePath: string): Promise<GGUFMetadata> 
     const metadata = new Map<string, unknown>();
     for (let index = 0; index < count; index++) {
       const key = await string(); const type = await u32();
-      const keep = /^(general\.(architecture|name|type)|tokenizer\.chat_template)$|\.(context_length|embedding_length|block_count|nextn_predict_layers|full_attention_interval|attention\.(head_count|head_count_kv|key_length|value_length|recurrent_layers)|ssm\.(conv_kernel|inner_size|state_size|group_count))$/.test(key);
+      const keep = /^(general\.(architecture|name|type)|tokenizer\.chat_template|clip\.has_vision_encoder)$|\.(context_length|embedding_length|block_count|nextn_predict_layers|full_attention_interval|attention\.(head_count|head_count_kv|key_length|value_length|recurrent_layers)|ssm\.(conv_kernel|inner_size|state_size|group_count))$/.test(key);
       const item = await value(type, keep);
       if (keep) metadata.set(key, item);
     }
@@ -154,6 +154,7 @@ export const readGGUFMetadata = async (filePath: string): Promise<GGUFMetadata> 
       embeddingLength: number("embedding_length"), blockCount: number("block_count"), headCount: number("attention.head_count"), headCountKv: number("attention.head_count_kv"),
       attentionKeyLength: number("attention.key_length"), attentionValueLength: number("attention.value_length"), fullAttentionInterval: number("full_attention_interval"),
       recurrentLayers: Array.isArray(recurrent) ? recurrent.map(Boolean) : typeof recurrent === "number" ? Boolean(recurrent) : undefined,
-      nextnPredictLayers: number("nextn_predict_layers"), ssmConvKernel: number("ssm.conv_kernel"), ssmInnerSize: number("ssm.inner_size"), ssmStateSize: number("ssm.state_size"), ssmGroupCount: number("ssm.group_count") };
+      nextnPredictLayers: number("nextn_predict_layers"), ssmConvKernel: number("ssm.conv_kernel"), ssmInnerSize: number("ssm.inner_size"), ssmStateSize: number("ssm.state_size"), ssmGroupCount: number("ssm.group_count"),
+      hasVisionEncoder: metadata.has("clip.has_vision_encoder") ? Boolean(metadata.get("clip.has_vision_encoder")) : undefined };
   } finally { await handle.close(); }
 };

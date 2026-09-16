@@ -15,20 +15,20 @@ test("chat submit locks before setup save and old cleanup cannot reset a new req
   const setup = deferred<void>(); const answer = deferred<{ sessionId: string }>(); const sent = deferred<void>();
   const state: any = { activeSessionId: "a", activeChatRequest: null, chatSubmitting: false,
     drafts: { a: "prompt", b: "keep this draft" }, draftAttachments: {}, ui: { autosavePromise: Promise.resolve() } };
-  let handler!: (event: any) => Promise<void>; let calls = 0;
+  let handler!: (event: any) => Promise<void>; let calls = 0; let sentPayload: any;
   const stopped: unknown[] = [];
   const button = { disabled: false };
   const context = { state, voiceInput: { busy: () => false }, AbortController, FormData: class { get() { return "Explain arrays"; } },
     document: { querySelector: (selector: string) => selector.includes("button[type") ? button : ({ addEventListener: (_name: string, callback: typeof handler) => { handler = callback; } }) },
-    createUiEntityId: () => "request-a", getActiveDraftAttachments: () => [], persistActiveSessionSetup: () => setup.promise, readSessionSetupSnapshot: () => null, reviewPanel: { isOpen: () => false },
+    createUiEntityId: () => "request-a", getActiveDraftAttachments: () => [], getImageAttachmentGuidance: () => ({ blocked: false, message: "" }), persistActiveSessionSetup: () => setup.promise, readSessionSetupSnapshot: () => null, reviewPanel: { isOpen: () => false },
     window: { location: { hash: "" }, clearTimeout() {} }, isSubagentRequest: () => false, isMessageStreamNearBottom: () => false,
     render: () => {}, startProcessProgressPolling: () => {}, stopProcessProgressPolling: (active: unknown) => stopped.push(active),
     refreshBootstrap: async () => {}, loadActiveSession: async () => {},
-    api: { sendChat: async () => { calls++; sent.resolve(); return answer.promise; } },
+    api: { sendChat: async (payload: any) => { sentPayload = payload; calls++; sent.resolve(); return answer.promise; } },
     preserveStoppedChatRequest: () => {}, pushToast: () => {}
   };
   const start = source.indexOf('  document.querySelector("#chat-form")?.addEventListener("submit"');
-  vm.runInNewContext(functionSource("async function submitChatMessage", "function bindEvents") + source.slice(start, source.indexOf('  document.querySelector("#chat-form textarea', start)), context);
+  vm.runInNewContext(functionSource("function buildChatAttachmentMetadata", "function getTargetModel") + functionSource("async function submitChatMessage", "function bindEvents") + source.slice(start, source.indexOf('  document.querySelector("#chat-form textarea', start)), context);
   const event = { preventDefault() {}, currentTarget: { querySelector: () => button } };
   const first = handler(event);
   const original = state.activeChatRequest;
@@ -39,6 +39,7 @@ test("chat submit locks before setup save and old cleanup cannot reset a new req
   state.activeSessionId = "b";
   setup.resolve(); await sent.promise;
   assert.equal(calls, 1);
+  assert.equal(sentPayload.metadata, undefined);
   assert.equal(state.drafts.b, "keep this draft");
   original.cancelled = true;
   const newer = { requestId: "request-b" };

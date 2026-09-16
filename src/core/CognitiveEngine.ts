@@ -3,11 +3,13 @@ import { MemoryService } from "../memory/MemoryService";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { Logger } from "../utils/Logger";
-import { ProcessInput, ProcessResult, SessionSettings, ToolExecutionResult } from "../types";
+import { ProcessInput, ProcessResult, ProviderTarget, SessionSettings, ToolExecutionResult } from "../types";
 import { ModeDetector } from "./ModeDetector";
 import { Router } from "./Router";
 import { ToolRequestBuilder } from "./ToolRequestBuilder";
 import { resolveProviderTarget } from "../llm/ProviderTargetResolver";
+import { conversationAttachments, validateAttachments } from "../utils/attachments";
+import { withInferenceImages } from "../llm/InferenceImages";
 
 export class CognitiveEngine {
   constructor(
@@ -18,7 +20,8 @@ export class CognitiveEngine {
     private readonly toolRegistry: ToolRegistry,
     private readonly toolRequestBuilder: ToolRequestBuilder,
     private readonly logger: Logger,
-    private readonly defaultProviderId: string
+    private readonly defaultProviderId: string,
+    private readonly supportsImages: (target: ProviderTarget) => boolean | undefined = () => undefined
   ) {}
 
   async process(request: ProcessInput): Promise<ProcessResult> {
@@ -38,6 +41,11 @@ export class CognitiveEngine {
     const providerId = activeTarget.providerId;
     const memory = await this.memoryService.retrieve(normalizedInput, { actor });
     const conversation = await this.memoryService.recent({ actor, limit: 12 });
+    const currentAttachments = validateAttachments(request.metadata?.attachments);
+    // A workflow uses its task's current attachment list; removing a task file
+    // must also remove it from later runs. Chat follow-ups retain recent files.
+    const attachments = request.metadata?.taskId || request.metadata?.includePreviousAttachments === false
+      ? currentAttachments : conversationAttachments(currentAttachments, conversation, this.supportsImages(activeTarget) !== false);
     const startedAt = new Date();
     const metadataMode = this.readMetadataMode(request.metadata);
     const requestedMode =
@@ -52,17 +60,17 @@ export class CognitiveEngine {
         ? "code"
         : requestedMode;
     const handler = this.router.route(mode);
-    const result = await handler(normalizedInput, {
+    const result = await withInferenceImages(attachments.filter(file => file.kind === "image" && file.dataUrl).map(file => ({ name: file.name, dataUrl: file.dataUrl! })), () => handler(normalizedInput, {
       actor,
       memory,
       conversation,
       providerId,
       activeTarget,
       sessionSettings,
-      requestMetadata: request.metadata,
+      requestMetadata: { ...request.metadata, attachments },
       signal: request.signal,
       onProgress: request.onProgress
-    });
+    }));
     request.signal?.throwIfAborted();
     request.onProgress?.({
       phase: "tools",

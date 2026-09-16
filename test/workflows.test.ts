@@ -155,6 +155,7 @@ test("agent node forwards its provider and model overrides to the cognitive engi
   const task = await taskStore.create({
     title: "Use explicit target",
     description: "Execute with the configured model.",
+    attachments: [{ id: "doc", name: "brief.txt", mimeType: "text/plain", sizeBytes: 9, kind: "text", textContent: "AMBER-529" }],
     workflowId: defaultTaskWorkflow().id
   });
   const workflow = defaultTaskWorkflow();
@@ -205,6 +206,8 @@ test("agent node forwards its provider and model overrides to the cognitive engi
 
   assert.equal(receivedRequest?.providerId, "ollama");
   assert.equal(receivedRequest?.model, "qwen3:8b");
+  assert.deepEqual((receivedRequest?.metadata as Record<string, unknown>).attachments, task.attachments);
+  assert.deepEqual((await new TaskStore(path.join(root, "tasks")).get(task.id))?.attachments, JSON.parse(JSON.stringify(task.attachments)));
   assert.deepEqual(result.data.target, {
     providerId: "ollama",
     model: "qwen3:8b"
@@ -229,6 +232,11 @@ test("agent node forwards its provider and model overrides to the cognitive engi
     }
   });
   assert.equal(receivedRequest?.model, "llama3.2");
+  await taskStore.update(task.id, { attachments: [] });
+  assert.deepEqual((await taskStore.get(task.id))?.attachments, []);
+  await assert.rejects(taskStore.update(task.id, { attachments: [{ id: "bad", name: "image.png", mimeType: "image/png", sizeBytes: 9, kind: "image" }] }), /Reattach/);
+  await taskStore.setStatus(task.id, "in_progress");
+  await assert.rejects(taskStore.update(task.id, { attachments: [] }), /Stop this workflow/);
 });
 
 test("workflow runner executes a task through entry, agent, and terminal nodes", async () => {

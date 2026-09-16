@@ -23,7 +23,8 @@ export const createDescriptor = (
     local: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
     managed: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
     jsonMode: ["openai", "llamacpp"].includes(options.id),
-    reasoning: options.id === "openai"
+    reasoning: options.id === "openai",
+    vision: ["openai", "anthropic", "gemini", "llamacpp", "lmstudio", "ollama"].includes(options.id)
   }
 });
 
@@ -79,6 +80,12 @@ export const readResponseText = (payload: unknown): string => {
   }
 
   const record = payload as Record<string, unknown>;
+
+  if (Array.isArray(record.choices)) {
+    const content = record.choices[0]?.message?.content;
+    if (typeof content === "string") return content.trim();
+    if (Array.isArray(content)) return content.filter(part => part?.type === "text").map(part => part.text ?? "").join("\n").trim();
+  }
 
   if (typeof record.output_text === "string" && record.output_text.trim()) {
     return record.output_text.trim();

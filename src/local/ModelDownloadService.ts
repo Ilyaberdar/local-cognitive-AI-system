@@ -9,6 +9,7 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { artifactDownloadUrl, validateRevision } from "./HuggingFaceCatalog";
 import { getFreeDiskBytes, readGGUFMetadata } from "./ModelCompatibility";
 import { CatalogModel, CatalogVariant, DownloadJob, LibraryModel, LocalModelError, ModelArtifact } from "./types";
+import { allModelArtifacts, assertVisionProjector } from "./ModelArtifacts";
 
 export const sha256File = async (filePath: string, signal?: AbortSignal): Promise<string> => {
   const hash = createHash("sha256");
@@ -26,29 +27,43 @@ export class ModelDownloadService {
   constructor(private readonly store: ModelLibraryStore, private readonly changed: () => void = () => {}, private readonly fetcher: typeof fetch = fetch) {}
   list(): DownloadJob[] { return this.store.listJobs(); }
 
-  async start(model: CatalogModel, variant: CatalogVariant): Promise<DownloadJob> {
+  async start(model: CatalogModel, variant: CatalogVariant, projectorPath?: string): Promise<DownloadJob> {
     if (this.disposed) throw new LocalModelError("Downloads are shutting down.", 503);
     if (model.gated) throw new LocalModelError("This model requires access from Hugging Face. Gated downloads are not supported in this release.", 403);
     validateRevision(model.revision);
     if (!variant.files.length) throw new LocalModelError("This variant has no complete verified GGUF artifact set.");
+    const projector = projectorPath ? model.projectors?.find(file => file.path === projectorPath) : undefined;
+    if (projectorPath && !projector) throw new LocalModelError("Select a vision adapter from this pinned repository revision.", 400, "invalid_projector");
+    if (projector && variant.files.some(file => file.path === projector.path)) throw new LocalModelError("The vision adapter must be separate from the main model weights.");
     const libraryId = modelLibraryId(model.repoId, model.revision, variant.id);
     const pending = this.pendingStarts.get(libraryId);
-    if (pending) return pending;
-    const starting = this.createJob(model, variant, libraryId).finally(() => { this.pendingStarts.delete(libraryId); });
+    if (pending) {
+      const job = await pending;
+      this.assertSameProjector(job.projector, projector);
+      return job;
+    }
+    const starting = this.createJob(model, variant, libraryId, projector).finally(() => { this.pendingStarts.delete(libraryId); });
     this.pendingStarts.set(libraryId, starting);
     return starting;
   }
 
-  private async createJob(model: CatalogModel, variant: CatalogVariant, libraryId: string): Promise<DownloadJob> {
+  private assertSameProjector(existing: ModelArtifact | undefined, requested: ModelArtifact | undefined): void {
+    if (existing?.sha256 !== requested?.sha256 || existing?.path !== requested?.path) throw new LocalModelError("This model already has a download or installed copy with a different vision adapter selection. Finish or cancel the download, or use Attach vision adapter on the installed model.", 409, "projector_conflict");
+  }
+
+  private async createJob(model: CatalogModel, variant: CatalogVariant, libraryId: string, projector?: ModelArtifact): Promise<DownloadJob> {
+    const installed = this.store.listModels().find(item => item.id === libraryId);
+    if (installed) this.assertSameProjector(installed.projector, projector);
     const existing = this.store.listJobs().find((job) => job.libraryId === libraryId && !["cancelled", "failed"].includes(job.state));
-    if (existing && (existing.state !== "completed" || this.store.listModels().some((item) => item.id === libraryId))) return existing;
+    if (existing && (existing.state !== "completed" || installed)) { this.assertSameProjector(existing.projector, projector); return existing; }
+    const totalBytes = variant.sizeBytes + (projector?.sizeBytes ?? 0);
     const freeBytes = await getFreeDiskBytes(this.store.modelsDir);
     if (this.disposed) throw new LocalModelError("Downloads are shutting down.", 503);
-    if (freeBytes !== undefined && freeBytes < variant.sizeBytes + 64 * 1024 ** 2) throw new LocalModelError("There is not enough free disk space for this model.", 409, "disk_full");
+    if (freeBytes !== undefined && freeBytes < totalBytes + 64 * 1024 ** 2) throw new LocalModelError("There is not enough free disk space for this model and its selected vision adapter.", 409, "disk_full");
     const now = new Date().toISOString();
     const job: DownloadJob = { id: `download-${randomUUID()}`, libraryId, repoId: model.repoId, revision: model.revision, variantId: variant.id,
-      name: model.name, quantization: variant.quantization, license: model.license, files: structuredClone(variant.files), state: "queued", downloadedBytes: 0,
-      totalBytes: variant.sizeBytes, speedBytesPerSecond: 0, progress: 0, createdAt: now, updatedAt: now };
+      name: model.name, quantization: variant.quantization, license: model.license, files: structuredClone(variant.files), projector: projector ? structuredClone(projector) : undefined,
+      projectorPath: projector?.path, state: "queued", downloadedBytes: 0, totalBytes, speedBytesPerSecond: 0, progress: 0, createdAt: now, updatedAt: now };
     await this.store.putJob(job); this.changed(); this.pump(); return job;
   }
 
@@ -58,6 +73,9 @@ export class ModelDownloadService {
     if (this.disposed) throw new LocalModelError("Downloads are shutting down.", 503);
     const job = this.store.getJob(id);
     if (["completed", "downloading", "verifying", "queued"].includes(job.state)) return job;
+    const installed = this.store.listModels().find(model => model.id === job.libraryId);
+    if (installed) this.assertSameProjector(installed.projector, job.projector);
+    if (this.store.listJobs().some(other => other.id !== job.id && other.libraryId === job.libraryId && ["queued", "downloading", "verifying", "paused"].includes(other.state))) throw new LocalModelError("Another download for this model already exists. Resume or cancel that download first.", 409, "download_conflict");
     job.state = "queued"; job.error = undefined; job.updatedAt = new Date().toISOString();
     await this.store.putJob(job); this.changed(); this.pump(); return job;
   }
@@ -83,7 +101,7 @@ export class ModelDownloadService {
     job = this.store.getJob(id);
     if (state === "paused") {
       let persistedBytes = 0;
-      for (const file of job.files) {
+      for (const file of allModelArtifacts(job)) {
         const target = path.join(this.store.stagingDirectory(id), file.path);
         const complete = await fs.stat(target).catch(() => undefined);
         const partial = complete ? undefined : await fs.stat(`${target}.part`).catch(() => undefined);
@@ -130,7 +148,7 @@ export class ModelDownloadService {
       await this.store.putJob(job, persist); this.changed();
     };
     let completedBytes = 0;
-    for (const file of job.files) {
+    for (const file of allModelArtifacts(job)) {
       signal.throwIfAborted();
       const target = await this.store.safePath(folder, file.path, true);
       const part = `${target}.part`;
@@ -157,11 +175,12 @@ export class ModelDownloadService {
     }
     signal.throwIfAborted();
     const metadata = await readGGUFMetadata(await this.store.safePath(folder, job.files[0].path));
+    if (job.projector) assertVisionProjector(await readGGUFMetadata(await this.store.safePath(folder, job.projector.path)));
     signal.throwIfAborted();
     if (this.active?.id === job.id) this.active.committing = true;
     const destination = this.store.modelDirectory(job.libraryId);
     const installed = this.store.listModels().find((model) => model.id === job.libraryId);
-    if (installed) await fs.rm(folder, { recursive: true, force: true });
+    if (installed) { this.assertSameProjector(installed.projector, job.projector); await fs.rm(folder, { recursive: true, force: true }); }
     else {
       // A crash after rename but before manifest persistence leaves a complete, re-verifiable directory.
       const existing = await fs.lstat(destination).catch(() => undefined);
@@ -172,7 +191,7 @@ export class ModelDownloadService {
       await fs.rename(folder, destination);
       const model: LibraryModel = { id: job.libraryId, libraryId: job.libraryId, displayName: job.name, providerId: "llamacpp", providerName: "Local models",
         repoId: job.repoId, revision: job.revision, variantId: job.variantId, quantization: job.quantization, license: job.license,
-        sizeBytes: job.totalBytes, installedAt: new Date().toISOString(), owned: true, files: job.files, metadata,
+        sizeBytes: job.totalBytes, installedAt: new Date().toISOString(), owned: true, files: job.files, projector: job.projector, vision: Boolean(job.projector), metadata,
         loaded: false, loadedInstanceIds: [], state: "unloaded" };
       await this.store.putModel(model);
     }
