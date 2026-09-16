@@ -888,12 +888,20 @@ a {
   overflow: hidden;
 }
 
-.process-card.is-ok {
-  border-left: 2px solid #40c463;
+.process-card.is-error {
+  position: relative;
 }
 
-.process-card.is-error {
-  border-left: 2px solid #ff6b5f;
+.process-card.is-error::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 1px;
+  border-radius: 0;
+  background: #ff6b5f;
+  pointer-events: none;
 }
 
 .process-card__header {

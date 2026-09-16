@@ -25,7 +25,7 @@
 .mm-live-status { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; color: var(--muted); font-size: 10px; }
 .mm-search { display: flex; align-items: center; gap: 8px; }
 .mm-search-input { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; background: var(--control-bg); border: 1px solid var(--line); border-radius: 11px; padding: 0 12px; }
-.mm-search-input:focus-within { border-color: var(--accent-border); box-shadow: 0 0 0 2px var(--focus-ring); }
+.mm-search-input:focus-within { border-color: var(--muted); box-shadow: none; }
 .mm-search-input .ui-icon { flex: 0 0 auto; color: var(--muted); width: 16px; height: 16px; }
 .mm-search input { width: 100%; min-width: 0; border: 0; background: transparent; box-shadow: none; outline: none; padding: 11px 0; color: var(--text); font: inherit; font-size: 12px; }
 .mm-search input:focus { outline: none; box-shadow: none; }

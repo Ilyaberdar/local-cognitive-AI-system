@@ -1,9 +1,10 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, systemPreferences, shell, powerMonitor } = require("electron");
 const net = require("net");
 const path = require("path");
 
 let mainWindow;
 let backendHandle;
+let voiceInput;
 let shutdownComplete = false;
 if (process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.resolve(process.env.LOCAL_COGNITIVE_TEST_DATA_DIR));
 const hasInstanceLock = app.requestSingleInstanceLock();
@@ -60,6 +61,8 @@ const configureRuntimeEnvironment = async () => {
 
   return {
     appRoot,
+    dataRoot,
+    resourceRoot,
     url: `http://127.0.0.1:${port}`
   };
 };
@@ -102,6 +105,7 @@ const createWindow = async (url) => {
     }
   });
 
+  voiceInput?.attach(mainWindow);
   await mainWindow.loadURL(url);
   if (isMac) mainWindow.setWindowButtonVisibility(true);
   if (liquidGlass) {
@@ -129,6 +133,10 @@ ipcMain.on("appearance:set-theme", (event, theme) => {
 if (hasInstanceLock) app.whenReady().then(async () => {
   try {
     const runtime = await configureRuntimeEnvironment();
+    voiceInput = require("./voice-input.cjs").registerVoiceInput({ app, ipcMain, systemPreferences, shell, powerMonitor,
+      getWindow: () => mainWindow, origin: runtime.url,
+      root: path.join(runtime.dataRoot, "speech"),
+      runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
     backendHandle = await startBackend(runtime.appRoot);
     await waitForServer(runtime.url);
     await createWindow(runtime.url);
@@ -159,7 +167,7 @@ app.on("second-instance", () => {
 app.on("before-quit", (event) => {
   if (shutdownComplete || !backendHandle) return;
   event.preventDefault();
-  void backendHandle.dispose().catch(error => console.error("Shutdown failed", error)).finally(() => {
+  void Promise.all([backendHandle.dispose(), voiceInput?.dispose()]).catch(error => console.error("Shutdown failed", error)).finally(() => {
     shutdownComplete = true;
     app.quit();
   });

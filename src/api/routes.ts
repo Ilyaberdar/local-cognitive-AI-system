@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createOpenWorkspaceEditorController } from "./workspaceReview";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { createLocalModelRouter } from "./localModelControllers";
@@ -24,6 +25,7 @@ import {
   createProcessController,
   createProviderTestController,
   createProcessRunStatusController,
+  createReviewProcessRunController,
   createReadWorkspaceFileController,
   createRevealWorkspacePathController,
   createRenameSessionController,
@@ -129,8 +131,10 @@ export const createApiRouter = (
 
   router.post("/chat", createProcessController(runtimeManager, sessionIndexStore));
   router.post("/process", createProcessController(runtimeManager, sessionIndexStore));
+  router.post("/process-runs/:requestId/review", createReviewProcessRunController());
   router.get("/process-runs/:requestId", createProcessRunStatusController());
   router.post("/process-runs/:requestId/cancel", createCancelProcessRunController());
+  router.post("/workspace/editor", createOpenWorkspaceEditorController(runtimeManager));
   router.get("/workspace/file", createReadWorkspaceFileController(runtimeManager));
   router.post("/workspace/reveal", createRevealWorkspacePathController(runtimeManager));
 

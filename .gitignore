@@ -31,3 +31,6 @@ test-tmp
 /resources/llama/linux-*/
 /data/app/local-models/
 /test-results/
+/resources/speech/darwin-*/
+/resources/speech/win32-*/
+/resources/speech/linux-*/

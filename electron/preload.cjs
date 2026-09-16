@@ -11,3 +11,21 @@ contextBridge.exposeInMainWorld("desktopModels", {
   importModel: () => ipcRenderer.invoke("models:select-files"),
   selectDirectory: () => ipcRenderer.invoke("models:select-directory")
 });
+
+contextBridge.exposeInMainWorld("desktopVoice", {
+  status: () => ipcRenderer.invoke("voice:status"),
+  install: () => ipcRenderer.invoke("voice:install"),
+  cancelDownload: () => ipcRenderer.invoke("voice:cancel-download"),
+  removeModel: () => ipcRenderer.invoke("voice:remove-model"),
+  updateSettings: value => ipcRenderer.invoke("voice:settings", value),
+  requestMicrophone: id => ipcRenderer.invoke("voice:microphone", id),
+  releaseMicrophone: id => ipcRenderer.invoke("voice:release-microphone", id),
+  openMicrophoneSettings: () => ipcRenderer.invoke("voice:open-settings"),
+  transcribe: value => ipcRenderer.invoke("voice:transcribe", value),
+  cancel: id => ipcRenderer.invoke("voice:cancel", id),
+  onStopCapture: callback => {
+    const listener = () => callback();
+    ipcRenderer.on("voice:stop-capture", listener);
+    return () => ipcRenderer.removeListener("voice:stop-capture", listener);
+  }
+});

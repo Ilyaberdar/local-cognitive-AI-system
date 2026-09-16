@@ -1,3 +1,4 @@
+import { CommandTool, commandInstruction } from "../tools/CommandTool";
 import fs from "fs/promises";
 import path from "path";
 import { AttackAgent } from "../agents/AttackAgent";
@@ -71,6 +72,7 @@ import {
   stripSubagentRoutingSyntax
 } from "../prompts/codeAgentPrompts";
 import { buildTextPrompt } from "../prompts/common";
+import { reviewInputPath } from "../utils/reviewSelection";
 import { FsmEngine } from "../workflows/FsmEngine";
 import { AgentNodeExecutor } from "../workflows/nodes/AgentNodeExecutor";
 import { EntryNodeExecutor } from "../workflows/nodes/EntryNodeExecutor";
@@ -154,14 +156,15 @@ const runCodeAgent = async (
   language: "auto" | "ru" | "en",
   systemPrompt: string,
   signal?: AbortSignal,
-  onProgress?: LLMRequest["onProgress"]
+  onProgress?: LLMRequest["onProgress"],
+  commandInput?: string
 ) => withInferenceProgress(onProgress, async () => {
   try {
     signal?.throwIfAborted();
     const response = await llmService.generateText(
       {
         model: agent.model,
-        systemPrompt,
+        systemPrompt: [systemPrompt, commandInstruction(commandInput || "")].filter(Boolean).join("\n\n"),
         prompt,
         timeoutMs: agentRequestTimeoutMs(agent.providerId),
         signal
@@ -172,7 +175,7 @@ const runCodeAgent = async (
     const degraded = isDegradedResponse(response);
     const normalized = degraded
       ? `Provider request failed for @${agent.name}: ${response.error || "The model returned no usable output."}`
-      : /<<<|```/.test(response.text)
+      : reviewInputPath(commandInput || "") || /<<<|```/.test(response.text)
         ? response.text
         : await languageEnforcer.normalizeText(response.text, language, {
             providerId: agent.providerId,
@@ -216,7 +219,7 @@ const runCodeSwarm = async (
     context.memory.map((entry) => `- ${entry.input.slice(0, 120)}`).join("\n") ||
     "- No relevant memory found.";
   const attachmentContext = renderAttachmentContext(readAttachments(context.requestMetadata));
-  const taskInput = stripSubagentRoutingSyntax(input);
+  const taskInput = reviewInputPath(input) ? input : stripSubagentRoutingSyntax(input);
   const mainAgent = {
     id: "main-model",
     name: "Main model",
@@ -226,7 +229,7 @@ const runCodeSwarm = async (
   } satisfies CodeAgentTarget;
   const reviewAgents =
     context.sessionSettings.codeAgents.length > 0
-      ? selectConfiguredSubagents(input, context.sessionSettings.codeAgents.slice(0, 4))
+      ? selectConfiguredSubagents(input, context.sessionSettings.codeAgents.slice(0, 4)).map((agent) => ({ ...agent, accessMode: context.sessionSettings.defaultAccessMode }))
       : [];
 
   const progress = new AgentProgressReporter(
@@ -257,7 +260,7 @@ const runCodeSwarm = async (
         taskInput,
         context.sessionSettings.outputStyle
       ),
-      context.signal, progress.inference(mainAgent.id)
+      context.signal, progress.inference(mainAgent.id), input
     );
 
     progress.update(mainAgent.id, mainRun.degraded ? "degraded" : "completed", mainRun.degraded ? "Failed" : "Complete", mainRun.response.error);
@@ -402,7 +405,7 @@ const runCodeSwarm = async (
       reviewAgents,
       context.sessionSettings.outputStyle
     ),
-    context.signal, progress.inference(mainAgent.id)
+    context.signal, progress.inference(mainAgent.id), input
   );
   if (finalRun.degraded) {
     const error = finalRun.response.error || "The main model returned no usable final output.";
@@ -591,6 +594,7 @@ export const buildRuntime = async (
       const response = await llmService.generateText(
         {
           model: context.activeTarget.model,
+          systemPrompt: commandInstruction(input) || undefined,
           prompt: buildTextPrompt(
             "general",
             input,
@@ -604,7 +608,7 @@ export const buildRuntime = async (
         },
         context.providerId
       );
-      const normalized = isDegradedResponse(response) ? response.text : await languageEnforcer.normalizeText(
+      const normalized = isDegradedResponse(response) || reviewInputPath(input) || /<<<|```/.test(response.text) ? response.text : await languageEnforcer.normalizeText(
         response.text,
         context.sessionSettings.language,
         context.activeTarget,
@@ -629,6 +633,7 @@ export const buildRuntime = async (
   });
 
   const toolRegistry = new ToolRegistry();
+  toolRegistry.register(new CommandTool(process.cwd()));
   toolRegistry.register(
     new FileTool({
       outputDir: config.outputDir,

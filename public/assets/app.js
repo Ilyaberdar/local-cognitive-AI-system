@@ -1,7 +1,11 @@
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
+import { createReviewPanel } from "./review-panel.js";
+import { createSessionSetupMotion } from "./session-setup-motion.js";
+import { createVoiceInput, appendDictation } from "./voice-input.js";
 
 const app = document.querySelector("#app");
+const sessionSetupMotion = createSessionSetupMotion();
 let systemMetricsPollTimer = null;
 let sessionLoadSequence = 0;
 let workflowPollInFlight = false;
@@ -36,10 +40,17 @@ const SUBAGENT_PENDING_MESSAGES = [
   "Handing this pass to {agents}..."
 ];
 
+const ACCESS_MODES = [
+  { id: "ask", label: "Ask for approval", icon: "hand", description: "Always ask before changing files, running commands or using the internet" },
+  { id: "default", label: "Approve for me", icon: "shield", description: "Allow workspace edits; ask before commands, external access or deletions" },
+  { id: "full", label: "Full access", icon: "shieldAlert", description: "Run actions without asking, with access to files and the internet" }
+];
+
 const state = {
   route: "chat",
   loading: false,
   chatSubmitting: false,
+  accessSaving: false,
   activeChatRequest: null,
   notice: "",
   error: "",
@@ -68,7 +79,7 @@ const state = {
     sidebarCollapsed: localStorage.getItem("lcai.sidebarCollapsed") === "true",
     sidebarWidth: Number(localStorage.getItem("lcai.sidebarWidth") || 232),
     sessionSetupCollapsed: localStorage.getItem("lcai.sessionSetupCollapsed") === "true",
-    sessionSetupWidth: Number(localStorage.getItem("lcai.sessionSetupWidth") || 300),
+    rightPanelWidth: Math.max(320, Number(localStorage.getItem("lcai.rightPanelWidth") || localStorage.getItem("lcai.sessionSetupWidth") || 420)),
     workflowSideCollapsed: localStorage.getItem("lcai.workflowSideCollapsed") !== "false",
     workflowSideWidth: Number(localStorage.getItem("lcai.workflowSideWidth") || 300),
     taskSearch: "",
@@ -78,9 +89,7 @@ const state = {
     autosavePromise: Promise.resolve(),
     messageStreamScrollTop: 0,
     messageStreamPinnedToBottom: true,
-    showScrollToBottom: false,
-    rightPanelTabs: [],
-    activeRightPanelTab: "setup"
+    showScrollToBottom: false
   }
 };
 
@@ -114,11 +123,17 @@ const api = {
       timeoutMs: 900000,
       controller
     }),
+  reviewProcessRun: (requestId, sessionId, approvalId, approved) =>
+    request(`/process-runs/${encodeURIComponent(requestId)}/review`, {
+      method: "POST", body: JSON.stringify({ sessionId, approvalId, approved })
+    }),
   getProcessRun: (requestId) => request(`/process-runs/${encodeURIComponent(requestId)}`),
   cancelProcessRun: (requestId) =>
     request(`/process-runs/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
-  readWorkspaceFile: (filePath) =>
-    request(`/workspace/file?path=${encodeURIComponent(filePath)}`),
+  readWorkspaceFile: (filePath, sessionId) =>
+    request(`/workspace/file?path=${encodeURIComponent(filePath)}&sessionId=${encodeURIComponent(sessionId || "")}`),
+  openWorkspaceEditor: (filePath, sessionId) =>
+    request("/workspace/editor", { method: "POST", body: JSON.stringify({ path: filePath, sessionId }) }),
   revealWorkspacePath: (filePath) =>
     request("/workspace/reveal", {
       method: "POST",
@@ -232,6 +247,47 @@ const api = {
   },
   getSystemMetrics: () => request("/system/metrics")
 };
+
+const reviewPanel = createReviewPanel({
+  sessionId: () => state.activeSessionId,
+  isCollapsed: () => state.ui.sessionSetupCollapsed,
+  showPanel: () => {
+    state.ui.sessionSetupCollapsed = false;
+    localStorage.setItem("lcai.sessionSetupCollapsed", "false");
+  },
+  busy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving),
+  readFile: api.readWorkspaceFile,
+  openEditor: api.openWorkspaceEditor,
+  findChange: findFileChangeMetadata,
+  beforeOpen: async () => {
+    const sessionId = state.activeSessionId;
+    const snapshot = readSessionSetupSnapshot();
+    window.clearTimeout(state.ui.autosaveTimer);
+    await state.ui.autosavePromise.catch(() => undefined);
+    await persistActiveSessionSetup({ refreshBootstrap: false, sessionId, snapshot });
+  },
+  changed: render,
+  notify: (message) => { pushToast(message, "danger"); render(); },
+  icon,
+  send: ({ input, attachments, sessionId, reviewSelection }) => submitChatMessage(input, attachments, { sessionId, fromReview: true, reviewSelection })
+});
+
+const voiceInput = createVoiceInput({
+  bridge: window.desktopVoice,
+  sessionId: () => state.activeSessionId,
+  isChat: () => state.route === "chat",
+  hasSession: id => (state.bootstrap?.sessions ?? []).some(session => session.id === id),
+  sendBusy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving),
+  icon,
+  appendText: (sessionId, text) => {
+    state.drafts[sessionId] = appendDictation(state.drafts[sessionId] || "", text);
+    if (state.activeSessionId === sessionId) {
+      const textarea = document.querySelector("#chat-form textarea");
+      if (textarea) textarea.value = state.drafts[sessionId];
+    }
+  },
+  notify: message => { pushToast(message, "info"); render(); }
+});
 
 const modelManager = createModelManager({
   request,
@@ -417,11 +473,13 @@ function applyTheme(theme) {
   if (select) select.value = nextTheme;
 }
 
-function render() {
+function render(options = {}) {
   if (!app) {
     return;
   }
 
+  reviewPanel.capture();
+  const setupViewport = sessionSetupMotion.capture();
   const presentation = capturePresentationState();
   const viewKey = `${state.route}:${state.route === "orchestration" ? state.orchestrationTab : state.activeSessionId}`;
   const viewChanged = app.dataset.view !== viewKey;
@@ -463,8 +521,11 @@ function render() {
   `;
 
   bindEvents();
+  voiceInput.bind();
+  reviewPanel.bind();
   modelManager.bind(document.querySelector("#local-model-manager"));
   restorePresentationState(presentation);
+  sessionSetupMotion.restore(setupViewport, options.setupAddedId);
   bindGlassLighting(app);
   mountActiveWorkflowEditor();
   if (state.route === "chat") {
@@ -481,7 +542,7 @@ function capturePresentationState() {
     key: element.dataset.uiDisclosure, open: element.open
   }));
   const focused = document.activeElement;
-  return { forms, disclosures, focusId: focused?.id, start: focused?.selectionStart, end: focused?.selectionEnd };
+  return { forms, disclosures, focusId: focused?.closest?.("#session-setup-body") ? null : focused?.id, start: focused?.selectionStart, end: focused?.selectionEnd };
 }
 
 function restorePresentationState(snapshot) {
@@ -704,7 +765,7 @@ function renderChatRoute() {
   const draftAttachments = getActiveDraftAttachments();
 
   return `
-    <div class="chat-layout" style="--session-panel-width: ${Math.max(280, state.ui.sessionSetupWidth || 300)}px;">
+    <div class="chat-layout ${reviewPanel.expanded() ? "review-expanded" : ""}" style="--session-panel-width: ${state.ui.rightPanelWidth}px;">
       <section class="chat-shell">
         <div class="message-stream">
           ${
@@ -721,6 +782,7 @@ function renderChatRoute() {
           aria-label="Scroll to latest message"
         >${icon("arrowDown")}</button>
 
+        <div class="chat-approval-slot" data-chat-approval>${renderChatApproval()}</div>
         <form class="composer liquid-glass" id="chat-form">
           <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="image/*,.txt,.md,.markdown,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.xml,.toml,.sh,.log,.pdf,.doc,.docx" />
           ${
@@ -729,13 +791,15 @@ function renderChatRoute() {
               : ""
           }
           <textarea name="input" aria-label="Message" placeholder="Ask anything…">${escapeHtml(getActiveDraft())}</textarea>
+          ${voiceInput.renderStrip()}
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
             <button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files">${icon("plus")}</button>
             ${renderChatActivityBar(settings)}
             <div class="composer-actions">
+              ${voiceInput.renderButton()}
               ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
-              <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting ? "disabled" : ""}>${icon("arrowUp")}</button>
+              <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting || state.accessSaving ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -768,9 +832,107 @@ function renderChatActivityBar(settings) {
       <span class="activity-scan status-dot" aria-hidden="true"><span></span></span>
       <span class="activity-label">${escapeHtml(label)}</span>
       <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
+      ${renderAccessControl(settings)}
       <span class="activity-hint">${running ? "esc to stop" : ""}</span>
     </div>
   `;
+}
+
+function renderAccessControl(settings) {
+  const mode = ACCESS_MODES.find((item) => item.id === settings.defaultAccessMode) || ACCESS_MODES[1];
+  const busy = state.accessSaving || state.activeChatRequest?.sessionId === state.activeSessionId;
+  return `<button type="button" class="icon-button access-trigger ${mode.id === "full" ? "access-full" : ""}"
+    popovertarget="chat-access-menu" aria-label="Access: ${mode.label}" title="${mode.label}" ${busy ? "disabled" : ""}>${icon(mode.icon)}</button>
+    <div id="chat-access-menu" class="access-menu" popover="auto" role="group" aria-label="Chat access">
+      <div class="access-menu__heading">How should agent actions be approved?</div>
+      ${ACCESS_MODES.map((item) => `<button type="button" class="access-option ${item.id === "full" ? "access-full" : ""}"
+        data-access-mode="${item.id}" aria-pressed="${item.id === mode.id}">
+        ${icon(item.icon)}<span><strong>${item.label}</strong><small>${item.description}</small></span>
+        <span class="access-option__check">${item.id === mode.id ? icon("check") : ""}</span>
+      </button>`).join("")}
+      <div class="access-menu__footer">Applies to this chat and its agents.</div>
+    </div>`;
+}
+
+function renderChatApproval() {
+  const pending = state.pendingRequest;
+  if (!pending?.approval || pending.sessionId !== state.activeSessionId) return "";
+  const approval = pending.approval;
+  return `<section class="chat-approval" role="region" aria-label="Approval request">
+    <div class="chat-approval__heading">${icon("hand")}<strong>Approval required</strong><span>${escapeHtml(approval.tool)}</span></div>
+    <p>${escapeHtml(approval.summary)}</p>
+    <pre tabindex="0">${escapeHtml(approval.details)}</pre>
+    <div class="chat-approval__actions"><span>Waiting for your decision</span>
+      <button type="button" class="ghost-button" data-approval-id="${escapeAttr(approval.id)}" data-approval-decision="cancel" ${pending.reviewing ? "disabled" : ""}>Cancel</button>
+      <button type="button" class="primary-button" data-approval-id="${escapeAttr(approval.id)}" data-approval-decision="approve" ${pending.reviewing ? "disabled" : ""}>Approve</button>
+    </div>
+  </section>`;
+}
+
+function updateChatApproval(approval) {
+  if (!state.pendingRequest) return;
+  const changed = state.pendingRequest.approval?.id !== approval?.id;
+  state.pendingRequest.approval = approval;
+  if (changed && state.pendingRequest.sessionId === state.activeSessionId) {
+    const slot = document.querySelector("[data-chat-approval]");
+    if (slot) slot.innerHTML = renderChatApproval();
+  }
+}
+
+function bindChatAccess() {
+  const menu = document.querySelector("#chat-access-menu");
+  menu?.addEventListener("beforetoggle", (event) => {
+    if (event.newState !== "open") return;
+    const trigger = document.querySelector(".access-trigger").getBoundingClientRect();
+    const width = Math.min(280, window.innerWidth - 24);
+    menu.style.width = `${width}px`;
+    menu.style.left = `${Math.max(12, Math.min(trigger.left, window.innerWidth - width - 12))}px`;
+    menu.style.bottom = `${window.innerHeight - trigger.top + 7}px`;
+  });
+  menu?.addEventListener("click", async (event) => {
+    const option = event.target.closest("[data-access-mode]");
+    if (!option || state.accessSaving || state.activeChatRequest?.sessionId === state.activeSessionId) return;
+    const mode = option.dataset.accessMode;
+    if (!ACCESS_MODES.some((item) => item.id === mode)) return;
+    menu.hidePopover();
+    const sessionId = state.activeSessionId;
+    // Finish any older setup save before updating access, then preserve all unsaved setup fields.
+    state.accessSaving = true;
+    window.clearTimeout(state.ui.autosaveTimer);
+    state.ui.autosaveSeq++;
+    const previousMode = state.sessionSettings.defaultAccessMode;
+    const snapshot = readSessionSetupSnapshot();
+    state.sessionSettings = { ...snapshot.settings, defaultAccessMode: mode };
+    render();
+    try {
+      await state.ui.autosavePromise.catch(() => undefined);
+      const saved = await api.updateSessionSettings(sessionId, sessionSettingsToPatch({ ...snapshot.settings, defaultAccessMode: mode }));
+      if (state.activeSessionId === sessionId) state.sessionSettings = saved;
+    } catch (error) {
+      if (state.activeSessionId === sessionId) state.sessionSettings.defaultAccessMode = previousMode;
+      pushToast(error instanceof Error ? error.message : "Could not save access", "danger");
+    } finally { state.accessSaving = false; render(); }
+  });
+  document.querySelector("[data-chat-approval]")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-approval-decision]");
+    const pending = state.pendingRequest;
+    if (!button || !pending?.approval || pending.reviewing || pending.sessionId !== state.activeSessionId ||
+        button.dataset.approvalId !== pending.approval.id) return;
+    pending.reviewing = true;
+    document.querySelector("[data-chat-approval]").innerHTML = renderChatApproval();
+    try {
+      await api.reviewProcessRun(pending.requestId, pending.sessionId, pending.approval.id, button.dataset.approvalDecision === "approve");
+      if (state.pendingRequest === pending) updateChatApproval(undefined);
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not submit decision", "danger");
+    } finally {
+      pending.reviewing = false;
+      if (state.pendingRequest === pending && pending.sessionId === state.activeSessionId) {
+        const slot = document.querySelector("[data-chat-approval]");
+        if (slot) slot.innerHTML = renderChatApproval();
+      }
+    }
+  });
 }
 
 function getProviderDisplayName(providerId) {
@@ -790,6 +952,8 @@ function renderPendingAssistantText(pendingRequest) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === "Escape" && voiceInput.escape()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+  if (event.key === "Escape" && document.querySelector("#chat-access-menu:popover-open")) return;
   if (event.key !== "Escape" || !state.activeChatRequest) {
     return;
   }
@@ -836,7 +1000,8 @@ function startProcessProgressPolling(active) {
     try {
       const run = await api.getProcessRun(active.requestId);
       if (state.activeChatRequest?.requestId !== active.requestId || active.cancelled) return;
-      if (run?.progress && state.pendingRequest) {
+      updateChatApproval(run?.approval);
+      if (run?.progress && state.pendingRequest && state.pendingRequest.sessionId === state.activeSessionId) {
         state.pendingRequest.progress = run.progress;
         updateChatActivityProgress(run.progress);
       }
@@ -948,17 +1113,10 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
     <form
       class="panel chat-settings form-grid ${collapsed ? "chat-settings--collapsed" : ""}"
       id="session-settings-form"
-      style="--session-panel-width: ${Math.max(280, state.ui.sessionSetupWidth || 300)}px;"
+      data-session-id="${escapeAttr(state.activeSessionId)}" data-setup-mode="${escapeAttr(setupMode)}"
     >
-      <div class="session-resize-handle" data-action="resize-session-setup" title="Resize setup"></div>
-      <div class="chat-settings__header">
-        <button class="ghost-button setup-toggle icon-button" type="button" data-action="toggle-session-setup" aria-label="Toggle session setup" aria-expanded="${!collapsed}" aria-controls="session-setup-body" title="${collapsed ? "Show setup" : "Hide setup"}">${icon(collapsed ? "chevronLeft" : "chevronRight")}</button>
-        <div class="chat-settings__title">
-          <h3>Session setup</h3>
-          <div class="subtle" data-autosave-status>${escapeHtml(autosaveStatusLabel(state.ui.autosaveStatus))}</div>
-        </div>
-      </div>
-
+      <div class="session-resize-handle" data-action="resize-right-panel" title="Resize panel"></div>
+      ${reviewPanel.tabs()}
       <div id="session-setup-body" class="chat-settings__body">
         <div class="chat-type-bar">
           ${["general", "code", "hypothesis"].map((mode) => `
@@ -999,66 +1157,21 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
 	              <label>Model</label>
 	              ${renderSessionModelControl("defaultModel", settings.defaultTarget.providerId, settings.defaultTarget.model ?? "", defaultModelOptions, "default-model-options")}
 	            </div>
-	            <div class="field">
-	              <label>Access</label>
-	              <select name="defaultAccess">${["default", "full"].map((value) => option(value, settings.defaultAccessMode ?? "default")).join("")}</select>
-	            </div>
+
 	          </div>
 	        </section>
 
         ${setupMode === "hypothesis"
           ? renderHypothesisSetup(settings, providerOptions)
           : renderSubagentSetup(settings, providerOptions)}
+        <div class="subtle setup-save-status" data-autosave-status aria-live="polite">${escapeHtml(autosaveStatusLabel(state.ui.autosaveStatus))}</div>
       </div>
-      ${renderRightPanelTabs()}
     </form>
   `;
 }
 
 function renderChatRightPanel(settings, currentSession, providerOptions) {
-  const activeTab = state.ui.activeRightPanelTab;
-  const fileTab = state.ui.rightPanelTabs.find((tab) => tab.id === activeTab);
-
-  if (!fileTab) {
-    return renderSessionSetupPanel(settings, currentSession, providerOptions);
-  }
-
-  const lineCount = splitFileViewerLines(fileTab.content).length;
-  return `
-    <aside class="panel chat-settings file-viewer-panel" style="--session-panel-width: ${Math.max(280, state.ui.sessionSetupWidth || 300)}px;">
-      <div class="session-resize-handle" data-action="resize-session-setup" title="Resize panel"></div>
-      <div class="file-viewer__header">
-        <div>
-          <div class="section-label">Full file</div>
-          <h3>${escapeHtml(fileTab.name)}</h3>
-        </div>
-        <div class="file-viewer__actions">
-          <button class="ghost-button" type="button" data-action="reveal-tool-path" data-path="${escapeAttr(fileTab.path)}">Folder</button>
-          <button class="ghost-button" type="button" data-action="copy-open-file" data-tab-id="${escapeAttr(fileTab.id)}">Copy</button>
-        </div>
-      </div>
-      <div class="file-viewer__meta" title="${escapeAttr(fileTab.path)}">
-        <code>${escapeHtml(compactPath(fileTab.path))}</code>
-        <span>${lineCount} lines · ${formatBytes(fileTab.sizeBytes)}</span>
-      </div>
-      <div class="file-viewer__content">${renderFullFileRows(fileTab)}</div>
-      ${renderRightPanelTabs()}
-    </aside>
-  `;
-}
-
-function renderRightPanelTabs() {
-  return `
-    <div class="right-panel-tabs" role="tablist" aria-label="Right panel views">
-      <button class="right-panel-tab ${state.ui.activeRightPanelTab === "setup" ? "active" : ""}" type="button" data-action="open-right-panel-tab" data-tab-id="setup">Setup</button>
-      ${state.ui.rightPanelTabs.map((tab) => `
-        <span class="right-panel-tab-wrap">
-          <button class="right-panel-tab ${state.ui.activeRightPanelTab === tab.id ? "active" : ""}" type="button" data-action="open-right-panel-tab" data-tab-id="${escapeAttr(tab.id)}" title="${escapeAttr(tab.path)}">${escapeHtml(tab.name)}</button>
-          <button class="right-panel-tab-close" type="button" data-action="close-right-panel-tab" data-tab-id="${escapeAttr(tab.id)}" aria-label="Close ${escapeAttr(tab.name)}">×</button>
-        </span>
-      `).join("")}
-    </div>
-  `;
+  return reviewPanel.render() || renderSessionSetupPanel(settings, currentSession, providerOptions);
 }
 
 function getEffectiveSetupMode(settings) {
@@ -2893,9 +3006,9 @@ function renderFileToolCard(tool) {
   const metadata = tool.metadata || {};
   const files = Array.isArray(metadata.files) ? metadata.files : [];
   const operation = metadata.operation || inferFileOperation(metadata);
-  const title = metadata.permissionRequired ? "Permission required" : fileOperationLabel(operation);
+  const title = metadata.cancelled ? "Action cancelled" : metadata.permissionRequired ? "Permission required" : fileOperationLabel(operation);
   const targetPath = metadata.filePath || metadata.path || metadata.directory || metadata.baseDir;
-  const statusLabel = tool.ok ? "done" : metadata.permissionRequired ? "needs approval" : "failed";
+  const statusLabel = tool.ok ? "done" : metadata.cancelled ? "cancelled" : metadata.permissionRequired ? "needs approval" : "failed";
 
   if (files.length) {
     return `
@@ -2909,7 +3022,7 @@ function renderFileToolCard(tool) {
         ${files.slice(0, 4).map((file) => renderFileDiffBlock(file.filePath, file.diff, file.operation)).join("")}
         ${
           files.length > 4
-            ? `<div class="process-card__more">+${files.length - 4} more files</div>`
+            ? `<div class="process-card__more">${files.slice(4).map((file) => renderReviewButton(file.filePath, compactPath(file.filePath))).join("")}</div>`
             : ""
         }
       </section>
@@ -2922,8 +3035,9 @@ function renderFileToolCard(tool) {
         <span class="process-card__status">${tool.ok ? "✓" : "!"}</span>
         <span class="process-card__title">${escapeHtml(title)}</span>
         <span class="process-card__meta">${escapeHtml(statusLabel)}</span>
+        ${tool.ok && targetPath && !["delete", "directory", "create directory"].includes(operation) ? renderReviewButton(targetPath) : ""}
       </div>
-      ${targetPath ? renderFilePathBar(targetPath, fileOperationLabel(operation)) : ""}
+      ${targetPath ? renderFilePathBar(targetPath, fileOperationLabel(operation), "", false) : ""}
       ${metadata.diff ? renderFileDiffBlock(targetPath, metadata.diff, operation, false) : renderToolOutput(tool.output)}
     </section>
   `;
@@ -2987,7 +3101,7 @@ function renderFileDiffBlock(filePath, diff, operation = "write", showPath = tru
   `;
 }
 
-function renderFilePathBar(filePath, label = "File", extraClass = "") {
+function renderFilePathBar(filePath, label = "File", extraClass = "", showReview = true) {
   const value = String(filePath || "");
   const isDirectory = ["Project", "List directory", "Create directory"].includes(label);
 
@@ -3002,9 +3116,13 @@ function renderFilePathBar(filePath, label = "File", extraClass = "") {
           <button class="ghost-button process-pathbar__button" type="button" data-action="copy-tool-path" data-path="${escapeAttr(value)}">Copy</button>
           <button class="ghost-button process-pathbar__button" type="button" data-action="reveal-tool-path" data-path="${escapeAttr(value)}">Open</button>
         </div>
-      ` : ""}
+      ` : showReview && label !== "Delete" ? renderReviewButton(value) : ""}
     </div>
   `;
+}
+
+function renderReviewButton(filePath, label = "Review") {
+  return `<button class="ghost-button process-card__review" type="button" data-action="open-tool-path" data-path="${escapeAttr(filePath)}" title="Review ${escapeAttr(filePath)}">${icon("code")} ${escapeHtml(label)}</button>`;
 }
 
 function renderDiffRow(row) {
@@ -3017,54 +3135,6 @@ function renderDiffRow(row) {
       <code>${escapeHtml(row.text || "")}</code>
     </div>
   `;
-}
-
-function splitFileViewerLines(content) {
-  const normalized = String(content || "").replace(/\r?\n$/, "");
-  return normalized ? normalized.split(/\r?\n/) : [""];
-}
-
-function renderFullFileRows(fileTab) {
-  const lines = splitFileViewerLines(fileTab.content);
-  const change = fileTab.change;
-  const diff = change?.diff;
-  const addedLines = new Set();
-  const removedByLine = new Map();
-
-  if (diff) {
-    const start = Number(
-      diff.changeStartLine || diff.preview?.find((row) => row.type === "add")?.line || 1
-    );
-    for (let index = 0; index < Number(diff.added || 0); index += 1) {
-      addedLines.add(start + index);
-    }
-    for (const row of diff.preview || []) {
-      if (row.type !== "remove") {
-        continue;
-      }
-      const lineNumber = Number(row.line || start);
-      removedByLine.set(lineNumber, [...(removedByLine.get(lineNumber) || []), row]);
-    }
-  }
-
-  const rows = [];
-  lines.forEach((text, index) => {
-    const lineNumber = index + 1;
-    for (const removed of removedByLine.get(lineNumber) || []) {
-      rows.push(renderDiffRow({ ...removed, line: lineNumber }));
-    }
-    const type = change?.beforeExists === false || addedLines.has(lineNumber) ? "add" : "context";
-    rows.push(renderDiffRow({ type, line: lineNumber, text }));
-  });
-
-  for (const [lineNumber, removedRows] of removedByLine.entries()) {
-    if (lineNumber <= lines.length) {
-      continue;
-    }
-    removedRows.forEach((row) => rows.push(renderDiffRow(row)));
-  }
-
-  return rows.join("");
 }
 
 function renderToolOutput(output) {
@@ -3121,7 +3191,91 @@ function renderAttachmentMeta(attachment) {
   return parts.join(" · ");
 }
 
+async function submitChatMessage(input, attachments, options = {}) {
+  if (voiceInput.busy(state.activeSessionId)) return;
+  if (!input || state.chatSubmitting || state.activeChatRequest || state.accessSaving || (options.sessionId && options.sessionId !== state.activeSessionId)) {
+    return;
+  }
+
+  const requestId = createUiEntityId("chat");
+  const controller = new AbortController();
+  const activeRequest = { requestId, controller, cancelled: false, progressTimer: null };
+  const sessionId = state.activeSessionId;
+  activeRequest.sessionId = sessionId;
+  state.activeChatRequest = activeRequest;
+  state.chatSubmitting = true;
+  const submitButton = document.querySelector("#chat-form button[type='submit']");
+  if (submitButton) submitButton.disabled = true;
+  let completed = false;
+  const setupSnapshot = readSessionSetupSnapshot();
+  try {
+    window.clearTimeout(state.ui.autosaveTimer);
+    await state.ui.autosavePromise.catch(() => undefined);
+    await persistActiveSessionSetup({ refreshBootstrap: false, sessionId, snapshot: setupSnapshot });
+    if (activeRequest.cancelled || state.activeChatRequest?.requestId !== requestId) return;
+    state.route = "chat";
+    window.location.hash = "/chat";
+    state.pendingRequest = {
+      requestId,
+      sessionId,
+      input,
+      startedAt: new Date().toISOString(),
+      pendingText: isSubagentRequest(input) ? chooseSubagentPendingText(input) : undefined
+    };
+    state.activeChatRequest = activeRequest;
+    state.chatSubmitting = true;
+    if (!options.fromReview) {
+      state.drafts[sessionId] = "";
+    }
+    const wasNearBottom = state.ui.messageStreamPinnedToBottom || isMessageStreamNearBottom();
+    render();
+    if (wasNearBottom) {
+      requestAnimationFrame(() => scrollChatToBottom("auto"));
+    }
+    startProcessProgressPolling(activeRequest);
+
+    const response = await api.sendChat({
+      requestId,
+      input,
+      sessionId,
+      metadata: attachments.length
+        ? {
+            attachments,
+            ...(options.reviewSelection ? { reviewSelection: options.reviewSelection } : {})
+          }
+        : undefined
+    }, controller);
+    if (activeRequest.cancelled) {
+      return;
+    }
+    if (!options.fromReview) state.draftAttachments[sessionId] = [];
+    completed = true;
+    await refreshBootstrap();
+    if (state.activeSessionId === sessionId) {
+      await loadActiveSession();
+      if (reviewPanel.isOpen()) await reviewPanel.refresh();
+    }
+  } catch (error) {
+    if (state.activeChatRequest?.requestId === requestId && !activeRequest.cancelled) {
+      const message = error instanceof Error ? error.message : "Action failed";
+      preserveStoppedChatRequest(activeRequest, message, "degraded");
+      pushToast(message, "danger");
+    }
+  } finally {
+    stopProcessProgressPolling(activeRequest);
+    if (state.activeChatRequest?.requestId === requestId) {
+      state.activeChatRequest = null;
+      state.pendingRequest = null;
+      state.chatSubmitting = false;
+      render();
+      if (state.ui.messageStreamPinnedToBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
+    }
+  }
+  return completed;
+}
+
 function bindEvents() {
+  bindChatAccess();
   document.querySelectorAll(".field").forEach((field, index) => {
     const label = field.querySelector("label");
     const control = field.querySelector('input:not([type="hidden"]), select, textarea');
@@ -3198,16 +3352,19 @@ function bindEvents() {
     localStorage.setItem("lcai.sessionSetupCollapsed", String(state.ui.sessionSetupCollapsed));
     const panel = document.querySelector(".chat-settings");
     panel?.classList.toggle("chat-settings--collapsed", state.ui.sessionSetupCollapsed);
+    document.querySelector(".chat-layout")?.classList.toggle("review-expanded", reviewPanel.expanded());
+    document.querySelector(".review-selection-plus")?.setAttribute("hidden", "");
     const button = document.querySelector("[data-action='toggle-session-setup']");
     if (button) {
       button.innerHTML = icon(state.ui.sessionSetupCollapsed ? "chevronLeft" : "chevronRight");
       button.setAttribute("aria-expanded", String(!state.ui.sessionSetupCollapsed));
-      button.setAttribute("title", state.ui.sessionSetupCollapsed ? "Show setup" : "Hide setup");
+      button.setAttribute("title", state.ui.sessionSetupCollapsed ? "Show panel" : "Hide panel");
+      button.setAttribute("aria-label", state.ui.sessionSetupCollapsed ? "Show panel" : "Hide panel");
     }
     window.setTimeout(syncScrollToBottomButton, 340);
   });
 
-  bindResizeHandle("[data-action='resize-session-setup']", "sessionSetupWidth", "lcai.sessionSetupWidth", 280, Math.floor(window.innerWidth * 0.5), (event) => window.innerWidth - event.clientX);
+  bindResizeHandle("[data-action='resize-right-panel']", "rightPanelWidth", "lcai.rightPanelWidth", 320, Math.floor(window.innerWidth * 0.7), (event) => document.querySelector(".chat-layout").getBoundingClientRect().right - event.clientX);
 
   document.querySelector("[data-action='toggle-workflow-side']")?.addEventListener("click", () => {
     state.ui.workflowSideCollapsed = !state.ui.workflowSideCollapsed;
@@ -3778,12 +3935,13 @@ function bindEvents() {
       const baseSettings = snapshot?.settings ?? state.sessionSettings;
       const nextIndex = (baseSettings.codeAgents?.length ?? 0) + 1;
       const agentName = chooseSubagentName(baseSettings.codeAgents ?? []);
+      const addedId = createUiEntityId("agent");
       state.sessionSettings = {
         ...baseSettings,
         codeAgents: [
           ...(baseSettings.codeAgents ?? []),
           {
-            id: `agent-${Date.now()}`,
+            id: addedId,
             name: agentName || `Agent${nextIndex}`,
             providerId: baseSettings.defaultTarget.providerId,
             model: baseSettings.defaultTarget.model,
@@ -3791,7 +3949,7 @@ function bindEvents() {
           }
         ].slice(0, 4)
       };
-      render();
+      render({ setupAddedId: addedId });
       scheduleSessionSetupAutosave();
     });
   });
@@ -3828,12 +3986,13 @@ function bindEvents() {
         return;
       }
 
+      const addedId = createUiEntityId("hypothesis");
       state.sessionSettings = {
         ...baseSettings,
         hypothesisAgents: [
           ...agents,
           {
-            id: createUiEntityId("hypothesis"),
+            id: addedId,
             name: chooseHypothesisAdvisorName(agents),
             role: "advisor",
             providerId: baseSettings.defaultTarget.providerId,
@@ -3841,7 +4000,7 @@ function bindEvents() {
           }
         ].slice(0, MAX_HYPOTHESIS_AGENTS)
       };
-      render();
+      render({ setupAddedId: addedId });
       scheduleSessionSetupAutosave();
     });
   });
@@ -3910,75 +4069,7 @@ function bindEvents() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const input = String(form.get("input") || "").trim();
-
-    if (!input || state.chatSubmitting || state.activeChatRequest) {
-      return;
-    }
-
-    const requestId = createUiEntityId("chat");
-    const controller = new AbortController();
-    const activeRequest = { requestId, controller, cancelled: false, progressTimer: null };
-    const sessionId = state.activeSessionId;
-    state.activeChatRequest = activeRequest;
-    state.chatSubmitting = true;
-    event.currentTarget.querySelector("button[type='submit']").disabled = true;
-    try {
-      const attachments = getActiveDraftAttachments();
-      await persistActiveSessionSetup({ refreshBootstrap: false });
-      if (activeRequest.cancelled || state.activeChatRequest?.requestId !== requestId) return;
-      state.route = "chat";
-      window.location.hash = "/chat";
-      state.pendingRequest = {
-        requestId,
-        sessionId,
-        input,
-        startedAt: new Date().toISOString(),
-        pendingText: isSubagentRequest(input) ? chooseSubagentPendingText(input) : undefined
-      };
-      state.activeChatRequest = activeRequest;
-      state.chatSubmitting = true;
-      if (state.activeSessionId) {
-        state.drafts[sessionId] = "";
-      }
-      const wasNearBottom = state.ui.messageStreamPinnedToBottom || isMessageStreamNearBottom();
-      render();
-      if (wasNearBottom) {
-        requestAnimationFrame(() => scrollChatToBottom("auto"));
-      }
-      startProcessProgressPolling(activeRequest);
-
-      const response = await api.sendChat({
-        requestId,
-        input,
-        sessionId,
-        metadata: attachments.length
-          ? {
-              attachments
-            }
-          : undefined
-      }, controller);
-      if (activeRequest.cancelled) {
-        return;
-      }
-      state.draftAttachments[sessionId] = [];
-      await refreshBootstrap();
-      if (state.activeSessionId === sessionId) await loadActiveSession();
-    } catch (error) {
-      if (state.activeChatRequest?.requestId === requestId && !activeRequest.cancelled) {
-        const message = error instanceof Error ? error.message : "Action failed";
-        preserveStoppedChatRequest(activeRequest, message, "degraded");
-        pushToast(message, "danger");
-      }
-    } finally {
-      stopProcessProgressPolling(activeRequest);
-      if (state.activeChatRequest?.requestId === requestId) {
-        state.activeChatRequest = null;
-        state.pendingRequest = null;
-        state.chatSubmitting = false;
-        render();
-        if (state.ui.messageStreamPinnedToBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
-      }
-    }
+    await submitChatMessage(input, getActiveDraftAttachments());
   });
 
   document.querySelector("#chat-form textarea[name='input']")?.addEventListener("input", (event) => {
@@ -4307,23 +4398,6 @@ function bindEvents() {
     });
   });
 
-  document.querySelectorAll("[data-action='open-tool-path']").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const filePath = button.dataset.path;
-
-      if (!filePath) {
-        return;
-      }
-
-      try {
-        await openFileInRightPanel(filePath);
-      } catch (error) {
-        pushToast(error instanceof Error ? error.message : "Unable to open file", "danger");
-        render();
-      }
-    });
-  });
-
   document.querySelectorAll("[data-action='reveal-tool-path']").forEach((button) => {
     button.addEventListener("click", async () => {
       const filePath = button.dataset.path;
@@ -4337,39 +4411,6 @@ function bindEvents() {
       } catch (error) {
         pushToast(error instanceof Error ? error.message : "Unable to open directory", "danger");
       }
-    });
-  });
-
-  document.querySelectorAll("[data-action='open-right-panel-tab']").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.ui.activeRightPanelTab = button.dataset.tabId || "setup";
-      render();
-    });
-  });
-
-  document.querySelectorAll("[data-action='close-right-panel-tab']").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const tabId = button.dataset.tabId;
-      state.ui.rightPanelTabs = state.ui.rightPanelTabs.filter((tab) => tab.id !== tabId);
-      if (state.ui.activeRightPanelTab === tabId) {
-        state.ui.activeRightPanelTab = "setup";
-      }
-      render();
-    });
-  });
-
-  document.querySelectorAll("[data-action='copy-open-file']").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const tab = state.ui.rightPanelTabs.find((item) => item.id === button.dataset.tabId);
-      if (!tab) {
-        return;
-      }
-      await navigator.clipboard.writeText(tab.content);
-      button.textContent = "Copied";
-      window.setTimeout(() => {
-        button.textContent = "Copy";
-      }, 1000);
     });
   });
 
@@ -4402,32 +4443,6 @@ function bindEvents() {
   });
 }
 
-async function openFileInRightPanel(filePath) {
-  const change = findFileChangeMetadata(filePath);
-  const existing = state.ui.rightPanelTabs.find((tab) => tab.path === filePath);
-  if (existing) {
-    existing.change = change || existing.change;
-    state.ui.activeRightPanelTab = existing.id;
-    render();
-    return;
-  }
-
-  const file = await api.readWorkspaceFile(filePath);
-  const tab = {
-    id: createUiEntityId("file"),
-    path: file.path,
-    name: file.name,
-    sizeBytes: file.sizeBytes,
-    content: file.content,
-    change
-  };
-  state.ui.rightPanelTabs = [...state.ui.rightPanelTabs, tab].slice(-6);
-  state.ui.activeRightPanelTab = tab.id;
-  state.ui.sessionSetupCollapsed = false;
-  localStorage.setItem("lcai.sessionSetupCollapsed", "false");
-  render();
-}
-
 function findFileChangeMetadata(filePath) {
   for (const message of [...state.messages].reverse()) {
     for (const tool of [...(message.tools || [])].reverse()) {
@@ -4440,6 +4455,7 @@ function findFileChangeMetadata(filePath) {
         return {
           operation: file.operation || "write",
           beforeExists: file.beforeExists,
+          afterHash: file.afterHash,
           diff: file.diff
         };
       }
@@ -4447,6 +4463,7 @@ function findFileChangeMetadata(filePath) {
         return {
           operation: metadata.operation || "write",
           beforeExists: metadata.beforeExists,
+          afterHash: metadata.afterHash,
           diff: metadata.diff
         };
       }
@@ -4471,8 +4488,7 @@ function bindResizeHandle(selector, stateKey, storageKey, minWidth, maxWidth, re
       state.ui[stateKey] = width;
       localStorage.setItem(storageKey, String(width));
       document.querySelector(".shell")?.style.setProperty("--sidebar-width", `${state.ui.sidebarWidth}px`);
-      document.querySelector(".chat-layout")?.style.setProperty("--session-panel-width", `${state.ui.sessionSetupWidth}px`);
-      document.querySelector("#session-settings-form")?.style.setProperty("--session-panel-width", `${state.ui.sessionSetupWidth}px`);
+      document.querySelector(".chat-layout")?.style.setProperty("--session-panel-width", `${state.ui.rightPanelWidth}px`);
       document.querySelector(".orchestration-layout--workflow")?.style.setProperty("--workflow-side-width", `${state.ui.workflowSideWidth}px`);
     };
     const onUp = () => {
@@ -5514,7 +5530,7 @@ function readSessionSetupSnapshot() {
     return value || (providerMatchesFallback ? fallbackModel : undefined) || getDefaultModelForProvider(providerId) || undefined;
   };
   const codeAgentCards = [...form.querySelectorAll(".code-agent-card")];
-  const codeAgents = codeAgentCards
+  const codeAgents = !form.querySelector(".code-agents:not(.hypothesis-agents)") ? fallbackSettings.codeAgents : codeAgentCards
     .filter((card) => card.matches("[data-code-agent-index]"))
     .map((card, index) => {
     const agentIndex = card.dataset.codeAgentIndex ?? String(index);
@@ -5527,7 +5543,7 @@ function readSessionSetupSnapshot() {
       id: String(formData.get(`codeAgentId:${agentIndex}`) || existingAgent?.id || `agent-${index + 1}`).trim(),
       name: String(formData.get(`codeAgentName:${agentIndex}`) || existingAgent?.name || `Agent${index + 1}`).trim() || `Agent${index + 1}`,
       providerId,
-      accessMode: String(formData.get(`codeAgentAccess:${agentIndex}`) || existingAgent?.accessMode || "default") === "full" ? "full" : "default",
+      accessMode: fallbackSettings.defaultAccessMode || "default",
       model:
         resolveModelValue(`codeAgentProvider:${agentIndex}`, `codeAgentModel:${agentIndex}`, existingAgent?.model, existingAgent?.providerId) ||
         getProviderConfiguredModel(providerId)
@@ -5536,7 +5552,7 @@ function readSessionSetupSnapshot() {
   const hypothesisAgentCards = [
     ...form.querySelectorAll(".hypothesis-agent-card[data-hypothesis-agent-index]")
   ];
-  const hypothesisAgents = hypothesisAgentCards.map((card, index) => {
+  const hypothesisAgents = !form.querySelector(".hypothesis-agents") ? fallbackSettings.hypothesisAgents : hypothesisAgentCards.map((card, index) => {
     const agentIndex = card.dataset.hypothesisAgentIndex ?? String(index);
     const existingAgent = fallbackSettings.hypothesisAgents?.[index];
     const role = String(formData.get(`hypothesisAgentRole:${agentIndex}`) || existingAgent?.role || (index === 0 ? "support" : index === 1 ? "attack" : index === 2 ? "judge" : "advisor")).trim();
@@ -5569,7 +5585,7 @@ function readSessionSetupSnapshot() {
 	        providerId: String(formData.get("defaultProvider") || fallbackSettings.defaultTarget.providerId).trim() || fallbackSettings.defaultTarget.providerId,
 	        model: resolveModelValue("defaultProvider", "defaultModel", fallbackSettings.defaultTarget.model, fallbackSettings.defaultTarget.providerId)
 	      },
-	      defaultAccessMode: String(formData.get("defaultAccess") || fallbackSettings.defaultAccessMode || "default") === "full" ? "full" : "default",
+	      defaultAccessMode: fallbackSettings.defaultAccessMode || "default",
 	      codeAgents,
       subagents: codeAgents,
       hypothesisAgents,
@@ -5598,13 +5614,13 @@ async function persistActiveSessionSetup(options = {}) {
     return null;
   }
 
-  const sessionId = state.activeSessionId;
-  const snapshot = readSessionSetupSnapshot();
+  const sessionId = options.sessionId || state.activeSessionId;
+  const snapshot = options.snapshot || readSessionSetupSnapshot();
   if (!snapshot) {
     return null;
   }
 
-  const currentSession = getCurrentSessionSummary();
+  const currentSession = state.bootstrap?.sessions?.find((item) => item.id === sessionId);
   if (options.renameSession !== false && snapshot.title && snapshot.title !== currentSession?.title) {
     await api.renameSession(sessionId, snapshot.title);
     if (currentSession) {
@@ -5733,7 +5749,7 @@ function renderCodeAgentCard(agent, index, providerOptions) {
   const modelOptions = getSelectableSessionModels(agent.providerId, agent.model);
 
   return `
-    <div class="code-agent-card" data-code-agent-index="${index}">
+    <div class="code-agent-card" data-code-agent-index="${index}" data-setup-agent-id="${escapeAttr(agent.id)}">
       <input type="hidden" name="codeAgentId:${index}" value="${escapeAttr(agent.id)}" />
       <div class="field">
         <label>Name</label>
@@ -5749,12 +5765,7 @@ function renderCodeAgentCard(agent, index, providerOptions) {
         <label>Model</label>
         ${renderSessionModelControl(`codeAgentModel:${index}`, agent.providerId, agent.model ?? "", modelOptions, `code-agent-model-options-${index}`)}
       </div>
-      <div class="field">
-        <label>Access</label>
-        <select name="codeAgentAccess:${index}">
-          ${["default", "full"].map((value) => option(value, agent.accessMode ?? "default")).join("")}
-        </select>
-      </div>
+
       <div class="field code-agent-delete">
         <label>&nbsp;</label>
         <button class="ghost-button" type="button" data-action="delete-code-agent" data-code-agent-index="${index}">Delete</button>
@@ -5767,7 +5778,7 @@ function renderHypothesisAgentCard(agent, index, providerOptions) {
   const modelOptions = getSelectableSessionModels(agent.providerId, agent.model);
 
   return `
-    <div class="code-agent-card hypothesis-agent-card" data-hypothesis-agent-index="${index}">
+    <div class="code-agent-card hypothesis-agent-card" data-hypothesis-agent-index="${index}" data-setup-agent-id="${escapeAttr(agent.id)}">
       <input type="hidden" name="hypothesisAgentId:${index}" value="${escapeAttr(agent.id)}" />
       <div class="field">
         <label>Name</label>
@@ -5790,10 +5801,10 @@ function renderHypothesisAgentCard(agent, index, providerOptions) {
         <label>Model</label>
         ${renderSessionModelControl(`hypothesisAgentModel:${index}`, agent.providerId, agent.model ?? "", modelOptions, `hypothesis-agent-model-options-${index}`)}
       </div>
-      <div class="field code-agent-delete">
+      ${index >= 3 ? `<div class="field code-agent-delete">
         <label>&nbsp;</label>
-        <button class="ghost-button" type="button" data-action="delete-hypothesis-agent" data-hypothesis-agent-index="${index}" data-hypothesis-agent-id="${escapeAttr(agent.id)}" ${index < 3 ? "disabled" : ""}>Delete</button>
-      </div>
+        <button class="ghost-button" type="button" data-action="delete-hypothesis-agent" data-hypothesis-agent-index="${index}" data-hypothesis-agent-id="${escapeAttr(agent.id)}">Delete</button>
+      </div>` : ""}
     </div>
   `;
 }
@@ -5821,6 +5832,7 @@ async function deleteSessionById(sessionId) {
   await runAction(async () => {
     const deletingActive = sessionId === state.activeSessionId;
     await api.deleteSession(sessionId);
+    voiceInput.cancelSession(sessionId);
     delete state.drafts[sessionId];
     delete state.draftAttachments[sessionId];
     await refreshBootstrap();

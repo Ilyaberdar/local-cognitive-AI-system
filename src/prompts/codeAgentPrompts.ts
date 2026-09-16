@@ -104,9 +104,7 @@ const buildCodeAdvisorRoleInstruction = (style: OutputStyle): string => {
 };
 
 const buildSubagentAccessInstruction = (agent: CodeAgentTarget): string =>
-  agent.accessMode === "full"
-    ? "Access mode: full. You may produce outputs intended for filesystem execution when the user asks for it."
-    : "Access mode: default. Do not assume filesystem changes will be executed automatically; write plans normally and expect explicit approval for file operations.";
+  `Access mode: ${agent.accessMode}. Produce the requested file contents when asked. The application enforces the chat access policy and pauses for approval when needed. Never claim an action succeeded before the tool result.`;
 
 export const buildCodeAdvisorPrompt = (
   input: string,

@@ -106,7 +106,7 @@ test("provider tests submit the chosen model and only built-in runtime requests 
     request: async (url: string, options: unknown) => calls.push({ url, options }),
     isLocalProvider: (id: string) => ["llamacpp", "lmstudio", "ollama"].includes(id)
   };
-  vm.runInNewContext(fragment("function defaultProviderTimeoutMs", "function providerTimeoutHelp") + fragment("const api = {", "const modelManager =") + "globalThis.api = api;", context);
+  vm.runInNewContext(fragment("function defaultProviderTimeoutMs", "function providerTimeoutHelp") + fragment("const api = {", "const reviewPanel =") + "globalThis.api = api;", context);
   await context.api.testProvider("llamacpp", "gguf-selected");
   await context.api.loadModel("llamacpp", "gguf-selected");
   await context.api.unloadModel("llamacpp", "gguf-selected");
