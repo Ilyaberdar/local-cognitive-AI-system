@@ -16,13 +16,15 @@
     "mcp:stdio": "node dist/src/mcp.js",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "electron": "npm run build && electron .",
-    "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run build && electron-builder --mac dmg --arm64 --x64",
-    "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run build && electron-builder --mac dmg --arm64",
-    "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run build && electron-builder --mac dmg --x64",
-    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64",
+    "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch arm64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg --arm64 --x64",
+    "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:speech -- --arch arm64 && npm run build && electron-builder --mac dmg --arm64",
+    "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg --x64",
+    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run prepare:speech -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64",
     "prepare:llama": "node scripts/prepare-llama-runtime.mjs",
     "verify:llama": "node scripts/verify-packaged-runtime.mjs",
-    "test:llama": "npm run build && node --test dist/test/llamaCpp.integration.test.js"
+    "test:llama": "npm run build && node --test dist/test/llamaCpp.integration.test.js",
+    "prepare:speech": "node scripts/prepare-speech-runtime.mjs",
+    "verify:speech": "node scripts/verify-speech-runtime.mjs"
   },
   "engines": {
     "node": ">=18.18.0"
@@ -82,8 +84,18 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "resources/speech/darwin-${arch}",
+          "to": "speech/darwin-${arch}",
+          "filter": [
+            "**/*"
+          ]
         }
-      ]
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Dictate messages using local speech recognition. Audio stays on your computer."
+      }
     },
     "win": {
       "signAndEditExecutable": false,
@@ -99,6 +111,13 @@
         {
           "from": "resources/llama/win32-${arch}",
           "to": "llama/win32-${arch}",
+          "filter": [
+            "**/*"
+          ]
+        },
+        {
+          "from": "resources/speech/win32-${arch}",
+          "to": "speech/win32-${arch}",
           "filter": [
             "**/*"
           ]

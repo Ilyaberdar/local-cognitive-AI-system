@@ -1,8 +1,10 @@
 import fs from "fs/promises";
 import path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { ModeResult, ToolExecutionRequest, ToolExecutionResult } from "../types";
 import { Tool } from "./Tool.interface";
+import { authorizeOperation, canonicalPath, isWorkspacePath } from "./AccessPolicy";
+import { isReviewEditRequest, readReviewSelection, reviewInputPath } from "../utils/reviewSelection";
 
 interface FileToolOptions {
   outputDir: string;
@@ -29,6 +31,9 @@ export class FileTool implements Tool {
   constructor(private readonly options: FileToolOptions) {}
 
   matchesIntent(input: string): boolean {
+    // Paths and quoted source can contain action words; only the comment's
+    // explicit edit request may turn a Review message into a mutation.
+    if (reviewInputPath(input)) return isReviewEditRequest(input);
     // Negated instructions must not become file actions through a keyword match.
     const affirmativeInput = input
       .split(/(?<=[.!?;])\s+|\n/)
@@ -39,147 +44,105 @@ export class FileTool implements Tool {
     );
   }
 
-  async execute(input: ToolExecutionRequest): Promise<ToolExecutionResult> {
+  async execute(request: ToolExecutionRequest): Promise<ToolExecutionResult> {
+    // Capture the model output once. Approval resumes this exact operation without another model call.
+    const input = { ...request, result: structuredClone(request.result) };
     const rawInput = input.rawInput;
     const requestedPath = this.extractPath(rawInput);
+    const selection = readReviewSelection(input.context.requestMetadata);
+    if (reviewInputPath(rawInput) && !selection) throw new Error("Review selection is missing. Select the text again before editing.");
     const scaffoldFiles = this.extractScaffoldFiles(input.result);
-
-    if (this.isReadIntent(rawInput) && requestedPath) {
-      return this.readFile(requestedPath);
-    }
-
-    if (this.isListIntent(rawInput)) {
-      return this.listDirectory(requestedPath);
-    }
-
-    if (this.isDeleteIntent(rawInput) && requestedPath) {
-      const approval = this.requireFileApproval(input, "delete");
-      if (approval) {
-        return approval;
+    let operation = "write";
+    let files: Array<{ path: string; content?: string }>;
+    if (selection) {
+      if (!isReviewEditRequest(rawInput)) throw new Error("Review comments support replacing selected text. Send whole-file operations from the chat composer.");
+      if (requestedPath !== selection.path) throw new Error("The requested file does not match the Review selection.");
+      const output = "response" in input.result ? input.result.toolPayload || input.result.response : "";
+      let replacement: unknown;
+      try { replacement = JSON.parse(output.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1")); } catch { /* Reject malformed proposals without touching the file. */ }
+      if (!replacement || typeof replacement !== "object" || typeof (replacement as { replacement?: unknown }).replacement !== "string") {
+        throw new Error('The model did not return a valid Review edit {"replacement":"..."}. No file was changed.');
       }
-      return this.deletePath(requestedPath);
+      files = [{ path: this.resolveTargetPath(selection.path), content: (replacement as { replacement: string }).replacement }];
+    } else if (this.isReadIntent(rawInput) && requestedPath) {
+      operation = "read";
+      files = [{ path: this.resolveTargetPath(requestedPath) }];
+    } else if (this.isListIntent(rawInput)) {
+      operation = "list";
+      files = [{ path: this.resolveTargetPath(requestedPath ?? this.options.outputDir) }];
+    } else if (this.isDeleteIntent(rawInput) && requestedPath) {
+      operation = "delete";
+      files = [{ path: this.resolveTargetPath(requestedPath) }];
+    } else if (this.isAppendIntent(rawInput) && requestedPath) {
+      operation = "append";
+      files = [{ path: this.resolveTargetPath(requestedPath), content: this.renderSingleFileContent(input.result, scaffoldFiles) }];
+    } else if (scaffoldFiles.length) {
+      const base = requestedPath ? this.resolveTargetPath(requestedPath) : path.join(this.options.outputDir, `scaffold-${randomUUID()}`);
+      files = requestedPath && this.looksLikeFilePath(requestedPath) && scaffoldFiles.length === 1
+        ? [{ path: base, content: scaffoldFiles[0].content }]
+        : scaffoldFiles.map((file) => ({ path: path.resolve(base, file.filePath), content: file.content }));
+    } else if (this.isMkdirIntent(rawInput) && requestedPath && !this.isWriteIntent(rawInput)) {
+      operation = "mkdir";
+      files = [{ path: this.resolveTargetPath(requestedPath) }];
+    } else if (this.isWriteIntent(rawInput) && requestedPath) {
+      files = [{ path: this.resolveTargetPath(requestedPath), content: this.renderSingleFileContent(input.result) }];
+    } else {
+      files = [{ path: path.join(path.resolve(this.options.outputDir), `${randomUUID()}.md`), content: `# ${input.title}\n\n${input.content}\n` }];
     }
-
-    if (scaffoldFiles.length > 0) {
-      const approval = this.requireFileApproval(input, "write scaffold");
-      if (approval) {
-        return approval;
+    if (operation === "write" || operation === "append") this.assertWritableResult(input.result);
+    const resolveOperationPath = async (target: string) => operation === "delete"
+      ? path.join(await canonicalPath(path.dirname(target)), path.basename(target))
+      : canonicalPath(target);
+    files = await Promise.all(files.map(async (file) => ({ ...file, path: await resolveOperationPath(file.path) })));
+    const inWorkspace = (await Promise.all(files.map((file) => isWorkspacePath(file.path, this.options.allowedDirectories)))).every(Boolean);
+    let selectedFileVersion: string | undefined;
+    if (selection && operation === "write") {
+      const previous = await fs.readFile(files[0].path, "utf8");
+      selectedFileVersion = createHash("sha256").update(previous).digest("hex");
+      if (selectedFileVersion !== selection.version || previous.slice(selection.startOffset, selection.endOffset) !== selection.text) {
+        throw new Error("The file changed since this selection. Refresh Review and select the text again.");
       }
-      this.assertWritableResult(input.result);
-
-      if (requestedPath && this.looksLikeFilePath(requestedPath) && scaffoldFiles.length === 1) {
-        return this.writeFile(requestedPath, scaffoldFiles[0].content);
-      }
-
-      return this.writeScaffold(scaffoldFiles, requestedPath);
+      // The response is a replacement for this range. Preserve every byte around
+      // it rather than asking a model to reconstruct the rest of a large file.
+      const replacement = files[0].content!;
+      files[0].content = previous.slice(0, selection.startOffset) + replacement + previous.slice(selection.endOffset);
     }
-
-    if (this.isMkdirIntent(rawInput) && requestedPath) {
-      const approval = this.requireFileApproval(input, "create directory");
-      if (approval) {
-        return approval;
-      }
-      return this.makeDirectory(requestedPath);
-    }
-
-    if (this.isAppendIntent(rawInput) && requestedPath) {
-      const approval = this.requireFileApproval(input, "append file");
-      if (approval) {
-        return approval;
-      }
-      this.assertWritableResult(input.result);
-      return this.appendFile(requestedPath, this.renderSingleFileContent(input.result, scaffoldFiles));
-    }
-
-    if (this.isWriteIntent(rawInput) && requestedPath) {
-      const approval = this.requireFileApproval(input, "write file");
-      if (approval) {
-        return approval;
-      }
-      this.assertWritableResult(input.result);
-      return this.writeFile(requestedPath, this.renderSingleFileContent(input.result, scaffoldFiles));
-    }
-
-    return this.writeNote(input);
-  }
-
-  private async writeNote(input: ToolExecutionRequest): Promise<ToolExecutionResult> {
-    const outputDir = path.resolve(this.options.outputDir);
-    this.assertAllowed(outputDir);
-
-    await fs.mkdir(outputDir, { recursive: true });
-
-    const filename = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}.md`;
-    const filePath = path.join(outputDir, filename);
-    const content = `# ${input.title}\n\n${input.content}\n`;
-
-    await fs.writeFile(filePath, content, "utf8");
-
-    return {
-      tool: this.name,
-      ok: true,
-      output: `Saved file to ${filePath}`,
-      metadata: {
-        filePath,
-        operation: "write",
-        beforeExists: false,
-        diff: this.createDiffPreview("", content)
-      }
-    };
-  }
-
-  private async writeScaffold(
-    files: Array<{ filePath: string; content: string }>,
-    targetPath?: string
-  ): Promise<ToolExecutionResult> {
-    const baseDir = targetPath
-      ? this.resolveTargetPath(targetPath)
-      : path.join(this.options.outputDir, `scaffold-${Date.now()}`);
-
-    this.assertAllowed(baseDir);
-    await fs.mkdir(baseDir, { recursive: true });
-
-    const writtenPaths: string[] = [];
-    const filesMetadata: Array<{
-      filePath: string;
-      operation: "write";
-      beforeExists: boolean;
-      diff: FileDiffPreview;
-    }> = [];
-
+    const readOnly = operation === "read" || operation === "list";
+    const permission = await authorizeOperation(input.context, {
+      tool: this.name, operation,
+      summary: `${operation[0].toUpperCase()}${operation.slice(1)} ${files.length === 1 ? files[0].path : `${files.length} files`}`,
+      details: files.map((file) => `${file.path}${file.content === undefined ? "" : `\n\n${file.content}`}`).join("\n\n---\n\n")
+    }, inWorkspace && operation !== "delete", readOnly);
+    if (permission) return permission;
+    input.context.signal?.throwIfAborted();
+    // Authorize the canonical paths above, never a mutable alias or a path reparsed from user text.
     for (const file of files) {
-      const destination = path.resolve(baseDir, file.filePath);
-      this.assertAllowed(destination);
-      const before = await this.readTextIfExists(destination);
-      const nextContent = this.normalizeFileContent(file.content);
-      await fs.mkdir(path.dirname(destination), { recursive: true });
-      await fs.writeFile(destination, nextContent, "utf8");
-      writtenPaths.push(destination);
-      filesMetadata.push({
-        filePath: destination,
-        operation: "write",
-        beforeExists: before.exists,
-        diff: this.createDiffPreview(before.content, nextContent)
-      });
-    }
-
-    return {
-      tool: this.name,
-      ok: true,
-      output: `Project scaffold written to ${baseDir}`,
-      metadata: {
-        baseDir,
-        writtenPaths,
-        files: filesMetadata
+      if (await resolveOperationPath(file.path) !== file.path) throw new Error(`Path changed while awaiting approval: ${file.path}`);
+      if (selectedFileVersion && createHash("sha256").update(await fs.readFile(file.path)).digest("hex") !== selectedFileVersion) {
+        throw new Error("The file changed while awaiting approval. Refresh Review and retry the edit.");
       }
-    };
+    }
+    const executor = new FileTool({ ...this.options, accessMode: "full" });
+    const results: ToolExecutionResult[] = [];
+    for (const file of files) {
+      input.context.signal?.throwIfAborted();
+      results.push(await (operation === "read" ? executor.readFile(file.path)
+        : operation === "list" ? executor.listDirectory(file.path)
+        : operation === "delete" ? executor.deletePath(file.path)
+        : operation === "mkdir" ? executor.makeDirectory(file.path)
+        : operation === "append" ? executor.appendFile(file.path, file.content!)
+        : executor.writeFile(file.path, file.content!, Boolean(selection))));
+    }
+    if (results.length === 1) return results[0];
+    return { tool: this.name, ok: true, output: `Wrote ${results.length} files`,
+      metadata: { writtenPaths: files.map((file) => file.path), files: results.map((result) => result.metadata) } };
   }
 
-  private async writeFile(targetPath: string, content: string): Promise<ToolExecutionResult> {
+  private async writeFile(targetPath: string, content: string, preserveContent = false): Promise<ToolExecutionResult> {
     const resolved = this.resolveTargetPath(targetPath);
     this.assertAllowed(resolved);
     const before = await this.readTextIfExists(resolved);
-    const nextContent = this.normalizeFileContent(content);
+    const nextContent = preserveContent ? content : this.normalizeFileContent(content);
     await fs.mkdir(path.dirname(resolved), { recursive: true });
     await fs.writeFile(resolved, nextContent, "utf8");
 
@@ -191,6 +154,7 @@ export class FileTool implements Tool {
         filePath: resolved,
         operation: "write",
         beforeExists: before.exists,
+        afterHash: createHash("sha256").update(nextContent).digest("hex"),
         diff: this.createDiffPreview(before.content, nextContent)
       }
     };
@@ -213,6 +177,7 @@ export class FileTool implements Tool {
         filePath: resolved,
         operation: "append",
         beforeExists: before.exists,
+        afterHash: createHash("sha256").update(nextContent).digest("hex"),
         diff: this.createDiffPreview(before.content, nextContent)
       }
     };
@@ -401,67 +366,6 @@ export class FileTool implements Tool {
     }
   }
 
-  private requireFileApproval(
-    input: ToolExecutionRequest,
-    operation: string
-  ): ToolExecutionResult | undefined {
-    if (!("response" in input.result)) {
-      return undefined;
-    }
-
-    const writer = input.result.subagents?.find((agent) => agent.role === "writer");
-
-    if (writer) {
-      if (writer.accessMode === "full" || this.hasExplicitFileApproval(input.rawInput)) {
-        return undefined;
-      }
-
-      return {
-        tool: this.name,
-        ok: false,
-        output: [
-          `Permission required: ${writer.name} requested ${operation} with access=default.`,
-          `Reply with explicit approval, for example "approve file access", or switch this subagent to full access.`
-        ].join(" "),
-        metadata: {
-          permissionRequired: true,
-          operation,
-          agentId: writer.id,
-          agentName: writer.name,
-          accessMode: writer.accessMode
-        }
-      };
-    }
-
-    const accessMode = input.context.sessionSettings.defaultAccessMode;
-
-    if (accessMode === "full" || this.hasExplicitFileApproval(input.rawInput)) {
-      return undefined;
-    }
-
-    return {
-      tool: this.name,
-      ok: false,
-      output: [
-        `Permission required: current model requested ${operation} with access=default.`,
-        `Reply with explicit approval, for example "approve file access", or switch the main model to full access.`
-      ].join(" "),
-      metadata: {
-        permissionRequired: true,
-        operation,
-        agentId: "default-model",
-        agentName: "Current model",
-        accessMode
-      }
-    };
-  }
-
-  private hasExplicitFileApproval(input: string): boolean {
-    return /approve file access|approved file access|allow file access|разрешаю доступ|подтверждаю доступ|одобряю доступ|full access/i.test(
-      input
-    );
-  }
-
   private resolveTargetPath(rawPath: string): string {
     if (path.isAbsolute(rawPath)) {
       return path.resolve(rawPath);
@@ -473,6 +377,8 @@ export class FileTool implements Tool {
   }
 
   private extractPath(input: string): string | undefined {
+    const reviewPath = reviewInputPath(input);
+    if (reviewPath) return reviewPath;
     const fenced = input.match(/`([^`]+)`/);
 
     if (fenced?.[1]) {

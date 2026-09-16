@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { RuntimeManager } from "../../app/RuntimeManager";
 import { SessionIndexStore } from "../../session/SessionIndexStore";
-import { Channel, Mode, ProcessProgressEvent, ProcessResult } from "../../types";
+import { ApprovalHandler, Channel, Mode, ProcessProgressEvent, ProcessResult } from "../../types";
 
 export interface ProcessRuntimeInput {
   input: string;
@@ -14,6 +14,7 @@ export interface ProcessRuntimeInput {
   mode?: Mode;
   signal?: AbortSignal;
   onProgress?: (event: ProcessProgressEvent) => void;
+  requestApproval?: ApprovalHandler;
 }
 
 export interface ProcessRuntimeResult extends ProcessResult {
@@ -55,7 +56,8 @@ export const processRuntimeInput = async (
     },
     metadata,
     signal: payload.signal,
-    onProgress: payload.onProgress
+    onProgress: payload.onProgress,
+    requestApproval: payload.requestApproval
   });
 
   return {

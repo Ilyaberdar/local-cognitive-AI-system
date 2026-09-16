@@ -1,5 +1,15 @@
 // Shared presentation primitives. No runtime, provider, or task behavior lives here.
 const paths = {
+  microphone: '<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
+  chevronDown: '<path d="m7 10 5 5 5-5"/>',
+  file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8m-8 4h5"/>',
+  code: '<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18"/>',
+  externalLink: '<path d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/>',
+  hand: '<path d="M8 12V5a1.5 1.5 0 0 1 3 0v6-8a1.5 1.5 0 0 1 3 0v8-6a1.5 1.5 0 0 1 3 0v7-3a1.5 1.5 0 0 1 3 0v5c0 5-3 8-7 8-3 0-5-2-7-5l-3-4a1.5 1.5 0 0 1 2-2l3 3"/>',
+  shield: '<path d="m12 3 8 4v5c0 5-4 8-8 10-4-2-8-5-8-10V7l8-4Z"/><path d="m9 10 3 2-3 2m5 1h2"/>',
+  shieldAlert: '<path d="m12 3 8 4v5c0 5-4 8-8 10-4-2-8-5-8-10V7l8-4Z"/><path d="M12 8v5m0 4h.01"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+
   chat: '<path d="M4 10.5 12 4l8 6.5M6.5 9v10h4v-5h3v5h4V9"/>',
   orchestration: '<rect x="4" y="5" width="16" height="14" rx="3"/><path d="M9.3 5v14m5.4-14v14M6.7 9h0m5.3 3h0m5.3-3h0"/>',
   models: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Zm0 9 8-4.5M12 12 4 7.5M12 12v9"/>',

@@ -1,4 +1,5 @@
-import { ProcessProgressEvent } from "../types";
+import { randomUUID } from "crypto";
+import { ApprovalOperation, PendingApproval, ProcessProgressEvent } from "../types";
 
 interface ProcessRunState {
   id: string;
@@ -8,16 +9,20 @@ interface ProcessRunState {
   startedAt: string;
   updatedAt: string;
   error?: string;
+  sessionId?: string;
+  approval?: PendingApproval;
 }
 
 export class ProcessRunRegistry {
   private readonly runs = new Map<string, ProcessRunState>();
+  private readonly decisions = new Map<string, (approved: boolean) => void>();
 
-  start(id: string): ProcessRunState {
+  start(id: string, sessionId?: string): ProcessRunState {
     if (this.runs.has(id)) throw new Error("Process request id already exists.");
     const now = new Date().toISOString();
     const run: ProcessRunState = {
       id,
+      sessionId,
       status: "running",
       controller: new AbortController(),
       startedAt: now,
@@ -27,6 +32,38 @@ export class ProcessRunRegistry {
     this.runs.set(id, run);
     this.prune();
     return run;
+  }
+
+  async requestApproval(id: string, operation: ApprovalOperation): Promise<boolean> {
+    const run = this.runs.get(id);
+    if (!run || run.status !== "running" || run.approval) throw new Error("Run cannot request approval.");
+    run.controller.signal.throwIfAborted();
+    run.approval = { ...structuredClone(operation), id: randomUUID(), requestedAt: new Date().toISOString() };
+    this.update(id, { phase: "approval", label: "Approval required", detail: operation.summary, at: new Date().toISOString() });
+    return new Promise<boolean>((resolve, reject) => {
+      const cleanup = () => {
+        this.decisions.delete(id);
+        delete run.approval;
+        run.controller.signal.removeEventListener("abort", abort);
+      };
+      const abort = () => { cleanup(); reject(run.controller.signal.reason); };
+      this.decisions.set(id, (approved) => {
+        cleanup();
+        this.update(id, { phase: "tools", label: approved ? "Executing" : "Cancelled action",
+          detail: operation.summary, at: new Date().toISOString() });
+        resolve(approved);
+      });
+      run.controller.signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  review(id: string, sessionId: string, approvalId: string, approved: boolean): boolean {
+    const run = this.runs.get(id);
+    const decide = this.decisions.get(id);
+    if (!run || run.status !== "running" || run.sessionId !== sessionId ||
+        run.approval?.id !== approvalId || !decide) return false;
+    decide(approved);
+    return true;
   }
 
   update(id: string, progress: ProcessProgressEvent): void {
@@ -78,6 +115,7 @@ export class ProcessRunRegistry {
     if (!run) {
       return;
     }
+    if (status !== "running" && run.approval) this.decisions.get(id)?.(false);
     run.status = status;
     run.updatedAt = new Date().toISOString();
     if (status !== "running" && run.progress?.agents) {

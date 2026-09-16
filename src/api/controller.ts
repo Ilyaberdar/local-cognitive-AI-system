@@ -32,7 +32,8 @@ export const createProcessController =
       res.status(409).json({ error: "Process request id already exists." });
       return;
     }
-    const processRun = processRunRegistry.start(requestId);
+    const processSessionId = typeof req.body?.sessionId === "string" && req.body.sessionId.trim() ? req.body.sessionId.trim() : randomUUID();
+    const processRun = processRunRegistry.start(requestId, processSessionId);
     req.once("aborted", () => processRunRegistry.cancel(requestId));
     res.once("close", () => {
       if (!res.writableEnded) processRunRegistry.cancel(requestId);
@@ -70,14 +71,15 @@ export const createProcessController =
         sessionIndexStore,
         {
           input,
-          sessionId: typeof sessionId === "string" ? sessionId : undefined,
+          sessionId: processSessionId,
           sessionTitle: typeof sessionTitle === "string" ? sessionTitle : undefined,
           userId: configuredProfileId,
           providerId: typeof providerId === "string" ? providerId : undefined,
           model: typeof model === "string" ? model : undefined,
           metadata,
           signal: processRun.controller.signal,
-          onProgress: (event) => processRunRegistry.update(requestId, event)
+          onProgress: (event) => processRunRegistry.update(requestId, event),
+          requestApproval: (operation) => processRunRegistry.requestApproval(requestId, operation)
         },
         resolvedChannel
       );
@@ -109,6 +111,17 @@ export const createProcessRunStatusController = () =>
     res.status(200).json(run);
   };
 
+export const createReviewProcessRunController = () =>
+  (req: Request, res: Response): void => {
+    const { sessionId, approvalId, approved } = req.body ?? {};
+    if (typeof sessionId !== "string" || typeof approvalId !== "string" || typeof approved !== "boolean") {
+      res.status(400).json({ error: "sessionId, approvalId and a boolean approved are required." });
+      return;
+    }
+    const accepted = processRunRegistry.review(String(req.params.requestId), sessionId, approvalId, approved);
+    res.status(accepted ? 200 : 409).json({ accepted });
+  };
+
 export const createCancelProcessRunController = () =>
   (req: Request, res: Response): void => {
     const requestId = String(req.params.requestId);
@@ -116,48 +129,7 @@ export const createCancelProcessRunController = () =>
     res.status(cancelled ? 202 : 409).json({ requestId, cancelled });
   };
 
-export const createReadWorkspaceFileController =
-  (runtimeManager: RuntimeManager) =>
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const requestedPath = typeof req.query.path === "string" ? req.query.path : "";
-      if (!requestedPath) {
-        res.status(400).json({ error: "Query parameter 'path' is required." });
-        return;
-      }
-
-      const runtime = runtimeManager.getRuntime();
-      const filePath = path.resolve(requestedPath);
-      const allowed = runtime.config.filesystem.allowedDirectories.some((directory) => {
-        const root = path.resolve(directory);
-        return filePath === root || filePath.startsWith(`${root}${path.sep}`);
-      });
-
-      if (!allowed) {
-        res.status(403).json({ error: "File is outside configured workspace boundaries." });
-        return;
-      }
-
-      const stat = await fs.stat(filePath);
-      if (!stat.isFile()) {
-        res.status(400).json({ error: "Requested path is not a file." });
-        return;
-      }
-      if (stat.size > 5 * 1024 * 1024) {
-        res.status(413).json({ error: "File is larger than the 5 MB viewer limit." });
-        return;
-      }
-
-      res.status(200).json({
-        path: filePath,
-        name: path.basename(filePath),
-        sizeBytes: stat.size,
-        content: await fs.readFile(filePath, "utf8")
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
+export { createReadWorkspaceFileController } from "./workspaceReview";
 
 export const createRevealWorkspacePathController =
   (runtimeManager: RuntimeManager) =>
@@ -453,7 +425,7 @@ export const createUpdateSessionSettingsController =
                 typeof body.defaultTarget.model === "string" ? body.defaultTarget.model : undefined
 	            }
 	          : undefined,
-	        defaultAccessMode: body.defaultAccessMode === "full" ? "full" : body.defaultAccessMode === "default" ? "default" : undefined,
+	        defaultAccessMode: body.defaultAccessMode === "ask" ? "ask" : body.defaultAccessMode === "full" ? "full" : body.defaultAccessMode === "default" ? "default" : undefined,
 	        codeAgents: Array.isArray(body.codeAgents)
           ? body.codeAgents
               .filter(isObject)
@@ -463,7 +435,7 @@ export const createUpdateSessionSettingsController =
                 providerId:
                   typeof agent.providerId === "string" ? agent.providerId : runtime.config.llm.defaultProvider,
                 model: typeof agent.model === "string" ? agent.model : undefined,
-                accessMode: agent.accessMode === "full" ? "full" : "default"
+                accessMode: agent.accessMode === "ask" ? "ask" : agent.accessMode === "full" ? "full" : "default"
               }))
           : undefined,
         subagents: Array.isArray(body.subagents)
@@ -475,7 +447,7 @@ export const createUpdateSessionSettingsController =
                 providerId:
                   typeof agent.providerId === "string" ? agent.providerId : runtime.config.llm.defaultProvider,
                 model: typeof agent.model === "string" ? agent.model : undefined,
-                accessMode: agent.accessMode === "full" ? "full" : "default"
+                accessMode: agent.accessMode === "ask" ? "ask" : agent.accessMode === "full" ? "full" : "default"
               }))
           : undefined,
         hypothesisAgents: Array.isArray(body.hypothesisAgents)

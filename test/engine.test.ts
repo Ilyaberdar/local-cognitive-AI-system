@@ -114,6 +114,24 @@ const createTestConfig = (root: string): AppConfig => ({
   }
 });
 
+test("cancelled file proposals do not become success claims in the final response", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-cancelled-file-"));
+  const runtime = await buildRuntime(createTestConfig(root), new Logger());
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  runtime.llmService.generateText = async () => ({ provider: "ollama", model: "fixture",
+    text: "<<<FILE:proof.txt>>>\nThe command succeeded and the file was created.\n<<<END FILE>>>" });
+  await runtime.sessionSettingsStore.update("cancel-proof", { mode: "general", language: "en", defaultAccessMode: "ask" });
+  for (const requestApproval of [async () => false, undefined]) {
+    const result = await runtime.engine.process({ input: "Create file `proof.txt`", actor: { sessionId: "cancel-proof" }, requestApproval });
+    assert.equal(result.tools[0].ok, false);
+    assert.ok("response" in result.result);
+    assert.doesNotMatch(result.result.response, /<<<FILE:|succeeded|file was created/);
+    assert.match(result.result.response, /cancelled|Permission required/i);
+    assert.equal(result.result.toolPayload, undefined);
+    await assert.rejects(fs.access(path.join(root, "output", "proof.txt")));
+  }
+});
+
 test("runtime processes hypothesis requests and triggers notion plugin", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-engine-"));
   const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
@@ -863,14 +881,15 @@ test("hypothesis snapshot selector targets cards instead of delete buttons", asy
 test("chat UI exposes cancellation, phase progress, and an in-panel full file viewer", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
   const styles = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.css"), "utf8");
+  const review = await fs.readFile(path.resolve(process.cwd(), "public/assets/review-panel.js"), "utf8");
 
   assert.match(source, /event\.key !== "Escape"/);
   assert.match(source, /cancelProcessRun/);
   assert.match(source, /getProcessRun/);
   assert.match(source, /data-action="open-tool-path"/);
-  assert.match(source, /file-viewer-panel/);
+  assert.match(review, /review-panel/);
   assert.match(source, /revealWorkspacePath/);
-  assert.match(source, /renderFullFileRows/);
+  assert.match(review, /File contents:/);
   assert.doesNotMatch(source, /window\.open\(normalized/);
   assert.match(styles, /\.diff-preview[\s\S]*?background: var\(--control-bg\)/);
   assert.match(styles, /\.subagent-card__output[\s\S]*?background: var\(--control-bg\)/);
@@ -881,7 +900,7 @@ test("chat UI exposes cancellation, phase progress, and an in-panel full file vi
 test("model unload handler resolves the catalog key in its own scope", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
   const handler = source.match(
-    /document\.querySelectorAll\("\[data-action='unload-model'\]"\)[\s\S]*?document\.querySelectorAll\("\[data-action='open-tool-path'\]"\)/
+    /document\.querySelectorAll\("\[data-action='unload-model'\]"\)[\s\S]*?document\.querySelectorAll\("\[data-action='test-plugin'\]"\)/
   )?.[0];
 
   assert.ok(handler);
@@ -889,7 +908,7 @@ test("model unload handler resolves the catalog key in its own scope", async () 
   assert.match(handler, /optimisticallyUnloadModel\(providerId, modelKey, modelId\)/);
 });
 
-test("file tool asks for approval when a default-access subagent wants to write", async () => {
+test("file tool asks for approval when a subagent in an Ask chat wants to write", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-file-permission-"));
   const targetDir = path.join(tmpDir, "workspace");
   const tool = new FileTool({
@@ -922,7 +941,7 @@ test("file tool asks for approval when a default-access subagent wants to write"
 	          providerId: "lmstudio",
 	          model: "qwen/qwen3.5-9b"
 	        },
-	        defaultAccessMode: "default",
+	        defaultAccessMode: "ask",
 	        codeAgents: [],
         hypothesisAgents: [],
         debate: {
@@ -1025,7 +1044,7 @@ test("file tool lets a full-access spawned writer edit files", async () => {
   assert.equal(typeof result.metadata?.diff, "object");
 });
 
-test("file tool gates main model writes by default access mode", async () => {
+test("file tool gates main model writes by Ask access mode", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-main-file-permission-"));
   const targetDir = path.join(tmpDir, "workspace");
   const tool = new FileTool({
@@ -1054,7 +1073,7 @@ test("file tool gates main model writes by default access mode", async () => {
         providerId: "lmstudio",
         model: "qwen/qwen3.5-9b"
       },
-      defaultAccessMode: "default" as const,
+      defaultAccessMode: "ask" as const,
       codeAgents: [],
       hypothesisAgents: [],
       debate: {

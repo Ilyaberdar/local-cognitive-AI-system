@@ -1,4 +1,5 @@
 import { LanguagePreference, OutputStyle } from "../types";
+import { isReviewEditRequest, reviewInputPath } from "../utils/reviewSelection";
 
 type TextPromptMode = "code" | "general";
 
@@ -55,7 +56,17 @@ const wantsSingleFileWrite = (input: string): boolean =>
   );
 
 const buildFilesystemInstruction = (input: string): string =>
-  wantsFilesystemScaffold(input)
+  reviewInputPath(input)
+    ? isReviewEditRequest(input)
+    ? [
+        "The user is editing a selected range in Review.",
+        'Return only one JSON object with this format: {"replacement":"the new selected text"}.',
+        "The replacement string must contain ONLY the replacement for the selected source range, not the whole file.",
+        "The application will preserve all text outside the selection automatically.",
+        "Do not add explanations, markdown fences or file markers. Preserve whitespace and indentation using JSON escapes."
+      ].join("\n")
+    : ""
+    : wantsFilesystemScaffold(input)
     ? [
         "The user wants real files or a project scaffold.",
         "Return one or more file blocks using this exact format and nothing else outside those blocks for file contents:",

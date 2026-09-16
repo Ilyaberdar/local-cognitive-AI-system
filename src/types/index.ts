@@ -3,7 +3,21 @@ export type SessionMode = Mode | "auto";
 export type Channel = "http" | "telegram" | "mcp" | "system";
 export type LanguagePreference = "auto" | "ru" | "en";
 export type OutputStyle = "compact" | "balanced" | "detailed" | "exhaustive";
-export type SubagentAccessMode = "default" | "full";
+export type SubagentAccessMode = "ask" | "default" | "full";
+
+export interface ApprovalOperation {
+  tool: string;
+  operation: string;
+  summary: string;
+  details: string;
+}
+
+export interface PendingApproval extends ApprovalOperation {
+  id: string;
+  requestedAt: string;
+}
+
+export type ApprovalHandler = (operation: ApprovalOperation) => Promise<boolean>;
 export type DebateProfile =
   | "general"
   | "technical"
@@ -391,6 +405,7 @@ export interface ExecutionContext {
   requestMetadata?: Record<string, unknown>;
   signal?: AbortSignal;
   onProgress?: (event: ProcessProgressEvent) => void;
+  requestApproval?: ApprovalHandler;
 }
 
 export interface ProcessProgressEvent {
@@ -422,6 +437,7 @@ export interface ProcessInput {
   metadata?: Record<string, unknown>;
   signal?: AbortSignal;
   onProgress?: (event: ProcessProgressEvent) => void;
+  requestApproval?: ApprovalHandler;
 }
 
 export interface MemorySaveInput {

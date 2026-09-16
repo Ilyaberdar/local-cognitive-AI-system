@@ -39,7 +39,7 @@ export class SessionSettingsStore {
     const current = await this.get(sessionId);
     const next = this.normalize({
       ...current,
-      ...patch,
+      ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
       defaultTarget: this.normalizeTarget(patch.defaultTarget, current.defaultTarget),
       codeAgents: patch.subagents ?? patch.codeAgents ?? current.codeAgents,
       hypothesisAgents: patch.hypothesisAgents ?? current.hypothesisAgents,
@@ -83,7 +83,7 @@ export class SessionSettingsStore {
       language: settings.language ?? fallback.language,
 	      outputStyle: settings.outputStyle ?? fallback.outputStyle,
 	      defaultTarget: this.normalizeTarget(settings.defaultTarget, fallback.defaultTarget),
-	      defaultAccessMode: settings.defaultAccessMode === "full" ? "full" : "default",
+	      defaultAccessMode: settings.defaultAccessMode === "ask" ? "ask" : settings.defaultAccessMode === "full" ? "full" : "default",
 	      codeAgents: this.normalizeCodeAgents(settings.codeAgents, fallback.codeAgents),
       hypothesisAgents: this.normalizeHypothesisAgents(settings.hypothesisAgents, fallback.hypothesisAgents),
       debate: {
@@ -162,7 +162,7 @@ export class SessionSettingsStore {
           name: agent.name?.trim() || this.defaultSubagentName(index),
           providerId: normalizedTarget.providerId,
           model: normalizedTarget.model,
-          accessMode: agent.accessMode === "full" ? "full" : "default"
+          accessMode: agent.accessMode === "ask" ? "ask" : agent.accessMode === "full" ? "full" : "default"
         };
       });
     }
@@ -177,7 +177,7 @@ export class SessionSettingsStore {
         name: agent.name?.trim() || this.defaultSubagentName(index),
         providerId: normalizedTarget.providerId,
         model: normalizedTarget.model,
-        accessMode: agent.accessMode === "full" ? "full" : "default"
+        accessMode: agent.accessMode === "ask" ? "ask" : agent.accessMode === "full" ? "full" : "default"
       };
     });
   }

@@ -1,3 +1,4 @@
+import { authorizeOperation } from "../tools/AccessPolicy";
 import { MemoryService } from "../memory/MemoryService";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { ToolRegistry } from "../tools/ToolRegistry";
@@ -76,10 +77,41 @@ export class CognitiveEngine {
       providerId,
       activeTarget,
       sessionSettings,
-      signal: request.signal
+      signal: request.signal,
+      requestMetadata: request.metadata,
+      requestApproval: request.requestApproval
     });
     if ("response" in result && result.toolPayload && !tools.some((tool) => tool.tool === "file")) {
       result.response = result.toolPayload;
+    }
+    const fileOperation = tools.find((tool) => tool.tool === "file");
+    if ("response" in result && (fileOperation?.metadata?.cancelled || fileOperation?.metadata?.permissionRequired)) {
+      const russian = sessionSettings.language === "ru" || (sessionSettings.language === "auto" && /[А-Яа-яЁё]/.test(normalizedInput));
+      // The model only proposed these contents. A declined write must never leave
+      // its unexecuted payload or a model's success claim in the final response.
+      result.response = fileOperation.metadata.cancelled
+        ? russian ? "Файловая операция отменена. Изменения не применены." : "File operation cancelled. No changes were applied."
+        : fileOperation.output;
+      delete result.toolPayload;
+    }
+    const selectedFileEdit = request.metadata?.reviewSelection ? fileOperation : undefined;
+    if ("response" in result && selectedFileEdit) {
+      const russian = sessionSettings.language === "ru" || (sessionSettings.language === "auto" && /[А-Яа-яЁё]/.test(normalizedInput));
+      result.response = selectedFileEdit.metadata?.cancelled
+        ? russian ? "Правка отменена. Файл не изменён." : "Edit cancelled. The file was not changed."
+        : selectedFileEdit.ok && selectedFileEdit.metadata?.operation === "write"
+          ? russian ? "Выделенный фрагмент обновлён. Остальной файл сохранён без изменений." : "Updated the selected text. The rest of the file is unchanged."
+          : selectedFileEdit.output;
+      delete result.toolPayload;
+    }
+    const command = tools.find((tool) => tool.tool === "command");
+    if ("response" in result && command) {
+      const russian = sessionSettings.language === "ru" || (sessionSettings.language === "auto" && /[А-Яа-яЁё]/.test(normalizedInput));
+      result.response = command.metadata?.cancelled
+        ? russian ? "Команда отменена." : "Command cancelled."
+        : command.ok ? russian ? "Команда выполнена." : "Command completed."
+        : command.output;
+      delete result.toolPayload;
     }
     request.signal?.throwIfAborted();
     request.onProgress?.({
@@ -174,7 +206,8 @@ export class CognitiveEngine {
     result: ProcessResult["result"],
     context: Parameters<ToolRequestBuilder["build"]>[0]["context"]
   ): Promise<ToolExecutionResult[]> {
-    const tools = this.toolRegistry.resolveFromInput(input);
+    const resolved = this.toolRegistry.resolveFromInput(input);
+    const tools = resolved.some((tool) => tool.name === "command") ? resolved.filter((tool) => tool.name !== "file") : resolved;
 
     if (tools.length === 0) {
       return [];
@@ -187,6 +220,18 @@ export class CognitiveEngine {
       context
     });
 
-    return Promise.all(tools.map((tool) => tool.execute(executionRequest)));
+    const results: ToolExecutionResult[] = [];
+    for (const tool of tools) {
+      context.signal?.throwIfAborted();
+      if (!["file", "command"].includes(tool.name)) {
+        const permission = await authorizeOperation(context, {
+          tool: tool.name, operation: "plugin", summary: `Run ${tool.name}`,
+          details: `${tool.description}\n\n${executionRequest.content}`
+        }, false);
+        if (permission) { results.push(permission); continue; }
+      }
+      results.push(await tool.execute(executionRequest));
+    }
+    return results;
   }
 }
