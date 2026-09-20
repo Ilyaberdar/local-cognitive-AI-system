@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
-import { config, AppConfig } from "../src/config/config";
+import { config, AppConfig, localModelOptions } from "../src/config/config";
 import { AppSettingsStore } from "../src/app/AppSettingsStore";
 import { RuntimeManager } from "../src/app/RuntimeManager";
 import { Logger } from "../src/utils/Logger";
@@ -31,11 +31,11 @@ async function fixture(t: TestContext) {
   const manager = new RuntimeManager(options, store, new Logger());
   const runtime = await manager.init();
   t.after(async () => { await manager.dispose(); await fs.rm(root, { recursive: true, force: true }); });
-  return { manager, store, service: runtime.localModelService };
+  return { manager, store, service: runtime.localModelService, settingsPath: path.join(options.appDataDir, "settings.json") };
 }
 
 test("settings commit only after local reconfiguration succeeds; failures preserve the prior settings", async (t) => {
-  const { manager, store, service } = await fixture(t);
+  const { manager, store, service, settingsPath } = await fixture(t);
   const entered = deferred();
   const release = deferred();
   const reconfigure = service.reconfigure.bind(service);
@@ -47,8 +47,10 @@ test("settings commit only after local reconfiguration succeeds; failures preser
   });
   const pending = manager.updateSettings({ localModels: { contextSize: 2048 } });
   await entered.promise;
-  assert.deepEqual(await store.get(), previous, "Do not publish settings pointing at unfinished storage");
-  release.resolve();
+  // get() joins the transaction lock; inspect the committed file while the transaction is paused.
+  try {
+    assert.deepEqual(JSON.parse(await fs.readFile(settingsPath, "utf8")), JSON.parse(JSON.stringify(previous)), "Do not publish settings pointing at unfinished storage");
+  } finally { release.resolve(); }
   await pending;
   const committed = await store.get();
   assert.equal(committed.localModels?.contextSize, 2048);
@@ -69,6 +71,20 @@ test("Quit disposes the local model owner before waiting for settings queued beh
   await entered.promise;
   await manager.dispose();
   await outcome;
+});
+
+test("preserved unknown settings cannot override backend-owned local runtime options", async t => {
+  const { manager, store } = await fixture(t);
+  const previous = localModelOptions(manager.getRuntime().config);
+  const { runtime } = await manager.updateSettings({
+    localModels: { enabled: !previous.enabled, executablePath: "/unexpected-executable", dataDir: "/unexpected-metadata" } as never
+  });
+  const current = localModelOptions(runtime.config);
+  assert.equal(current.enabled, previous.enabled);
+  assert.equal(current.executablePath, previous.executablePath);
+  assert.equal(current.dataDir, previous.dataDir);
+  const saved = (await store.get()).localModels as unknown as Record<string, unknown>;
+  assert.equal(saved.executablePath, "/unexpected-executable", "forward-compatible saved fields remain preserved");
 });
 
 test("a translation following general chat reports its own local queue and load phases", async (t) => {

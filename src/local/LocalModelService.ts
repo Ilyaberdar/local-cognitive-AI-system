@@ -116,14 +116,23 @@ export class LocalModelService implements LocalModelManager {
   async resumeDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.resume(id); }
   async cancelDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.cancel(id); }
 
-  async loadModel(modelId: string): Promise<void> {
+  async loadModel(modelId: string, callerSignal?: AbortSignal): Promise<void> {
     await this.init(); this.assertLibrary();
-    await this.scheduler.run(modelId, () => this.ensureLoaded(modelId, this.lifetime.signal), this.lifetime.signal);
+    const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
+    await this.scheduler.run(modelId, async () => {
+      try {
+        await this.ensureLoaded(modelId, signal);
+        signal.throwIfAborted();
+      } finally {
+        if (signal.aborted) await this.runtime.stop();
+      }
+    }, signal);
   }
-  async unloadModel(identifier: string): Promise<void> {
+  async unloadModel(identifier: string, callerSignal?: AbortSignal): Promise<void> {
     await this.init(); this.assertLibrary(); this.store.getModel(identifier);
+    const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
     if (this.scheduler.isModelBusy(identifier)) throw new LocalModelError("This model is in use or waiting in the inference queue. Interrupt its requests before unloading it.", 409, "model_busy");
-    await this.scheduler.run("__unload", async () => { if (this.runtime.currentModelId === identifier) await this.runtime.stop(); }, this.lifetime.signal);
+    await this.scheduler.run("__unload", async () => { if (this.runtime.currentModelId === identifier) await this.runtime.stop(); }, signal);
   }
   async deleteModel(id: string): Promise<void> {
     await this.init(); this.assertLibrary();
