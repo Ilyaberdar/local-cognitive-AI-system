@@ -2683,7 +2683,7 @@ function renderSettingsRoute() {
                     : ""
                 }
                 <div class="footer-row">
-                  <span class="subtle">Check auth, base URL, and model access before assigning this provider to a role.</span>
+                  <span class="subtle">Tests the values currently entered here and saves them before checking auth, base URL, and model access.</span>
                   <button class="ghost-button" type="button" data-action="test-provider" data-provider-id="${escapeAttr(providerId)}">Test provider</button>
                 </div>
               </section>
@@ -4196,6 +4196,7 @@ function bindEvents() {
       state.bootstrap.providers = response.providers;
       state.bootstrap.tools = response.tools;
       state.bootstrap.appSettings = response.settings;
+      state.bootstrap.availableModels = response.availableModels ?? state.bootstrap.availableModels;
       state.bootstrap.pluginStatuses = await request("/plugins/status");
       state.notice = "";
     });
@@ -4213,6 +4214,7 @@ function bindEvents() {
       state.bootstrap.plugins = response.plugins;
       state.bootstrap.tools = response.tools;
       state.bootstrap.appSettings = response.settings;
+      state.bootstrap.availableModels = response.availableModels ?? state.bootstrap.availableModels;
       state.bootstrap.pluginStatuses = await request("/plugins/status");
       state.notice = "";
     });
@@ -4353,7 +4355,20 @@ function bindEvents() {
         return;
       }
 
+      const settingsForm = document.querySelector("#app-settings-form");
+      const settingsPayload = settingsForm
+        ? buildAppSettingsPayload(new FormData(settingsForm), false)
+        : null;
+
       await runAction(async () => {
+        if (settingsPayload) {
+          const savedSettings = await api.updateAppSettings(settingsPayload);
+          state.bootstrap.providers = savedSettings.providers;
+          state.bootstrap.plugins = savedSettings.plugins;
+          state.bootstrap.tools = savedSettings.tools;
+          state.bootstrap.appSettings = savedSettings.settings;
+          state.bootstrap.availableModels = savedSettings.availableModels ?? state.bootstrap.availableModels;
+        }
         state.providerTestResults[providerId] = await api.testProvider(providerId, model);
         state.notice = "";
       });
@@ -5009,11 +5024,12 @@ function getLoadedModelOptions(providerId) {
 }
 
 function getProviderSuggestedModels(providerId) {
-  const localModels = getModelOptions(providerId);
+  const discoveredModels = getModelOptions(providerId);
+  let suggestedModels = [];
 
   switch (providerId) {
     case "openai":
-      return [
+      suggestedModels = [
         "gpt-6-astra",
         "gpt-5.1",
         "gpt-5-mini",
@@ -5025,25 +5041,33 @@ function getProviderSuggestedModels(providerId) {
         "gpt-5.1-codex-mini",
         "codex-mini-latest"
       ];
+      break;
     case "anthropic":
-      return [
+      suggestedModels = [
         "claude-sonnet-4-5",
         "claude-opus-4-1",
         "claude-haiku-4-5"
       ];
+      break;
     case "gemini":
-      return [
+      suggestedModels = [
         "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite"
       ];
+      break;
     case "lmstudio":
     case "ollama":
     case "llamacpp":
-      return localModels;
+      return discoveredModels;
     default:
       return [];
   }
+
+  // The API catalog is scoped to the user's key and includes fine-tuned and
+  // newly released models. Keep a short fallback list in case that request is
+  // temporarily unavailable.
+  return [...new Set([...discoveredModels, ...suggestedModels])].sort();
 }
 
 function getRuntimeProviderStatus(providerId) {
@@ -5356,6 +5380,18 @@ function getProviderSettingsModelOptions(providerId, currentValue = "") {
 function renderProviderSettingsModelControl(providerId, value) {
   const options = getProviderSettingsModelOptions(providerId, value || getProviderConfiguredModel(providerId));
   const selectedValue = value || getProviderConfiguredModel(providerId) || "";
+
+  if (["openai", "anthropic", "gemini"].includes(providerId)) {
+    const unavailable = selectedValue && !options.includes(selectedValue);
+    return `
+      <select name="provider.${escapeAttr(providerId)}.model">
+        <option value="">Select model</option>
+        ${unavailable ? `<option value="${escapeAttr(selectedValue)}" selected disabled>${escapeHtml(selectedValue)} · unavailable</option>` : ""}
+        ${options.map((modelId) => option(modelId, selectedValue, modelId)).join("")}
+      </select>
+      ${unavailable ? '<div class="mm-unavailable-target">This saved model is not returned by the provider. Choose an available model or check its access.</div>' : ""}
+    `;
+  }
 
   if (!isLocalProvider(providerId)) {
     return `<input name="provider.${escapeAttr(providerId)}.model" value="${escapeAttr(selectedValue)}" list="provider-models-${escapeAttr(providerId)}" placeholder="${escapeAttr(providerModelPlaceholder(providerId))}" /><datalist id="provider-models-${escapeAttr(providerId)}">${renderDatalistOptions(options)}</datalist>`;
@@ -5924,6 +5960,18 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
         ${options.map((modelId) => option(modelId, resolvedValue, getModelDisplayName(providerId, modelId))).join("")}
       </select>
       ${unavailable ? '<div class="mm-unavailable-target">This saved model is unavailable. Select a model from the library.</div>' : ""}
+    `;
+  }
+
+  if (["openai", "anthropic", "gemini"].includes(providerId)) {
+    const unavailable = resolvedValue && !options.includes(resolvedValue);
+    return `
+      <select name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
+        <option value="">Select model</option>
+        ${unavailable ? `<option value="${escapeAttr(resolvedValue)}" selected disabled>${escapeHtml(resolvedValue)} · unavailable</option>` : ""}
+        ${options.map((modelId) => option(modelId, resolvedValue, modelId)).join("")}
+      </select>
+      ${unavailable ? '<div class="mm-unavailable-target">This saved model is not returned by the provider. Choose an available model or check its access.</div>' : ""}
     `;
   }
 
