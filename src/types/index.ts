@@ -1,3 +1,5 @@
+import type { McpClientConfiguration, McpClientConfigurationPatch } from "../mcp/client/types";
+
 export type Mode = "hypothesis" | "code" | "general";
 export type SessionMode = Mode | "auto";
 export type Channel = "http" | "telegram" | "mcp" | "system";
@@ -132,6 +134,7 @@ export interface AppSettings {
     defaultProvider: string;
   };
   mcp: {
+    client?: McpClientConfiguration;
     server: {
       enabled: boolean;
       transport: "stdio";
@@ -165,6 +168,7 @@ export interface AppSettingsPatch {
     defaultProvider?: string;
   };
   mcp?: {
+    client?: McpClientConfigurationPatch;
     server?: {
       enabled?: boolean;
       transport?: "stdio";

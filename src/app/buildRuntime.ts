@@ -8,6 +8,9 @@ import { HypothesisAdvisorAgent } from "../agents/HypothesisAdvisorAgent";
 import { SupportAgent } from "../agents/SupportAgent";
 import { AppConfig, localModelOptions } from "../config/config";
 import { LocalModelService } from "../local/LocalModelService";
+import { McpClientManager } from "../mcp/client/McpClientManager";
+import { McpClientService } from "../mcp/client/types";
+import { emptyMcpConfiguration } from "../mcp/client/configuration";
 import { LlamaCppProvider } from "../llm/LlamaCppProvider";
 import { LlamaCppModelManager } from "../llm/LlamaCppModelManager";
 import { withInferenceProgress } from "../llm/InferenceProgress";
@@ -90,6 +93,7 @@ import { WorkflowStore } from "../workflows/WorkflowStore";
 
 export interface AppRuntime {
   localModelService: LocalModelService;
+  mcpClients: McpClientService;
   engine: CognitiveEngine;
   providerDescriptors: ProviderDescriptor[];
   tools: ToolDescriptor[];
@@ -462,7 +466,8 @@ const runCodeSwarm = async (
 export const buildRuntime = async (
   config: AppConfig,
   logger: Logger,
-  sharedLocalModelService?: LocalModelService
+  sharedLocalModelService?: LocalModelService,
+  sharedMcpClients?: McpClientService
 ): Promise<AppRuntime> => {
   await fs.mkdir(config.memory.baseDir, { recursive: true });
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
@@ -707,9 +712,12 @@ export const buildRuntime = async (
   );
   const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner);
   const scheduleService = new ScheduleService(scheduleStore, taskService);
+  const mcpClients = sharedMcpClients ?? new McpClientManager();
+  if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
 
   return {
     localModelService,
+    mcpClients,
     engine,
     providerDescriptors: providerRegistry.list(),
     tools: toolRegistry.list(),

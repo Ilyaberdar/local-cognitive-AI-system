@@ -2,6 +2,8 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import type { LocalModelOptions } from "../local/types";
+import type { McpClientConfiguration } from "../mcp/client/types";
+import { parseMcpConfiguration } from "../mcp/client/configuration";
 
 dotenv.config();
 
@@ -25,6 +27,7 @@ export interface AppConfig {
     port: number;
   };
   mcp: {
+    client?: McpClientConfiguration;
     server: {
       enabled: boolean;
       transport: "stdio";
@@ -185,6 +188,7 @@ export const config: AppConfig = {
     port: Number(process.env.PORT ?? 3000)
   },
   mcp: {
+    client: parseMcpConfiguration(fileMcp.client),
     server: {
       enabled: toBoolean(
         process.env.MCP_ENABLED,

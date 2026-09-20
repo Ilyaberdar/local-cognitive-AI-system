@@ -3,8 +3,9 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { AppConfig, localModelOptions } from "../config/config";
 import { AppSettings, AppSettingsPatch } from "../types";
-import { withFileLock, writeJsonAtomically } from "../utils/fileStore";
+import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { constants } from "node:fs";
+import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
 
 export class AppSettingsStore {
   private readonly filePath: string;
@@ -15,26 +16,32 @@ export class AppSettingsStore {
   }
 
   async get(): Promise<AppSettings> {
-    await fs.mkdir(this.appDataDir, { recursive: true });
+    return withFileLock(this.filePath, () => this.read());
+  }
 
+  /** Caller holds the shared file lock, including initialization and migration writes. */
+  private async read(): Promise<AppSettings> {
+    await fs.mkdir(this.appDataDir, { recursive: true });
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<AppSettings>;
-      const settings = this.normalize(parsed);
-      if (parsed.schemaVersion !== 1) {
-        await fs.copyFile(this.filePath, path.join(this.appDataDir, "settings.pre-llamacpp.json"), constants.COPYFILE_EXCL).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "EEXIST") throw error;
-        });
-      }
-      if (!parsed.memory?.localProfileId || parsed.schemaVersion !== 1) {
-        await this.write(settings);
-      }
-      return settings;
-    } catch {
+      raw = await fs.readFile(this.filePath, "utf8");
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
       const defaults = this.fromConfig();
       await this.write(defaults);
       return defaults;
     }
+    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid application settings.");
+    const settings = this.normalize(parsed);
+    const requiresMigration = parsed.schemaVersion === undefined || parsed.schemaVersion < 1;
+    if (requiresMigration) {
+      await fs.copyFile(this.filePath, path.join(this.appDataDir, "settings.pre-llamacpp.json"), constants.COPYFILE_EXCL).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+    }
+    if (!parsed.memory?.localProfileId || requiresMigration || parsed.mcp?.client === undefined) await this.write(settings);
+    return settings;
   }
 
   async update(patch: AppSettingsPatch): Promise<AppSettings> {
@@ -42,23 +49,47 @@ export class AppSettingsStore {
   }
 
   async restore(settings: AppSettings): Promise<void> {
-    await withFileLock(this.filePath, () => this.write(settings));
+    await withFileLock(this.filePath, () => this.write(this.normalize(settings)));
   }
 
   async preview(patch: AppSettingsPatch): Promise<AppSettings> {
     return withFileLock(this.filePath, () => this.applyPatch(patch, false));
   }
 
+  /** Build/reconfigure against a snapshot, then atomically commit without losing another store's update. */
+  async transaction<T>(
+    patch: AppSettingsPatch,
+    apply: (settings: AppSettings, previous: AppSettings) => Promise<T>
+  ): Promise<{ value: T; settings: AppSettings }> {
+    return withFileLock(this.filePath, async () => {
+      const previous = await this.read();
+      const settings = this.patch(previous, patch);
+      const value = await apply(settings, previous);
+      await this.write(settings);
+      return { value, settings };
+    });
+  }
+
   private async applyPatch(patch: AppSettingsPatch, persist = true): Promise<AppSettings> {
-    const current = await this.get();
+    const normalized = this.patch(await this.read(), patch);
+    if (persist) await this.write(normalized);
+    return normalized;
+  }
+
+  private patch(current: AppSettings, patch: AppSettingsPatch): AppSettings {
     const next: AppSettings = {
-      schemaVersion: 1,
+      ...current,
       localModels: { ...this.localDefaults(), ...current.localModels, ...patch.localModels },
       llm: {
+        ...current.llm,
         defaultProvider: patch.llm?.defaultProvider ?? current.llm.defaultProvider
       },
       mcp: {
+        ...current.mcp,
+        client: patch.mcp?.client === undefined ? current.mcp.client
+          : applyMcpConfigurationPatch(parseMcpConfiguration(current.mcp.client), patch.mcp.client),
         server: {
+          ...current.mcp.server,
           enabled: patch.mcp?.server?.enabled ?? current.mcp.server.enabled,
           transport: "stdio",
           defaultSessionId:
@@ -66,17 +97,20 @@ export class AppSettingsStore {
         }
       },
       telegram: {
+        ...current.telegram,
         enabled: patch.telegram?.enabled ?? current.telegram.enabled,
         botToken: patch.telegram?.botToken ?? current.telegram.botToken,
         ownerUserIds: patch.telegram?.ownerUserIds ?? current.telegram.ownerUserIds,
         pollTimeoutSec: patch.telegram?.pollTimeoutSec ?? current.telegram.pollTimeoutSec
       },
       memory: {
+        ...current.memory,
         adapter: patch.memory?.adapter ?? current.memory.adapter,
         baseDir: patch.memory?.baseDir ?? current.memory.baseDir,
         topK: patch.memory?.topK ?? current.memory.topK,
         localProfileId: current.memory.localProfileId,
         worldPartition: {
+          ...current.memory.worldPartition,
           crossSessionRecall:
             patch.memory?.worldPartition?.crossSessionRecall ?? current.memory.worldPartition.crossSessionRecall,
           strategy: patch.memory?.worldPartition?.strategy ?? current.memory.worldPartition.strategy,
@@ -91,6 +125,7 @@ export class AppSettingsStore {
             patch.memory?.worldPartition?.migrateLegacyOnStart ?? current.memory.worldPartition.migrateLegacyOnStart
         },
         openMemory: {
+          ...current.memory.openMemory,
           enabled: patch.memory?.openMemory?.enabled ?? current.memory.openMemory.enabled,
           dbPath: patch.memory?.openMemory?.dbPath ?? current.memory.openMemory.dbPath
         }
@@ -113,6 +148,7 @@ export class AppSettingsStore {
       };
 
       next.plugins[pluginName] = {
+        ...previous,
         enabled: pluginPatch.enabled ?? previous.enabled,
         values: {
           ...previous.values,
@@ -121,9 +157,7 @@ export class AppSettingsStore {
       };
     }
 
-    const normalized = this.normalize(next);
-    if (persist) await this.write(normalized);
-    return normalized;
+    return this.normalize(next);
   }
 
   private async write(settings: AppSettings): Promise<void> {
@@ -139,6 +173,7 @@ export class AppSettingsStore {
         defaultProvider: this.baseConfig.llm.defaultProvider
       },
       mcp: {
+        client: parseMcpConfiguration(this.baseConfig.mcp.client),
         server: {
           enabled: this.baseConfig.mcp.server.enabled,
           transport: this.baseConfig.mcp.server.transport,
@@ -242,13 +277,18 @@ export class AppSettingsStore {
   private normalize(input: Partial<AppSettings>): AppSettings {
     const defaults = this.fromConfig();
     const settings: AppSettings = {
-      schemaVersion: 1,
+      ...input,
+      schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 1 ? input.schemaVersion : 1,
       localModels: this.normalizeLocalModels(input.localModels),
       llm: {
+        ...input.llm,
         defaultProvider: input.llm?.defaultProvider ?? defaults.llm.defaultProvider
       },
       mcp: {
+        ...input.mcp,
+        client: parseMcpConfiguration(input.mcp?.client === undefined ? defaults.mcp.client : input.mcp.client),
         server: {
+          ...input.mcp?.server,
           enabled: input.mcp?.server?.enabled ?? defaults.mcp.server.enabled,
           transport: "stdio",
           defaultSessionId:
@@ -256,6 +296,7 @@ export class AppSettingsStore {
         }
       },
       telegram: {
+        ...input.telegram,
         enabled: input.telegram?.enabled ?? defaults.telegram.enabled,
         botToken: input.telegram?.botToken ?? defaults.telegram.botToken,
         ownerUserIds: this.normalizeTelegramOwnerUserIds(
@@ -265,6 +306,7 @@ export class AppSettingsStore {
         pollTimeoutSec: input.telegram?.pollTimeoutSec ?? defaults.telegram.pollTimeoutSec
       },
       memory: {
+        ...input.memory,
         adapter: this.normalizeMemoryAdapter(input.memory?.adapter, defaults.memory.adapter),
         baseDir: input.memory?.baseDir ?? defaults.memory.baseDir,
         topK: input.memory?.topK ?? defaults.memory.topK,
@@ -274,6 +316,7 @@ export class AppSettingsStore {
             : defaults.memory.localProfileId,
         worldPartition: this.normalizeWorldPartition(input.memory?.worldPartition, defaults.memory.worldPartition),
         openMemory: {
+          ...input.memory?.openMemory,
           enabled: input.memory?.openMemory?.enabled ?? defaults.memory.openMemory.enabled,
           dbPath: input.memory?.openMemory?.dbPath ?? defaults.memory.openMemory.dbPath
         }
@@ -297,6 +340,8 @@ export class AppSettingsStore {
     for (const [pluginName, plugin] of Object.entries(input.plugins ?? {})) {
       const previous = settings.plugins[pluginName] ?? { enabled: true, values: {} };
       settings.plugins[pluginName] = {
+        ...previous,
+        ...plugin,
         enabled: plugin.enabled ?? previous.enabled,
         values: {
           ...previous.values,
@@ -328,6 +373,7 @@ export class AppSettingsStore {
   private normalizeLocalModels(input: AppSettings["localModels"]): NonNullable<AppSettings["localModels"]> {
     const defaults = this.localDefaults();
     return {
+      ...input,
       modelsDir: typeof input?.modelsDir === "string" && input.modelsDir.trim() ? path.resolve(input.modelsDir.trim()) : defaults.modelsDir,
       contextSize: Math.min(131072, this.positiveInteger(input?.contextSize, defaults.contextSize, 512)),
       gpuLayers: typeof input?.gpuLayers === "number" && Number.isFinite(input.gpuLayers) ? Math.max(0, Math.min(999, Math.floor(input.gpuLayers))) : defaults.gpuLayers,
@@ -353,6 +399,7 @@ export class AppSettingsStore {
     const maxRadius = Math.max(initialRadius, this.nonNegativeInteger(value?.maxRadius, defaults.maxRadius));
 
     return {
+      ...value,
       crossSessionRecall:
         typeof value?.crossSessionRecall === "boolean" ? value.crossSessionRecall : defaults.crossSessionRecall,
       strategy: strategy === "global" || strategy === "partitioned" || strategy === "auto" ? strategy : defaults.strategy,

@@ -6,21 +6,27 @@ import { AppSettings, AppSettingsPatch } from "../types";
 import { AppSettingsStore } from "./AppSettingsStore";
 import { extractNotionId } from "../utils/notion";
 import { LocalModelService } from "../local/LocalModelService";
+import { McpClientManager, McpClientManagerOptions } from "../mcp/client/McpClientManager";
+import { emptyMcpConfiguration } from "../mcp/client/configuration";
 
 export class RuntimeManager {
   private runtime: AppRuntime | null = null;
   private operations: Promise<unknown> = Promise.resolve();
   private localModelService?: LocalModelService;
+  private readonly mcpClients: McpClientManager;
   private disposed = false;
+  private disposing?: Promise<void>;
 
   constructor(
     private readonly baseConfig: AppConfig,
     private readonly settingsStore: AppSettingsStore,
-    private readonly logger: Logger
-  ) {}
+    private readonly logger: Logger,
+    mcpOptions: McpClientManagerOptions = {}
+  ) { this.mcpClients = new McpClientManager(mcpOptions); }
 
   async init(): Promise<AppRuntime> {
-    return this.reload();
+    try { return await this.reload(); }
+    catch (error) { await this.dispose(); throw error; }
   }
 
   getRuntime(): AppRuntime {
@@ -37,15 +43,16 @@ export class RuntimeManager {
 
   async updateSettings(patch: AppSettingsPatch): Promise<{ runtime: AppRuntime; settings: AppSettings }> {
     return this.enqueue(async () => {
-      const previous = await this.settingsStore.get();
-      const settings = await this.settingsStore.preview(patch);
       try {
-        const runtime = await this.build(settings);
-        await this.settingsStore.restore(settings);
+        const { value: runtime, settings } = await this.settingsStore.transaction(patch, settings => this.build(settings));
         return { runtime, settings };
       } catch (error) {
-        await this.settingsStore.restore(previous);
-        if (!this.disposed) await this.build(previous);
+        // The transaction never publishes failed settings. Read the latest committed
+        // state for rollback, so a concurrent store update is not overwritten.
+        if (!this.disposed) {
+          try { await this.build(await this.settingsStore.get()); }
+          catch { this.logger.error("Runtime settings rollback failed"); }
+        }
         throw error;
       }
     });
@@ -74,28 +81,39 @@ export class RuntimeManager {
       this.localModelService = service;
     } else await this.localModelService.reconfigure(localModelOptions(mergedConfig));
     if (this.disposed) throw new Error("Runtime has been disposed");
-    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService);
+    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService, this.mcpClients);
+    if (this.disposed) throw new Error("Runtime has been disposed");
+    await this.mcpClients.reconcile(settings.mcp.client ?? emptyMcpConfiguration());
+    if (this.disposed) throw new Error("Runtime has been disposed");
     this.runtime = runtime;
     return runtime;
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.disposing) return this.disposing;
     this.disposed = true;
     // Abort active inference before awaiting a settings operation queued behind it.
-    const disposing = this.localModelService?.dispose();
-    await this.operations;
-    await disposing;
+    const disposing = Promise.all([this.localModelService?.dispose(), this.mcpClients.dispose()]);
+    this.disposing = (async () => { await this.operations; await disposing; })();
+    return this.disposing;
   }
 
   private applySettings(settings: AppSettings): AppConfig {
     const { dataDir: _dataDir, enabled: _enabled, ...baseLocalModels } = localModelOptions(this.baseConfig);
+    const local = settings.localModels;
     return {
       ...this.baseConfig,
-      localModels: { ...baseLocalModels, ...settings.localModels },
+      // Saved forward-compatible fields must not override backend-only executable/ownership settings.
+      localModels: { ...baseLocalModels, ...(local ? {
+        modelsDir: local.modelsDir, contextSize: local.contextSize, gpuLayers: local.gpuLayers,
+        loadTimeoutMs: local.loadTimeoutMs, generationTimeoutMs: local.generationTimeoutMs,
+        memoryLimitPercent: local.memoryLimitPercent
+      } : {}) },
       llm: {
         defaultProvider: settings.llm.defaultProvider
       },
       mcp: {
+        client: settings.mcp.client ?? emptyMcpConfiguration(),
         server: {
           ...this.baseConfig.mcp.server,
           enabled: settings.mcp.server.enabled,
