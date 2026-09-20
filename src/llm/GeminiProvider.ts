@@ -1,4 +1,4 @@
-import { LLMRequest, LLMResponse, ProviderDescriptor } from "../types";
+import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
@@ -38,6 +38,62 @@ export class GeminiProvider implements LLMProvider {
       },
       this.isConfigured()
     );
+  }
+
+  async listModels(): Promise<ProviderModel[]> {
+    const models: ProviderModel[] = [];
+    let pageToken: string | undefined;
+
+    do {
+      const url = new URL(`${this.options.baseUrl.replace(/\/+$/, "")}/v1beta/models`);
+      url.searchParams.set("pageSize", "1000");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "x-goog-api-key": this.options.apiKey ?? ""
+        },
+        signal: AbortSignal.timeout(Math.min(this.options.timeoutMs, 5000))
+      });
+
+      if (!response.ok) {
+        throw new Error(`Gemini models request failed with status ${response.status}`);
+      }
+
+      const payload = (await response.json()) as {
+        models?: Array<{
+          name?: string;
+          baseModelId?: string;
+          supportedGenerationMethods?: string[];
+          supported_generation_methods?: string[];
+          supportedActions?: string[];
+          supported_actions?: string[];
+        }>;
+        nextPageToken?: string;
+      };
+
+      models.push(
+        ...(payload.models ?? [])
+          .filter((model) => {
+            const methods = model.supportedGenerationMethods ?? model.supported_generation_methods ?? model.supportedActions ?? model.supported_actions;
+            return !methods || methods.some((method) => method.toLowerCase() === "generatecontent");
+          })
+          .flatMap((model) => {
+            const id = model.baseModelId || model.name?.replace(/^models\//, "");
+            return id
+              ? [{
+                  id,
+                  providerId: this.id,
+                  providerName: this.name
+                }]
+              : [];
+          })
+      );
+      pageToken = payload.nextPageToken;
+    } while (pageToken);
+
+    return models;
   }
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {

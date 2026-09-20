@@ -625,7 +625,11 @@ export const createUpdateAppSettingsController =
         settings,
         providers: runtime.providerDescriptors,
         tools: runtime.tools,
-        plugins: runtime.plugins
+        plugins: runtime.plugins,
+        // A provider can become configured as part of this save. Return its
+        // current catalog immediately instead of making the UI wait for a
+        // full dashboard reload before it can offer the provider's models.
+        availableModels: await runtime.modelCatalog.listAll()
       });
     } catch (error) {
       next(error);

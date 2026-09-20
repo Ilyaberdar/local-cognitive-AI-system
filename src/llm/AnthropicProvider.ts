@@ -1,4 +1,4 @@
-import { LLMRequest, LLMResponse, ProviderDescriptor } from "../types";
+import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
@@ -45,6 +45,49 @@ export class AnthropicProvider implements LLMProvider {
       },
       this.isConfigured()
     );
+  }
+
+  async listModels(): Promise<ProviderModel[]> {
+    const models: ProviderModel[] = [];
+    let afterId: string | undefined;
+
+    do {
+      const url = new URL(`${this.options.baseUrl.replace(/\/+$/, "")}/v1/models`);
+      url.searchParams.set("limit", "1000");
+      if (afterId) url.searchParams.set("after_id", afterId);
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "x-api-key": this.options.apiKey ?? "",
+          "anthropic-version": this.options.version
+        },
+        signal: AbortSignal.timeout(Math.min(this.options.timeoutMs, 5000))
+      });
+
+      if (!response.ok) {
+        throw new Error(`Anthropic models request failed with status ${response.status}`);
+      }
+
+      const payload = (await response.json()) as {
+        data?: Array<{ id?: string }>;
+        has_more?: boolean;
+        last_id?: string;
+      };
+
+      models.push(
+        ...(payload.data ?? [])
+          .filter((model): model is { id: string } => Boolean(model.id))
+          .map((model) => ({
+            id: model.id,
+            providerId: this.id,
+            providerName: this.name
+          }))
+      );
+      afterId = payload.has_more && payload.last_id ? payload.last_id : undefined;
+    } while (afterId);
+
+    return models;
   }
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {

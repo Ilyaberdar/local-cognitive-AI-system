@@ -117,6 +117,30 @@ test("provider tests submit the chosen model and only built-in runtime requests 
   assert.deepEqual(JSON.parse(calls[3].options.body), { model: "selected-remote" });
 });
 
+test("cloud model selectors include the models discovered with the user's provider key", () => {
+  const source = fs.readFileSync("public/assets/app.js", "utf8");
+  const helpers = source.slice(source.indexOf("function getModelOptions"), source.indexOf("function renderChip"));
+  const context: any = {
+    state: { bootstrap: { availableModels: [
+      { providerId: "openai", id: "gpt-5-custom" },
+      { providerId: "openai", id: "ft:gpt-4.1-mini:team:example" },
+      { providerId: "anthropic", id: "claude-unrelated" }
+    ], allManagedModels: [], appSettings: { providers: { openai: { model: "gpt-4.1-mini" } } } } },
+    isLocalProvider: () => false,
+    escapeAttr: (value: unknown) => String(value),
+    escapeHtml: (value: unknown) => String(value),
+    option: (model: string, selected: string, label: string) => `<option value="${model}"${model === selected ? " selected" : ""}>${label}</option>`
+  };
+  vm.runInNewContext(helpers, context);
+  const choices = context.getProviderSuggestedModels("openai");
+  assert.ok(choices.includes("gpt-5-custom"));
+  assert.ok(choices.includes("ft:gpt-4.1-mini:team:example"));
+  const rendered = context.renderProviderSettingsModelControl("openai", "gpt-4.1-mini");
+  assert.match(rendered, /<select name="provider\.openai\.model">/);
+  assert.match(rendered, /gpt-5-custom/);
+  assert.doesNotMatch(rendered, /<input name="provider\.openai\.model"/);
+});
+
 test("local model test captures the form selection, prevents duplicates and leaves the UI editable", async () => {
   const answer = deferred<unknown>(); let handler!: () => Promise<void>;
   const selected = { value: "gguf-selected" };
@@ -140,6 +164,48 @@ test("local model test captures the form selection, prevents duplicates and leav
   assert.equal(state.localModelTest, null);
   assert.equal(state.providerTestResults.llamacpp.ok, true);
   assert.equal(updates, 2);
+});
+
+test("remote provider tests save the values currently entered in Settings before testing", async () => {
+  let handler!: () => Promise<void>;
+  const selected = { value: "claude-sonnet-test" };
+  const button = {
+    dataset: { providerId: "anthropic" },
+    form: { elements: { namedItem: () => selected } },
+    addEventListener: (_name: string, fn: typeof handler) => { handler = fn; }
+  };
+  const form = {};
+  const payload = { providers: { anthropic: { apiKey: "draft-key", model: "claude-sonnet-test" } } };
+  const saved = {
+    providers: [{ id: "anthropic" }], plugins: [], tools: [],
+    settings: { providers: { anthropic: { apiKey: "draft-key" } } },
+    availableModels: [{ providerId: "anthropic", id: "claude-sonnet-test" }]
+  };
+  const calls: unknown[][] = [];
+  const state: any = {
+    loading: false, localModelTest: null, providerTestResults: {},
+    bootstrap: { providers: [], plugins: [], tools: [], appSettings: {}, availableModels: [] }
+  };
+
+  vm.runInNewContext(fragment('  document.querySelectorAll("[data-action=\'test-provider\']")', '  document.querySelectorAll("[data-chip-kind]")'), {
+    state, Error,
+    FormData: function FormData() { return form; },
+    document: {
+      querySelectorAll: () => [button],
+      querySelector: (selector: string) => selector === "#app-settings-form" ? form : null
+    },
+    buildAppSettingsPayload: () => payload,
+    api: {
+      updateAppSettings: async (next: unknown) => { calls.push(["save", next]); return saved; },
+      testProvider: async (...args: unknown[]) => { calls.push(["test", ...args]); return { ok: true }; }
+    },
+    runAction: async (action: () => Promise<void>) => action()
+  });
+
+  await handler();
+  assert.deepEqual(calls, [["save", payload], ["test", "anthropic", "claude-sonnet-test"]]);
+  assert.deepEqual(state.bootstrap.appSettings, saved.settings);
+  assert.deepEqual(state.bootstrap.availableModels, saved.availableModels);
 });
 
 test("local runtime phases and technical model references render readable installed model names", () => {
