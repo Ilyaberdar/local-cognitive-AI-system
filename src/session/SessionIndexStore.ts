@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
 import { Channel, SessionSummary } from "../types";
+import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 
 interface SessionIndexRecord {
   sessions: SessionSummary[];
@@ -15,22 +16,31 @@ export class SessionIndexStore {
   }
 
   async list(): Promise<SessionSummary[]> {
-    const record = await this.read();
-    return [...record.sessions].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return withFileLock(this.filePath, async () => {
+      const record = await this.read();
+      return [...record.sessions].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    });
   }
 
-  async create(title?: string, channel: Channel = "http"): Promise<SessionSummary> {
+  get(id: string): Promise<SessionSummary | null> {
+    return withFileLock(this.filePath, async () => (await this.read()).sessions.find(session => session.id === id) ?? null);
+  }
+
+  async create(title?: string, channel: Channel = "http", projectId?: string): Promise<SessionSummary> {
+    return withFileLock(this.filePath, async () => {
     const record = await this.read();
     const session: SessionSummary = {
       id: randomUUID(),
       title: title?.trim() || "New chat",
       updatedAt: new Date().toISOString(),
-      channel
+      channel,
+      ...(projectId ? { projectId } : {})
     };
 
     record.sessions.unshift(session);
     await this.write(record);
     return session;
+    });
   }
 
   async touch(
@@ -40,6 +50,7 @@ export class SessionIndexStore {
       channel?: Channel;
     }
   ): Promise<SessionSummary> {
+    return withFileLock(this.filePath, async () => {
     const record = await this.read();
     const existing = record.sessions.find((session) => session.id === id);
 
@@ -66,9 +77,11 @@ export class SessionIndexStore {
     record.sessions.unshift(created);
     await this.write(record);
     return created;
+    });
   }
 
   async rename(id: string, title: string): Promise<SessionSummary | null> {
+    return withFileLock(this.filePath, async () => {
     const record = await this.read();
     const existing = record.sessions.find((session) => session.id === id);
 
@@ -80,9 +93,11 @@ export class SessionIndexStore {
     existing.updatedAt = new Date().toISOString();
     await this.write(record);
     return existing;
+    });
   }
 
   async delete(id: string): Promise<boolean> {
+    return withFileLock(this.filePath, async () => {
     const record = await this.read();
     const initialLength = record.sessions.length;
     record.sessions = record.sessions.filter((session) => session.id !== id);
@@ -93,6 +108,7 @@ export class SessionIndexStore {
 
     await this.write(record);
     return true;
+    });
   }
 
   private async read(): Promise<SessionIndexRecord> {
@@ -101,18 +117,21 @@ export class SessionIndexStore {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<SessionIndexRecord>;
+      if (!parsed || !Array.isArray(parsed.sessions) || parsed.sessions.some(session => !session ||
+        typeof session.id !== "string" || typeof session.title !== "string" || typeof session.updatedAt !== "string" ||
+        (session.projectId !== undefined && typeof session.projectId !== "string"))) {
+        throw new Error("Invalid session index. Existing data has not been changed.");
+      }
       return {
-        sessions: Array.isArray(parsed.sessions) ? parsed.sessions : []
+        sessions: parsed.sessions
       };
-    } catch {
-      const initial = { sessions: [] };
-      await this.write(initial);
-      return initial;
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      return { sessions: [] };
     }
   }
 
   private async write(record: SessionIndexRecord): Promise<void> {
-    await fs.mkdir(this.appDataDir, { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(record, null, 2), "utf8");
+    await writeJsonAtomically(this.filePath, record);
   }
 }

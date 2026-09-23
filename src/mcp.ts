@@ -26,7 +26,7 @@ const bootstrapMcp = async (): Promise<void> => {
   await runtimeManager.init();
 
   const settings = await appSettingsStore.get();
-  const sessionIndexStore = new SessionIndexStore(config.appDataDir);
+  const sessionIndexStore = runtimeManager.getRuntime().sessionIndexStore;
   const defaultSessionId =
     settings.mcp.server.defaultSessionId || config.mcp.server.defaultSessionId;
   const server = new McpServer({

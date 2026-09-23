@@ -6,6 +6,7 @@ import { RuntimeManager } from "./app/RuntimeManager";
 import { AppConfig, config as defaultConfig } from "./config/config";
 import { Server } from "node:http";
 import { LocalModelError } from "./local/types";
+import { SettingsValidationError } from "./app/settingsValidation";
 import { AttachmentError } from "./utils/attachments";
 import { SessionIndexStore } from "./session/SessionIndexStore";
 import { ScheduleRunner } from "./schedules/ScheduleRunner";
@@ -26,7 +27,7 @@ export const startBackend = async (config: AppConfig = defaultConfig): Promise<B
   const runtimeManager = new RuntimeManager(config, appSettingsStore, logger);
   const runtime = await runtimeManager.init();
   const appSettings = await appSettingsStore.get();
-  const sessionIndexStore = new SessionIndexStore(config.appDataDir);
+  const sessionIndexStore = runtime.sessionIndexStore;
 
   let server: Server | undefined;
   let scheduler: ScheduleRunner | undefined;
@@ -53,9 +54,10 @@ export const startBackend = async (config: AppConfig = defaultConfig): Promise<B
     });
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
       logger.error("Unhandled request error", { message: error.message });
-      const known = error instanceof LocalModelError || error instanceof AttachmentError;
-      res.status(known ? error.statusCode : 500).json({
-        error: known ? error.message : "Internal server error",
+      const known = error instanceof LocalModelError || error instanceof AttachmentError || error instanceof SettingsValidationError;
+      const statusCode = "statusCode" in error && typeof error.statusCode === "number" && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
+      res.status(known ? error.statusCode : statusCode).json({
+        error: known || statusCode < 500 ? error.message : "Internal server error",
         message: error.message
       });
     });

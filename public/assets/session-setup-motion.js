@@ -1,9 +1,11 @@
+import { motionEnabled } from "./motion.js";
 // Keep the scrollable setup body stable while the surrounding app is rendered.
 // Agent lists are keyed by identity so deleting a card does not move focus to
 // an unrelated input that happens to reuse its old array index.
 export function createSessionSetupMotion() {
   let stopAnimation;
   let pendingAddedId;
+  window.addEventListener("lcai:motion", event => { if (!event.detail) stopAnimation?.(true); });
   const body = () => document.querySelector("#session-setup-body");
   const key = (element) => {
     const form = element?.closest("#session-settings-form");
@@ -26,7 +28,7 @@ export function createSessionSetupMotion() {
   function restore(snapshot, addedId) {
     const panel = body();
     if (!panel || !snapshot || key(panel) !== snapshot.key || !panel.clientHeight) return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduced = !motionEnabled();
     const originalPadding = panel.style.paddingBottom;
     const padding = parseFloat(getComputedStyle(panel).paddingBottom) || 0;
     const maxTop = Math.max(0, panel.scrollHeight - panel.clientHeight);
@@ -73,7 +75,8 @@ export function createSessionSetupMotion() {
     }
     let frame, started, interrupted = false;
     const events = ["wheel", "touchstart", "pointerdown", "keydown"];
-    const stop = () => {
+    const stop = (settle = false) => {
+      if (settle) panel.scrollTop = target;
       cancelAnimationFrame(frame);
       panel.style.paddingBottom = originalPadding;
       events.forEach((name) => panel.removeEventListener(name, interrupt));

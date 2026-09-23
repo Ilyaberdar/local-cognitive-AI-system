@@ -8,6 +8,7 @@ import { extractNotionId } from "../utils/notion";
 import { LocalModelService } from "../local/LocalModelService";
 import { McpClientManager, McpClientManagerOptions } from "../mcp/client/McpClientManager";
 import { emptyMcpConfiguration } from "../mcp/client/configuration";
+import { validateSettingsPatch } from "./settingsValidation";
 
 export class RuntimeManager {
   private runtime: AppRuntime | null = null;
@@ -42,7 +43,11 @@ export class RuntimeManager {
   }
 
   async updateSettings(patch: AppSettingsPatch): Promise<{ runtime: AppRuntime; settings: AppSettings }> {
+    validateSettingsPatch(patch);
     return this.enqueue(async () => {
+      if (patch && Object.keys(patch).every(key => key === "ui")) {
+        return { runtime: this.getRuntime(), settings: await this.settingsStore.update(patch) };
+      }
       try {
         const { value: runtime, settings } = await this.settingsStore.transaction(patch, settings => this.build(settings));
         return { runtime, settings };
@@ -191,7 +196,8 @@ export class RuntimeManager {
       },
       notion: {
         ...this.baseConfig.notion,
-        apiKey: this.asString(settings.plugins.notion?.values.apiKey) ?? this.baseConfig.notion.apiKey,
+        apiKey: typeof settings.plugins.notion?.values.apiKey === "string"
+          ? settings.plugins.notion.values.apiKey.trim() : this.baseConfig.notion.apiKey,
         parentPageId:
           extractNotionId(this.asString(settings.plugins.notion?.values.parentPageUrl)) ??
           this.asString(settings.plugins.notion?.values.parentPageId) ??

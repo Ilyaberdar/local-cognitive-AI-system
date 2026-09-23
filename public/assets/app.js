@@ -1,3 +1,7 @@
+import { createProjectsUi, projectOptions } from "./projects-ui.js";
+import { createSettingsShell } from "./settings-shell.js";
+import { createSettingsData } from "./settings-data.js";
+import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
 import { createReviewPanel } from "./review-panel.js";
@@ -12,14 +16,17 @@ let workflowPollInFlight = false;
 let workflowEditorHandle = null;
 let workflowEditorModulePromise = null;
 let workflowEditorMountGeneration = 0;
-const UI_THEMES = ["dark", "light"];
+const UI_THEMES = ["dark", "light", "system"];
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+const resolveTheme = theme => theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
 const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
   ? localStorage.getItem("lcai.theme")
   : "dark";
-document.documentElement.dataset.theme = initialTheme;
+document.documentElement.dataset.theme = resolveTheme(initialTheme);
+applyFontScale(Number(localStorage.getItem("lcai.fontScale")) || 100);
 if (window.desktopAppearance) {
   document.documentElement.dataset.desktop = window.desktopAppearance.platform;
-  window.desktopAppearance.setTheme(initialTheme);
+  window.desktopAppearance.setTheme(resolveTheme(initialTheme));
 }
 const DEFAULT_SUBAGENT_NAMES = ["Atlas", "Nova", "Vector", "Echo", "Orion", "Lyra", "Kepler", "Sable", "Rook", "Mira"];
 const MAX_HYPOTHESIS_ADVISORS = 5;
@@ -59,6 +66,8 @@ const state = {
   toasts: [],
   bootstrap: null,
   activeSessionId: null,
+  activeProjectId: null,
+  taskWorkspaces: {},
   sessionSettings: null,
   messages: [],
   drafts: {},
@@ -73,6 +82,7 @@ const state = {
   savedButtons: {},
   activeWorkflowRunId: null,
   workflowRunDetail: null,
+  workflowAgentTraces: {},
   orchestrationTab: "tasks",
   workflowBuilder: {
     draft: null,
@@ -99,10 +109,14 @@ const state = {
 
 const api = {
   getBootstrap: () => request("/dashboard/bootstrap"),
-  createSession: (title) =>
+  createProject: payload => request("/projects", { method: "POST", body: JSON.stringify(payload) }),
+  updateProject: (id, payload) => request(`/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  getTaskWorkspace: taskId => request(`/tasks/${encodeURIComponent(taskId)}/workspace`),
+  revealTaskWorkspace: taskId => request(`/tasks/${encodeURIComponent(taskId)}/workspace/reveal`, { method: "POST" }),
+  createSession: (title, projectId) =>
     request("/sessions", {
       method: "POST",
-      body: JSON.stringify({ title })
+      body: JSON.stringify({ title, ...(projectId ? { projectId } : {}) })
     }),
   renameSession: (sessionId, title) =>
     request(`/sessions/${sessionId}`, {
@@ -138,10 +152,10 @@ const api = {
     request(`/workspace/file?path=${encodeURIComponent(filePath)}&sessionId=${encodeURIComponent(sessionId || "")}`),
   openWorkspaceEditor: (filePath, sessionId) =>
     request("/workspace/editor", { method: "POST", body: JSON.stringify({ path: filePath, sessionId }) }),
-  revealWorkspacePath: (filePath) =>
+  revealWorkspacePath: (filePath, sessionId = state.activeSessionId, runId) =>
     request("/workspace/reveal", {
       method: "POST",
-      body: JSON.stringify({ path: filePath })
+      body: JSON.stringify({ path: filePath, ...(runId ? { runId } : { sessionId }) })
     }),
   updateAppSettings: (payload) =>
     request("/app/settings", {
@@ -252,6 +266,26 @@ const api = {
   getSystemMetrics: () => request("/system/metrics")
 };
 
+const projectsUi = createProjectsUi({
+  getState: () => state,
+  createProject: api.createProject,
+  updateProject: api.updateProject,
+  notify: message => { pushToast(message, "danger"); render(); },
+  refresh: refreshBootstrap,
+  render,
+  selectProject: projectId => runAction(async () => {
+    await persistActiveSessionSetup({ refreshBootstrap: false });
+    voiceInput.leaveChat();
+    ++sessionLoadSequence;
+    state.activeProjectId = projectId;
+    state.activeSessionId = null;
+    state.sessionSettings = null;
+    state.messages = [];
+    state.route = "chat";
+    window.location.hash = "/chat";
+  })
+});
+
 const reviewPanel = createReviewPanel({
   sessionId: () => state.activeSessionId,
   isCollapsed: () => state.ui.sessionSetupCollapsed,
@@ -279,7 +313,7 @@ const reviewPanel = createReviewPanel({
 const voiceInput = createVoiceInput({
   bridge: window.desktopVoice,
   sessionId: () => state.activeSessionId,
-  isChat: () => state.route === "chat",
+  isChat: () => state.route === "chat" && document.getElementById('settings-root')?.hidden !== false,
   hasSession: id => (state.bootstrap?.sessions ?? []).some(session => session.id === id),
   sendBusy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving),
   icon,
@@ -321,7 +355,7 @@ const modelManager = createModelManager({
     updateAttachmentGuidance();
   },
   onUse: async (model) => {
-    if (!state.activeSessionId || !state.sessionSettings) await ensureSession();
+    if (!state.activeSessionId || !state.sessionSettings) await createChatInProject(state.activeProjectId);
     const sessionId = state.activeSessionId;
     window.clearTimeout(state.ui.autosaveTimer);
     await state.ui.autosavePromise.catch(() => undefined);
@@ -343,6 +377,34 @@ const modelManager = createModelManager({
   }
 });
 
+let appRenderDeferred = false;
+const settingsData = createSettingsData({ request, onSaved: (response, patch) => {
+  if (Object.keys(patch).some(key => key !== "ui")) appRenderDeferred = true;
+  if (!state.bootstrap) return;
+  state.bootstrap.appSettings = response.settings;
+  for (const key of ["providers", "plugins", "tools", "availableModels"]) if (response[key] !== undefined) state.bootstrap[key] = response[key];
+} });
+function applyUiPreferences(preferences) {
+  if (preferences.theme) applyTheme(preferences.theme, false);
+  if (typeof preferences.animations === "boolean") setAnimations(preferences.animations);
+  if (typeof preferences.fontScale === "number") applyFontScale(preferences.fontScale);
+}
+function applyFontScale(value) {
+  const scale = Number.isFinite(value) && value >= 85 && value <= 150 ? value : 100;
+  document.documentElement.style.setProperty("--font-scale", String(scale / 100));
+  localStorage.setItem("lcai.fontScale", String(scale));
+}
+const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
+  getContext: () => ({ ...state.bootstrap, route: state.route }),
+  renderModelControl: renderProviderSettingsModelControl, applyPreferences: applyUiPreferences,
+  captureScroll: captureScrollState, restoreScroll: restoreScrollState,
+  onReturn: () => {
+    if (appRenderDeferred && !workflowEditorHandle) render();
+    appRenderDeferred = false;
+  }
+});
+systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") applyTheme("system", false); });
+
 window.addEventListener("beforeunload", () => modelManager.dispose());
 
 init().catch((error) => {
@@ -351,11 +413,12 @@ init().catch((error) => {
 });
 
 window.addEventListener("hashchange", () => {
-  if (state.route === "chat") {
-    rememberMessageStreamScroll();
-  }
+  const wasSettings = settingsShell.isOpen();
+  if (settingsShell.route(window.location.hash)) return;
+  if (state.route === "chat") rememberMessageStreamScroll();
+  const previous = state.route;
   syncRouteFromHash();
-  render();
+  if (!wasSettings || state.route !== previous) render();
   syncSystemMetricsPolling();
 });
 
@@ -364,13 +427,20 @@ async function init() {
   syncRouteFromHash();
   await refreshBootstrap();
   await ensureSession();
+  const preferences = state.bootstrap.appSettings.ui;
+  if (preferences) applyUiPreferences(preferences);
+  else {
+    try { await settingsData.save({ ui: { theme: state.ui.theme, animations: localStorage.getItem("lcai.animations") !== "false" } }); }
+    catch (error) { pushToast(`Could not save appearance: ${error.message}`, "danger"); }
+  }
   render();
+  settingsShell.route(window.location.hash);
   syncSystemMetricsPolling();
 }
 
 function syncRouteFromHash() {
   const route = window.location.hash.replace(/^#\/?/, "");
-  state.route = ["chat", "orchestration", "models", "plugins", "settings"].includes(route) ? route : "chat";
+  state.route = ["chat", "orchestration", "models"].includes(route) ? route : "chat";
 }
 
 async function refreshBootstrap() {
@@ -379,16 +449,49 @@ async function refreshBootstrap() {
 
 async function ensureSession() {
   const sessions = state.bootstrap?.sessions ?? [];
-
-  if (!sessions.length) {
-    const session = await api.createSession("New task");
-    await refreshBootstrap();
-    state.activeSessionId = session.id;
-  } else if (!state.activeSessionId || !sessions.some((session) => session.id === state.activeSessionId)) {
-    state.activeSessionId = sessions[0].id;
+  if (state.activeSessionId && sessions.some(session => session.id === state.activeSessionId)) {
+    state.activeProjectId = sessions.find(session => session.id === state.activeSessionId)?.projectId ?? null;
+  } else {
+    const scoped = sessions.filter(session => (session.projectId ?? null) === state.activeProjectId);
+    if (scoped.length) state.activeSessionId = scoped[0].id;
+    else if (!state.activeProjectId) {
+      const session = await api.createSession("New chat");
+      await refreshBootstrap();
+      state.activeSessionId = session.id;
+    } else {
+      ++sessionLoadSequence;
+      state.activeSessionId = null;
+      state.sessionSettings = null;
+      state.messages = [];
+    }
   }
-
   await loadActiveSession();
+}
+
+async function createChatInProject(projectId) {
+  const snapshot = readSessionSetupSnapshot();
+  const currentSettings = snapshot ? sessionSettingsToPatch(snapshot.settings) : null;
+  await persistActiveSessionSetup({ refreshBootstrap: false });
+  const session = await api.createSession("New chat", projectId);
+  if (currentSettings) {
+    const defaults = state.bootstrap?.appSettings?.ui;
+    await api.updateSessionSettings(session.id, {
+      ...currentSettings,
+      ...(defaults ? { language: defaults.language, outputStyle: defaults.outputStyle, mode: defaults.mode } : {})
+    });
+  }
+  await refreshBootstrap();
+  state.activeProjectId = session.projectId ?? projectId ?? null;
+  projectsUi.revealSession(state.activeProjectId);
+  state.activeSessionId = session.id;
+  await loadActiveSession();
+  state.notice = "";
+  state.route = "chat";
+  window.location.hash = "/chat";
+}
+
+function currentProject() {
+  return (state.bootstrap?.projects ?? []).find(project => project.id === state.activeProjectId);
 }
 
 async function loadActiveSession() {
@@ -463,22 +566,24 @@ async function safeJson(response) {
   }
 }
 
-function applyTheme(theme) {
+function applyTheme(theme, persist = true) {
   const nextTheme = UI_THEMES.includes(theme) ? theme : "dark";
   state.ui.theme = nextTheme;
-  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.dataset.theme = resolveTheme(nextTheme);
   localStorage.setItem("lcai.theme", nextTheme);
-  window.desktopAppearance?.setTheme(nextTheme);
-  workflowEditorHandle?.setColorMode(nextTheme);
+  window.desktopAppearance?.setTheme(resolveTheme(nextTheme));
+  workflowEditorHandle?.setColorMode(resolveTheme(nextTheme));
   document.querySelectorAll("[data-action='set-theme']").forEach((button) => {
     button.classList.toggle("active", button.dataset.theme === nextTheme);
     button.setAttribute("aria-pressed", String(button.dataset.theme === nextTheme));
   });
   const select = document.querySelector("#appearance-theme");
   if (select) select.value = nextTheme;
+  if (persist) void settingsData.save({ ui: { theme: nextTheme } }).catch(error => { pushToast(`Theme not saved: ${error.message}`, "danger"); render(); });
 }
 
 function render(options = {}) {
+  if (settingsShell.isOpen()) { appRenderDeferred = true; return; }
   if (!app) {
     return;
   }
@@ -497,7 +602,7 @@ function render(options = {}) {
       ${renderSidebar()}
       <main class="main">
         <header class="app-topbar">
-          <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || "New task" : routeTitle(state.route))}</h1></div>
+          <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
           <div class="app-topbar__actions">
             ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
             <span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>
@@ -513,12 +618,6 @@ function render(options = {}) {
           <section class="route route--orchestration ${state.route === "orchestration" ? "active" : ""}">
             ${renderOrchestrationRoute()}
           </section>
-          <section class="route route--plugins ${state.route === "plugins" ? "active" : ""}">
-            ${renderPluginsRoute()}
-          </section>
-          <section class="route route--settings ${state.route === "settings" ? "active" : ""}">
-            ${renderSettingsRoute()}
-          </section>
         </div>
         ${renderToasts()}
       </main>
@@ -526,6 +625,8 @@ function render(options = {}) {
   `;
 
   bindEvents();
+  projectsUi.bind();
+  settingsShell.bindProfile();
   voiceInput.bind();
   reviewPanel.bind();
   modelManager.bind(document.querySelector("#local-model-manager"));
@@ -540,17 +641,23 @@ function render(options = {}) {
 
 // Preserve presentation state when runtime polling replaces the template.
 function capturePresentationState() {
-  const forms = [...document.querySelectorAll("#task-form, #schedule-form")].map((form) => ({
+  const forms = [...document.querySelectorAll("#task-form, #schedule-form, .workspace-edit-form")].map((form) => ({
     id: form.id, values: [...new FormData(form).entries()]
   }));
   const disclosures = [...document.querySelectorAll("[data-ui-disclosure]")].map((element) => ({
     key: element.dataset.uiDisclosure, open: element.open
   }));
   const focused = document.activeElement;
-  return { forms, disclosures, focusId: focused?.closest?.("#session-setup-body") ? null : focused?.id, start: focused?.selectionStart, end: focused?.selectionEnd };
+  const sidebarScroll = [...document.querySelectorAll("[data-sidebar-scroll]")].map(element => ({ key: element.dataset.sidebarScroll, top: element.scrollTop }));
+  const mobileConversationsOpen = Boolean(document.querySelector(".shell")?.classList.contains("mobile-sessions-open"));
+  return { forms, disclosures, sidebarScroll, mobileConversationsOpen, focusId: focused?.closest?.("#session-setup-body") ? null : focused?.id, start: focused?.selectionStart, end: focused?.selectionEnd };
 }
 
 function restorePresentationState(snapshot) {
+  if (typeof snapshot.mobileConversationsOpen === "boolean") {
+    document.querySelector(".shell")?.classList.toggle("mobile-sessions-open", snapshot.mobileConversationsOpen);
+    document.querySelector("[data-action='toggle-mobile-sessions']")?.setAttribute("aria-expanded", String(snapshot.mobileConversationsOpen));
+  }
   snapshot.forms.forEach(({ id, values }) => {
     const form = document.getElementById(id);
     values.forEach(([name, value]) => {
@@ -558,7 +665,9 @@ function restorePresentationState(snapshot) {
       if (field && typeof value === "string") field.value = value;
     });
     form?.querySelector("#schedule-frequency")?.dispatchEvent(new Event("change"));
+    form?.querySelector("[data-workspace-project]")?.dispatchEvent(new Event("change"));
   });
+  (snapshot.sidebarScroll ?? []).forEach(({ key, top }) => { const list = document.querySelector(`[data-sidebar-scroll="${CSS.escape(key)}"]`); if (list) list.scrollTop = top; });
   snapshot.disclosures.forEach(({ key, open }) => {
     const element = document.querySelector(`[data-ui-disclosure="${CSS.escape(key)}"]`);
     if (element) {
@@ -589,7 +698,6 @@ function flashSavedButton(key) {
 }
 
 function renderSidebar() {
-  const sessions = state.bootstrap?.sessions ?? [];
   const providerCount = state.bootstrap?.providers?.length ?? 0;
   const pluginCount = state.bootstrap?.plugins?.length ?? 0;
 
@@ -600,48 +708,21 @@ function renderSidebar() {
         <button class="sidebar-toggle icon-button" type="button" data-action="toggle-sidebar" aria-label="Toggle navigation" aria-expanded="${!state.ui.sidebarCollapsed}" title="${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}">${icon("sidebar")}</button>
       </div>
       <div class="sidebar-resize-handle" data-action="resize-sidebar" title="Resize navigation"></div>
-      <button class="new-task-button liquid-glass" type="button" data-action="new-session" title="New task" aria-label="New task">${icon("plus")}<span>New task</span></button>
+      <button class="new-task-button liquid-glass" type="button" data-action="new-session" title="${currentProject() ? `New chat in ${escapeAttr(currentProject().name)}` : "New chat"}" aria-label="New chat">${icon("plus")}<span>New chat</span></button>
       <nav class="nav" aria-label="Main navigation">
         ${renderNavButton("chat", "Chat")}
-        ${renderNavButton("orchestration", "Tasks & workflows", "Feature in test mode")}
+        ${renderNavButton("orchestration", "Workflow")}
         ${renderNavButton("models", "Models")}
-        ${renderNavButton("plugins", "Plugins")}
-        ${renderNavButton("settings", "Settings")}
       </nav>
 
-      <section class="sidebar-section">
-        <div class="sidebar-header">
-          <span>Recent</span>
-          <button class="icon-button" data-action="new-session" aria-label="New conversation" title="New conversation">${icon("plus")}</button>
-        </div>
-        <div class="session-list">
-          ${
-            sessions.length
-              ? sessions
-                  .map(
-                    (session) => `
-                      <div class="session-row ${session.id === state.activeSessionId ? "active" : ""}">
-                        <button class="session-item ${session.id === state.activeSessionId ? "active" : ""}" data-action="open-session" data-session-id="${session.id}">
-                          <span class="session-title">${escapeHtml(session.title)}</span>
-                          <span class="session-meta">${formatDate(session.updatedAt)} · ${escapeHtml(session.channel)}</span>
-                        </button>
-                        <button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${session.id}" aria-label="Delete chat">
-                          ${icon("close")}
-                        </button>
-                      </div>
-                    `
-                  )
-                  .join("")
-              : `<div class="empty">Your conversations appear here.</div>`
-          }
-        </div>
-      </section>
+      ${projectsUi.sidebar()}
 
       <div class="sidebar-footer">
         <details class="runtime-disclosure" data-ui-disclosure="runtime"><summary><span class="status-dot"></span><span>Local runtime</span></summary><div>${providerCount} providers · ${pluginCount} plugins · ${(state.bootstrap?.loadedModels ?? []).length} loaded local models</div></details>
         <div class="theme-switch" role="group" aria-label="Appearance">
           ${["light", "dark"].map((theme) => `<button class="icon-button ${state.ui.theme === theme ? "active" : ""}" type="button" data-action="set-theme" data-theme="${theme}" aria-label="${capitalize(theme)} Liquid Glass" aria-pressed="${state.ui.theme === theme}" title="${capitalize(theme)} Liquid Glass">${icon(theme === "light" ? "sun" : "moon")}</button>`).join("")}
         </div>
+        ${settingsShell.profileButton()}
       </div>
     </aside>
   `;
@@ -739,9 +820,11 @@ function renderNavIcon(route) {
 }
 
 function renderChatRoute() {
-  if (!state.activeSessionId || !state.sessionSettings) {
-    return `<div class="empty">Loading chat workspace...</div>`;
+  if (!state.activeSessionId) {
+    const project = currentProject();
+    return `<div class="project-landing">${icon(project ? "folder" : "chat")}<h2>${escapeHtml(project?.name || "Your conversations")}</h2><p>${escapeHtml(project?.rootPath || "Start a chat to explore an idea.")}</p><button class="primary-button" type="button" data-action="new-session" ${project?.archivedAt ? "disabled" : ""}>${project ? "New chat in project" : "New chat"}</button>${project ? `<button class="ghost-button" type="button" data-action="open-project-folder" data-project-id="${escapeAttr(project.id)}">Open folder</button>` : ""}</div>`;
   }
+  if (!state.sessionSettings) return `<div class="empty">Loading chat workspace...</div>`;
 
   const settings = state.sessionSettings;
   const currentSession = (state.bootstrap?.sessions ?? []).find((session) => session.id === state.activeSessionId);
@@ -1347,6 +1430,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
               }
             </select>
           </div>
+          ${renderWorkspaceFields("task")}
           <div class="field field--full">
             <label for="task-description">Description</label>
             <textarea id="task-description" name="description" rows="5" placeholder="Describe the expected outcome, constraints, files, and verification." required></textarea>
@@ -1429,6 +1513,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
                 }
               </select>
             </div>
+            ${renderWorkspaceFields("schedule")}
             <div class="field field--full">
               <label for="schedule-description">Task description</label>
               <textarea id="schedule-description" name="description" rows="4" placeholder="Describe the analysis, sources, expected result, and constraints." required></textarea>
@@ -1499,7 +1584,7 @@ function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
             ${
               selectedRun
                 ? `<div class="task-actions">
-                    <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading || ["running", "waiting", "done", "failed", "cancelled", "blocked"].includes(selectedRun.status) ? "disabled" : ""}>Step</button>
+                    <button class="ghost-button" type="button" data-action="step-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading || ["running", "waiting", "interrupted", "done", "failed", "cancelled", "blocked"].includes(selectedRun.status) ? "disabled" : ""}>Step</button>
                     ${
                       ["done", "failed", "cancelled"].includes(selectedRun.status)
                         ? ""
@@ -1525,7 +1610,7 @@ const TASK_STATUS_COLUMNS = [
 
 const TASK_STATUS_GROUPS = {
   todo: new Set(["todo", "backlog", "queued"]),
-  in_progress: new Set(["in_progress", "running", "waiting", "blocked", "failed"]),
+  in_progress: new Set(["in_progress", "running", "waiting", "interrupted", "blocked", "failed"]),
   done: new Set(["done", "cancelled"])
 };
 
@@ -1553,6 +1638,88 @@ function renderTaskBoard(tasks) {
   `;
 }
 
+function workspaceHint(projectId) {
+  const project = (state.bootstrap?.projects ?? []).find(item => item.id === projectId);
+  return project ? project.rootPath : "Uses a separate, persistent task folder. Files stay available after the run.";
+}
+
+function renderWorkspaceFields(prefix, value = {}, disabled = false) {
+  return `<div class="field">
+    <div class="workspace-project-label"><label for="${escapeAttr(prefix)}-project">Project</label><button id="${escapeAttr(prefix)}-add-project" class="icon-button" type="button" data-action="add-workspace-project" data-project-select-id="${escapeAttr(prefix)}-project" aria-label="Add project" title="Add project" ${disabled ? "disabled" : ""}>${icon("plus")}</button></div>
+    <select id="${escapeAttr(prefix)}-project" name="projectId" data-workspace-project aria-describedby="${escapeAttr(prefix)}-workspace-hint" ${disabled ? "disabled" : ""}>${projectOptions(state.bootstrap?.projects, value.projectId)}</select>
+  </div><div class="field">
+    <label for="${escapeAttr(prefix)}-access">Access</label>
+    <select id="${escapeAttr(prefix)}-access" name="accessMode" ${disabled ? "disabled" : ""}>${ACCESS_MODES.map(mode => option(mode.id, value.accessMode || "default", mode.label)).join("")}</select>
+  </div><p class="field--full workspace-hint" id="${escapeAttr(prefix)}-workspace-hint" data-workspace-hint>${escapeHtml(workspaceHint(value.projectId))}</p>`;
+}
+
+function renderWorkspaceEditor(kind, value) {
+  const running = kind === "task" && ["in_progress", "running", "waiting", "interrupted"].includes(value.status);
+  const workspace = state.taskWorkspaces[value.id];
+  return `<form id="${kind}-workspace-${escapeAttr(value.id)}" class="form-grid workspace-fields workspace-edit-form" data-workspace-kind="${kind}" data-workspace-id="${escapeAttr(value.id)}">
+    ${renderWorkspaceFields(`${kind}-${value.id}`, value, running)}
+    <div class="field--full task-workspace-actions"><button class="ghost-button" type="submit" ${running || state.loading ? "disabled" : ""}>Save workspace</button>${kind === "task" ? `<button class="ghost-button" type="button" data-action="open-task-folder" data-task-id="${escapeAttr(value.id)}">${icon("folder")}Open folder</button>` : ""}</div>
+    ${running ? '<p class="field--full workspace-hint">This run keeps the workspace chosen when it started.</p>' : ""}
+    ${kind === "task" ? `<span class="field--full task-workspace-path" data-task-workspace-path="${escapeAttr(value.id)}">${escapeHtml(workspace?.rootPath || "")}</span>` : ""}
+  </form>`;
+}
+
+function bindWorkspaceForms() {
+  document.querySelectorAll("[data-action='add-workspace-project']").forEach(button => button.addEventListener("click", () => {
+    if (button.disabled || state.loading) return;
+    projectsUi.openCreateProject(project => selectCreatedWorkspaceProject(button.dataset.projectSelectId, project));
+  }));
+  document.querySelectorAll("[data-workspace-project]").forEach(select => select.addEventListener("change", () => {
+    const hint = select.closest("form")?.querySelector("[data-workspace-hint]");
+    if (hint) hint.textContent = workspaceHint(select.value);
+  }));
+  document.querySelectorAll(".workspace-edit-form").forEach(form => {
+    const taskId = form.dataset.workspaceId;
+    const kind = form.dataset.workspaceKind;
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      if (state.loading) return;
+      const data = new FormData(form);
+      await runAction(async () => {
+        const payload = { projectId: String(data.get("projectId") || "") || null, accessMode: String(data.get("accessMode") || "default") };
+        if (kind === "task") { await api.updateTask(taskId, payload); delete state.taskWorkspaces[taskId]; }
+        else await api.updateSchedule(taskId, payload);
+        await refreshBootstrap();
+        if (kind === "task") state.taskWorkspaces[taskId] = await api.getTaskWorkspace(taskId);
+        pushToast("Workspace saved.", "info");
+      });
+    });
+    if (kind === "task") {
+      const disclosure = form.closest("details");
+      disclosure?.addEventListener("toggle", async () => {
+        if (!disclosure.open || state.taskWorkspaces[taskId]) return;
+        try {
+          const workspace = await api.getTaskWorkspace(taskId);
+          state.taskWorkspaces[taskId] = workspace;
+          const path = document.querySelector(`[data-task-workspace-path="${CSS.escape(taskId)}"]`);
+          if (path) path.textContent = workspace.rootPath;
+        } catch (error) { pushToast(error.message, "danger"); }
+      });
+    }
+  });
+  document.querySelectorAll("[data-action='open-task-folder']").forEach(button => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try { await api.revealTaskWorkspace(button.dataset.taskId); }
+    catch (error) { pushToast(error.message, "danger"); }
+    finally { button.disabled = false; }
+  }));
+}
+
+function selectCreatedWorkspaceProject(selectId, project) {
+  // Polling can replace the form while the dialog is open, so find its current control.
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  select.innerHTML = projectOptions(state.bootstrap?.projects, project.id);
+  select.value = project.id;
+  select.dispatchEvent(new Event("change"));
+  // createProjectsUi renders after this callback; presentation capture keeps every draft field.
+}
+
 function renderTaskCard(task) {
   const workflow = (state.bootstrap?.workflows ?? []).find((item) => item.id === task.workflowId);
   const canRun = getTaskBoardStatus(task) === "todo" || ["blocked", "failed"].includes(task.status);
@@ -1569,7 +1736,7 @@ function renderTaskCard(task) {
       <div class="task-meta">
         <span>${escapeHtml(workflow?.name ?? task.workflowId)}</span>
         <span>${task.scheduledFor ? `Scheduled ${formatDate(task.scheduledFor)}` : formatDate(task.updatedAt)}</span>
-      </div>${renderTaskAttachments(task)}</details>
+      </div>${renderWorkspaceEditor("task", task)}${renderTaskAttachments(task)}</details>
       <div class="task-actions task-actions--card">
         <div class="task-actions__primary">
           ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading || state.attachmentImports[`task:${task.id}`] ? "disabled" : ""}>Run</button>` : ""}
@@ -1610,6 +1777,7 @@ function renderScheduleCard(schedule) {
         <span>Next: ${formatDate(schedule.nextRunAt)}</span>
         <span>${schedule.lastRunAt ? `Last: ${formatDate(schedule.lastRunAt)}` : "Not run yet"}</span>
       </div>
+      <details class="task-card-details" data-ui-disclosure="schedule-${escapeAttr(schedule.id)}"><summary>Workspace</summary>${renderWorkspaceEditor("schedule", schedule)}</details>
       ${schedule.lastError ? `<p class="schedule-error">Last error: ${escapeHtml(schedule.lastError)}</p>` : ""}
       <div class="task-actions task-actions--card">
         <button class="ghost-button" type="button" data-action="toggle-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Resume"}</button>
@@ -1725,7 +1893,7 @@ async function mountActiveWorkflowEditor() {
       providers,
       validation: state.workflowBuilder?.validation ?? null,
       nodeRuns: getActiveWorkflowNodeRuns(workflow.id),
-      colorMode: state.ui.theme === "light" ? "light" : "dark",
+      colorMode: resolveTheme(state.ui.theme),
       onChange: (nextWorkflow) => {
         state.workflowBuilder.draft = cloneWorkflow(nextWorkflow);
         state.workflowBuilder.validation = null;
@@ -1928,6 +2096,10 @@ function renderWorkflowRunTrace(selectedRun) {
 
   const detail = state.workflowRunDetail?.run?.id === selectedRun.id ? state.workflowRunDetail : null;
   const nodeRuns = detail?.nodeRuns ?? [];
+  const pendingNode = [...nodeRuns].reverse().find(node => node.status === "waiting" && node.nodeId === selectedRun.currentNodeId);
+  const approval = pendingNode?.output?.data;
+  const approvalId = approval?.permissionRequired ? approval.approvalId : "";
+  const workspace = selectedRun.workspace ?? detail?.run?.workspace;
 
   return `
     <div class="run-trace">
@@ -1942,9 +2114,11 @@ function renderWorkflowRunTrace(selectedRun) {
           ? `<div class="status-block danger"><div class="status-block__label">Error</div><div class="status-block__text">${escapeHtml(selectedRun.error)}</div></div>`
           : ""
       }
-      ${selectedRun.status === "waiting" ? `<div class="footer-row">
-        <button class="primary-button" type="button" data-action="review-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" data-approved="true" ${state.loading ? "disabled" : ""}>Approve & continue</button>
-        <button class="ghost-button" type="button" data-action="review-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" data-approved="false" ${state.loading ? "disabled" : ""}>Reject</button>
+      ${workspace ? `<div class="run-workspace"><strong>${escapeHtml(workspace.projectName || "Task folder")}</strong><span>${escapeHtml(workspace.rootPath)}</span><button class="ghost-button" type="button" data-action="open-run-folder" data-run-id="${escapeAttr(selectedRun.id)}" data-root-path="${escapeAttr(workspace.rootPath)}">${icon("folder")}Open folder</button></div>` : ""}
+      ${selectedRun.status === "interrupted" ? `<p class="workspace-hint">The run was interrupted. Resume continues from its saved checkpoint. Actions with an unknown result are not repeated.</p><button class="primary-button" type="button" data-action="resume-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" ${state.loading ? "disabled" : ""}>Resume run</button>` : ""}
+      ${selectedRun.status === "waiting" ? `${pendingNode ? `<div class="workflow-approval-description"><strong>${escapeHtml(approval?.permissionRequired ? "Permission required" : "Review required")}</strong><p>${escapeHtml(pendingNode.output?.summary || "Review this step before continuing.")}</p>${approval?.details ? `<pre>${escapeHtml(typeof approval.details === "string" ? approval.details : JSON.stringify(approval.details, null, 2))}</pre>` : ""}</div>` : ""}<div class="footer-row">
+        <button class="primary-button" type="button" data-action="review-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" data-approval-id="${escapeAttr(approvalId || "")}" data-waiting-node-run-id="${escapeAttr(pendingNode?.id || "")}" data-approved="true" ${state.loading || !pendingNode || (approval?.permissionRequired && !approvalId) ? "disabled" : ""}>Approve & continue</button>
+        <button class="ghost-button" type="button" data-action="review-workflow-run" data-run-id="${escapeAttr(selectedRun.id)}" data-approval-id="${escapeAttr(approvalId || "")}" data-waiting-node-run-id="${escapeAttr(pendingNode?.id || "")}" data-approved="false" ${state.loading || !pendingNode || (approval?.permissionRequired && !approvalId) ? "disabled" : ""}>Reject</button>
       </div>` : ""}
       <div class="run-node-list">
         ${nodeRuns.length ? nodeRuns.map(renderNodeRunCard).join("") : `<div class="empty compact">Open Trace on a task to load node runs.</div>`}
@@ -1961,6 +2135,7 @@ function getActiveWorkflowNodeRuns(workflowId) {
 function renderNodeRunCard(nodeRun) {
   const output = nodeRun.output;
   const target = output?.data?.target;
+  const agentRunId = nodeRun.agentRunId || output?.data?.agentRunId;
   const targetLabel = target?.providerId ? formatProviderTarget(target.providerId, target.model) : "";
 
   return `
@@ -1974,6 +2149,7 @@ function renderNodeRunCard(nodeRun) {
         <span>${escapeHtml(targetLabel || output?.event || "no-event")}</span>
         <span>${formatDate(nodeRun.completedAt ?? nodeRun.startedAt)}</span>
       </div>
+      ${agentRunId ? `<details class="node-run-output" data-agent-trace="${escapeAttr(agentRunId)}" data-run-id="${escapeAttr(nodeRun.runId)}"><summary>Agent steps</summary><pre data-agent-steps>${escapeHtml(state.workflowAgentTraces[agentRunId] || "Open to load agent steps.")}</pre></details>` : ""}
       ${
         output?.data && Object.keys(output.data).length
           ? `<details class="node-run-output">
@@ -2030,7 +2206,7 @@ function statusTone(status) {
     return "";
   }
 
-  if (["in_progress", "running", "waiting"].includes(status)) {
+  if (["in_progress", "running", "waiting", "interrupted"].includes(status)) {
     return "warning";
   }
 
@@ -2323,396 +2499,6 @@ function renderModelActionButton(action, modelId, providerId = "lmstudio", model
       ${pending ? `<span class="button-spinner"></span>Loading...` : "Load"}
     </button>
   `;
-}
-
-function renderPluginsRoute() {
-  const pluginSettings = state.bootstrap?.appSettings?.plugins ?? {};
-  const pluginStatuses = state.bootstrap?.pluginStatuses ?? [];
-  const statusByName = Object.fromEntries(pluginStatuses.map((status) => [status.name, status]));
-
-  return `
-    <form class="grid" id="plugins-form">
-      <section class="panel route-header">
-        <div class="row-between">
-          <div>
-            <h2>Plugin Surface</h2>
-            <div class="subtle">Configure tool integrations and future bridges without editing source files.</div>
-          </div>
-          <button class="primary-button" type="submit">${getSaveButtonLabel("plugin-settings", "Save plugin settings")}</button>
-        </div>
-      </section>
-
-      <div class="plugin-grid">
-        ${renderPluginCard("notion", pluginSettings.notion, statusByName.notion, [
-          ["apiKey", "API key"],
-          ["parentPageUrl", "Parent page URL"],
-          ["dataSourceUrl", "Data source URL"],
-          ["titleProperty", "Title property"],
-          ["version", "Notion version"]
-        ])}
-        ${renderPluginCard("file", pluginSettings.file, statusByName.file, [
-          ["outputDir", "Output directory"],
-          ["accessMode", "Access mode"],
-          ["allowedDirectories", "Allowed directories", true]
-        ])}
-        ${renderPluginCard("vscode", pluginSettings.vscode, statusByName.vscode, [
-          ["workspaceRoot", "Workspace root"],
-          ["accessMode", "Access mode"],
-          ["allowedDirectories", "Allowed directories", true],
-          ["bridgeCommand", "Bridge command"],
-          ["notes", "Notes", true]
-        ])}
-      </div>
-    </form>
-  `;
-}
-
-function renderPluginCard(name, plugin, status, fields) {
-  const loaded = status?.loaded ?? false;
-  const configured = status?.configured ?? false;
-  const testResult = state.pluginTestResults[name];
-  const testTone = testResult ? (testResult.ok ? "success" : "danger") : "";
-  return `
-    <section class="card plugin-card">
-      <div class="card-header">
-        <div>
-          <h3>${escapeHtml(capitalize(name))}</h3>
-          <div class="subtle">${escapeHtml(status?.summary ?? (loaded ? "Loaded in runtime" : "Stored for future/runtime reload"))}</div>
-        </div>
-        <span class="badge ${loaded ? "success" : configured ? "warning" : "danger"}">${loaded ? "active" : configured ? "configured" : "needs setup"}</span>
-      </div>
-      <div class="footer-row">
-        <span class="subtle">enabled: ${plugin?.enabled ? "yes" : "no"} · loaded: ${loaded ? "yes" : "no"}</span>
-        <button class="ghost-button" type="button" data-action="test-plugin" data-plugin-name="${escapeAttr(name)}">Test</button>
-      </div>
-      ${
-        testResult
-          ? `
-            <div class="status-block ${testTone}">
-              <div class="status-block__label">${testResult.ok ? "Test passed" : "Test failed"}</div>
-              <div class="status-block__text">${escapeHtml(testResult.message)}</div>
-            </div>
-          `
-          : ""
-      }
-      <div class="field">
-        <label>Enabled</label>
-        <select name="plugin.${name}.enabled">
-          ${["true", "false"].map((value) => option(value, String(plugin?.enabled ?? true), value === "true" ? "on" : "off")).join("")}
-        </select>
-      </div>
-      <div class="form-grid">
-        ${fields
-          .map(([key, label, multiline]) => {
-            const value = plugin?.values?.[key] ?? "";
-            if (key === "accessMode") {
-              return `
-                <div class="field">
-                  <label>${escapeHtml(label)}</label>
-                  <select name="plugin.${name}.${key}">
-                    ${["restricted", "full"]
-                      .map((mode) => option(mode, String(value || "restricted"), mode))
-                      .join("")}
-                  </select>
-                </div>
-              `;
-            }
-
-            return multiline
-              ? `
-                <div class="field field--full">
-                  <label>${escapeHtml(label)}</label>
-                  <textarea name="plugin.${name}.${key}" placeholder="${escapeAttr(pluginFieldPlaceholder(name, key))}">${escapeHtml(String(value))}</textarea>
-                </div>
-              `
-              : `
-                <div class="field">
-                  <label>${escapeHtml(label)}</label>
-                  <input name="plugin.${name}.${key}" value="${escapeAttr(String(value))}" placeholder="${escapeAttr(pluginFieldPlaceholder(name, key))}" />
-                </div>
-              `;
-          })
-          .join("")}
-      </div>
-    </section>
-  `;
-}
-
-function renderSettingsRoute() {
-  const settings = state.bootstrap?.appSettings;
-
-  if (!settings) {
-    return `<div class="empty">Loading settings...</div>`;
-  }
-
-  return `
-    <form class="grid" id="app-settings-form">
-      <section class="panel route-header">
-        <div class="row-between">
-          <div>
-            <h2>Provider & Runtime Settings</h2>
-            <div class="subtle">Set local and proprietary provider connections, defaults, and runtime behavior from the browser.</div>
-          </div>
-          <div class="utility-bar">
-            <button class="ghost-button" type="button" data-action="reload-runtime">Reload runtime</button>
-            <button class="primary-button" type="submit">${getSaveButtonLabel("app-settings", "Save settings")}</button>
-          </div>
-        </div>
-      </section>
-
-      <div class="settings-top-grid">
-        <section class="card">
-          <h3>Appearance</h3>
-          <div class="field-grid">
-            <div class="field">
-              <label>Theme</label>
-              <select id="appearance-theme" name="appearance.theme">
-                ${option("dark", state.ui.theme, "Dark Liquid Glass")}
-                ${option("light", state.ui.theme, "Light Liquid Glass")}
-              </select>
-            </div>
-          </div>
-        </section>
-
-        <section class="card">
-          <h3>Global defaults</h3>
-          <div class="field-grid">
-            <div class="field">
-              <label>Default provider</label>
-              <select name="llm.defaultProvider">
-                ${(state.bootstrap?.providers ?? []).map((provider) => option(provider.id, settings.llm.defaultProvider, provider.id)).join("")}
-              </select>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <details class="card settings-disclosure" data-ui-disclosure="settings-mcp"><summary><span>MCP Server</span>${icon("chevronRight")}</summary><div class="settings-disclosure__body">
-        <div class="subtle">Expose this runtime to opencode, Codex-style clients, and local development pipelines over MCP stdio.</div>
-        <div class="field-grid">
-          <div class="field">
-            <label>Enabled</label>
-            <select name="mcp.server.enabled">
-              ${["true", "false"].map((value) => option(value, String(settings.mcp?.server?.enabled ?? true), value === "true" ? "on" : "off")).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Transport</label>
-            <select name="mcp.server.transport">
-              ${["stdio"].map((value) => option(value, settings.mcp?.server?.transport ?? "stdio")).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Default session</label>
-            <input name="mcp.server.defaultSessionId" value="${escapeAttr(settings.mcp?.server?.defaultSessionId || "mcp-default")}" />
-          </div>
-          <div class="field full">
-            <label>opencode config</label>
-            <pre class="config-snippet">${escapeHtml(JSON.stringify({
-              mcp: {
-                "local-cognitive": {
-                  type: "local",
-                  command: "npm",
-                  args: ["run", "--silent", "mcp:stdio"]
-                }
-              },
-              permission: {
-                "local_ai_*": "ask"
-              }
-            }, null, 2))}</pre>
-          </div>
-        </div>
-      </div></details>
-
-      <details class="card settings-disclosure" data-ui-disclosure="settings-telegram"><summary><span>Telegram</span>${icon("chevronRight")}</summary><div class="settings-disclosure__body">
-        <div class="subtle">Bot token and polling are stored here. Restart the server after changing Telegram settings.</div>
-        <div class="field-grid">
-          <div class="field">
-            <label>Enabled</label>
-            <select name="telegram.enabled">
-              ${["true", "false"].map((value) => option(value, String(settings.telegram.enabled), value === "true" ? "on" : "off")).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Poll timeout (sec)</label>
-            <input name="telegram.pollTimeoutSec" type="number" value="${escapeAttr(String(settings.telegram.pollTimeoutSec))}" />
-          </div>
-          <div class="field full">
-            <label>Bot token</label>
-            <input type="password" autocomplete="off" name="telegram.botToken" value="${escapeAttr(settings.telegram.botToken || "")}" placeholder="123456:telegram-bot-token" />
-          </div>
-          <div class="field full">
-            <label>Owner Telegram user IDs</label>
-            <input name="telegram.ownerUserIds" value="${escapeAttr(settings.telegram.ownerUserIds.join(", "))}" placeholder="123456789" />
-            <div class="subtle">Comma-separated numeric IDs. Telegram starts only when at least one owner is configured.</div>
-          </div>
-        </div>
-      </div></details>
-
-      <details class="card settings-disclosure" data-ui-disclosure="settings-memory"><summary><span>Long Memory</span>${icon("chevronRight")}</summary><div class="settings-disclosure__body">
-        <div class="field-grid">
-          <div class="field">
-            <label>Adapter</label>
-            <select name="memory.adapter">
-              ${["local-json", "world-partition", "openmemory"].map((value) => option(value, settings.memory.adapter)).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Top K</label>
-            <input name="memory.topK" type="number" value="${escapeAttr(String(settings.memory.topK))}" />
-          </div>
-          <div class="field">
-            <label>Memory directory</label>
-            <input name="memory.baseDir" value="${escapeAttr(settings.memory.baseDir)}" />
-          </div>
-          <div class="field">
-            <label>Cross-session recall</label>
-            <select name="memory.worldPartition.crossSessionRecall">
-              ${["true", "false"].map((value) => option(value, String(settings.memory.worldPartition.crossSessionRecall), value === "true" ? "on" : "off")).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Partition strategy</label>
-            <select name="memory.worldPartition.strategy">
-              ${["auto", "global", "partitioned"].map((value) => option(value, settings.memory.worldPartition.strategy)).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Activation threshold / user</label>
-            <input name="memory.worldPartition.activationThreshold" type="number" min="1" value="${escapeAttr(String(settings.memory.worldPartition.activationThreshold))}" />
-          </div>
-          <div class="field">
-            <label>Chunk capacity</label>
-            <input name="memory.worldPartition.chunkCapacity" type="number" min="32" value="${escapeAttr(String(settings.memory.worldPartition.chunkCapacity))}" />
-          </div>
-          <div class="field">
-            <label>Initial / max radius</label>
-            <div class="inline-pair">
-              <input name="memory.worldPartition.initialRadius" type="number" min="0" value="${escapeAttr(String(settings.memory.worldPartition.initialRadius))}" />
-              <input name="memory.worldPartition.maxRadius" type="number" min="0" value="${escapeAttr(String(settings.memory.worldPartition.maxRadius))}" />
-            </div>
-          </div>
-          <div class="field">
-            <label>Global fallback</label>
-            <select name="memory.worldPartition.fallbackToGlobalSearch">
-              ${["true", "false"].map((value) => option(value, String(settings.memory.worldPartition.fallbackToGlobalSearch), value === "true" ? "on" : "off")).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Migrate legacy JSON</label>
-            <select name="memory.worldPartition.migrateLegacyOnStart">
-              ${["true", "false"].map((value) => option(value, String(settings.memory.worldPartition.migrateLegacyOnStart), value === "true" ? "on" : "off")).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>OpenMemory enabled</label>
-            <select name="memory.openMemory.enabled">
-              ${["true", "false"].map((value) => option(value, String(settings.memory.openMemory.enabled), value === "true" ? "on" : "off")).join("")}
-            </select>
-          </div>
-          <div class="field full">
-            <label>OpenMemory DB path</label>
-            <input name="memory.openMemory.dbPath" value="${escapeAttr(settings.memory.openMemory.dbPath)}" />
-          </div>
-        </div>
-      </div></details>
-
-      <div class="settings-grid">
-        ${Object.entries(settings.providers)
-          .map(
-            ([providerId, provider]) => providerId === "llamacpp" ? renderBuiltInProviderSettings(provider, settings.localModels) : `
-              <section class="card compact-card settings-card">
-                <div class="card-header">
-                  <div>
-                    <h3>${escapeHtml(providerId)}</h3>
-                    <div class="subtle">Connection and default model configuration</div>
-                  </div>
-                  <span class="badge ${provider.enabled ? "success" : "warning"}">${provider.enabled ? "enabled" : "disabled"}</span>
-                </div>
-                <div class="form-grid">
-                  <div class="field">
-                    <label>Enabled</label>
-                    <select name="provider.${providerId}.enabled">
-                      ${["true", "false"].map((value) => option(value, String(provider.enabled), value === "true" ? "on" : "off")).join("")}
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label>Base URL</label>
-                    <input
-                      name="provider.${providerId}.baseUrl"
-                      value="${escapeAttr(provider.baseUrl || "")}"
-                      placeholder="${escapeAttr(providerBaseUrlPlaceholder(providerId))}"
-                    />
-                    <div class="subtle">${escapeHtml(providerBaseUrlHelp(providerId))}</div>
-                  </div>
-                  <div class="field">
-                    <label>API key</label>
-                    <input type="password" autocomplete="off" name="provider.${providerId}.apiKey" value="${escapeAttr(provider.apiKey || "")}" />
-                  </div>
-                  <div class="field">
-                    <label>Default model</label>
-                    ${renderProviderSettingsModelControl(providerId, provider.model || "")}
-                    <div class="subtle">${escapeHtml(providerModelHelp(providerId))}</div>
-                  </div>
-                  <div class="field">
-                    <label>Timeout (ms)</label>
-                    <input name="provider.${providerId}.timeoutMs" type="number" min="1000" step="1000" value="${escapeAttr(String(provider.timeoutMs ?? defaultProviderTimeoutMs(providerId)))}" />
-                    <div class="subtle">${escapeHtml(providerTimeoutHelp(providerId))}</div>
-                  </div>
-                  ${providerId === "anthropic"
-                    ? `
-                      <div class="field">
-                        <label>Anthropic version</label>
-                        <input name="provider.${providerId}.version" value="${escapeAttr(provider.version || "")}" />
-                      </div>
-                      <div class="field">
-                        <label>Max tokens</label>
-                        <input name="provider.${providerId}.maxTokens" type="number" value="${escapeAttr(String(provider.maxTokens ?? 1024))}" />
-                      </div>
-                    `
-                    : ""}
-                </div>
-                ${
-                  state.providerTestResults[providerId]
-                    ? `
-                      <div class="status-block ${providerTestTone(state.providerTestResults[providerId])}">
-                        <div class="status-block__label">${state.providerTestResults[providerId].ok ? "Provider ready" : "Provider issue"}</div>
-                        <div class="status-block__text">${escapeHtml(formatProviderTestResult(state.providerTestResults[providerId]))}</div>
-                      </div>
-                    `
-                    : ""
-                }
-                <div class="footer-row">
-                  <span class="subtle">Tests the values currently entered here and saves them before checking auth, base URL, and model access.</span>
-                  <button class="ghost-button" type="button" data-action="test-provider" data-provider-id="${escapeAttr(providerId)}">Test provider</button>
-                </div>
-              </section>
-            `
-          )
-          .join("")}
-      </div>
-    </form>
-  `;
-}
-
-function renderBuiltInProviderSettings(provider, local = {}) {
-  return `<section class="card compact-card settings-card">
-    <div class="card-header"><div><h3>Local models</h3><div class="subtle">Built-in inference on this device</div></div><span class="badge ${provider.enabled ? "success" : "warning"}">${provider.enabled ? "enabled" : "disabled"}</span></div>
-    <div class="mm-provider-note">The app manages the runtime automatically. Choose downloaded models from your library; an API key or server address is not required.<a href="#/models" class="mm-source-link">Open model library →</a></div>
-    <div class="form-grid">
-      <div class="field"><label>Enabled</label><select name="provider.llamacpp.enabled">${["true", "false"].map((value) => option(value, String(provider.enabled), value === "true" ? "on" : "off")).join("")}</select></div>
-      <div class="field"><label>Default model</label>${renderProviderSettingsModelControl("llamacpp", state.localModelTest?.model ?? provider.model ?? "")}<div class="subtle">Installed models stay selectable after Unload.</div></div>
-      <div class="field field--full"><label>Model storage folder</label><input name="localModels.modelsDir" value="${escapeAttr(local.modelsDir || "")}" placeholder="App-managed model library" /><div class="footer-row"><span class="subtle">Models are copied and verified before switching storage. Previous files remain as a backup. Pause downloads first.</span>${window.desktopModels?.selectDirectory ? '<button type="button" class="ghost-button" data-action="select-model-directory">Choose folder</button>' : ""}</div></div>
-      <div class="field"><label>Context size (tokens)</label><input name="localModels.contextSize" type="number" min="512" max="131072" step="512" value="${escapeAttr(local.contextSize ?? 4096)}" /><div class="subtle">Larger contexts need more memory.</div></div>
-      <div class="field"><label>Memory warning threshold (%)</label><input name="localModels.memoryLimitPercent" type="number" min="10" max="90" step="1" value="${escapeAttr(local.memoryLimitPercent ?? 75)}" /><div class="subtle">Warn above this share of device memory. Models can still load above the threshold.</div></div>
-      <div class="field"><label>Load timeout (ms)</label><input name="localModels.loadTimeoutMs" type="number" min="10000" max="1800000" step="1000" value="${escapeAttr(local.loadTimeoutMs ?? 300000)}" /></div>
-      <div class="field"><label>Generation timeout (ms)</label><input name="localModels.generationTimeoutMs" type="number" min="10000" max="3600000" step="1000" value="${escapeAttr(local.generationTimeoutMs ?? 600000)}" /><div class="subtle">Allows time for local reasoning and longer responses.</div></div>
-      <input type="hidden" name="localModels.gpuLayers" value="${escapeAttr(local.gpuLayers ?? 99)}" />
-      <input type="hidden" name="provider.llamacpp.timeoutMs" value="${escapeAttr(provider.timeoutMs ?? 600000)}" />
-    </div>
-    <div data-local-test-feedback aria-live="polite">${renderLocalModelTestFeedback()}</div>
-    <div class="footer-row"><span class="subtle">Test runs a response with the selected model. Save settings to make it the default.</span><button class="ghost-button" type="button" data-action="test-provider" data-provider-id="llamacpp" ${state.localModelTest ? "disabled" : ""}>${state.localModelTest ? "Testing model…" : "Test model"}</button></div>
-  </section>`;
 }
 
 function renderLocalModelTestFeedback() {
@@ -3297,6 +3083,13 @@ async function submitChatMessage(input, attachments, options = {}) {
 }
 
 function bindEvents() {
+  bindWorkspaceForms();
+  document.querySelectorAll("[data-action='open-project-folder']").forEach(button => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try { await request(`/projects/${encodeURIComponent(button.dataset.projectId)}/reveal`, { method: "POST" }); }
+    catch (error) { pushToast(error.message, "danger"); }
+    finally { button.disabled = false; }
+  }));
   bindChatAccess();
   document.querySelectorAll(".field").forEach((field, index) => {
     const label = field.querySelector("label");
@@ -3422,19 +3215,9 @@ function bindEvents() {
 
   document.querySelectorAll("[data-action='new-session']").forEach((button) => {
     button.addEventListener("click", async () => {
-      await runAction(async () => {
-        const snapshot = readSessionSetupSnapshot();
-        const currentSettings = snapshot ? sessionSettingsToPatch(snapshot.settings) : null;
-        const session = await api.createSession("New task");
-        if (currentSettings) {
-          await api.updateSessionSettings(session.id, currentSettings);
-        }
-        await refreshBootstrap();
-        state.activeSessionId = session.id;
-        await loadActiveSession();
-        state.notice = "";
-        window.location.hash = "/chat";
-      });
+      if (state.loading) return;
+      const projectId = button.hasAttribute("data-project-id") ? button.dataset.projectId || null : state.activeProjectId;
+      await runAction(() => createChatInProject(projectId));
     });
   });
 
@@ -3455,6 +3238,7 @@ function bindEvents() {
       await runAction(async () => {
         await persistActiveSessionSetup({ refreshBootstrap: false });
         state.activeSessionId = button.dataset.sessionId;
+        state.activeProjectId = (state.bootstrap?.sessions ?? []).find(session => session.id === state.activeSessionId)?.projectId ?? null;
         await loadActiveSession();
         window.location.hash = "/chat";
       });
@@ -3490,7 +3274,8 @@ function bindEvents() {
         workflowId,
         priority,
         attachments: state.taskDraftAttachments,
-        sessionId: state.activeSessionId
+        projectId: String(form.get("projectId") || "") || null,
+        accessMode: String(form.get("accessMode") || "default")
       });
       state.taskDraftAttachments = [];
       document.querySelector("#task-form")?.reset();
@@ -3552,7 +3337,8 @@ function bindEvents() {
         ...(frequency === "weekly" ? { weekday } : {}),
         time,
         timezone,
-        sessionId: state.activeSessionId
+        projectId: String(form.get("projectId") || "") || null,
+        accessMode: String(form.get("accessMode") || "default")
       });
       await refreshBootstrap();
       pushToast(frequency === "weekly" ? "Weekly schedule created." : "Daily schedule created.", "info");
@@ -4186,55 +3972,6 @@ function bindEvents() {
 
   bindSessionSetupFieldSync();
 
-  document.querySelector("#plugins-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const payload = buildAppSettingsPayload(form, true);
-    await runAction(async () => {
-      const response = await api.updateAppSettings(payload);
-      state.bootstrap.plugins = response.plugins;
-      state.bootstrap.providers = response.providers;
-      state.bootstrap.tools = response.tools;
-      state.bootstrap.appSettings = response.settings;
-      state.bootstrap.availableModels = response.availableModels ?? state.bootstrap.availableModels;
-      state.bootstrap.pluginStatuses = await request("/plugins/status");
-      state.notice = "";
-    });
-    flashSavedButton("plugin-settings");
-  });
-
-  document.querySelector("#app-settings-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const payload = buildAppSettingsPayload(form, false);
-
-    const saved = await runAction(async () => {
-      const response = await api.updateAppSettings(payload);
-      state.bootstrap.providers = response.providers;
-      state.bootstrap.plugins = response.plugins;
-      state.bootstrap.tools = response.tools;
-      state.bootstrap.appSettings = response.settings;
-      state.bootstrap.availableModels = response.availableModels ?? state.bootstrap.availableModels;
-      state.bootstrap.pluginStatuses = await request("/plugins/status");
-      state.notice = "";
-    });
-    if (saved) flashSavedButton("app-settings");
-  });
-
-  document.querySelector("#appearance-theme")?.addEventListener("change", (event) => {
-    applyTheme(event.currentTarget.value);
-  });
-
-  document.querySelector("[data-action='select-model-directory']")?.addEventListener("click", async () => {
-    try {
-      const directory = await window.desktopModels.selectDirectory();
-      const field = document.querySelector('[name="localModels.modelsDir"]');
-      if (directory && field) field.value = directory;
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Unable to select model folder.", "danger");
-    }
-  });
-
   document.querySelector("[data-action='reload-runtime']")?.addEventListener("click", async () => {
     await runAction(async () => {
       await api.reloadRuntime();
@@ -4832,101 +4569,22 @@ function syncSystemMetricsPolling() {
 }
 
 function buildAppSettingsPayload(form, pluginsOnly) {
-  const payload = {
-    llm: pluginsOnly
-      ? undefined
-      : {
-          defaultProvider: String(form.get("llm.defaultProvider") || "")
-        },
-    telegram: pluginsOnly
-      ? undefined
-      : {
-          enabled: form.get("telegram.enabled") === "true",
-          botToken: String(form.get("telegram.botToken") || "").trim(),
-          ownerUserIds: String(form.get("telegram.ownerUserIds") || "").split(",").map((value) => value.trim()).filter(Boolean),
-          pollTimeoutSec: Number(form.get("telegram.pollTimeoutSec") || 25)
-        },
-    mcp: pluginsOnly
-      ? undefined
-      : {
-          server: {
-            enabled: form.get("mcp.server.enabled") === "true",
-            transport: "stdio",
-            defaultSessionId: String(form.get("mcp.server.defaultSessionId") || "mcp-default").trim()
-          }
-        },
-    memory: pluginsOnly
-      ? undefined
-      : {
-          adapter: String(form.get("memory.adapter") || "local-json"),
-          topK: Number(form.get("memory.topK") || 5),
-          baseDir: String(form.get("memory.baseDir") || "").trim(),
-          worldPartition: {
-            crossSessionRecall: form.get("memory.worldPartition.crossSessionRecall") === "true",
-            strategy: String(form.get("memory.worldPartition.strategy") || "auto"),
-            activationThreshold: Number(form.get("memory.worldPartition.activationThreshold") || 10000),
-            chunkCapacity: Number(form.get("memory.worldPartition.chunkCapacity") || 1024),
-            initialRadius: Number(form.get("memory.worldPartition.initialRadius") || 1),
-            maxRadius: Number(form.get("memory.worldPartition.maxRadius") || 3),
-            fallbackToGlobalSearch: form.get("memory.worldPartition.fallbackToGlobalSearch") === "true",
-            migrateLegacyOnStart: form.get("memory.worldPartition.migrateLegacyOnStart") === "true"
-          },
-          openMemory: {
-            enabled: form.get("memory.openMemory.enabled") === "true",
-            dbPath: String(form.get("memory.openMemory.dbPath") || "").trim()
-          }
-        },
-    providers: {},
-    plugins: {}
-  };
-
-  if (!pluginsOnly) {
-    if (form.has("localModels.modelsDir")) {
-      payload.localModels = {
-        modelsDir: String(form.get("localModels.modelsDir") || "").trim(),
-        contextSize: Number(form.get("localModels.contextSize") || 4096),
-        gpuLayers: Number(form.get("localModels.gpuLayers") || 99),
-        memoryLimitPercent: Number(form.get("localModels.memoryLimitPercent") || 75),
-        loadTimeoutMs: Number(form.get("localModels.loadTimeoutMs") || 300000),
-        generationTimeoutMs: Number(form.get("localModels.generationTimeoutMs") || 600000)
-      };
-    }
-    for (const provider of state.bootstrap.providers ?? []) {
-      payload.providers[provider.id] = {
-        enabled: form.get(`provider.${provider.id}.enabled`) === "true",
-        baseUrl: String(form.get(`provider.${provider.id}.baseUrl`) || "").trim(),
-        apiKey: String(form.get(`provider.${provider.id}.apiKey`) || "").trim(),
-        model: String(form.get(`provider.${provider.id}.model`) || "").trim(),
-        timeoutMs: Number(form.get(`provider.${provider.id}.timeoutMs`) || defaultProviderTimeoutMs(provider.id))
-      };
-
-      if (provider.id === "llamacpp") {
-        delete payload.providers[provider.id].baseUrl;
-        delete payload.providers[provider.id].apiKey;
-        if (!form.has("provider.llamacpp.model")) payload.providers[provider.id].model = getProviderConfiguredModel("llamacpp");
-        payload.providers[provider.id].timeoutMs = payload.localModels?.generationTimeoutMs || payload.providers[provider.id].timeoutMs;
-      }
-
-      if (provider.id === "anthropic") {
-        payload.providers[provider.id].version = String(form.get(`provider.${provider.id}.version`) || "").trim();
-        payload.providers[provider.id].maxTokens = Number(form.get(`provider.${provider.id}.maxTokens`) || 1024);
-      }
-    }
+  const payload = {};
+  // Legacy callers also preserve absent fields; Settings pages use entityPatch.
+  const numeric = new Set(["timeoutMs", "maxTokens", "topK", "contextSize", "gpuLayers", "memoryLimitPercent", "loadTimeoutMs", "generationTimeoutMs", "activationThreshold", "chunkCapacity", "initialRadius", "maxRadius"]);
+  for (const [name, raw] of form.entries()) {
+    let keys = name.split(".");
+    if (!["provider", "plugin", "llm", "localModels", "memory", "mcp"].includes(keys[0])) continue;
+    if (pluginsOnly && keys[0] !== "plugin") continue;
+    if (keys.some(key => ["__proto__", "constructor", "prototype"].includes(key))) continue;
+    if (keys[0] === "provider") keys[0] = "providers";
+    if (keys[0] === "plugin") { keys[0] = "plugins"; if (keys[2] !== "enabled") keys.splice(2, 0, "values"); }
+    const key = keys.at(-1);
+    if (key === "apiKey" && !String(raw).trim()) continue;
+    let target = payload;
+    for (const part of keys.slice(0, -1)) target = target[part] ??= {};
+    target[key] = numeric.has(key) ? Number(raw) : ["true", "false"].includes(raw) ? raw === "true" : String(raw).trim();
   }
-
-  for (const pluginName of ["notion", "file", "vscode"]) {
-    const pluginFields = Object.fromEntries(
-      [...form.entries()]
-        .filter(([key]) => key.startsWith(`plugin.${pluginName}.`) && key !== `plugin.${pluginName}.enabled`)
-        .map(([key, value]) => [key.replace(`plugin.${pluginName}.`, ""), String(value)])
-    );
-
-    payload.plugins[pluginName] = {
-      enabled: form.get(`plugin.${pluginName}.enabled`) === "true",
-      values: pluginFields
-    };
-  }
-
   return payload;
 }
 
@@ -5883,7 +5541,7 @@ function scrollChatToBottom(behavior = "auto") {
 
   stream.scrollTo({
     top: stream.scrollHeight,
-    behavior
+    behavior: motionEnabled() ? behavior : "auto"
   });
   state.ui.messageStreamScrollTop = stream.scrollHeight;
   state.ui.messageStreamPinnedToBottom = true;
@@ -6079,17 +5737,11 @@ async function deleteSessionById(sessionId) {
     delete state.draftAttachments[sessionId];
     await refreshBootstrap();
 
-    if (!state.bootstrap.sessions?.length) {
-      const session = await api.createSession("New task");
-      await refreshBootstrap();
-      state.activeSessionId = session.id;
-      await loadActiveSession();
-    } else if (
-      deletingActive ||
-      !state.bootstrap.sessions.some((session) => session.id === state.activeSessionId)
-    ) {
-      state.activeSessionId = state.bootstrap.sessions[0].id;
-      await loadActiveSession();
+    if (deletingActive || (state.activeSessionId && !state.bootstrap.sessions.some(session => session.id === state.activeSessionId))) {
+      state.activeSessionId = null;
+      state.sessionSettings = null;
+      state.messages = [];
+      await ensureSession();
     }
 
     state.notice = "";
@@ -6333,13 +5985,41 @@ function escapeAttr(value) {
 }
 
 function bindWorkflowReviewActions() {
+  document.querySelectorAll("[data-action='open-run-folder']").forEach(button => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try { await api.revealWorkspacePath(button.dataset.rootPath, null, button.dataset.runId); }
+    catch (error) { pushToast(error.message, "danger"); }
+    finally { button.disabled = false; }
+  }));
+  document.querySelectorAll("[data-action='resume-workflow-run']").forEach(button => button.addEventListener("click", async () => {
+    if (state.loading) return;
+    await runAction(async () => {
+      await request(`/workflow-runs/${encodeURIComponent(button.dataset.runId)}/resume`, { method: "POST", body: JSON.stringify({ background: true }) });
+      await refreshBootstrap();
+      state.workflowRunDetail = await api.getWorkflowRun(button.dataset.runId);
+    });
+  }));
+  document.querySelectorAll("[data-agent-trace]").forEach(disclosure => disclosure.addEventListener("toggle", async () => {
+    if (!disclosure.open) return;
+    const output = disclosure.querySelector("[data-agent-steps]");
+    try {
+      const trace = await request(`/workflow-runs/${encodeURIComponent(disclosure.dataset.runId)}/agent-runs/${encodeURIComponent(disclosure.dataset.agentTrace)}`);
+      const data = trace.run ?? trace;
+      const text = Array.isArray(data.turns) ? data.turns.map((turn, index) => `${index + 1}. ${turn.type}\n${turn.content}`).join("\n\n") : JSON.stringify(data, null, 2);
+      state.workflowAgentTraces[disclosure.dataset.agentTrace] = text;
+      output.textContent = text || "No agent steps yet.";
+    } catch (error) { output.textContent = error.message; }
+  }));
+
   document.querySelectorAll("[data-action='review-workflow-run']").forEach((button) => {
     button.addEventListener("click", async () => {
       if (state.loading) return;
       const runId = button.dataset.runId;
       await runAction(async () => {
         await request(`/workflow-runs/${encodeURIComponent(runId)}/review`, {
-          method: "POST", body: JSON.stringify({ approved: button.dataset.approved === "true", background: true }), timeoutMs: 900000
+          method: "POST", body: JSON.stringify({ approved: button.dataset.approved === "true", background: true,
+            ...(button.dataset.approvalId ? { approvalId: button.dataset.approvalId } : { waitingNodeRunId: button.dataset.waitingNodeRunId })
+          }), timeoutMs: 900000
         });
         await refreshBootstrap();
         state.workflowRunDetail = await api.getWorkflowRun(runId);

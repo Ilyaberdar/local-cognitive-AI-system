@@ -1,6 +1,6 @@
 import { CognitiveEngine } from "../../core/CognitiveEngine";
-import { ProcessResult } from "../../types";
-import { NodeResult } from "../types";
+import { ProcessResult, ProviderTarget, SessionSettings } from "../../types";
+import { NodeResult, WorkflowNode } from "../types";
 import { renderWorkflowTemplate } from "../template";
 import { NodeExecutor, NodeExecutionContext } from "./NodeExecutor";
 
@@ -12,24 +12,48 @@ export class AgentNodeExecutor implements NodeExecutor {
     private readonly providerDefaults: Record<string, string | undefined> = {}
   ) {}
 
+  snapshotTarget(node: WorkflowNode, settings?: SessionSettings): ProviderTarget | undefined {
+    const providerId = readOptionalString(node.config.providerId) ?? settings?.defaultTarget.providerId;
+    if (!providerId) return undefined;
+    return {
+      providerId,
+      model: readOptionalString(node.config.model) ??
+        (settings?.defaultTarget.providerId === providerId ? settings.defaultTarget.model : undefined) ??
+        this.providerDefaults[providerId]
+    };
+  }
+
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
-    const prompt = renderWorkflowTemplate(
+    const prompt = context.agentInput ?? renderWorkflowTemplate(
       String(context.node.config.promptTemplate ?? "{{task.title}}\n\n{{task.description}}"),
       context
     );
     const mode = readMode(context.node.config.mode);
-    const providerId = readOptionalString(context.node.config.providerId);
-    const model =
+    const frozenTarget = context.run.executionSnapshot?.nodeTargets?.[context.node.id];
+    const providerId = frozenTarget ? frozenTarget.providerId : readOptionalString(context.node.config.providerId);
+    const model = frozenTarget ? frozenTarget.model :
       readOptionalString(context.node.config.model) ??
       (providerId ? this.providerDefaults[providerId] : undefined);
+    const agentRunId = context.agentRunId ?? `workflow-${context.run.id}:${context.node.id}`;
+    const workspace = context.workspace ?? context.run.workspace;
+    const approvalId = typeof context.approval?.approvalId === "string" ? context.approval.approvalId : undefined;
     const result = await this.engine.process({
       input: prompt,
       providerId,
       model,
       signal: context.signal,
       onProgress: context.onProgress,
+      ...(workspace ? { execution: {
+        workspace,
+        accessMode: context.accessMode ?? context.run.executionSnapshot?.accessMode ?? context.task.accessMode ?? "default",
+        agentRunId,
+        pauseForApproval: true,
+        requireApproval: context.node.config.approval === "always",
+        settings: context.settings ?? context.run.executionSnapshot?.settings,
+        approval: approvalId ? { id: approvalId, approved: context.approval?.approved === true } : undefined
+      } } : {}),
       actor: {
-        sessionId: context.task.sessionId ?? `task-${context.task.id}`,
+        sessionId: context.run.executionSessionId ?? `workflow-${context.run.id}`,
         channel: "system"
       },
       metadata: {
@@ -43,13 +67,26 @@ export class AgentNodeExecutor implements NodeExecutor {
       }
     });
 
-    const error = result.result.error || result.tools.find((tool) => !tool.ok)?.output;
+    const unknownOperation = result.tools.find(tool => tool.metadata?.unknown === true);
+    if (unknownOperation) return {
+      status: "blocked", event: "agent.operation_unknown", summary: unknownOperation.output, error: unknownOperation.output,
+      data: { unknown: true, agentRunId, tools: result.tools, response: extractResponse(result) }
+    };
+
+    if (result.pendingApproval) return {
+      status: "needs_input", event: "agent.approval_required", summary: result.pendingApproval.summary,
+      data: { ...result.pendingApproval, permissionRequired: true, agentRunId, approvalId: result.pendingApproval.id, tools: result.tools }
+    };
+
+    // A failed tool may have been handled by a later agent turn; only the final outcome fails the node.
+    const error = result.result.error;
     return {
       status: error ? "failed" : "ok",
       event: error ? "agent.failed" : "agent.completed",
       error,
       summary: extractSummary(result),
       data: {
+        agentRunId,
         target: {
           providerId: result.providerId,
           model: extractModel(result)

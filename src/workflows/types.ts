@@ -1,4 +1,6 @@
 import { Task } from "../tasks/types";
+import { ProviderTarget, SessionSettings, SubagentAccessMode } from "../types";
+import { WorkspaceSnapshot } from "../workspace/types";
 
 export type WorkflowNodeType =
   | "entry"
@@ -18,12 +20,13 @@ export type WorkflowRunStatus =
   | "queued"
   | "running"
   | "waiting"
+  | "interrupted"
   | "blocked"
   | "done"
   | "failed"
   | "cancelled";
 
-export type NodeRunStatus = "running" | "ok" | "failed" | "skipped" | "waiting" | "cancelled";
+export type NodeRunStatus = "running" | "ok" | "failed" | "blocked" | "skipped" | "waiting" | "cancelled";
 
 export type TransitionGuard =
   | { type: "always" }
@@ -74,6 +77,14 @@ export interface WorkflowRun {
   workflowId: string;
   workflowVersion: number;
   workflowSnapshot?: WorkflowDefinition;
+  workspace?: WorkspaceSnapshot;
+  executionSessionId?: string;
+  executionSnapshot?: {
+    task: Task;
+    settings?: SessionSettings;
+    accessMode: SubagentAccessMode;
+    nodeTargets?: Record<string, ProviderTarget>;
+  };
   status: WorkflowRunStatus;
   currentNodeId?: string;
   state: Record<string, unknown>;
@@ -106,6 +117,8 @@ export interface StoredNodeResult {
 }
 
 export interface NodeRun {
+  agentRunId?: string;
+  operationId?: string;
   progress?: import("../types").ProcessProgressEvent;
   id: string;
   runId: string;
@@ -121,8 +134,13 @@ export interface NodeRun {
 }
 
 export interface CreateWorkflowRunInput {
+  id?: string;
   task: Task;
   workflow: WorkflowDefinition;
+  workspace?: WorkspaceSnapshot;
+  executionSessionId?: string;
+  settings?: SessionSettings;
+  nodeTargets?: Record<string, ProviderTarget>;
 }
 
 export interface WorkflowValidationResult {
@@ -136,6 +154,10 @@ export interface WorkflowDefinitionRecord {
 
 export interface WorkflowRunRecord {
   runs: WorkflowRun[];
+}
+
+export class WorkflowRunConflictError extends Error {
+  readonly statusCode = 409;
 }
 
 export interface NodeRunRecord {

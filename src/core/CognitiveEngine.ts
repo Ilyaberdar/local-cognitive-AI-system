@@ -10,6 +10,11 @@ import { ToolRequestBuilder } from "./ToolRequestBuilder";
 import { resolveProviderTarget } from "../llm/ProviderTargetResolver";
 import { conversationAttachments, validateAttachments } from "../utils/attachments";
 import { withInferenceImages } from "../llm/InferenceImages";
+import { randomUUID } from "crypto";
+import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
+import { CodeAgentCoordinator, WorkspaceOutcome } from "../agents/code/CodeAgentCoordinator";
+import { ExecutionContext } from "../types";
+import { PluginOperationExecutor } from "../tools/PluginOperationExecutor";
 
 export class CognitiveEngine {
   constructor(
@@ -21,7 +26,10 @@ export class CognitiveEngine {
     private readonly toolRequestBuilder: ToolRequestBuilder,
     private readonly logger: Logger,
     private readonly defaultProviderId: string,
-    private readonly supportsImages: (target: ProviderTarget) => boolean | undefined = () => undefined
+    private readonly supportsImages: (target: ProviderTarget) => boolean | undefined = () => undefined,
+    private readonly workspaceResolver?: WorkspaceResolver,
+    private readonly workspaceAgents?: CodeAgentCoordinator,
+    private readonly pluginOperations?: PluginOperationExecutor
   ) {}
 
   async process(request: ProcessInput): Promise<ProcessResult> {
@@ -31,12 +39,17 @@ export class CognitiveEngine {
       throw new Error("Input cannot be empty");
     }
 
+    const sessionId=request.actor?.sessionId ?? "default-session";
+    const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId);
+    if(workspace)await this.workspaceResolver?.validate(workspace);
     const actor = {
-      sessionId: request.actor?.sessionId ?? "default-session",
+      sessionId,
       userId: request.actor?.userId,
-      channel: request.actor?.channel ?? "http"
+      channel: request.actor?.channel ?? "http",
+      ...(workspace&&workspace.kind!=="legacy-chat"?{memoryScope:workspace.memoryScope,projectId:workspace.projectId}:{})
     } as const;
-    const sessionSettings = await this.sessionSettingsStore.get(actor.sessionId);
+    const sessionSettings = structuredClone(request.execution?.settings??await this.sessionSettingsStore.get(actor.sessionId));
+    if(request.execution)sessionSettings.defaultAccessMode=request.execution.accessMode;
     const activeTarget = resolveProviderTarget(request, sessionSettings.defaultTarget ?? { providerId: this.defaultProviderId });
     const providerId = activeTarget.providerId;
     const memory = await this.memoryService.retrieve(normalizedInput, { actor });
@@ -60,7 +73,7 @@ export class CognitiveEngine {
         ? "code"
         : requestedMode;
     const handler = this.router.route(mode);
-    const result = await withInferenceImages(attachments.filter(file => file.kind === "image" && file.dataUrl).map(file => ({ name: file.name, dataUrl: file.dataUrl! })), () => handler(normalizedInput, {
+    const context:ExecutionContext={
       actor,
       memory,
       conversation,
@@ -69,8 +82,36 @@ export class CognitiveEngine {
       sessionSettings,
       requestMetadata: { ...request.metadata, attachments },
       signal: request.signal,
-      onProgress: request.onProgress
-    }));
+      onProgress: request.onProgress,
+      requestApproval:request.requestApproval,
+      workspace,
+      execution:request.execution??(workspace?{workspace,accessMode:sessionSettings.defaultAccessMode,agentRunId:randomUUID()}:undefined)
+    };
+    let workspaceOutcome:WorkspaceOutcome|undefined;
+    const result = await withInferenceImages(attachments.filter(file => file.kind === "image" && file.dataUrl).map(file => ({ name: file.name, dataUrl: file.dataUrl! })), async () => {
+      if(workspace&&this.workspaceAgents&&!request.metadata?.reviewSelection){workspaceOutcome=await this.workspaceAgents.run(normalizedInput,mode,context,handler);return workspaceOutcome.result;}
+      return handler(normalizedInput,context);
+    });
+    if(workspaceOutcome && !workspaceOutcome.pendingApproval && !result.error && this.pluginOperations) {
+      // Compatibility plugins are selected only by the user's request. Never re-run
+      // legacy file/command intent matching after the structured agent loop.
+      const plugins=this.toolRegistry.resolveFromInput(normalizedInput).filter(tool=>!["file","command"].includes(tool.name));
+      const pluginRequest=this.toolRequestBuilder.build({rawInput:normalizedInput,mode,result,context});
+      for(const plugin of plugins){
+        const outcome=await this.pluginOperations.execute(plugin,pluginRequest);
+        if(outcome.pendingApproval){workspaceOutcome.pendingApproval=outcome.pendingApproval;break;}
+        if(outcome.result){
+          workspaceOutcome.tools.push(outcome.result);
+          if(!outcome.result.ok||outcome.result.metadata?.unknown||outcome.result.metadata?.permissionRequired){
+            result.error=outcome.result.output;
+            if("response" in result)result.response=outcome.result.output;
+            break;
+          }
+        }
+      }
+    }
+    if(workspaceOutcome?.pendingApproval)return {input:normalizedInput,mode,providerId,result,tools:workspaceOutcome.tools,memory,conversationSize:conversation.length,sessionSettings,
+      pendingApproval:workspaceOutcome.pendingApproval,agentRunId:workspaceOutcome.agentRunId};
     request.signal?.throwIfAborted();
     request.onProgress?.({
       phase: "tools",
@@ -78,7 +119,7 @@ export class CognitiveEngine {
       detail: "Executing requested file and plugin actions",
       at: new Date().toISOString()
     });
-    const tools = result.error ? [] : await this.executeTools(normalizedInput, mode, result, {
+    const tools = workspaceOutcome?.tools ?? (result.error ? [] : await this.executeTools(normalizedInput, mode, result, {
       actor,
       memory,
       conversation,
@@ -87,12 +128,13 @@ export class CognitiveEngine {
       sessionSettings,
       signal: request.signal,
       requestMetadata: request.metadata,
-      requestApproval: request.requestApproval
-    });
+      requestApproval: request.requestApproval,
+      workspace
+    }));
     if ("response" in result && result.toolPayload && !tools.some((tool) => tool.tool === "file")) {
       result.response = result.toolPayload;
     }
-    const fileOperation = tools.find((tool) => tool.tool === "file");
+    const fileOperation = workspaceOutcome?undefined:tools.find((tool) => tool.tool === "file");
     if ("response" in result && (fileOperation?.metadata?.cancelled || fileOperation?.metadata?.permissionRequired)) {
       const russian = sessionSettings.language === "ru" || (sessionSettings.language === "auto" && /[А-Яа-яЁё]/.test(normalizedInput));
       // The model only proposed these contents. A declined write must never leave
@@ -112,7 +154,7 @@ export class CognitiveEngine {
           : selectedFileEdit.output;
       delete result.toolPayload;
     }
-    const command = tools.find((tool) => tool.tool === "command");
+    const command = workspaceOutcome?undefined:tools.find((tool) => tool.tool === "command");
     if ("response" in result && command) {
       const russian = sessionSettings.language === "ru" || (sessionSettings.language === "auto" && /[А-Яа-яЁё]/.test(normalizedInput));
       result.response = command.metadata?.cancelled
@@ -164,7 +206,8 @@ export class CognitiveEngine {
       tools,
       memory,
       conversationSize: conversation.length,
-      sessionSettings
+      sessionSettings,
+      agentRunId:workspaceOutcome?.agentRunId
     };
   }
 

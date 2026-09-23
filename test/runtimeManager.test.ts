@@ -131,3 +131,54 @@ test("missing delegation markers receive one structured repair from the main mod
   assert.ok(!reviewer[0].prompt.includes("Must not be scheduled."));
   assert.ok("subagents" in result.result && result.result.subagents?.[0].status === "ok");
 });
+
+test("UI preference saves keep the same runtime and do not reconfigure local inference", async t => {
+  const { manager, service } = await fixture(t);
+  const previous = manager.getRuntime();
+  let rebuilds = 0;
+  t.mock.method(service, "reconfigure", async () => { rebuilds++; });
+  const saved = await manager.updateSettings({ ui: { theme: "system", animations: false, fontScale: 130 } });
+  assert.equal(saved.runtime, previous);
+  assert.equal(rebuilds, 0);
+  assert.equal(saved.settings.ui?.animations, false);
+  assert.equal(saved.settings.ui?.theme, "system");
+  assert.equal(saved.settings.ui?.fontScale, 130);
+  const themeOnly = await manager.updateSettings({ ui: { theme: "light" } });
+  assert.equal(themeOnly.settings.ui?.fontScale, 130);
+  assert.equal(themeOnly.runtime, previous);
+});
+
+test("entity edits preserve all neighboring configuration and explicit secrets remain cleared", async t => {
+  const { manager, store } = await fixture(t);
+  await manager.updateSettings({
+    providers: { openai: { apiKey: "openai-fixture" }, anthropic: { apiKey: "anthropic-fixture", model: "preserve" } },
+    plugins: { notion: { values: { apiKey: "notion-fixture", parentPageId: "keep-page" } } }
+  });
+  const previous = await store.get();
+  const edited = await manager.updateSettings({ providers: { openai: { model: "new-model" } } });
+  assert.equal(edited.settings.providers.openai.apiKey, "openai-fixture");
+  for (const key of ["plugins", "mcp", "memory", "telegram", "localModels"] as const) assert.deepEqual(edited.settings[key], previous[key]);
+  assert.deepEqual(edited.settings.providers.anthropic, previous.providers.anthropic);
+  const removed = await manager.updateSettings({ providers: { openai: { apiKey: "" } }, plugins: { notion: { values: { apiKey: "" } } } });
+  assert.equal(removed.runtime.config.providers.openai.apiKey, "");
+  assert.equal(removed.runtime.config.notion.apiKey, "");
+  assert.equal(removed.settings.plugins.notion.values.parentPageId, "keep-page");
+  assert.equal((await store.get()).providers.openai.apiKey, "");
+});
+
+test("invalid entity fields reject without publishing settings; serialized preference edits persist the latest value", async t => {
+  const { manager, store } = await fixture(t);
+  const previous = await store.get();
+  await assert.rejects(manager.updateSettings({ providers: { openai: { timeoutMs: -1 } } }), /Invalid providers.openai.timeoutMs/);
+  await assert.rejects(manager.updateSettings({ ui: { animations: "yes" as never } }), /Invalid ui.animations/);
+  await assert.rejects(manager.updateSettings({ ui: { fontScale: 200 } }), /Invalid ui.fontScale/);
+  assert.deepEqual(await store.get(), previous);
+  await Promise.all([
+    manager.updateSettings({ ui: { theme: "light" } }),
+    manager.updateSettings({ ui: { theme: "dark", animations: false } }),
+    manager.updateSettings({ ui: { theme: "system" } })
+  ]);
+  const saved = await store.get();
+  assert.equal(saved.ui?.theme, "system");
+  assert.equal(saved.ui?.animations, false);
+});

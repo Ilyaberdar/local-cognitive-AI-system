@@ -16,6 +16,7 @@ import { MortonCodec } from "./MortonCodec";
 import { SemanticProjector } from "./SemanticProjector";
 import { VectorStore } from "./VectorStore";
 import { WorldPartitionStore } from "./WorldPartitionStore";
+import { sameMemoryScope, scopedActorIdentity } from "./workspaceScope";
 
 interface WorldPartitionMemoryAdapterOptions extends MemoryWorldPartitionSettings {
   baseDir: string;
@@ -65,7 +66,7 @@ export class WorldPartitionMemoryAdapter implements MemoryAdapter {
       this.resolveQueryActorKeys(actor).map((actorKey) => this.queryActorEntries(actorKey, queryEmbedding, limit))
     );
     const uniqueCandidates = Array.from(
-      new Map(candidateSets.flat().map((entry) => [entry.id, entry])).values()
+      new Map(candidateSets.flat().filter(entry => sameMemoryScope(entry.actor, actor)).map((entry) => [entry.id, entry])).values()
     );
 
     return this.vectorStore.similaritySearchByEmbedding(queryEmbedding, uniqueCandidates, limit);
@@ -89,6 +90,24 @@ export class WorldPartitionMemoryAdapter implements MemoryAdapter {
     await this.ensureMigrated();
     await this.store.deleteActor(this.store.actorKey(`session:${sessionId}`));
     await this.store.deleteSession(sessionId);
+    // Do not resurrect scoped records if a user later switches back to the
+    // local JSON adapter or repeats an incomplete legacy migration.
+    const scopes = await fs.readdir(this.store.legacyBaseDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return [];
+    });
+    for (const scope of scopes) {
+      if (!scope.isDirectory() || scope.name.startsWith(".")) continue;
+      const directory = path.join(this.store.legacyBaseDir, scope.name);
+      for (const file of await fs.readdir(directory, { withFileTypes: true })) {
+        if (!file.isFile() || !file.name.endsWith(".json")) continue;
+        const filePath = path.join(directory, file.name);
+        const entry = await fs.readFile(filePath, "utf8").then(raw => {
+          try { return JSON.parse(raw) as Partial<MemoryEntry>; } catch { return null; }
+        });
+        if (entry?.actor?.memoryScope && entry.actor.sessionId === sessionId) await fs.unlink(filePath);
+      }
+    }
   }
 
   private async queryActorEntries(actorKey: string, queryEmbedding: number[], limit: number): Promise<MemoryEntry[]> {
@@ -182,6 +201,8 @@ export class WorldPartitionMemoryAdapter implements MemoryAdapter {
   }
 
   private resolveActorKey(actor: Partial<ActorContext>): string {
+    const scoped = scopedActorIdentity(actor);
+    if (scoped) return this.store.actorKey(scoped);
     const identity =
       this.options.crossSessionRecall && actor.userId
         ? `user:${actor.channel ?? "system"}:${actor.userId}`
@@ -191,6 +212,7 @@ export class WorldPartitionMemoryAdapter implements MemoryAdapter {
 
   private resolveQueryActorKeys(actor: Partial<ActorContext>): string[] {
     const primary = this.resolveActorKey(actor);
+    if (actor.memoryScope) return [primary];
     if (!this.options.crossSessionRecall || !actor.userId || actor.channel !== "http") {
       return [primary];
     }
@@ -200,6 +222,7 @@ export class WorldPartitionMemoryAdapter implements MemoryAdapter {
   }
 
   private matchesTimelineActor(entry: MemoryEntry, actor: Partial<ActorContext>): boolean {
+    if (!sameMemoryScope(entry.actor, actor)) return false;
     if (entry.actor.sessionId !== actor.sessionId) {
       return false;
     }

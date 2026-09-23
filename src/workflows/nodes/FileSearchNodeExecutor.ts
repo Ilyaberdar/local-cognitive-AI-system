@@ -9,6 +9,8 @@ import {
 } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 import { WorkflowPathPolicy } from "./WorkflowPathPolicy";
+import { OperationExecutor } from "../../tools/OperationExecutor";
+import { executeWorkflowOperation } from "./WorkflowOperation";
 
 interface FileSearchNodeExecutorOptions {
   accessMode: "restricted" | "full";
@@ -26,7 +28,7 @@ export class FileSearchNodeExecutor implements NodeExecutor {
   readonly type = "file_search" as const;
   private readonly paths: WorkflowPathPolicy;
 
-  constructor(private readonly options: FileSearchNodeExecutorOptions) {
+  constructor(private readonly options: FileSearchNodeExecutorOptions, private readonly operations?: OperationExecutor) {
     this.paths = new WorkflowPathPolicy(
       options.accessMode,
       options.allowedDirectories,
@@ -36,7 +38,19 @@ export class FileSearchNodeExecutor implements NodeExecutor {
 
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
     const config = context.node.config;
-    const root = this.paths.resolve(renderWorkflowTemplate(readConfigString(config, "root", "."), context));
+    if (context.workspace ?? context.run.workspace) {
+      if (!this.operations) throw new Error("Workspace operation executor is unavailable.");
+      return executeWorkflowOperation(context, this.operations, "file.search", {
+        path: renderWorkflowTemplate(readConfigString(config, "root", "."), context),
+        query: renderWorkflowTemplate(readConfigString(config, "queryTemplate", ""), context).trim(),
+        include: readConfigStringArray(config, "include", ["**/*"]),
+        exclude: readConfigStringArray(config, "exclude", ["**/.git/**", "**/node_modules/**", "**/dist/**", "**/release/**"]),
+        maxFiles: readConfigNumber(config, "maxFiles", 500, 1, 5000),
+        maxResults: readConfigNumber(config, "maxResults", 40, 1, 200),
+        maxFileBytes: readConfigNumber(config, "maxFileBytes", 524288, 1024, 5_000_000)
+      });
+    }
+    const root = await this.paths.resolve(renderWorkflowTemplate(readConfigString(config, "root", "."), context));
     const query = renderWorkflowTemplate(readConfigString(config, "queryTemplate", ""), context).trim();
     const includes = readConfigStringArray(config, "include", ["**/*"]);
     const excludes = readConfigStringArray(config, "exclude", [

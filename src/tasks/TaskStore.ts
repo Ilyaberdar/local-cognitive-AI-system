@@ -72,6 +72,9 @@ export class TaskStore {
         priority: input.priority ?? "normal",
         workflowId: input.workflowId,
         sessionId: input.sessionId,
+        sourceSessionId: input.sourceSessionId ?? input.sessionId,
+        projectId: input.projectId,
+        accessMode: input.accessMode ?? "default",
         scheduledFor: input.scheduledFor,
         metadata: input.metadata,
         attachments: input.attachments === undefined ? undefined : validateAttachments(input.attachments),
@@ -154,7 +157,11 @@ export class TaskStore {
         throw new Error("Expected a tasks array.");
       }
 
-      return { tasks: parsed.tasks };
+      return { tasks: parsed.tasks.map((task) => ({
+        ...task,
+        sourceSessionId: task.sourceSessionId ?? task.sessionId,
+        accessMode: task.accessMode === "ask" || task.accessMode === "full" ? task.accessMode : "default"
+      })) };
     } catch (error) {
       throw new Error(
         `Could not parse task store at ${this.filePath}: ${error instanceof Error ? error.message : "invalid JSON"}`

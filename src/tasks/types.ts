@@ -1,4 +1,4 @@
-import { ChatAttachment } from "../types";
+import { ChatAttachment, SubagentAccessMode } from "../types";
 
 export type TaskStatus =
   | "todo"
@@ -7,6 +7,7 @@ export type TaskStatus =
   | "queued"
   | "running"
   | "waiting"
+  | "interrupted"
   | "blocked"
   | "done"
   | "failed"
@@ -24,6 +25,10 @@ export interface Task {
   workflowId: string;
   workflowVersion?: number;
   sessionId?: string;
+  /** Legacy provenance only. Execution always receives its own session. */
+  sourceSessionId?: string;
+  projectId?: string;
+  accessMode?: SubagentAccessMode;
   lastRunId?: string;
   scheduledFor?: string;
   metadata?: Record<string, unknown>;
@@ -39,7 +44,19 @@ export interface CreateTaskInput {
   priority?: TaskPriority;
   scheduledFor?: string;
   sessionId?: string;
+  sourceSessionId?: string;
+  projectId?: string;
+  accessMode?: SubagentAccessMode;
   metadata?: Record<string, unknown>;
+}
+
+export type UpdateTaskInput = Partial<Omit<Task, "id" | "createdAt" | "projectId">> & {
+  /** Omitted leaves the binding intact; null returns to the task's managed workspace. */
+  projectId?: string | null;
+};
+
+export class TaskValidationError extends Error {
+  constructor(message: string, readonly statusCode = 400) { super(message); }
 }
 
 export interface TaskRecord {

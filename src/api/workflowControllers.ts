@@ -139,7 +139,21 @@ export const createReviewWorkflowRunController =
     try {
       res.status(200).json(await runtimeManager.getRuntime().workflowRunner.review(
         readParam(req.params.runId), req.body.approved,
-        typeof req.body.comment === "string" ? req.body.comment : "", req.body.background === true
+        typeof req.body.comment === "string" ? req.body.comment : "", req.body.background === true,
+        {
+          approvalId: typeof req.body.approvalId === "string" ? req.body.approvalId : undefined,
+          waitingNodeRunId: typeof req.body.waitingNodeRunId === "string" ? req.body.waitingNodeRunId : undefined
+        }
+      ));
+    } catch (error) { next(error); }
+  };
+
+export const createResumeWorkflowRunController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      res.status(200).json(await runtimeManager.getRuntime().workflowRunner.resume(
+        readParam(req.params.runId), req.body?.background === true
       ));
     } catch (error) { next(error); }
   };

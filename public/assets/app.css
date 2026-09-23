@@ -216,7 +216,7 @@ a {
 
 .nav-label-note {
   color: #9f3548;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   font-weight: 600;
 }
 
@@ -289,7 +289,7 @@ a {
   justify-content: space-between;
   padding: 0 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -332,7 +332,7 @@ a {
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale, 1));
   line-height: 1;
 }
 
@@ -343,7 +343,7 @@ a {
 
 .session-title {
   display: block;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   line-height: 1.35;
 }
 
@@ -351,7 +351,7 @@ a {
   display: block;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .sidebar-footer {
@@ -369,14 +369,14 @@ a {
 
 .status-card strong {
   display: block;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
 }
 
 .status-card span {
   display: block;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.4;
 }
 
@@ -385,7 +385,7 @@ a {
 .primary-button {
   min-height: 28px;
   padding: 6px 9px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.2;
   transition: 240ms ease;
 }
@@ -523,13 +523,13 @@ a {
 .panel h3,
 .card h3 {
   margin: 0 0 12px;
-  font-size: 17px;
+  font-size: calc(17px * var(--font-scale, 1));
   font-weight: 600;
 }
 
 .subtle {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   line-height: 1.35;
   display: block;
 }
@@ -601,7 +601,7 @@ a {
   align-items: center;
   gap: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   margin-bottom: 8px;
 }
 
@@ -618,7 +618,7 @@ a {
   gap: 12px;
   margin-top: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .message-footer-actions {
@@ -629,7 +629,7 @@ a {
 
 .message-copy-button {
   padding: 5px 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .message-content {
@@ -662,7 +662,7 @@ a {
 .judge-conclusion__label {
   margin-bottom: 5px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -670,7 +670,7 @@ a {
 .judge-conclusion__body {
   margin: 0;
   color: var(--text);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   line-height: 1.5;
 }
 
@@ -731,18 +731,18 @@ a {
   width: fit-content;
   margin: 4px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   letter-spacing: 0.02em;
 }
 
 .message-runtime-line span {
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   letter-spacing: 0.12em;
 }
 
 .runtime-gradient-text {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   font-weight: 560;
   background: none;
   color: #62b3ff;
@@ -814,7 +814,7 @@ a {
 .subagent-card summary::before {
   content: "›";
   color: var(--muted);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   transform: translateY(-1px);
   transition: transform 180ms ease;
 }
@@ -825,7 +825,7 @@ a {
 
 .subagent-card__name {
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   font-weight: 500;
 }
 
@@ -833,7 +833,7 @@ a {
 .subagent-card__status,
 .subagent-card__meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .subagent-card__status {
@@ -861,7 +861,7 @@ a {
   background: var(--control-bg);
   color: var(--text);
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.5;
   white-space: pre-wrap;
   scrollbar-width: thin;
@@ -918,7 +918,7 @@ a {
   width: 16px;
   height: 16px;
   color: #40c463;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1;
 }
 
@@ -927,7 +927,7 @@ a {
 }
 
 .process-card__title {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -935,14 +935,14 @@ a {
 .process-card__meta,
 .process-card__more {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .process-file-block__path {
   margin-top: 7px;
   color: var(--text);
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.35;
   word-break: break-all;
 }
@@ -968,7 +968,7 @@ a {
 
 .process-pathbar__copy span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   letter-spacing: 0.12em;
   line-height: 1.2;
   text-transform: uppercase;
@@ -978,7 +978,7 @@ a {
   min-width: 0;
   color: var(--text);
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -994,7 +994,7 @@ a {
 
 .process-pathbar__button {
   padding: 4px 7px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .process-file-block {
@@ -1012,7 +1012,7 @@ a {
   gap: 8px;
   margin: 7px 0 5px;
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .diff-summary__add {
@@ -1031,7 +1031,7 @@ a {
   min-height: 24px;
   margin-left: auto;
   padding: 3px 7px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .diff-preview {
@@ -1069,7 +1069,7 @@ a {
   min-width: max-content;
   min-height: 22px;
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.45;
 }
 
@@ -1114,7 +1114,7 @@ a {
   scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
   color: var(--muted);
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -1126,7 +1126,7 @@ a {
   min-width: 0;
   max-width: min(720px, 100%);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   pointer-events: none;
 }
 
@@ -1323,7 +1323,7 @@ a {
 .draft-attachment__copy strong,
 .message-attachment__copy strong {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -1332,7 +1332,7 @@ a {
 
 .draft-attachment__copy span,
 .message-attachment__copy span {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   color: var(--muted);
   line-height: 1.3;
 }
@@ -1400,7 +1400,7 @@ a {
   background: #050505;
   border-color: var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .chip-button.active {
@@ -1440,13 +1440,13 @@ a {
   background: #080808;
   color: var(--muted);
   font-family: var(--mono-font);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.5;
   white-space: pre;
 }
 
 .field label {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1535,7 +1535,7 @@ a {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale, 1));
   color: var(--muted);
 }
 
@@ -1599,7 +1599,7 @@ a {
 
 .runtime-provider-quota {
   margin-top: 4px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   line-height: 1.35;
 }
 
@@ -1719,7 +1719,7 @@ a {
   background: #090909;
   border: 1px solid var(--line);
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .badge.success {
@@ -1755,14 +1755,14 @@ a {
 }
 
 .status-block__label {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
 }
 
 .status-block__text {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   line-height: 1.45;
   color: var(--text);
 }
@@ -1784,7 +1784,7 @@ a {
 
 .mono {
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .chat-shell {
@@ -1834,14 +1834,14 @@ a {
 }
 
 .toast__label {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .toast__message {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   line-height: 1.45;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -1932,7 +1932,7 @@ a {
   border: 1px solid var(--line);
   background: var(--control-bg);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .right-panel-tab.active {
@@ -1960,7 +1960,7 @@ a {
 
 .file-viewer__header h3 {
   margin: 2px 0 0;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
 }
 
 .file-viewer__actions {
@@ -1976,7 +1976,7 @@ a {
   min-width: 0;
   padding: 6px 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .file-viewer__meta code {
@@ -2000,7 +2000,7 @@ a {
 
 .file-viewer__content .diff-row {
   min-height: 24px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .file-viewer__content .diff-row code {
@@ -2048,7 +2048,7 @@ a {
 .chat-type-button {
   min-height: 28px;
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.2;
   border: 1px solid var(--line);
   background: transparent;
@@ -2073,7 +2073,7 @@ a {
 
 .section-label {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   line-height: 1.35;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2103,7 +2103,7 @@ a {
 
 .chat-settings__title h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -2111,13 +2111,13 @@ a {
 .chat-settings .subtle,
 .chat-settings__header .subtle {
   min-height: 0;
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale, 1));
   line-height: 1.25;
 }
 
 .chat-settings__header .primary-button {
   padding: 6px 9px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .chat-settings.form-grid {
@@ -2152,7 +2152,7 @@ a {
 }
 
 .chat-settings .field label {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   line-height: 1.2;
   letter-spacing: 0.07em;
 }
@@ -2161,7 +2161,7 @@ a {
 .chat-settings .field select {
   min-height: 32px;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.25;
   border-radius: var(--radius-md);
 }
@@ -2212,7 +2212,7 @@ a {
 .mention-item {
   min-height: 26px;
   padding: 4px 7px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   border: 1px solid var(--line);
   background: #050505;
   color: var(--text);
@@ -2249,7 +2249,7 @@ a {
 .orchestration-tab {
   min-height: 28px;
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.2;
   border: 1px solid transparent;
   background: transparent;
@@ -2385,7 +2385,7 @@ a {
 
 .schedule-card h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
@@ -2393,7 +2393,7 @@ a {
 .schedule-card p {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -2423,7 +2423,7 @@ a {
   border: 1px solid var(--line);
   background: #070707;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .task-list,
@@ -2483,7 +2483,7 @@ a {
 
 .task-card h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
@@ -2493,7 +2493,7 @@ a {
 .node-run-card p {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -2501,7 +2501,7 @@ a {
 .task-model-line {
   color: #b7b7b7;
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -2528,7 +2528,7 @@ a {
 .workflow-card__title span,
 .task-meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .task-meta span {
@@ -2569,7 +2569,7 @@ a {
 .task-actions .primary-button {
   min-height: 26px;
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .workflow-graph,
@@ -2588,13 +2588,13 @@ a {
   border: 1px solid var(--line);
   background: #050505;
   color: var(--text);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .workflow-graph small,
 .workflow-transitions {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .run-header {
@@ -2614,7 +2614,7 @@ a {
 .node-run-output summary {
   color: var(--muted);
   cursor: pointer;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .node-run-output pre {
@@ -2627,7 +2627,7 @@ a {
   background: var(--control-bg);
   color: var(--text);
   font-family: "SFMono-Regular", "Menlo", monospace;
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale, 1));
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2638,7 +2638,7 @@ a {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface-1);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .workflow-builder-panel {
@@ -2707,9 +2707,9 @@ a {
 
 .agent-progress-stack { display: grid; gap: 8px; margin-bottom: 12px; }
 .agent-progress-card { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--surface-2); }
-.agent-progress-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.agent-progress-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: calc(12px * var(--font-scale, 1)); }
 .agent-progress-header .activity-scan { flex-shrink: 0; }
-.agent-progress-detail { margin-top: 6px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.agent-progress-detail { margin-top: 6px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); overflow-wrap: anywhere; }
 .agent-progress-card.is-running { border-color: rgba(98, 179, 255, 0.45); }
 @media (prefers-reduced-motion: reduce) {
   .activity-scan span { animation: none; }

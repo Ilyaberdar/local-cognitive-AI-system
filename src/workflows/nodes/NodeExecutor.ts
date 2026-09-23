@@ -1,5 +1,6 @@
 import { CognitiveEngine } from "../../core/CognitiveEngine";
-import { ProcessProgressEvent } from "../../types";
+import { ProcessProgressEvent, ProviderTarget, SessionSettings, SubagentAccessMode } from "../../types";
+import { WorkspaceSnapshot } from "../../workspace/types";
 import { Task } from "../../tasks/types";
 import {
   NodeResult,
@@ -19,10 +20,17 @@ export interface NodeExecutionContext {
   signal?: AbortSignal;
   onProgress?: (event: ProcessProgressEvent) => void;
   approval?: Record<string, unknown>;
+  workspace?: WorkspaceSnapshot;
+  accessMode?: SubagentAccessMode;
+  settings?: SessionSettings;
+  agentRunId?: string;
+  agentInput?: string;
+  operationId?: string;
 }
 
 export interface NodeExecutor {
   type: WorkflowNodeType;
+  snapshotTarget?(node: WorkflowNode, settings?: SessionSettings): ProviderTarget | undefined;
   execute(context: NodeExecutionContext): Promise<NodeResult>;
 }
 

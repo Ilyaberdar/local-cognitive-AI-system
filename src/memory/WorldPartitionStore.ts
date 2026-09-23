@@ -66,7 +66,8 @@ export class WorldPartitionStore {
       const needsNewChunk = cell.chunks.length === 0 || cell.lastChunkCount >= this.options.chunkCapacity;
 
       if (needsNewChunk) {
-        cell.chunks.push(`chunk-${String(cell.chunks.length + 1).padStart(6, "0")}.jsonl`);
+        const nextChunk = Math.max(0, ...cell.chunks.map(name => Number(name.match(/\d+/)?.[0]) || 0)) + 1;
+        cell.chunks.push(`chunk-${String(nextChunk).padStart(6, "0")}.jsonl`);
         cell.lastChunkCount = 0;
       }
 
@@ -128,6 +129,47 @@ export class WorldPartitionStore {
 
   async deleteSession(sessionId: string): Promise<void> {
     return this.enqueue(async () => {
+      // Project/task memories share a partition, but deleting one chat must
+      // remove only its records. Preserve the established legacy user-memory
+      // behavior, where durable unscoped facts outlive a deleted chat timeline.
+      const actorsPath = path.join(this.worldDir, "actors");
+      const actors = await fs.readdir(actorsPath, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return [];
+      });
+      for (const actor of actors) {
+        if (!actor.isDirectory()) continue;
+        const manifest = await this.readManifest(actor.name);
+        let changed = false;
+        for (const cellKey of await this.listCellKeys(actor.name)) {
+          const { cell } = await this.recoverCell(actor.name, cellKey,
+            manifest.cells[cellKey] ?? { chunks: [], entryCount: 0, lastChunkCount: 0 });
+          let cellCount = 0;
+          let lastCount = 0;
+          const keptChunks: string[] = [];
+          for (const chunk of cell.chunks) {
+            const filePath = path.join(this.actorDir(actor.name), "cells", cellKey, chunk);
+            const entries = await this.readJsonLines(filePath);
+            const kept = entries.filter(entry => !(entry.actor.sessionId === sessionId && entry.actor.memoryScope));
+            if (kept.length !== entries.length) {
+              changed = true;
+              if (kept.length) await this.writeJsonLines(filePath, kept);
+              else await fs.unlink(filePath);
+            }
+            if (kept.length) {
+              keptChunks.push(chunk);
+              cellCount += kept.length;
+              lastCount = kept.length;
+            }
+          }
+          if (keptChunks.length) manifest.cells[cellKey] = { chunks: keptChunks, entryCount: cellCount, lastChunkCount: lastCount };
+          else delete manifest.cells[cellKey];
+        }
+        if (changed) {
+          manifest.entryCount = Object.values(manifest.cells).reduce((sum, cell) => sum + cell.entryCount, 0);
+          await this.writeManifest(actor.name, manifest);
+        }
+      }
       try {
         await fs.unlink(this.timelinePath(sessionId));
       } catch (error) {
@@ -136,6 +178,16 @@ export class WorldPartitionStore {
         }
       }
     });
+  }
+
+  private async writeJsonLines(filePath: string, entries: MemoryEntry[]): Promise<void> {
+    const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporaryPath, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+      await fs.rename(temporaryPath, filePath);
+    } finally {
+      await fs.unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+    }
   }
 
   async deleteActor(actorKey: string): Promise<void> {

@@ -19,6 +19,10 @@ import { ToolRequestBuilder } from "../src/core/ToolRequestBuilder";
 import { MemoryService } from "../src/memory/MemoryService";
 import { Logger } from "../src/utils/Logger";
 import { buildTextPrompt } from "../src/prompts/common";
+import { CodeAgentCoordinator } from "../src/agents/code/CodeAgentCoordinator";
+import { ProjectStore } from "../src/projects/ProjectStore";
+import { SessionIndexStore } from "../src/session/SessionIndexStore";
+import { WorkspaceResolver } from "../src/workspace/WorkspaceResolver";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
@@ -92,6 +96,59 @@ test("the engine passes structured selection metadata into the file tool and ret
   assert.equal(approvals, 1);
   assert.equal(result.tools[0].metadata?.cancelled, true);
   assert.equal(await fs.readFile(f.filePath, "utf8"), f.before);
+});
+
+test("a project Review selection keeps the protected range-edit path and project permissions", async t => {
+  const f = await fixture(t);
+  const projects = new ProjectStore(f.root);
+  const sessions = new SessionIndexStore(f.root);
+  const project = await projects.create({ name: "Review project", rootPath: f.workspace });
+  const session = await sessions.create("Review edit", "http", project.id);
+  const resolver = new WorkspaceResolver({ appDataDir: f.root }, projects, sessions);
+  const applicationOutput = path.join(f.root, "application-output");
+  await fs.mkdir(applicationOutput);
+  const file = new FileTool({ outputDir: applicationOutput, allowedDirectories: [applicationOutput], accessMode: "restricted" });
+  const registry = new ToolRegistry(); registry.register(file);
+  let handlerCalls = 0;
+  const router = new Router();
+  router.register("code", async (_input, context) => {
+    handlerCalls++;
+    assert.equal(context.workspace?.rootPath, f.workspace);
+    assert.equal(context.actor.projectId, project.id);
+    assert.equal(context.actor.memoryScope, `project:${project.id}`);
+    assert.deepEqual(context.requestMetadata?.reviewSelection, f.selection);
+    return structuredClone(f.request.result);
+  });
+  let agentCalls = 0;
+  const agents = { run: async () => {
+    agentCalls++;
+    throw new Error("A selected Review range must not enter the generic project agent loop.");
+  } } as unknown as CodeAgentCoordinator;
+  const memory = { retrieve: async () => [], recent: async () => [], save: async () => ({}) } as unknown as MemoryService;
+  const engine = new CognitiveEngine(new ModeDetector(), router, memory, f.store, registry, new ToolRequestBuilder(),
+    new Logger(), "local", () => undefined, resolver, agents);
+  const request = { input: f.request.rawInput, actor: { sessionId: session.id, channel: "http" as const },
+    metadata: f.request.context.requestMetadata };
+  await f.store.update(session.id, { mode: "code", language: "en", defaultAccessMode: "default" });
+  let approvals = 0;
+  const edited = await engine.process({ ...request, requestApproval: async () => { approvals++; return true; } });
+  assert.equal(agentCalls, 0);
+  assert.equal(handlerCalls, 1);
+  assert.equal(approvals, 0, "A project file in Default mode must use the project root, not global directories.");
+  assert.equal(edited.tools.length, 1);
+  assert.equal(edited.tools[0].metadata?.operation, "write");
+  assert.equal(await fs.readFile(f.filePath, "utf8"), f.prefix + "    return 2\r\n" + f.suffix);
+  assert.equal("response" in edited.result && edited.result.response, "Updated the selected text. The rest of the file is unchanged.");
+  assert.deepEqual(await fs.readdir(applicationOutput), []);
+
+  await fs.writeFile(f.filePath, f.before);
+  await f.store.update(session.id, { defaultAccessMode: "ask" });
+  const cancelled = await engine.process({ ...request, requestApproval: async () => { approvals++; return false; } });
+  assert.equal(agentCalls, 0);
+  assert.equal(approvals, 1);
+  assert.equal(cancelled.tools[0].metadata?.cancelled, true);
+  assert.equal(await fs.readFile(f.filePath, "utf8"), f.before);
+  assert.equal("response" in cancelled.result && cancelled.result.response, "Edit cancelled. The file was not changed.");
 });
 
 test("Review edits with short English and Russian comments require replacement JSON, while questions stay read-only", async (t) => {

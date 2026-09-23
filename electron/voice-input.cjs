@@ -22,9 +22,8 @@ function registerVoiceInput({ app, ipcMain, systemPreferences, shell, powerMonit
     if (typeof id !== "string" || !/^[a-zA-Z0-9-]{1,100}$/.test(id)) throw new Error("Invalid recording identity.");
     captureId = id;
     captureAllowed = false;
-    const status = await service.status();
-    if (captureId !== id) throw new Error("Dictation cancelled.");
-    if (!status.installed || !status.available) throw new Error("Prepare the voice model before recording.");
+    // Device selection and input-level tests do not require a recognition model.
+    // Transcription still validates model/runtime availability in SpeechService.
     if (process.platform === "darwin" && !await systemPreferences.askForMediaAccess("microphone")) {
       throw new Error("Microphone access is blocked. Allow it in System Settings → Privacy & Security → Microphone, then restart the app.");
     }

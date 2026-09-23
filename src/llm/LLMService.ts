@@ -24,7 +24,10 @@ export class LLMService {
     const images = validateImages(request.images ?? currentInferenceImages());
     const response = await provider.generateText({ ...request, images, onProgress: request.onProgress ?? currentInferenceProgress() });
     request.signal?.throwIfAborted();
-    const text = this.sanitizer.sanitize(response.text);
+    // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
+    const text = request.outputPurpose === "agent-action"
+      ? response.text.trim().replace(/^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "")
+      : this.sanitizer.sanitize(response.text);
 
     return {
       ...response,

@@ -1,4 +1,3 @@
-import { execFile } from "child_process";
 import { randomUUID } from "crypto";
 import fs from "fs/promises";
 import os from "os";
@@ -23,6 +22,8 @@ import { extractNotionId } from "../utils/notion";
 import { readAttachments } from "../utils/attachments";
 import { processRunRegistry } from "./ProcessRunRegistry";
 import { getSystemMemory } from "../utils/systemMemory";
+import { resolveReviewPath, revealWorkspacePath } from "./workspaceReview";
+import { ProjectError } from "../projects/types";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -141,36 +142,10 @@ export const createRevealWorkspacePathController =
         return;
       }
 
-      const runtime = runtimeManager.getRuntime();
-      const targetPath = path.resolve(requestedPath);
-      const allowed = runtime.config.filesystem.allowedDirectories.some((directory) => {
-        const root = path.resolve(directory);
-        return targetPath === root || targetPath.startsWith(`${root}${path.sep}`);
-      });
-
-      if (!allowed) {
-        res.status(403).json({ error: "Path is outside configured workspace boundaries." });
-        return;
-      }
-
-      const stat = await fs.stat(targetPath);
-      const directoryPath = stat.isDirectory() ? targetPath : path.dirname(targetPath);
-      const command = process.platform === "darwin"
-        ? "/usr/bin/open"
-        : process.platform === "win32"
-          ? "explorer.exe"
-          : "xdg-open";
-      const args = process.platform === "darwin"
-        ? stat.isDirectory() ? [directoryPath] : ["-R", targetPath]
-        : process.platform === "win32"
-          ? stat.isDirectory() ? [directoryPath] : [`/select,${targetPath}`]
-          : [directoryPath];
-
-      await new Promise<void>((resolve, reject) => {
-        execFile(command, args, (error) => error ? reject(error) : resolve());
-      });
-
-      res.status(200).json({ ok: true, directory: directoryPath });
+      const targetPath = await resolveReviewPath(runtimeManager, requestedPath,
+        typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined,
+        typeof req.body?.runId === "string" ? req.body.runId : undefined);
+      res.status(200).json(await revealWorkspacePath(targetPath));
     } catch (error) {
       next(error);
     }
@@ -201,7 +176,8 @@ export const createDashboardBootstrapController =
         tasks,
         schedules,
         workflows,
-        workflowRuns
+        workflowRuns,
+        projects
       ] = await Promise.all([
         runtimeManager.getSettings(),
         sessionIndexStore.list(),
@@ -211,7 +187,8 @@ export const createDashboardBootstrapController =
         runtime.taskService.list(),
         runtime.scheduleService.list(),
         runtime.workflowStore.list(),
-        runtime.workflowRunStore.listRuns()
+        runtime.workflowRunStore.listRuns(),
+        runtime.projectStore?.list() ?? Promise.resolve([])
       ]);
 
       const loadedNames = new Set(runtime.plugins.map((plugin) => plugin.manifest.name));
@@ -229,6 +206,7 @@ export const createDashboardBootstrapController =
         schedules,
         workflows,
         workflowRuns,
+        projects,
         availableModels,
         loadedModels,
         allManagedModels,
@@ -499,11 +477,25 @@ export const createListSessionsController =
   };
 
 export const createCreateSessionController =
-  (sessionIndexStore: SessionIndexStore) =>
+  (sessionIndexStore: SessionIndexStore, runtimeManager?: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const title = typeof req.body?.title === "string" ? req.body.title : undefined;
-      const session = await sessionIndexStore.create(title);
+      if (req.body?.projectId !== undefined && req.body?.projectId !== null &&
+        (typeof req.body.projectId !== "string" || !req.body.projectId.trim())) {
+        throw new ProjectError(400, "Field 'projectId' must be a project identifier or null.");
+      }
+      const projectId = typeof req.body?.projectId === "string" ? req.body.projectId.trim() : undefined;
+      if (projectId) {
+        const project = await runtimeManager?.getRuntime().projectStore.get(projectId);
+        if (!project) throw new ProjectError(404, "Project was not found.");
+        if (project.archivedAt) throw new ProjectError(409, "Restore this project before creating a chat.");
+      }
+      const session = await sessionIndexStore.create(title, "http", projectId);
+      const defaults = (await runtimeManager?.getSettings())?.ui;
+      if (defaults && runtimeManager) await runtimeManager.getRuntime().sessionSettingsStore.update(session.id, {
+        language: defaults.language, outputStyle: defaults.outputStyle, mode: defaults.mode
+      });
       res.status(201).json(session);
     } catch (error) {
       next(error);
@@ -562,11 +554,14 @@ export const createGetSessionMessagesController =
     try {
       const runtime = runtimeManager.getRuntime();
       const settings = await runtimeManager.getSettings();
+      const sessionId = String(req.params.sessionId);
+      const session = await runtime.sessionIndexStore?.get(sessionId);
       const entries = await runtime.memoryService.recent({
         actor: {
-          sessionId: String(req.params.sessionId),
+          sessionId,
           userId: settings.memory.localProfileId,
-          channel: "http"
+          channel: "http",
+          ...(session?.projectId ? { projectId: session.projectId, memoryScope: `project:${session.projectId}` } : {})
         },
         limit: 60
       });
@@ -629,7 +624,7 @@ export const createUpdateAppSettingsController =
         // A provider can become configured as part of this save. Return its
         // current catalog immediately instead of making the UI wait for a
         // full dashboard reload before it can offer the provider's models.
-        availableModels: await runtime.modelCatalog.listAll()
+        availableModels: Object.keys(patch).every(key => key === "ui") ? undefined : await runtime.modelCatalog.listAll()
       });
     } catch (error) {
       next(error);

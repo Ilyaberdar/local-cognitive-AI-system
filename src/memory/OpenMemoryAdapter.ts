@@ -6,6 +6,7 @@ import {
 } from "../types";
 import { Logger } from "../utils/Logger";
 import { MemoryAdapter } from "./MemoryAdapter";
+import { scopedActorIdentity } from "./workspaceScope";
 
 interface OpenMemoryAdapterOptions {
   dbPath: string;
@@ -47,7 +48,7 @@ export class OpenMemoryAdapter implements MemoryAdapter {
     };
 
     await openMemory.add(JSON.stringify(record), {
-      userId: entry.actor.userId ?? entry.actor.sessionId,
+      userId: scopedActorIdentity(entry.actor) ?? entry.actor.userId ?? entry.actor.sessionId,
       path: this.options.dbPath
     });
 

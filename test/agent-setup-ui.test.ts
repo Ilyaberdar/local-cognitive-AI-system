@@ -87,8 +87,10 @@ test("editing Hypothesis preserves the invisible General and Code subagent list"
 const motionHarness = (reduced = false) => {
   const frames = new Map<number, (time: number) => void>();
   let frameId = 0;
+  let enabled = !reduced;
+  const globalEvents = new Map<string, (event: { detail: boolean }) => void>();
   const document: any = { activeElement: null, querySelector: () => panel };
-  const context: any = { document, window: { matchMedia: () => ({ matches: reduced }) },
+  const context: any = { motionEnabled: () => enabled, document, window: { addEventListener(name: string, listener: (event: { detail: boolean }) => void) { globalEvents.set(name, listener); }, matchMedia: () => ({ matches: reduced }) },
     getComputedStyle: (element: any) => ({ paddingBottom: element.style.paddingBottom || "0px" }),
     requestAnimationFrame: (callback: (time: number) => void) => { frames.set(++frameId, callback); return frameId; },
     cancelAnimationFrame: (id: number) => frames.delete(id)
@@ -111,7 +113,7 @@ const motionHarness = (reduced = false) => {
     return element;
   };
   let panel = makePanel(1200);
-  vm.runInNewContext(fs.readFileSync("public/assets/session-setup-motion.js", "utf8").replace("export function", "function"), context);
+  vm.runInNewContext(fs.readFileSync("public/assets/session-setup-motion.js", "utf8").replace(/^import .*;\n/gm, "").replace("export function", "function"), context);
   const motion = context.createSessionSetupMotion();
   const tick = (time: number) => { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach((fn) => fn(time)); };
   const replace = (height: number, mode = "general") => { panel.isConnected = false; panel = makePanel(height, mode); return panel; };
@@ -124,7 +126,7 @@ const motionHarness = (reduced = false) => {
     owner.cards.push(card);
     return card;
   };
-  return { motion, tick, replace, addCard, document, frames, get panel() { return panel; } };
+  return { motion, tick, replace, addCard, document, frames, setMotion(value: boolean) { enabled = value; globalEvents.get("lcai:motion")?.({ detail: value }); }, get panel() { return panel; } };
 };
 
 test("an added card scrolls over multiple frames and finishes after an unrelated rerender", () => {
@@ -213,4 +215,20 @@ test("reduced motion adjusts only as needed without animation or retained paddin
   assert.equal(h.panel.style.paddingBottom, "");
   assert.equal(card.animations, 0);
   assert.equal(h.frames.size, 0);
+});
+
+
+test("turning global motion off during setup scrolling settles and cancels decorative RAF work", () => {
+  const h = motionHarness();
+  h.panel.scrollTop = 400;
+  const before = h.motion.capture();
+  h.replace(1400);
+  h.addCard("new", 1150);
+  h.motion.restore(before, "new");
+  h.tick(0); h.tick(90);
+  h.setMotion(false);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.panel.style.paddingBottom, "");
+  assert.equal(h.panel.scrollTop, 1012);
+  assert.equal(h.motion.capture().addedId, undefined);
 });
