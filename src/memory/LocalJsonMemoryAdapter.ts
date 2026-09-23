@@ -10,6 +10,7 @@ import {
 import { Logger } from "../utils/Logger";
 import { VectorStore } from "./VectorStore";
 import { MemoryAdapter } from "./MemoryAdapter";
+import { sameMemoryScope } from "./workspaceScope";
 
 interface LocalJsonMemoryAdapterOptions {
   baseDir: string;
@@ -72,7 +73,7 @@ export class LocalJsonMemoryAdapter implements MemoryAdapter {
   }
 
   async recent(options?: MemoryRecentOptions): Promise<MemoryEntry[]> {
-    const allEntries = await this.loadAllEntries({ actor: options?.actor });
+    const allEntries = await this.loadAllEntries({ actor: options?.actor, timeline: true });
 
     return allEntries
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -80,7 +81,7 @@ export class LocalJsonMemoryAdapter implements MemoryAdapter {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    const allEntries = await this.loadAllEntries();
+    const allEntries = await this.loadAllEntries({ includeScoped: true });
     await Promise.all(
       allEntries
         .filter((entry) => entry.actor.sessionId === sessionId)
@@ -88,7 +89,7 @@ export class LocalJsonMemoryAdapter implements MemoryAdapter {
     );
   }
 
-  private async loadAllEntries(options?: { actor?: MemoryQueryOptions["actor"] }): Promise<MemoryEntry[]> {
+  private async loadAllEntries(options?: { actor?: MemoryQueryOptions["actor"]; timeline?: boolean; includeScoped?: boolean }): Promise<MemoryEntry[]> {
     await fs.mkdir(this.options.baseDir, { recursive: true });
     const scopeDirs = await fs.readdir(this.options.baseDir, { withFileTypes: true });
     const files: string[] = [];
@@ -115,17 +116,21 @@ export class LocalJsonMemoryAdapter implements MemoryAdapter {
       })
     );
 
-    return entries.filter((entry) => this.matchesActor(entry, options?.actor));
+    return entries.filter((entry) => options?.includeScoped || this.matchesActor(entry, options?.actor, options?.timeline));
   }
 
-  private matchesActor(entry: MemoryEntry, actor?: MemoryQueryOptions["actor"]): boolean {
+  private matchesActor(entry: MemoryEntry, actor?: MemoryQueryOptions["actor"], timeline = false): boolean {
+    if (!sameMemoryScope(entry.actor, actor)) return false;
     if (!actor) {
       return true;
     }
 
-    if (actor.sessionId && actor.sessionId !== entry.actor.sessionId) {
+    if ((timeline || !actor.memoryScope) && actor.sessionId && actor.sessionId !== entry.actor.sessionId) {
       return false;
     }
+
+    if (actor.memoryScope && (entry.actor.userId ?? "") !== (actor.userId ?? "")) return false;
+    if (actor.memoryScope && (entry.actor.channel ?? "system") !== (actor.channel ?? "system")) return false;
 
     if (actor.userId && actor.userId !== entry.actor.userId) {
       return false;

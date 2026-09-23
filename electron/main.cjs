@@ -6,6 +6,8 @@ let mainWindow;
 let backendHandle;
 let voiceInput;
 let shutdownComplete = false;
+let applicationDataRoot;
+let applicationOrigin;
 if (process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.resolve(process.env.LOCAL_COGNITIVE_TEST_DATA_DIR));
 const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) app.quit();
@@ -133,6 +135,8 @@ ipcMain.on("appearance:set-theme", (event, theme) => {
 if (hasInstanceLock) app.whenReady().then(async () => {
   try {
     const runtime = await configureRuntimeEnvironment();
+    applicationDataRoot = runtime.dataRoot;
+    applicationOrigin = runtime.url;
     voiceInput = require("./voice-input.cjs").registerVoiceInput({ app, ipcMain, systemPreferences, shell, powerMonitor,
       getWindow: () => mainWindow, origin: runtime.url,
       root: path.join(runtime.dataRoot, "speech"),
@@ -196,4 +200,29 @@ ipcMain.handle("models:select-directory", async (event) => {
   if (event.sender !== mainWindow?.webContents) return null;
   const result = await dialog.showOpenDialog(mainWindow, { title: "Model storage", properties: ["openDirectory", "createDirectory"] });
   return result.canceled ? null : result.filePaths[0];
+});
+
+function assertAppSender(event) {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow?.webContents.mainFrame ||
+      new URL(event.senderFrame.url).origin !== applicationOrigin) throw new Error("Unknown application window.");
+}
+ipcMain.handle("projects:select-directory", async event => {
+  assertAppSender(event);
+  const result = await dialog.showOpenDialog(mainWindow, { title: "Project folder", properties: ["openDirectory", "createDirectory"] });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
+ipcMain.handle("app:open-data-folder", async event => {
+  assertAppSender(event);
+  if (!applicationDataRoot) throw new Error("Application data folder is not ready.");
+  const error = await shell.openPath(applicationDataRoot);
+  if (error) throw new Error(error);
+  return { opened: true };
+});
+ipcMain.handle("app:info", event => {
+  assertAppSender(event);
+  const metadata = require(path.join(app.getAppPath(), "package.json"));
+  return { name: metadata.build?.productName || app.getName(), version: app.getVersion(),
+    platform: `${process.platform} ${process.arch}`, electron: process.versions.electron,
+    license: metadata.license || "Not declared in application metadata" };
 });

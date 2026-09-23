@@ -90,8 +90,20 @@ import { WebSearchNodeExecutor } from "../workflows/nodes/WebSearchNodeExecutor"
 import { WorkflowRunner } from "../workflows/WorkflowRunner";
 import { WorkflowRunStore } from "../workflows/WorkflowRunStore";
 import { WorkflowStore } from "../workflows/WorkflowStore";
+import { ProjectStore } from "../projects/ProjectStore";
+import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
+import { SessionIndexStore } from "../session/SessionIndexStore";
+import { OperationExecutor } from "../tools/OperationExecutor";
+import { AgentLoopRunner } from "../agents/runtime/AgentLoopRunner";
+import { CodeAgentCoordinator } from "../agents/code/CodeAgentCoordinator";
+import { PluginOperationExecutor } from "../tools/PluginOperationExecutor";
 
 export interface AppRuntime {
+  projectStore: ProjectStore;
+  workspaceResolver: WorkspaceResolver;
+  sessionIndexStore: SessionIndexStore;
+  agentLoopRunner: AgentLoopRunner;
+  operationExecutor: OperationExecutor;
   localModelService: LocalModelService;
   mcpClients: McpClientService;
   engine: CognitiveEngine;
@@ -475,6 +487,10 @@ export const buildRuntime = async (
   await fs.mkdir(path.join(config.appDataDir, "tasks"), { recursive: true });
   await fs.mkdir(path.join(config.appDataDir, "schedules"), { recursive: true });
   await fs.mkdir(path.join(config.appDataDir, "workflows"), { recursive: true });
+  const projectStore = new ProjectStore(config.appDataDir);
+  const sessionIndexStore = new SessionIndexStore(config.appDataDir);
+  const workspaceResolver = new WorkspaceResolver(config,projectStore,sessionIndexStore);
+  const operationExecutor = new OperationExecutor(config.appDataDir);
 
   const providerRegistry = new LLMRegistry();
   // RuntimeManager supplies the long-lived owner. Direct test/headless builders remain supported.
@@ -658,6 +674,7 @@ export const buildRuntime = async (
   );
   const plugins = await pluginLoader.loadAll();
 
+  const agentLoopRunner = new AgentLoopRunner(llmService,operationExecutor,config.appDataDir,config.agentLimits);
   const engine = new CognitiveEngine(
     modeDetector,
     router,
@@ -669,7 +686,10 @@ export const buildRuntime = async (
     config.llm.defaultProvider,
     target => target.providerId === "llamacpp"
       ? localModelService.snapshot().models.find(model => model.id === (target.model || config.providers.llamacpp?.model))?.vision
-      : undefined
+      : undefined,
+    workspaceResolver,
+    new CodeAgentCoordinator(agentLoopRunner),
+    new PluginOperationExecutor(config.appDataDir)
   );
   const workflowRunner = new WorkflowRunner(
     taskStore,
@@ -690,7 +710,7 @@ export const buildRuntime = async (
         accessMode: config.filesystem.accessMode,
         allowedDirectories: config.filesystem.allowedDirectories,
         workspaceDir: process.cwd()
-      }),
+      },operationExecutor),
       new WebSearchNodeExecutor({
         braveApiKey: process.env.BRAVE_SEARCH_API_KEY,
         searxngUrl: process.env.SEARXNG_URL
@@ -699,23 +719,25 @@ export const buildRuntime = async (
         accessMode: config.filesystem.accessMode,
         allowedDirectories: config.filesystem.allowedDirectories,
         outputDir: config.outputDir
-      }),
+      },operationExecutor),
       new CommandNodeExecutor({
         accessMode: config.filesystem.accessMode,
         allowedDirectories: config.filesystem.allowedDirectories,
         workspaceDir: process.cwd()
-      }),
+      },operationExecutor),
       new DecisionNodeExecutor(),
       new HumanReviewNodeExecutor(),
       new TerminalNodeExecutor()
-    ])
+    ]),workspaceResolver,sessionSettingsStore
   );
-  const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner);
-  const scheduleService = new ScheduleService(scheduleStore, taskService);
+  await workflowRunner.recoverInterruptedRuns();
+  const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner,workspaceResolver);
+  const scheduleService = new ScheduleService(scheduleStore, taskService,workspaceResolver);
   const mcpClients = sharedMcpClients ?? new McpClientManager();
   if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
 
   return {
+    projectStore,workspaceResolver,sessionIndexStore,agentLoopRunner,operationExecutor,
     localModelService,
     mcpClients,
     engine,

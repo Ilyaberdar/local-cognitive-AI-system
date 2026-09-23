@@ -9,6 +9,11 @@ export const renderWorkflowTemplate = (
     workflow: context.workflow,
     node: context.node,
     run: context.run,
+    workspace: context.workspace ?? context.run.workspace,
+    project: (context.workspace ?? context.run.workspace)?.projectId ? {
+      id: (context.workspace ?? context.run.workspace)?.projectId,
+      name: (context.workspace ?? context.run.workspace)?.projectName
+    } : undefined,
     nodes: readRecord(context.run.state.nodeResults)
   };
   const exact = template.match(/^\s*{{\s*([^{}]+?)\s*}}\s*$/);

@@ -1,4 +1,5 @@
 import path from "path";
+import { canonicalPath, isWorkspacePath } from "../../tools/AccessPolicy";
 
 export class WorkflowPathPolicy {
   constructor(
@@ -7,23 +8,20 @@ export class WorkflowPathPolicy {
     private readonly defaultDirectory: string
   ) {}
 
-  resolve(rawPath: string): string {
-    const target = path.resolve(
+  async resolve(rawPath: string): Promise<string> {
+    const target = await canonicalPath(path.resolve(
       path.isAbsolute(rawPath) ? rawPath : path.join(this.defaultDirectory, rawPath)
-    );
-    this.assertAllowed(target);
+    ));
+    await this.assertAllowed(target);
     return target;
   }
 
-  assertAllowed(targetPath: string): void {
+  async assertAllowed(targetPath: string): Promise<void> {
     if (this.accessMode === "full") {
       return;
     }
 
-    const allowed = this.allowedDirectories.some((directory) => {
-      const root = path.resolve(directory);
-      return targetPath === root || targetPath.startsWith(`${root}${path.sep}`);
-    });
+    const allowed = await isWorkspacePath(targetPath, this.allowedDirectories);
 
     if (!allowed) {
       throw new Error(`Workflow filesystem access blocked for path: ${targetPath}`);

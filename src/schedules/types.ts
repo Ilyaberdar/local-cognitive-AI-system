@@ -1,4 +1,5 @@
-import { TaskPriority } from "../tasks/types";
+import { CreateTaskInput, TaskPriority } from "../tasks/types";
+import { SubagentAccessMode } from "../types";
 
 export type ScheduleFrequency = "daily" | "weekly";
 export type ScheduleWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
@@ -10,6 +11,8 @@ export interface Schedule {
   workflowId: string;
   priority: TaskPriority;
   sessionId?: string;
+  projectId?: string;
+  accessMode?: SubagentAccessMode;
   metadata?: Record<string, unknown>;
   frequency: ScheduleFrequency;
   /** Sunday is 0 and Saturday is 6. Required when frequency is weekly. */
@@ -19,6 +22,7 @@ export interface Schedule {
   enabled: boolean;
   nextRunAt: string;
   activeOccurrenceAt?: string;
+  activeTaskInput?: CreateTaskInput;
   lastRunAt?: string;
   lastTaskId?: string;
   lastError?: string;
@@ -32,6 +36,8 @@ export interface CreateScheduleInput {
   workflowId: string;
   priority?: TaskPriority;
   sessionId?: string;
+  projectId?: string;
+  accessMode?: SubagentAccessMode;
   metadata?: Record<string, unknown>;
   frequency?: ScheduleFrequency;
   weekday?: ScheduleWeekday;
@@ -46,6 +52,8 @@ export interface UpdateScheduleInput {
   workflowId?: string;
   priority?: TaskPriority;
   sessionId?: string;
+  projectId?: string | null;
+  accessMode?: SubagentAccessMode;
   metadata?: Record<string, unknown>;
   frequency?: ScheduleFrequency;
   weekday?: ScheduleWeekday;

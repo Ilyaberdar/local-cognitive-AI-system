@@ -8,6 +8,8 @@ import {
 } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 import { WorkflowPathPolicy } from "./WorkflowPathPolicy";
+import { OperationExecutor } from "../../tools/OperationExecutor";
+import { executeWorkflowOperation } from "./WorkflowOperation";
 
 interface CommandNodeExecutorOptions {
   accessMode: "restricted" | "full";
@@ -19,7 +21,7 @@ export class CommandNodeExecutor implements NodeExecutor {
   readonly type = "command" as const;
   private readonly paths: WorkflowPathPolicy;
 
-  constructor(private readonly options: CommandNodeExecutorOptions) {
+  constructor(private readonly options: CommandNodeExecutorOptions, private readonly operations?: OperationExecutor) {
     this.paths = new WorkflowPathPolicy(
       options.accessMode,
       options.allowedDirectories,
@@ -30,6 +32,15 @@ export class CommandNodeExecutor implements NodeExecutor {
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
     context.signal?.throwIfAborted();
     const config = context.node.config;
+    if (context.workspace ?? context.run.workspace) {
+      if (!this.operations) throw new Error("Workspace operation executor is unavailable.");
+      return executeWorkflowOperation(context, this.operations, "command.run", {
+        executable: renderWorkflowTemplate(readConfigString(config, "executable", ""), context).trim(),
+        args: readConfigStringArray(config, "args").map((value) => renderWorkflowTemplate(value, context)),
+        cwd: renderWorkflowTemplate(readConfigString(config, "cwd", "."), context),
+        timeoutMs: readConfigNumber(config, "timeoutMs", 120_000, 1_000, 120_000)
+      });
+    }
     const access = readConfigString(config, "access", "default");
     const approval = context.approval;
     if (approval && (approval.operation !== "command" || typeof approval.executable !== "string" ||
@@ -43,7 +54,7 @@ export class CommandNodeExecutor implements NodeExecutor {
       : renderWorkflowTemplate(readConfigString(config, "executable", ""), context).trim();
     if (!executable) throw new Error("Run Command executable is required.");
     const args = approval ? approval.args as string[] : readConfigStringArray(config, "args").map((value) => renderWorkflowTemplate(value, context));
-    const cwd = this.paths.resolve(approval ? readConfigString(approval, "cwd") : renderWorkflowTemplate(readConfigString(config, "cwd", "."), context));
+    const cwd = await this.paths.resolve(approval ? readConfigString(approval, "cwd") : renderWorkflowTemplate(readConfigString(config, "cwd", "."), context));
     const timeoutMs = readConfigNumber(approval ?? config, "timeoutMs", 120_000, 1_000, 900_000);
     if (!approval && access !== "full" && this.options.accessMode !== "full") {
       return {

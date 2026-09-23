@@ -6,6 +6,7 @@ import { AppSettings, AppSettingsPatch } from "../types";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { constants } from "node:fs";
 import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
+import { validateSettingsPatch, defaultUiPreferences } from "./settingsValidation";
 
 export class AppSettingsStore {
   private readonly filePath: string;
@@ -77,8 +78,10 @@ export class AppSettingsStore {
   }
 
   private patch(current: AppSettings, patch: AppSettingsPatch): AppSettings {
+    validateSettingsPatch(patch);
     const next: AppSettings = {
       ...current,
+      ui: { ...defaultUiPreferences, ...current.ui, ...patch.ui, version: 1 },
       localModels: { ...this.localDefaults(), ...current.localModels, ...patch.localModels },
       llm: {
         ...current.llm,
@@ -278,6 +281,8 @@ export class AppSettingsStore {
     const defaults = this.fromConfig();
     const settings: AppSettings = {
       ...input,
+      // Keep old stores readable; the UI imports its first-paint theme once.
+      ...(input.ui ? { ui: { ...defaultUiPreferences, ...input.ui, version: 1 as const } } : {}),
       schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 1 ? input.schemaVersion : 1,
       localModels: this.normalizeLocalModels(input.localModels),
       llm: {

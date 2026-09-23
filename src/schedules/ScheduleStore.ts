@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { Schedule, ScheduleRecord } from "./types";
+import { withFileLock } from "../utils/fileStore";
 
 export interface CompleteScheduleDispatchPatch {
   occurrenceAt: string;
@@ -12,7 +13,6 @@ export interface CompleteScheduleDispatchPatch {
 
 export class ScheduleStore {
   private readonly filePath: string;
-  private operationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly baseDir: string) {
     this.filePath = path.join(baseDir, "schedules.json");
@@ -111,6 +111,12 @@ export class ScheduleStore {
 
       Object.assign(schedule, {
         activeOccurrenceAt: occurrenceAt,
+        activeTaskInput: {
+          title: schedule.title, description: schedule.description, workflowId: schedule.workflowId,
+          priority: schedule.priority, sourceSessionId: schedule.sessionId,
+          projectId: schedule.projectId, accessMode: schedule.accessMode ?? "default", scheduledFor: occurrenceAt,
+          metadata: { ...schedule.metadata, scheduleId: schedule.id, scheduleOccurrenceAt: occurrenceAt }
+        },
         nextRunAt,
         updatedAt: new Date().toISOString()
       });
@@ -137,6 +143,7 @@ export class ScheduleStore {
 
       Object.assign(schedule, {
         activeOccurrenceAt: undefined,
+        activeTaskInput: undefined,
         lastRunAt: patch.lastRunAt,
         lastTaskId: patch.lastTaskId,
         lastError: patch.lastError,
@@ -172,7 +179,10 @@ export class ScheduleStore {
       }
 
       return {
-        schedules: parsed.schedules
+        schedules: parsed.schedules.map((schedule) => ({
+          ...schedule,
+          accessMode: schedule.accessMode === "ask" || schedule.accessMode === "full" ? schedule.accessMode : "default"
+        }))
       };
     } catch (error) {
       throw new Error(
@@ -189,12 +199,7 @@ export class ScheduleStore {
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationQueue.then(operation, operation);
-    this.operationQueue = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
+    return withFileLock(this.filePath, operation);
   }
 }
 

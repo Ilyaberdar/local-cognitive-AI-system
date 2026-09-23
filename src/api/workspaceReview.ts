@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import { createHash } from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -7,37 +7,58 @@ import { RuntimeManager } from "../app/RuntimeManager";
 import { isWorkspacePath } from "../tools/AccessPolicy";
 
 class ReviewError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  readonly statusCode: number;
+  constructor(public status: number, message: string) { super(message); this.statusCode = status; }
 }
 
 // An explicitly opened, previously completed file action may be reviewed even
 // outside the workspace. A session's access mode alone is not a read grant.
-export async function resolveReviewPath(manager: RuntimeManager, requestedPath: string, sessionId?: string): Promise<string> {
+export async function resolveReviewPath(manager: RuntimeManager, requestedPath: string, sessionId?: string, runId?: string): Promise<string> {
   if (!requestedPath) throw new ReviewError(400, "A file path is required.");
-  const target = await fs.realpath(path.resolve(requestedPath));
   const runtime = manager.getRuntime();
-  if (await isWorkspacePath(target, runtime.config.filesystem.allowedDirectories)) return target;
+  if (sessionId && runId) throw new ReviewError(400, "Choose one file owner: sessionId or runId.");
+  if (runtime.workspaceResolver && !sessionId && !runId) throw new ReviewError(400, "A sessionId or runId is required to open workspace files.");
+  const run = runId ? await runtime.workflowRunStore.getRun(runId) : undefined;
+  if (runId && !run) throw new ReviewError(404, "Workflow run was not found.");
+  const workspace = run?.workspace ?? (sessionId ? await runtime.workspaceResolver?.forSession(sessionId, { allowArchived: true }) : undefined);
+  if (workspace) await runtime.workspaceResolver.validate(workspace);
+  const target = await fs.realpath(path.resolve(workspace?.rootPath ?? process.cwd(), requestedPath));
+  if (await isWorkspacePath(target, workspace?.allowedDirectories ?? runtime.config.filesystem.allowedDirectories)) return target;
   if (sessionId) {
     const settings = await manager.getSettings();
     const entries = await runtime.memoryService.recent({
-      actor: { sessionId, userId: settings.memory.localProfileId, channel: "http" }, limit: 500
+      actor: { sessionId, userId: settings.memory.localProfileId, channel: "http", memoryScope: workspace?.memoryScope }, limit: 500
     });
     for (const entry of entries) {
       // Stored tool results, never paths supplied by request metadata or model prose.
       const tools = entry.metadata?.tools;
       if (!Array.isArray(tools)) continue;
       for (const tool of tools) {
-        if (tool?.tool !== "file" || !tool.ok) continue;
-        const files = Array.isArray(tool.metadata?.files) ? tool.metadata.files : [tool.metadata];
-        if (files.some((file: { filePath?: string }) => file?.filePath === target)) return target;
+        if (completedFileAction(tool, target)) return target;
       }
     }
   }
-  throw new ReviewError(403, "This file is outside the workspace and has no completed file action in this chat.");
+  if (run) {
+    for (const node of await runtime.workflowRunStore.listNodeRuns(run.id)) {
+      const tools = node.output?.data?.tools;
+      if (Array.isArray(tools) && tools.some(tool => completedFileAction(tool, target))) return target;
+      if (node.status === "ok" && node.output?.artifacts?.some(artifact => artifact.path === target)) return target;
+    }
+  }
+  throw new ReviewError(403, "This file is outside the workspace and has no completed file action for this owner.");
 }
 
-async function readReviewFile(manager: RuntimeManager, requestedPath: string, sessionId?: string) {
-  const filePath = await resolveReviewPath(manager, requestedPath, sessionId);
+function completedFileAction(value: unknown, target: string): boolean {
+  if (!value || typeof value !== "object") return false;
+  const tool = value as { tool?: string; ok?: boolean; metadata?: { files?: unknown[]; filePath?: string; path?: string } };
+  if (!(tool.tool === "file" || tool.tool?.startsWith("file.")) || tool.ok !== true) return false;
+  const files = Array.isArray(tool.metadata?.files) ? tool.metadata.files : [tool.metadata];
+  return files.some(file => Boolean(file && typeof file === "object" &&
+    ((file as { filePath?: string }).filePath === target || (file as { path?: string }).path === target)));
+}
+
+async function readReviewFile(manager: RuntimeManager, requestedPath: string, sessionId?: string, runId?: string) {
+  const filePath = await resolveReviewPath(manager, requestedPath, sessionId, runId);
   const handle = await fs.open(filePath, "r");
   try {
     const stat = await handle.stat();
@@ -70,7 +91,8 @@ export const createReadWorkspaceFileController = (manager: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       res.json(await readReviewFile(manager, typeof req.query.path === "string" ? req.query.path : "",
-        typeof req.query.sessionId === "string" ? req.query.sessionId : undefined));
+        typeof req.query.sessionId === "string" ? req.query.sessionId : undefined,
+        typeof req.query.runId === "string" ? req.query.runId : undefined));
     } catch (error) { report(error, res, next); }
   };
 
@@ -126,8 +148,19 @@ export const createOpenWorkspaceEditorController = (manager: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const file = await readReviewFile(manager, typeof req.body?.path === "string" ? req.body.path : "",
-        typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined);
+        typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined,
+        typeof req.body?.runId === "string" ? req.body.runId : undefined);
       const editor = await openWorkspaceEditor(file.path);
       res.json({ ok: true, path: file.path, editor });
     } catch (error) { report(error, res, next); }
   };
+
+export async function revealWorkspacePath(targetPath: string): Promise<{ ok: true; directory: string }> {
+  const stat = await fs.stat(targetPath);
+  const directory = stat.isDirectory() ? targetPath : path.dirname(targetPath);
+  const command = process.platform === "darwin" ? "/usr/bin/open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
+  const args = process.platform === "darwin" ? stat.isDirectory() ? [directory] : ["-R", targetPath]
+    : process.platform === "win32" ? stat.isDirectory() ? [directory] : [`/select,${targetPath}`] : [directory];
+  await new Promise<void>((resolve, reject) => execFile(command, args, error => error ? reject(error) : resolve()));
+  return { ok: true, directory };
+}

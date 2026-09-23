@@ -1,9 +1,13 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Router } from "express";
 import { createOpenWorkspaceEditorController } from "./workspaceReview";
+import { revealWorkspacePath } from "./workspaceReview";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { createLocalModelRouter } from "./localModelControllers";
 import { createAttachmentRouter } from "./attachmentControllers";
+import { createCreateProjectController, createListProjectsController, createRevealProjectController, createUpdateProjectController } from "./projectControllers";
 import {
   createCreateSessionController,
   createCancelProcessRunController,
@@ -41,6 +45,7 @@ import {
   createCreateTaskController,
   createDeleteTaskController,
   createGetTaskController,
+  createGetTaskWorkspaceController,
   createListTasksController,
   createQueueTaskController,
   createRunNextTaskController,
@@ -62,6 +67,7 @@ import {
   createListWorkflowsController,
   createStepWorkflowRunController,
   createReviewWorkflowRunController,
+  createResumeWorkflowRunController,
   createUpdateWorkflowController,
   createValidateWorkflowController
 } from "./workflowControllers";
@@ -77,6 +83,13 @@ export const createApiRouter = (
     res.status(200).json({ ok: true });
   });
 
+  router.get("/app/info", async (_req, res, next) => {
+    try {
+      const metadata = JSON.parse(await fs.readFile(path.join(process.cwd(), "package.json"), "utf8"));
+      res.json({ name: metadata.build?.productName || metadata.name, version: metadata.version,
+        platform: "Browser", license: metadata.license || "Not declared in application metadata" });
+    } catch (error) { next(error); }
+  });
   router.get("/meta", createMetadataController(runtimeManager));
   router.get("/dashboard/bootstrap", createDashboardBootstrapController(runtimeManager, sessionIndexStore));
   router.get("/system/metrics", createSystemMetricsController());
@@ -92,7 +105,11 @@ export const createApiRouter = (
   router.use(createLocalModelRouter(() => runtimeManager.getRuntime().localModelService));
 
   router.get("/sessions", createListSessionsController(sessionIndexStore));
-  router.post("/sessions", createCreateSessionController(sessionIndexStore));
+  router.get("/projects", createListProjectsController(runtimeManager));
+  router.post("/projects", createCreateProjectController(runtimeManager));
+  router.patch("/projects/:projectId", createUpdateProjectController(runtimeManager));
+  router.post("/projects/:projectId/reveal", createRevealProjectController(runtimeManager));
+  router.post("/sessions", createCreateSessionController(sessionIndexStore, runtimeManager));
   router.patch("/sessions/:sessionId", createRenameSessionController(sessionIndexStore));
   router.delete("/sessions/:sessionId", createDeleteSessionController(runtimeManager, sessionIndexStore));
   router.get("/sessions/:sessionId/messages", createGetSessionMessagesController(runtimeManager));
@@ -110,6 +127,12 @@ export const createApiRouter = (
   router.post("/tasks", createCreateTaskController(runtimeManager));
   router.post("/tasks/run-next", createRunNextTaskController(runtimeManager));
   router.get("/tasks/:taskId", createGetTaskController(runtimeManager));
+  router.get("/tasks/:taskId/workspace", createGetTaskWorkspaceController(runtimeManager));
+  router.post("/tasks/:taskId/workspace/reveal", async(req,res,next)=>{
+    try { const workspace=await runtimeManager.getRuntime().taskService.getWorkspace(String(req.params.taskId));
+      await runtimeManager.getRuntime().workspaceResolver.validate(workspace);res.json(await revealWorkspacePath(workspace.rootPath));
+    }catch(error){next(error);}
+  });
   router.patch("/tasks/:taskId", createUpdateTaskController(runtimeManager));
   router.delete("/tasks/:taskId", createDeleteTaskController(runtimeManager));
   router.post("/tasks/:taskId/queue", createQueueTaskController(runtimeManager));
@@ -130,6 +153,32 @@ export const createApiRouter = (
   router.post("/workflow-runs/:runId/step", createStepWorkflowRunController(runtimeManager));
   router.post("/workflow-runs/:runId/review", createReviewWorkflowRunController(runtimeManager));
   router.post("/workflow-runs/:runId/cancel", createCancelWorkflowRunController(runtimeManager));
+  router.post("/workflow-runs/:runId/resume", createResumeWorkflowRunController(runtimeManager));
+  router.get("/workflow-runs/:runId/agent-runs/:agentRunId",async(req,res,next)=>{
+    try{
+      const runtime=runtimeManager.getRuntime();
+      const detail=await runtime.taskService.getRunDetail(String(req.params.runId));
+      const agentRunId=String(req.params.agentRunId);
+      const ids=detail?.nodeRuns.map(node=>node.agentRunId).filter((id):id is string=>typeof id==="string")??[];
+      if(!ids.some(id=>agentRunId===id||agentRunId.startsWith(`${id}:agent:`))){res.status(404).json({error:"Agent run was not found in this workflow."});return;}
+      const exact=await runtime.agentLoopRunner.store.get(agentRunId);
+      if(!exact && ids.includes(agentRunId)) {
+        const budget=await runtime.agentLoopRunner.store.getBudget(agentRunId);
+        const participants=await Promise.all((budget?.memberIds??[])
+          .filter(id=>id.startsWith(`${agentRunId}:agent:`)).map(id=>runtime.agentLoopRunner.store.get(id)));
+        const agents=participants.filter((agent):agent is NonNullable<typeof agent>=>Boolean(agent));
+        if(agents.length){
+          res.json({id:agentRunId,agents,turns:agents.flatMap(agent=>agent.turns.map(turn=>({
+            ...turn,content:`[${agent.id.slice(agentRunId.length+7)}] ${turn.content}`
+          })))});
+          return;
+        }
+      }
+      const run=exact??await runtime.agentLoopRunner.store.get(`${agentRunId}:agent:main`);
+      if(!run){res.status(404).json({error:"No agent steps have been recorded yet."});return;}
+      res.json(run);
+    }catch(error){next(error);}
+  });
 
   router.post("/chat", createProcessController(runtimeManager, sessionIndexStore));
   router.post("/process", createProcessController(runtimeManager, sessionIndexStore));

@@ -1,5 +1,12 @@
+import { motionEnabled } from "./motion.js";
 // Shared presentation primitives. No runtime, provider, or task behavior lives here.
 const paths = {
+  profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>',
+  folder: '<path d="M3 7h7l2 2h9v10H3Z"/><path d="M3 7V4h6l3 3"/>',
+  archive: '<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v12h14V8m-10 4h6"/>',
+  moreHorizontal: '<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>',
+  keyboard: '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M8 16h8"/>',
   microphone: '<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
   chevronDown: '<path d="m7 10 5 5 5-5"/>',
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8m-8 4h5"/>',
@@ -45,9 +52,9 @@ export function glassFilters() {
 }
 
 export function bindGlassLighting(root) {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   root.querySelectorAll(".liquid-glass").forEach((surface) => {
     surface.addEventListener("pointermove", (event) => {
+      if (!motionEnabled()) return;
       const rect = surface.getBoundingClientRect();
       surface.style.setProperty("--light-x", `${((event.clientX - rect.left) / rect.width) * 100}%`);
       surface.style.setProperty("--light-y", `${((event.clientY - rect.top) / rect.height) * 100}%`);

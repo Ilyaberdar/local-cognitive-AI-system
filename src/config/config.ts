@@ -4,6 +4,7 @@ import path from "path";
 import type { LocalModelOptions } from "../local/types";
 import type { McpClientConfiguration } from "../mcp/client/types";
 import { parseMcpConfiguration } from "../mcp/client/configuration";
+import { AgentLimits, readAgentLimits } from "../agents/runtime/AgentLimits";
 
 dotenv.config();
 
@@ -20,6 +21,7 @@ export interface ProviderHttpConfig {
 }
 
 export interface AppConfig {
+  agentLimits?: Partial<AgentLimits>;
   localModels?: Omit<LocalModelOptions, "dataDir" | "enabled">;
   server: {
     enabled: boolean;
@@ -172,6 +174,7 @@ const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 60000);
 const defaultLocalTimeoutMs = Number(process.env.LOCAL_PROVIDER_TIMEOUT_MS ?? 300000);
 
 export const config: AppConfig = {
+  agentLimits: readAgentLimits(fileConfig.agentLimits),
   localModels: {
     modelsDir: resolveDir(localValue("modelsDir", "LOCAL_MODELS_DIR") ?? path.join(process.env.APP_DATA_DIR ?? "./data/app", "local-models", "models"), "./data/app/local-models/models"),
     runtimeDir: resolveDir(process.env.LLAMA_RUNTIME_DIR ?? `./resources/llama/${process.platform}-${process.arch}`, "./resources/llama"),

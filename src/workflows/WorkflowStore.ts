@@ -283,6 +283,9 @@ const hasReachableTerminal = (workflow: WorkflowDefinition, entryNodeId: string)
 
 const validateNodeConfig = (node: WorkflowNode): string[] => {
   const errors: string[] = [];
+  if (node.config.approval !== undefined && node.config.approval !== "inherit" && node.config.approval !== "always") {
+    errors.push(`Workflow node ${node.id} config.approval must be inherit or always.`);
+  }
   const requireString = (key: string): void => {
     if (typeof node.config[key] !== "string" || !String(node.config[key]).trim()) {
       errors.push(`Workflow node ${node.id} requires config.${key}.`);

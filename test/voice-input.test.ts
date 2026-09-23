@@ -94,28 +94,31 @@ async function uiHarness() {
   let click!: (event: any) => Promise<void>, session = "a", streams = 0, stopped = 0, nodes: any[] = [];
   const drafts: Record<string, string> = { a: "Existing draft.", b: "Second chat." }, notices: string[] = [];
   const permission = deferred(), result = deferred(), settingsSaved = deferred();
-  let delayedPermission = false, request: any, requests = 0;
+  let delayedPermission = false, request: any, requests = 0, installed = true, saveFailure = false;
+  let inputDevices = [{ kind: "audioinput", deviceId: "default", label: "Default - External Microphone" }, { kind: "audioinput", deviceId: "external", label: "External Microphone" }, { kind: "audioinput", deviceId: "builtin", label: "MacBook Pro Microphone" }];
+  const captures: any[] = [], tracks: any[] = [];
+  let captureListener: () => void = () => {};
   const released: string[] = [];
-  let settings = { language: "ru", deviceId: "default", modelId: "whisper-small" };
+  let settings: any = { language: "ru", deviceId: "default", modelId: "whisper-small" };
   const bridge: any = {
-    status: async () => ({ installed: true, available: true, settings: { ...settings }, models: SPEECH_MODELS, model: SPEECH_MODELS.find(model => model.id === settings.modelId) }),
-    updateSettings: async (next: typeof settings) => { await settingsSaved.promise; settings = next; return { ...settings }; },
+    status: async () => ({ installed, available: true, settings: { ...settings }, models: SPEECH_MODELS, model: SPEECH_MODELS.find(model => model.id === settings.modelId) }),
+    updateSettings: async (next: typeof settings) => { await settingsSaved.promise; if (saveFailure) throw new Error("Disk full"); settings = next; return { ...settings }; },
     requestMicrophone: () => delayedPermission ? permission.promise : Promise.resolve(true),
-    releaseMicrophone: async (id: string) => { released.push(id); }, cancel: async () => {}, onStopCapture: () => {},
+    releaseMicrophone: async (id: string) => { released.push(id); }, cancel: async () => {}, onStopCapture: (callback: any) => { captureListener = callback; },
     transcribe: (value: any) => { request = value; requests++; return result.promise; }
   };
   const form = { dataset: {}, addEventListener: (_name: string, callback: any) => { click = callback; } };
-  let settingsChanged!: () => Promise<void>;
+  let settingsChanged!: (event: any) => Promise<void>;
   const fields = new Map<string, any>();
   const field = (selector: string) => {
-    if (!fields.has(selector)) fields.set(selector, {});
+    if (!fields.has(selector)) fields.set(selector, { dataset: {}, hasAttribute: (name: string) => selector === `[${name}]` });
     return fields.get(selector);
   };
   field("[data-voice-language]").value = settings.language;
   field("[data-voice-device]").value = settings.deviceId;
   const trigger = { disabled: false, classList: { toggle() {} } };
   const panel = {
-    setAttribute() {}, matches: () => false, showPopover() {}, hidePopover() {},
+    classList: { add() {} }, removeEventListener() {}, setAttribute() {}, matches: () => false, showPopover() {}, hidePopover() {},
     addEventListener: (name: string, callback: any) => { if (name === "change") settingsChanged = callback; },
     querySelector: field,
     querySelectorAll: () => [field("[data-voice-language]"), field("[data-voice-device]"), field("[data-voice-model]")]
@@ -125,12 +128,21 @@ async function uiHarness() {
     document: { querySelector: (selector: string) => selector === "#chat-form" ? form : selector === ".voice-trigger" ? trigger : null,
       createElement: () => panel, body: { append() {} }, addEventListener() {} },
     window: { addEventListener() {} },
-    navigator: { mediaDevices: { getUserMedia: async () => { streams++; const track = { onended: null, stop: () => { stopped++; } }; return { getTracks: () => [track] }; } } },
+    navigator: { mediaDevices: {
+      addEventListener() {},
+      enumerateDevices: async () => tracks.some(track => !track.ended) ? inputDevices : [{ kind: "audioinput", deviceId: "default", label: "" }],
+      getUserMedia: async (constraints: any) => {
+        captures.push(constraints); streams++;
+        const track = { onended: null, ended: false, label: constraints.audio?.deviceId?.exact === "builtin" ? "MacBook Pro Microphone" : "External Microphone", stop() { if (!this.ended) stopped++; this.ended = true; } };
+        tracks.push(track); return { getTracks: () => [track], getAudioTracks: () => [track] };
+      }
+    } },
     AudioContext: class {
       state = "running"; sampleRate = 16000;
       audioWorklet = { addModule: async () => {} };
       createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
-      async resume() { nodes.at(-1).port.onmessage({ data: { samples: new Float32Array(4000).fill(0.1) } }); }
+      createAnalyser() { return { fftSize: 2048, getFloatTimeDomainData: (data: Float32Array) => data.fill(0.1), disconnect() {} }; }
+      async resume() { nodes.at(-1)?.port.onmessage({ data: { samples: new Float32Array(4000).fill(0.1) } }); }
       async close() { this.state = "closed"; }
     },
     AudioWorkletNode: class {
@@ -144,8 +156,13 @@ async function uiHarness() {
   context.controller.bind();
   return {
     controller: context.controller, drafts, notices, permission, result, released, settingsSaved, trigger,
-    changeModel: (modelId: string) => { field("[data-voice-model]").value = modelId; return settingsChanged(); },
-    click: (action: string) => click({ preventDefault() {}, target: { closest: () => ({ dataset: { voiceAction: action } }) } }),
+    change: (key: string, value: string) => { const selector = `[data-voice-${key}]`; field(selector).value = value; return settingsChanged({ target: { matches: (query: string) => query === selector, value } }); },
+    field, bridge, panel, captures, settings: () => settings,
+    noModel: () => { installed = false; }, failSave: () => { saveFailure = true; },
+    configure: (patch: any) => { settings = { ...settings, ...patch }; },
+    disconnect: () => { inputDevices = inputDevices.filter(device => device.deviceId !== "external"); },
+    suspend: () => captureListener(), liveTracks: () => tracks.filter(track => !track.ended).length,
+    click: (action: string) => click({ currentTarget: panel, preventDefault() {}, target: { closest: () => ({ dataset: { voiceAction: action } }) } }),
     delayPermission: () => { delayedPermission = true; }, session: (id: string) => { session = id; context.controller.bind(); },
     streams: () => streams, stopped: () => stopped, request: () => request, requests: () => requests
   };
@@ -154,18 +171,18 @@ async function uiHarness() {
 test("a model selection must finish saving before recording can start", async () => {
   const h = await uiHarness();
   await h.click("options");
-  const saving = h.changeModel("whisper-large-v3-turbo");
+  const saving = h.change("model", "whisper-large-v3-turbo");
   try {
     await h.click("close-panel");
     assert.equal(h.trigger.disabled, true);
     await h.click("record");
-    assert.equal(h.streams(), 0);
+    assert.equal(h.liveTracks(), 0);
     assert.equal(h.controller.busy(), false);
     h.settingsSaved.resolve();
     await saving;
     assert.equal(h.trigger.disabled, false);
     await h.click("record");
-    assert.equal(h.streams(), 1);
+    assert.equal(h.liveTracks(), 1);
   } finally {
     h.settingsSaved.resolve();
     await saving;
@@ -213,7 +230,7 @@ test("IPC microphone grants are bound to recording identity and reject foreign f
   const contents: any = { mainFrame: frame, session: { setPermissionCheckHandler: (handler: any) => { check = handler; }, setPermissionRequestHandler() {} }, on() {} };
   const window = { webContents: contents, on() {} };
   const context: any = { URL, module: { exports: {} }, process: { platform: "darwin" }, require: () => ({ SpeechService: class {
-    async status() { return { installed: true, available: true }; } async cancel() {} async dispose() {}
+    async status() { return { installed: false, available: false }; } async cancel() {} async dispose() {}
   } }) };
   vm.runInNewContext(source, context);
   const voice = context.module.exports.registerVoiceInput({ ipcMain: { handle: (name: string, fn: any) => { handlers[name] = fn; } },
@@ -231,4 +248,81 @@ test("IPC microphone grants are bound to recording identity and reject foreign f
   await assert.rejects(handlers["voice:status"]({ sender: contents, senderFrame: { origin: frame.origin } }), /application window/);
   await handlers["voice:release-microphone"](event, "second");
   assert.equal(check(contents, "media", frame.origin, { mediaType: "audio" }), false);
+});
+
+
+test("microphone discovery exposes all labels without a model and releases capture", async () => {
+  const h = await uiHarness(); h.noModel();
+  await h.click("options");
+  assert.match(h.field("[data-voice-device]").innerHTML, /MacBook Pro Microphone/);
+  assert.match(h.field("[data-voice-device]").innerHTML, /External Microphone/);
+  assert.equal(h.liveTracks(), 0);
+  assert.ok(h.released.length > 0);
+  assert.equal(h.field('[data-voice-action="test-input"]').disabled, false);
+});
+
+test("selected headset is resolved after origin ID changes and captured explicitly", async () => {
+  const h = await uiHarness(); h.configure({ deviceId: "old-origin", deviceLabel: "External Microphone" });
+  await h.click("record");
+  try {
+    assert.equal(h.captures.at(-1).audio.deviceId.exact, "external");
+    assert.equal(h.liveTracks(), 1);
+  } finally { await h.click("cancel"); }
+  assert.equal(h.liveTracks(), 0);
+});
+
+test("a disconnected selected microphone never silently records another device", async () => {
+  const h = await uiHarness(); h.configure({ deviceId: "external", deviceLabel: "External Microphone" }); h.disconnect();
+  await h.click("record");
+  assert.equal(h.liveTracks(), 0);
+  assert.equal(h.captures.length, 1); // Only the short discovery stream; no replacement capture.
+  await h.click("cancel");
+});
+
+test("closing Voice during permission request cancels discovery before any capture", async () => {
+  const h = await uiHarness(); h.delayPermission();
+  const dispose = h.controller.mountSettings(h.panel);
+  await tick(); dispose(); h.permission.resolve(true); await tick(); await tick();
+  assert.equal(h.streams(), 0);
+  assert.equal(h.liveTracks(), 0);
+});
+
+test("input-level test works before model installation and stops on page exit or suspend", async () => {
+  const h = await uiHarness(); h.noModel();
+  const dispose = h.controller.mountSettings(h.panel); await tick(); await tick();
+  await h.click("test-input");
+  assert.equal(h.liveTracks(), 1);
+  h.suspend(); assert.equal(h.liveTracks(), 0);
+  await h.click("test-input"); assert.equal(h.liveTracks(), 1);
+  dispose(); assert.equal(h.liveTracks(), 0);
+});
+
+test("voice edits are serialized by field and failure is never reported as saved", async () => {
+  const h = await uiHarness(); await h.click("options");
+  const first = h.change("language", "uk"), second = h.change("device", "builtin");
+  h.settingsSaved.resolve(); await Promise.all([first, second]);
+  assert.equal(h.settings().language, "uk"); assert.equal(h.settings().deviceId, "builtin");
+  assert.equal(h.settings().modelId, "whisper-small");
+  h.failSave(); await h.change("language", "en");
+  assert.equal(h.settings().language, "uk");
+  assert.match(h.field("[data-voice-save-status]").textContent, /Not saved/);
+  assert.match(h.field("[data-voice-error]").textContent, /Disk full/);
+});
+
+test("quiet microphone diagnosis keeps the draft and retry records fresh audio", async () => {
+  const h = await uiHarness(); await h.click("record");
+  const finishing = h.click("stop"); await tick();
+  h.result.resolve({ id: h.request().id, sessionId: "a", text: "", reason: "quiet-audio" }); await finishing;
+  assert.equal(h.drafts.a, "Existing draft.");
+  assert.equal(h.liveTracks(), 0); assert.equal(h.controller.busy(), true);
+  await h.click("retry"); assert.equal(h.liveTracks(), 1);
+  await h.click("cancel");
+});
+
+test("opening Settings stops capture and finishes dictation into the original draft", async () => {
+  const h = await uiHarness(); await h.click("record");
+  h.controller.leaveChat(); await tick(); await tick();
+  assert.equal(h.liveTracks(), 0); assert.equal(h.requests(), 1);
+  h.result.resolve({ id: h.request().id, sessionId: "a", text: "Completed dictation." }); await tick();
+  assert.equal(h.drafts.a, "Existing draft. Completed dictation.");
 });

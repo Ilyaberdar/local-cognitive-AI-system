@@ -45,6 +45,12 @@ export class FileTool implements Tool {
   }
 
   async execute(request: ToolExecutionRequest): Promise<ToolExecutionResult> {
+    const workspace=request.context.workspace;
+    if(workspace)return new FileTool({...this.options,outputDir:workspace.outputDir,allowedDirectories:workspace.allowedDirectories}).executeScoped(request);
+    return this.executeScoped(request);
+  }
+
+  private async executeScoped(request: ToolExecutionRequest): Promise<ToolExecutionResult> {
     // Capture the model output once. Approval resumes this exact operation without another model call.
     const input = { ...request, result: structuredClone(request.result) };
     const rawInput = input.rawInput;

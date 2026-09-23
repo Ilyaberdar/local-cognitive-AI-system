@@ -1,5 +1,6 @@
 import { ToolExecutionRequest, ToolExecutionResult } from "../types";
 import { Tool } from "./Tool.interface";
+import { createHash } from "crypto";
 
 interface NotionToolOptions {
   apiKey?: string;
@@ -15,8 +16,12 @@ export class NotionTool implements Tool {
 
   constructor(private readonly options: NotionToolOptions) {}
 
+  approvalFingerprint(): string { return createHash("sha256").update(JSON.stringify(this.options)).digest("hex"); }
+
   matchesIntent(input: string): boolean {
-    return /notion|ноушен|заметк.*notion|save.*notion|note.*notion|сделай.*заметк/i.test(input);
+    if (!/notion|ноушен/i.test(input)) return false;
+    if (/(?:do not|don't|never|не)\s+(?:\w+\s+){0,2}(?:save|write|create|send|publish|сохран|созда|отправ|публик)/iu.test(input)) return false;
+    return /(?:\b(?:save|write|create|add|publish|export|send|make)\b|сохран|созда|добав|сдела|опублику|отправ)[^\n.!?]{0,160}(?:notion|ноушен)/iu.test(input);
   }
 
   async execute(input: ToolExecutionRequest): Promise<ToolExecutionResult> {

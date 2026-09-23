@@ -1,4 +1,5 @@
 import type { McpClientConfiguration, McpClientConfigurationPatch } from "../mcp/client/types";
+import type { WorkspaceSnapshot } from "../workspace/types";
 
 export type Mode = "hypothesis" | "code" | "general";
 export type SessionMode = Mode | "auto";
@@ -31,6 +32,8 @@ export interface ActorContext {
   sessionId: string;
   userId?: string;
   channel: Channel;
+  projectId?: string;
+  memoryScope?: string;
 }
 
 export interface ProviderTarget {
@@ -127,8 +130,19 @@ export interface PluginRuntimeSettings {
   values: Record<string, string | number | boolean | undefined>;
 }
 
+export interface UiPreferences {
+  version: 1;
+  theme: "dark" | "light" | "system";
+  animations: boolean;
+  fontScale: number;
+  language: LanguagePreference;
+  outputStyle: OutputStyle;
+  mode: SessionMode;
+}
+
 export interface AppSettings {
   schemaVersion?: number;
+  ui?: UiPreferences;
   localModels?: LocalModelSettings;
   llm: {
     defaultProvider: string;
@@ -163,6 +177,7 @@ export interface AppSettings {
 }
 
 export interface AppSettingsPatch {
+  ui?: Partial<Omit<UiPreferences, "version">>;
   localModels?: Partial<LocalModelSettings>;
   llm?: {
     defaultProvider?: string;
@@ -354,6 +369,8 @@ export interface ProcessResult {
   memory: MemoryReference[];
   conversationSize: number;
   sessionSettings: SessionSettings;
+  pendingApproval?: PendingApproval;
+  agentRunId?: string;
 }
 
 export interface SessionSummary {
@@ -361,6 +378,7 @@ export interface SessionSummary {
   title: string;
   updatedAt: string;
   channel: Channel;
+  projectId?: string;
 }
 
 export interface ChatMessage {
@@ -381,6 +399,7 @@ export interface LLMImage {
 }
 
 export interface LLMRequest {
+  outputPurpose?: "agent-action";
   prompt: string;
   images?: LLMImage[];
   systemPrompt?: string;
@@ -419,6 +438,19 @@ export interface ExecutionContext {
   signal?: AbortSignal;
   onProgress?: (event: ProcessProgressEvent) => void;
   requestApproval?: ApprovalHandler;
+  workspace?: WorkspaceSnapshot;
+  execution?: InternalExecutionContext;
+}
+
+/** Server-owned execution parameters. HTTP/MCP metadata must never populate this. */
+export interface InternalExecutionContext {
+  workspace: WorkspaceSnapshot;
+  accessMode: SubagentAccessMode;
+  agentRunId: string;
+  pauseForApproval?: boolean;
+  requireApproval?: boolean;
+  approval?: { id: string; approved: boolean };
+  settings?: SessionSettings;
 }
 
 export interface ProcessProgressEvent {
@@ -451,6 +483,7 @@ export interface ProcessInput {
   signal?: AbortSignal;
   onProgress?: (event: ProcessProgressEvent) => void;
   requestApproval?: ApprovalHandler;
+  execution?: InternalExecutionContext;
 }
 
 export interface MemorySaveInput {

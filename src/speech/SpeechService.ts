@@ -161,7 +161,7 @@ export class SpeechService {
         await this.init(); operation.controller.signal.throwIfAborted();
         const model = this.model();
         if (!this.available || !this.installed.has(model.id)) throw new Error("Download the voice model before recording.");
-        if (!hasAudibleSpeech(request.pcm)) return { id: request.id, sessionId: request.sessionId, text: "" };
+        if (!hasAudibleSpeech(request.pcm)) return { id: request.id, sessionId: request.sessionId, text: "", reason: "quiet-audio" };
         await fs.mkdir(directory, { mode: 0o700 });
         const input = path.join(directory, "input.wav"), output = path.join(directory, "result");
         await fs.writeFile(input, wav, { mode: 0o600 });
@@ -177,7 +177,7 @@ export class SpeechService {
         if (this.active === operation) this.active = undefined;
       }
     })();
-    return operation.done as Promise<{ id: string; sessionId: string; text: string }>;
+    return operation.done as Promise<{ id: string; sessionId: string; text: string; reason?: "quiet-audio" }>;
   }
   async cancel(id?: string) {
     const active = this.active;

@@ -4,6 +4,7 @@ import { DEFAULT_TASK_WORKFLOW_ID } from "../workflows/defaultWorkflows";
 import { ScheduleService, ScheduleValidationError } from "../schedules/ScheduleService";
 import { TaskPriority } from "../tasks/types";
 import { ScheduleFrequency, ScheduleWeekday } from "../schedules/types";
+import { SubagentAccessMode } from "../types";
 
 const taskPriorities = new Set<TaskPriority>(["low", "normal", "high"]);
 
@@ -53,6 +54,8 @@ export const createCreateScheduleController =
         timezone,
         enabled: typeof req.body?.enabled === "boolean" ? req.body.enabled : undefined,
         sessionId: readString(req.body?.sessionId),
+        projectId: normalizeProject(req.body?.projectId) ?? undefined,
+        accessMode: normalizeAccess(req.body?.accessMode),
         metadata: isRecord(req.body?.metadata) ? req.body.metadata : undefined
       });
       res.status(201).json(schedule);
@@ -75,6 +78,7 @@ export const createUpdateScheduleController =
       (body.time !== undefined && typeof body.time !== "string") ||
       (body.timezone !== undefined && typeof body.timezone !== "string") ||
       (body.sessionId !== undefined && typeof body.sessionId !== "string") ||
+      (body.projectId !== undefined && body.projectId !== null && typeof body.projectId !== "string") ||
       (body.enabled !== undefined && typeof body.enabled !== "boolean") ||
       (body.metadata !== undefined && !isRecord(body.metadata))
     ) {
@@ -95,6 +99,8 @@ export const createUpdateScheduleController =
           ...(typeof body.time === "string" ? { time: body.time } : {}),
           ...(typeof body.timezone === "string" ? { timezone: body.timezone } : {}),
           ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}),
+          ...(body.projectId === undefined ? {} : { projectId: normalizeProject(body.projectId) }),
+          ...(body.accessMode === undefined ? {} : { accessMode: normalizeAccess(body.accessMode) }),
           ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
           ...(isRecord(body.metadata) ? { metadata: body.metadata } : {})
         }
@@ -149,4 +155,16 @@ const handleScheduleError = (error: unknown, next: NextFunction, res: Response):
   }
 
   next(error);
+};
+
+const normalizeProject = (value: unknown): string | null | undefined => {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string" || !value.trim()) throw new ScheduleValidationError("Field 'projectId' must be a non-empty string or null.");
+  return value.trim();
+};
+
+const normalizeAccess = (value: unknown): SubagentAccessMode | undefined => {
+  if (value === undefined) return undefined;
+  if (value !== "ask" && value !== "default" && value !== "full") throw new ScheduleValidationError("Field 'accessMode' must be ask, default, or full.");
+  return value;
 };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -9,6 +9,7 @@ import {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
+  useReactFlow,
   type Connection,
   type Edge,
   type Node
@@ -49,7 +50,18 @@ function flowEdges(workflow: WorkflowDefinition): Edge<FsmEdgeData>[] {
   }));
 }
 
+const subscribeMotion = (callback: () => void) => {
+  window.addEventListener("lcai:motion", callback);
+  return () => window.removeEventListener("lcai:motion", callback);
+};
+const readMotion = () => document.documentElement.dataset.motion !== "off";
+
 function WorkflowEditorInner(props: WorkflowEditorProps) {
+  const motion = useSyncExternalStore(subscribeMotion, readMotion);
+  const flow = useReactFlow();
+  useEffect(() => {
+    if (!motion) void flow.setViewport(flow.getViewport(), { duration: 0 });
+  }, [motion, flow]);
   const [draft, setDraft] = useState(() => cloneWorkflow(props.workflow));
   const draftRef = useRef(draft);
   const [nodes, setNodes, applyNodeChanges] = useNodesState(toFlowNodes(draft));
@@ -273,6 +285,10 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
             defaultMarkerColor="var(--muted)"
             fitView
             fitViewOptions={{ padding: 0.25, maxZoom: 1.15 }}
+            zoomOnDoubleClick={motion}
+            onDoubleClick={event => {
+              if (!motion && (event.target as HTMLElement).classList.contains("react-flow__pane")) void flow.zoomIn({ duration: 0 });
+            }}
             minZoom={0.25}
             maxZoom={1.8}
             deleteKeyCode={["Backspace", "Delete"]}
@@ -286,7 +302,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
             onPaneClick={() => setSelected(null)}
           >
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} bgColor="var(--bg)" color="var(--line-strong)" />
-            <Controls showInteractive={false} />
+            <Controls showInteractive={false} fitViewOptions={{ duration: 0 }} />
             {mapOpen ? <MiniMap<Node<FsmNodeData>>
               pannable
               zoomable
@@ -350,6 +366,7 @@ function WorkflowFields({ draft, onUpdate }: {
       <Field label="Name"><input value={draft.name} onChange={(event) => onUpdate({ name: event.target.value })} /></Field>
       <Field label="Version"><input type="number" min="1" value={draft.version} onChange={(event) => onUpdate({ version: Math.max(1, Number(event.target.value) || 1) })} /></Field>
       <Field label="Description"><textarea rows={4} value={draft.description ?? ""} onChange={(event) => onUpdate({ description: event.target.value })} /></Field>
+      <p className="fsm-model-hint">Choose a project when creating a task. The same workflow can run in different folders.</p>
     </div>
   );
 }
@@ -403,6 +420,12 @@ function NodeFields({ node, entryNodeId, providers, configError, onConfigError, 
           </Field>
         </>
       ) : null}
+      {["agent", "file_search", "file_write", "command"].includes(node.type) ? <>
+        <p className="fsm-model-hint">Paths start in the task’s project folder, or its own persistent folder when no project is selected. Access follows the task’s setting.</p>
+        <div className="fsm-output-contract"><span>Workspace bindings</span><code>{"{{workspace.rootPath}} · {{workspace.outputDir}} · {{project.name}} · {{project.id}}"}</code></div>
+      </> : null}
+      {["file_write", "command"].includes(node.type) ? <Field label="Step approval"><select value={String(node.config.approval ?? (node.config.access === "full" ? "inherit" : "always"))} onChange={event => onConfigUpdate({ approval: event.target.value })}><option value="inherit">Follow task access</option><option value="always">Always ask for this step</option></select></Field> : null}
+      {node.type === "agent" ? <p className="fsm-model-hint">Agents read files, inspect tool results, and continue until done or the execution limit is reached.</p> : null}
       <Field label="Config JSON">
         <textarea
           key={`${node.id}-${JSON.stringify(node.config)}`}
@@ -510,13 +533,13 @@ function defaultNodeConfig(type: WorkflowNodeType): Record<string, unknown> {
     limit: 8
   };
   if (type === "file_write") return {
-    access: "default",
+    approval: "inherit",
     path: "workflow-output.md",
     mode: "overwrite",
     contentTemplate: "{{nodes.agent.data.response}}"
   };
   if (type === "command") return {
-    access: "default",
+    approval: "inherit",
     executable: "npm",
     args: ["test"],
     cwd: ".",

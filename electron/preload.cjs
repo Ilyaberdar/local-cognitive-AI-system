@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld("desktopModels", {
   selectDirectory: () => ipcRenderer.invoke("models:select-directory")
 });
 
+contextBridge.exposeInMainWorld("desktopProjects", {
+  selectDirectory: () => ipcRenderer.invoke("projects:select-directory")
+});
+
 contextBridge.exposeInMainWorld("desktopVoice", {
   status: () => ipcRenderer.invoke("voice:status"),
   install: () => ipcRenderer.invoke("voice:install"),
@@ -29,4 +33,10 @@ contextBridge.exposeInMainWorld("desktopVoice", {
     ipcRenderer.on("voice:stop-capture", listener);
     return () => ipcRenderer.removeListener("voice:stop-capture", listener);
   }
+});
+
+// Fixed application actions: the renderer cannot supply a path or command.
+contextBridge.exposeInMainWorld("desktopApp", {
+  openDataFolder: () => ipcRenderer.invoke("app:open-data-folder"),
+  getInfo: () => ipcRenderer.invoke("app:info")
 });

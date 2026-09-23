@@ -4,6 +4,8 @@ import { NodeResult } from "../types";
 import { readConfigString, renderWorkflowTemplate } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 import { WorkflowPathPolicy } from "./WorkflowPathPolicy";
+import { OperationExecutor } from "../../tools/OperationExecutor";
+import { executeWorkflowOperation } from "./WorkflowOperation";
 
 interface SaveFileNodeExecutorOptions {
   accessMode: "restricted" | "full";
@@ -15,7 +17,7 @@ export class SaveFileNodeExecutor implements NodeExecutor {
   readonly type = "file_write" as const;
   private readonly paths: WorkflowPathPolicy;
 
-  constructor(private readonly options: SaveFileNodeExecutorOptions) {
+  constructor(private readonly options: SaveFileNodeExecutorOptions, private readonly operations?: OperationExecutor) {
     this.paths = new WorkflowPathPolicy(
       options.accessMode,
       options.allowedDirectories,
@@ -26,6 +28,14 @@ export class SaveFileNodeExecutor implements NodeExecutor {
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
     context.signal?.throwIfAborted();
     const config = context.node.config;
+    if (context.workspace ?? context.run.workspace) {
+      if (!this.operations) throw new Error("Workspace operation executor is unavailable.");
+      const mode = readConfigString(config, "mode", "overwrite");
+      return executeWorkflowOperation(context, this.operations, mode === "append" ? "file.append" : "file.write", {
+        path: renderWorkflowTemplate(readConfigString(config, "path", ""), context).trim(),
+        content: renderWorkflowTemplate(readConfigString(config, "contentTemplate", ""), context)
+      });
+    }
     const access = readConfigString(config, "access", "default");
     const approval = context.approval;
     if (approval && (approval.operation !== "file_write" || typeof approval.path !== "string" ||
@@ -36,7 +46,7 @@ export class SaveFileNodeExecutor implements NodeExecutor {
       ? readConfigString(approval, "path")
       : renderWorkflowTemplate(readConfigString(config, "path", ""), context).trim();
     if (!rawPath) throw new Error("Save File path is required.");
-    const filePath = this.paths.resolve(rawPath);
+    const filePath = await this.paths.resolve(rawPath);
     const content = approval ? readConfigString(approval, "content") : renderWorkflowTemplate(readConfigString(config, "contentTemplate", ""), context);
     const mode = readConfigString(approval ?? config, "mode", "overwrite");
     if (!approval && access !== "full" && this.options.accessMode !== "full") {

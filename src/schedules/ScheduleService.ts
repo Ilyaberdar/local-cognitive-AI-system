@@ -1,6 +1,8 @@
 import { CreateTaskInput, Task, TaskPriority } from "../tasks/types";
 import { TaskService } from "../tasks/TaskService";
 import { ScheduleStore } from "./ScheduleStore";
+import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
+import { withFileLock } from "../utils/fileStore";
 import {
   nextDailyOccurrence,
   nextWeeklyOccurrence,
@@ -37,7 +39,8 @@ export class ScheduleValidationError extends Error {}
 export class ScheduleService {
   constructor(
     private readonly scheduleStore: ScheduleStore,
-    private readonly taskService: ScheduledTaskService
+    private readonly taskService: ScheduledTaskService,
+    private readonly workspaceResolver?: Pick<WorkspaceResolver, "forTask">
   ) {}
 
   async list(): Promise<Schedule[]> {
@@ -55,6 +58,8 @@ export class ScheduleService {
     const timezone = normalizeTimezone(input.timezone);
     const frequency = normalizeFrequency(input.frequency);
     const weekday = frequency === "weekly" ? normalizeWeekday(input.weekday) : undefined;
+    const projectId = normalizeProjectId(input.projectId);
+    if (projectId) await this.workspaceResolver?.forTask({ id: "schedule-validation", projectId });
 
     return this.scheduleStore.create({
       title,
@@ -62,6 +67,8 @@ export class ScheduleService {
       workflowId,
       priority: normalizePriority(input.priority),
       sessionId: optionalText(input.sessionId),
+      projectId,
+      accessMode: normalizeAccessMode(input.accessMode),
       metadata: input.metadata,
       frequency,
       weekday,
@@ -82,6 +89,8 @@ export class ScheduleService {
     if (!current) {
       return null;
     }
+    const projectId = input.projectId === undefined ? current.projectId : normalizeProjectId(input.projectId);
+    if (input.projectId !== undefined && projectId) await this.workspaceResolver?.forTask({ id: "schedule-validation", projectId });
 
     const time = input.time === undefined ? current.time : normalizeTime(input.time);
     const timezone = input.timezone === undefined ? current.timezone : normalizeTimezone(input.timezone);
@@ -103,6 +112,8 @@ export class ScheduleService {
       ...(input.workflowId === undefined ? {} : { workflowId: requireText(input.workflowId, "workflowId") }),
       ...(input.priority === undefined ? {} : { priority: normalizePriority(input.priority) }),
       ...(input.sessionId === undefined ? {} : { sessionId: optionalText(input.sessionId) }),
+      ...(input.projectId === undefined ? {} : { projectId }),
+      ...(input.accessMode === undefined ? {} : { accessMode: normalizeAccessMode(input.accessMode) }),
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
       frequency,
       weekday,
@@ -174,6 +185,14 @@ export class ScheduleService {
     claimedSchedule: Schedule,
     now: Date
   ): Promise<ScheduleDispatchResult | null> {
+    return withFileLock(`schedule-occurrence:${claimedSchedule.id}:${claimedSchedule.activeOccurrenceAt}`, () =>
+      this.dispatchClaimUnlocked(claimedSchedule, now));
+  }
+
+  private async dispatchClaimUnlocked(
+    claimedSchedule: Schedule,
+    now: Date
+  ): Promise<ScheduleDispatchResult | null> {
     const schedule = await this.scheduleStore.get(claimedSchedule.id);
     const claimedOccurrenceAt = claimedSchedule.activeOccurrenceAt;
 
@@ -199,7 +218,7 @@ export class ScheduleService {
     }
 
     try {
-      const task = await this.taskService.create(this.toTaskInput(schedule, occurrenceAt));
+      const task = await this.taskService.create(schedule.activeTaskInput ?? this.toTaskInput(claimedSchedule, occurrenceAt));
       return this.runTask(schedule, occurrenceAt, task, now);
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown_error";
@@ -285,6 +304,9 @@ export class ScheduleService {
       workflowId: schedule.workflowId,
       priority: schedule.priority,
       sessionId: schedule.sessionId,
+      sourceSessionId: schedule.sessionId,
+      projectId: schedule.projectId,
+      accessMode: schedule.accessMode ?? "default",
       scheduledFor: occurrenceAt,
       metadata: {
         ...schedule.metadata,
@@ -303,6 +325,18 @@ const requireText = (value: string, field: string): string => {
   }
 
   return normalized;
+};
+
+const normalizeProjectId = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new ScheduleValidationError("Field 'projectId' must be a non-empty string or null.");
+  return value.trim();
+};
+
+const normalizeAccessMode = (value: unknown): "ask" | "default" | "full" => {
+  if (value === undefined) return "default";
+  if (value !== "ask" && value !== "default" && value !== "full") throw new ScheduleValidationError("Field 'accessMode' must be ask, default, or full.");
+  return value;
 };
 
 const optionalText = (value: string | undefined): string | undefined => {

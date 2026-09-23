@@ -1,18 +1,26 @@
 import { withFileLock } from "../utils/fileStore";
+import { randomUUID } from "crypto";
+import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
+import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { TaskStore } from "../tasks/TaskStore";
 import { Task } from "../tasks/types";
 import { FsmEngine } from "./FsmEngine";
 import { NodeExecutorRegistry } from "./nodes/NodeExecutor";
 import { WorkflowRunStore } from "./WorkflowRunStore";
 import { WorkflowStore } from "./WorkflowStore";
+import { renderWorkflowTemplate } from "./template";
+import { ProviderTarget } from "../types";
 import {
   NodeResult,
   WorkflowDefinition,
   WorkflowNode,
-  WorkflowRun
+  WorkflowRun,
+  WorkflowRunConflictError
 } from "./types";
 
-const stopped = (run: WorkflowRun): boolean => ["done", "failed", "cancelled", "waiting", "blocked"].includes(run.status);
+const stopped = (run: WorkflowRun): boolean => ["done", "failed", "cancelled", "waiting", "blocked", "interrupted"].includes(run.status);
+
+export interface WorkflowReviewIdentity { approvalId?: string; waitingNodeRunId?: string; }
 
 export class WorkflowRunner {
   private static readonly steps = new Map<string, Promise<WorkflowRun>>();
@@ -23,8 +31,27 @@ export class WorkflowRunner {
     private readonly workflowStore: WorkflowStore,
     private readonly runStore: WorkflowRunStore,
     private readonly fsmEngine: FsmEngine,
-    private readonly executors: NodeExecutorRegistry
+    private readonly executors: NodeExecutorRegistry,
+    private readonly workspaceResolver?: Pick<WorkspaceResolver, "forTask" | "validate">,
+    private readonly sessionSettingsStore?: Pick<SessionSettingsStore, "get">
   ) {}
+
+  /** Recovery is explicit: a previous process's in-flight effects are never replayed at startup. */
+  async recoverInterruptedRuns(): Promise<void> {
+    for (const candidate of await this.runStore.listRuns()) {
+      if (WorkflowRunner.controllers.has(candidate.id) || !["running", "queued", "waiting"].includes(candidate.status)) continue;
+      await withFileLock(`workflow-run:${candidate.id}`, async () => {
+        const run = await this.requireRun(candidate.id);
+        if (WorkflowRunner.controllers.has(run.id)) return;
+        if (this.workspaceResolver && (!run.workspace || !run.executionSnapshot)) {
+          await this.blockRun(run, "This legacy run has no workspace snapshot. Cancel it and start a new run with a selected project or managed task workspace.");
+        } else if (run.status === "running") {
+          await this.runStore.updateRun(run.id, { status: "interrupted", error: "Execution was interrupted. Resume to recover its saved operation; uncertain effects will not be repeated." });
+          await this.taskStore.setStatus(run.taskId, "interrupted");
+        }
+      });
+    }
+  }
 
   async startTask(taskId: string): Promise<WorkflowRun> {
     return withFileLock(`workflow-task:${taskId}`, async () => {
@@ -36,7 +63,16 @@ export class WorkflowRunner {
       const workflow = await this.requireWorkflow(task);
       const validation = this.workflowStore.validate(workflow);
       if (!validation.ok) throw new Error(`Cannot start invalid workflow: ${validation.errors.join("; ")}`);
-      const run = await this.runStore.createRun({ task, workflow });
+      const id = randomUUID();
+      const executionSessionId = `workflow-${id}`;
+      const workspace = await this.workspaceResolver?.forTask(task);
+      const settings = await this.sessionSettingsStore?.get(executionSessionId);
+      const nodeTargets: Record<string, ProviderTarget> = {};
+      for (const node of workflow.nodes.filter(node => node.type === "agent")) {
+        const target = this.executors.get(node.type).snapshotTarget?.(node, settings);
+        if (target) nodeTargets[node.id] = target;
+      }
+      const run = await this.runStore.createRun({ task, workflow, workspace, settings, nodeTargets, executionSessionId, id });
       await this.taskStore.setStatus(task.id, "in_progress", { workflowVersion: workflow.version, lastRunId: run.id });
       return run;
     });
@@ -57,23 +93,52 @@ export class WorkflowRunner {
     const controller = new AbortController();
     WorkflowRunner.controllers.set(runId, controller);
     const prepared = await withFileLock(`workflow-run:${runId}`, async () => {
-      const run = await this.requireRun(runId);
+      let run = await this.requireRun(runId);
       if (stopped(run)) return { run };
       if (controller.signal.aborted) return { run: { ...run, status: "cancelled" as const } };
-      const task = await this.requireTask(run.taskId);
+      if (this.workspaceResolver && (!run.workspace || !run.executionSnapshot)) {
+        return { run: await this.blockRun(run, "This legacy run has no workspace snapshot. Cancel it and start a new run with a selected project or managed task workspace.") };
+      }
+      if (run.workspace && this.workspaceResolver) {
+        try { await this.workspaceResolver.validate(run.workspace); }
+        catch (error) { return { run: await this.blockRun(run, error instanceof Error ? error.message : "Workspace is unavailable.") }; }
+      }
+      const task = run.executionSnapshot?.task ?? await this.requireTask(run.taskId);
       const workflow = await this.workflowForRun(run);
       const node = this.requireNode(workflow, run.currentNodeId);
       const previousNodeRuns = await this.runStore.listNodeRuns(run.id);
+      if (run.status === "running" && previousNodeRuns.some((item) => item.status === "running")) {
+        const interrupted = (await this.runStore.updateRun(run.id, {
+          status: "interrupted", error: "The previous execution was interrupted. Resume to recover the saved operation; an uncertain command will not be repeated."
+        }))!;
+        await this.taskStore.setStatus(run.taskId, "interrupted");
+        return { run: interrupted };
+      }
+      const invocationId = typeof run.state.nodeInvocationId === "string" && run.state.activeNodeId === node.id
+        ? run.state.nodeInvocationId : randomUUID();
+      const agentRunId = `workflow-${run.id}:${node.id}:${invocationId}`;
+      const operationId = `${agentRunId}:operation`;
+      const agentInput = node.type === "agent" ? (
+        run.state.activeNodeId === node.id && typeof run.state.activeAgentInput === "string" ? run.state.activeAgentInput :
+          renderWorkflowTemplate(String(node.config.promptTemplate ?? "{{task.title}}\n\n{{task.description}}"), {
+            task, workflow, run, node, previousNodeRuns, workspace: run.workspace
+          })
+      ) : undefined;
+      run = (await this.runStore.updateRun(runId, { status: "running", state: {
+        ...run.state, activeNodeId: node.id, nodeInvocationId: invocationId, activeAgentRunId: agentRunId, activeOperationId: operationId,
+        activeAgentInput: agentInput
+      } }))!;
       const nodeRun = await this.runStore.appendNodeRun({
         runId, taskId: task.id, workflowId: workflow.id, nodeId: node.id, status: "running",
+        agentRunId: node.type === "agent" ? agentRunId : undefined,
+        operationId: ["file_search", "file_write", "command"].includes(node.type) ? operationId : undefined,
         input: { taskId: task.id, nodeConfig: node.config }, startedAt: new Date().toISOString()
       });
-      await this.runStore.updateRun(runId, { status: "running" });
       await this.taskStore.setStatus(task.id, "in_progress");
-      return { run, task, workflow, node, previousNodeRuns, nodeRun };
+      return { run, task, workflow, node, previousNodeRuns, nodeRun, agentRunId, operationId, agentInput };
     });
     if (!prepared.nodeRun) return prepared.run;
-    const { run, task, workflow, node, previousNodeRuns, nodeRun } = prepared;
+    const { run, task, workflow, node, previousNodeRuns, nodeRun, agentRunId, operationId, agentInput } = prepared;
     let progressWrite: Promise<unknown> = Promise.resolve();
     let lastProgressAt = 0;
     let lastPhase = "";
@@ -83,6 +148,8 @@ export class WorkflowRunner {
       controller.signal.throwIfAborted();
       result = await this.executors.get(node.type).execute({
         task, workflow, run, node, previousNodeRuns, signal: controller.signal,
+        workspace: run.workspace, accessMode: run.executionSnapshot?.accessMode ?? task.accessMode ?? "default",
+        settings: run.executionSnapshot?.settings, agentRunId, operationId, agentInput,
         onProgress: (event) => {
           if (finished || controller.signal.aborted) return;
           const now = Date.now();
@@ -103,7 +170,7 @@ export class WorkflowRunner {
     finished = true;
     await progressWrite;
     await this.runStore.updateNodeRun(nodeRun.id, {
-      status: controller.signal.aborted ? "cancelled" : result.status === "needs_input" ? "waiting" : result.status === "failed" ? "failed" : "ok",
+      status: controller.signal.aborted ? "cancelled" : result.status === "needs_input" ? "waiting" : result.status === "blocked" ? "blocked" : result.status === "failed" ? "failed" : "ok",
       output: result, error: result.error, completedAt: new Date().toISOString()
     });
     return this.advanceAfterNode(runId, task, workflow, node, result);
@@ -145,27 +212,35 @@ export class WorkflowRunner {
     });
   }
 
-  async review(runId: string, approved: boolean, comment = "", background = false): Promise<WorkflowRun> {
+  async review(runId: string, approved: boolean, comment = "", background = false, identity: WorkflowReviewIdentity = {}): Promise<WorkflowRun> {
     const reviewed = await withFileLock(`workflow-run:${runId}`, async () => {
       const run = await this.requireRun(runId);
-      if (run.status !== "waiting") throw new Error("Only a waiting run can be reviewed.");
-      const task = await this.requireTask(run.taskId);
+      if (run.status !== "waiting") throw new WorkflowRunConflictError("Only a waiting run can be reviewed.");
+      const task = run.executionSnapshot?.task ?? await this.requireTask(run.taskId);
       const workflow = await this.workflowForRun(run);
       const node = this.requireNode(workflow, run.currentNodeId);
       const waiting = readRecord(readRecord(run.state.nodeResults)[node.id]);
       const permissionRequired = readRecord(waiting.data).permissionRequired === true;
       const nodeRuns = await this.runStore.listNodeRuns(runId);
       const waitingNodeRun = [...nodeRuns].reverse().find((item) => item.nodeId === node.id && item.status === "waiting");
-      if (permissionRequired && approved) {
+      const waitingData = readRecord(waiting.data);
+      if (run.workspace) {
+        const expectedId = permissionRequired ? waitingData.approvalId : waitingNodeRun?.id;
+        const suppliedId = permissionRequired ? identity.approvalId : identity.waitingNodeRunId;
+        if (typeof expectedId !== "string" || suppliedId !== expectedId) throw new WorkflowRunConflictError("This approval is stale or missing its waiting operation ID. Refresh the run before reviewing it.");
+        if (this.workspaceResolver) await this.workspaceResolver.validate(run.workspace);
+      }
+      const resumableOperation = node.type === "agent" || typeof waitingData.approvalId === "string";
+      if (permissionRequired && (approved || resumableOperation)) {
         // Freeze the operation shown to the user; task edits must not change what approval executes.
         if (waitingNodeRun?.output) await this.runStore.updateNodeRun(waitingNodeRun.id, {
           status: "ok",
-          output: { ...waitingNodeRun.output, status: "ok", event: "approval.approved",
-            summary: comment.trim() || "Approved by user.", data: { ...waitingNodeRun.output.data, approved: true } },
+          output: { ...waitingNodeRun.output, status: "ok", event: `approval.${approved ? "approved" : "rejected"}`,
+            summary: comment.trim() || (approved ? "Approved by user." : "Rejected by user."), data: { ...waitingNodeRun.output.data, approved } },
           completedAt: new Date().toISOString()
         });
         return (await this.runStore.updateRun(runId, {
-          status: "queued", state: { ...run.state, approvedNodeId: node.id, approvedOperation: readRecord(waiting.data) }
+          status: "queued", state: { ...run.state, approvedNodeId: node.id, approvedOperation: { ...waitingData, approved } }
         }))!;
       }
       const result: NodeResult = {
@@ -181,6 +256,20 @@ export class WorkflowRunner {
     });
     if (stopped(reviewed)) return reviewed;
     if (background) { this.runInBackground(runId); return reviewed; }
+    return this.runUntilStopped(runId);
+  }
+
+  async resume(runId: string, background = false): Promise<WorkflowRun> {
+    const resumed = await withFileLock(`workflow-run:${runId}`, async () => {
+      const run = await this.requireRun(runId);
+      if (run.status !== "interrupted") throw new WorkflowRunConflictError("Only an interrupted run can be resumed.");
+      if (!run.workspace || !run.executionSnapshot) throw new WorkflowRunConflictError("This run has no workspace snapshot. Start a new run.");
+      await this.workspaceResolver?.validate(run.workspace);
+      const updated = (await this.runStore.updateRun(runId, { status: "queued", error: undefined }))!;
+      await this.taskStore.setStatus(run.taskId, "in_progress");
+      return updated;
+    });
+    if (background) { this.runInBackground(runId); return resumed; }
     return this.runUntilStopped(runId);
   }
 
@@ -214,10 +303,18 @@ export class WorkflowRunner {
   private async advanceUnlocked(runId: string, task: Task, workflow: WorkflowDefinition, node: WorkflowNode, result: NodeResult): Promise<WorkflowRun> {
     const latestRun = await this.requireRun(runId);
     if (["done", "failed", "cancelled"].includes(latestRun.status)) return latestRun;
+    const unknown = result.data.unknown === true || (Array.isArray(result.data.tools) && result.data.tools.some(tool =>
+      readRecord(readRecord(tool).metadata).unknown === true));
+    const preserveInvocation = result.status === "needs_input" || unknown;
     const state = {
       ...latestRun.state,
       approvedNodeId: undefined,
       approvedOperation: undefined,
+      activeNodeId: preserveInvocation ? latestRun.state.activeNodeId : undefined,
+      nodeInvocationId: preserveInvocation ? latestRun.state.nodeInvocationId : undefined,
+      activeAgentRunId: preserveInvocation ? latestRun.state.activeAgentRunId : undefined,
+      activeAgentInput: preserveInvocation ? latestRun.state.activeAgentInput : undefined,
+      activeOperationId: preserveInvocation ? latestRun.state.activeOperationId : undefined,
       nodeResults: {
         ...(readRecord(latestRun.state.nodeResults)),
         [node.id]: {
@@ -230,6 +327,14 @@ export class WorkflowRunner {
         }
       }
     };
+
+    // Unknown effects must never enter graph retry/back edges with a fresh operation identity.
+    if (unknown) {
+      const updated = (await this.runStore.updateRun(runId, { status: "blocked", state,
+        error: result.error ?? "An operation's outcome is unknown. Inspect its effects before starting another run; it was not repeated." }))!;
+      await this.taskStore.setStatus(task.id, "blocked");
+      return updated;
+    }
 
     if (node.type === "terminal") {
       const runStatus = result.data.runStatus === "failed" ? "failed" : "done";
@@ -271,6 +376,12 @@ export class WorkflowRunner {
       currentNodeId: transition.to,
       state
     })) ?? latestRun;
+  }
+
+  private async blockRun(run: WorkflowRun, error: string): Promise<WorkflowRun> {
+    const updated = (await this.runStore.updateRun(run.id, { status: "blocked", error }))!;
+    await this.taskStore.setStatus(run.taskId, "blocked");
+    return updated;
   }
 
   private async requireTask(taskId: string): Promise<Task> {

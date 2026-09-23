@@ -1,7 +1,8 @@
 import { NextFunction, Request, Response } from "express";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { DEFAULT_TASK_WORKFLOW_ID } from "../workflows/defaultWorkflows";
-import { TaskPriority, TaskStatus } from "../tasks/types";
+import { TaskPriority, TaskStatus, TaskValidationError, UpdateTaskInput } from "../tasks/types";
+import { SubagentAccessMode } from "../types";
 
 const taskPriorities = new Set<TaskPriority>(["low", "normal", "high"]);
 const taskStatuses = new Set<TaskStatus>([
@@ -11,6 +12,7 @@ const taskStatuses = new Set<TaskStatus>([
   "queued",
   "running",
   "waiting",
+  "interrupted",
   "blocked",
   "done",
   "failed",
@@ -39,6 +41,8 @@ export const createCreateTaskController =
           ? req.body.workflowId.trim()
           : DEFAULT_TASK_WORKFLOW_ID;
       const priority = normalizePriority(req.body?.priority);
+      const projectId = normalizeProject(req.body?.projectId);
+      const accessMode = normalizeAccess(req.body?.accessMode);
 
       if (!title) {
         res.status(400).json({ error: "Field 'title' must be a non-empty string." });
@@ -51,15 +55,18 @@ export const createCreateTaskController =
         description,
         workflowId,
         priority,
+        projectId: projectId ?? undefined,
+        accessMode,
         attachments: req.body?.attachments,
         sessionId: typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined,
+        sourceSessionId: typeof req.body?.sourceSessionId === "string" ? req.body.sourceSessionId : undefined,
         scheduledFor: typeof req.body?.scheduledFor === "string" ? req.body.scheduledFor : undefined,
         metadata: isRecord(req.body?.metadata) ? req.body.metadata : undefined
       });
 
       res.status(201).json(task);
     } catch (error) {
-      next(error);
+      handleTaskError(error, next, res);
     }
   };
 
@@ -85,7 +92,7 @@ export const createUpdateTaskController =
   (runtimeManager: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const patch: Record<string, unknown> = {};
+      const patch: UpdateTaskInput = {};
       if (req.body?.attachments !== undefined) patch.attachments = req.body.attachments;
 
       if (typeof req.body?.title === "string") {
@@ -103,9 +110,11 @@ export const createUpdateTaskController =
       if (req.body?.priority !== undefined) {
         patch.priority = normalizePriority(req.body.priority);
       }
+      if (req.body?.projectId !== undefined) patch.projectId = normalizeProject(req.body.projectId);
+      if (req.body?.accessMode !== undefined) patch.accessMode = normalizeAccess(req.body.accessMode);
 
       if (typeof req.body?.status === "string" && taskStatuses.has(req.body.status as TaskStatus)) {
-        patch.status = req.body.status;
+        patch.status = req.body.status as TaskStatus;
       }
 
       const runtime = runtimeManager.getRuntime();
@@ -118,8 +127,19 @@ export const createUpdateTaskController =
 
       res.status(200).json(task);
     } catch (error) {
-      next(error);
+      handleTaskError(error, next, res);
     }
+  };
+
+export const createGetTaskWorkspaceController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const service = runtimeManager.getRuntime().taskService;
+      const id = readParam(req.params.taskId);
+      if (!await service.get(id)) { res.status(404).json({ error: "Task was not found." }); return; }
+      res.status(200).json(await service.getWorkspace(id));
+    } catch (error) { handleTaskError(error, next, res); }
   };
 
 export const createDeleteTaskController =
@@ -202,3 +222,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const readParam = (value: string | string[] | undefined): string =>
   Array.isArray(value) ? value[0] ?? "" : value ?? "";
+
+const normalizeProject = (value: unknown): string | null | undefined => {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string" || !value.trim()) throw new TaskValidationError("Field 'projectId' must be a non-empty string or null.");
+  return value.trim();
+};
+
+const normalizeAccess = (value: unknown): SubagentAccessMode | undefined => {
+  if (value === undefined) return undefined;
+  if (value !== "ask" && value !== "default" && value !== "full") throw new TaskValidationError("Field 'accessMode' must be ask, default, or full.");
+  return value;
+};
+
+const handleTaskError = (error: unknown, next: NextFunction, res: Response): void => {
+  if (error instanceof TaskValidationError) { res.status(error.statusCode).json({ error: error.message }); return; }
+  next(error);
+};

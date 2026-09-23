@@ -30,12 +30,21 @@ export class WorkflowRunStore {
     return withFileLock(this.runsPath, async () => {
       const record = await this.readRuns();
       const now = new Date().toISOString();
+      const id = input.id ?? randomUUID();
       const run: WorkflowRun = {
-        id: randomUUID(),
+        id,
         taskId: input.task.id,
         workflowId: input.workflow.id,
         workflowVersion: input.workflow.version,
         workflowSnapshot: structuredClone(input.workflow),
+        workspace: input.workspace ? structuredClone(input.workspace) : undefined,
+        executionSessionId: input.executionSessionId ?? `workflow-${id}`,
+        executionSnapshot: {
+          task: structuredClone(input.task),
+          settings: input.settings ? structuredClone(input.settings) : undefined,
+          nodeTargets: input.nodeTargets ? structuredClone(input.nodeTargets) : undefined,
+          accessMode: input.task.accessMode ?? "default"
+        },
         status: "queued",
         currentNodeId: input.workflow.entryNodeId,
         state: {},
@@ -63,6 +72,10 @@ export class WorkflowRunStore {
 
       if (!run) {
         return null;
+      }
+
+      if (["workspace", "executionSessionId", "executionSnapshot", "workflowSnapshot", "taskId", "workflowId", "workflowVersion"].some((field) => Object.prototype.hasOwnProperty.call(patch, field))) {
+        throw new Error("Workflow execution snapshots cannot be changed after run creation.");
       }
 
       Object.assign(run, {
