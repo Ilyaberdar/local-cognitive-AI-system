@@ -1,5 +1,5 @@
 import { NodeResult } from "../types";
-import { readConfigString, readDotPath, readRecord } from "../template";
+import { readConfigString, readDotPath, readRecord, workflowInput } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 
 export class DecisionNodeExecutor implements NodeExecutor {
@@ -11,7 +11,8 @@ export class DecisionNodeExecutor implements NodeExecutor {
     const operator = readConfigString(config, "operator", "exists");
     const expected = config.value;
     const source = {
-      task: context.task,
+      task: context.task ?? workflowInput(context),
+      input: workflowInput(context),
       workflow: context.workflow,
       run: context.run,
       nodes: readRecord(context.run.state.nodeResults)

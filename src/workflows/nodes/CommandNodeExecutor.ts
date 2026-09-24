@@ -65,7 +65,9 @@ export class CommandNodeExecutor implements NodeExecutor {
       };
     }
 
-    const result = await runCommand(executable, args, cwd, timeoutMs, context.signal);
+    context.onProgress?.({ phase: "tools", label: "Running command", detail: [executable, ...args].join(" "), at: new Date().toISOString() });
+    const result = await runCommand(executable, args, cwd, timeoutMs, context.signal,
+      (stream, text) => context.onProgress?.({ phase: "tools", label: "Running command", at: new Date().toISOString(), output: { stream, text } }));
 
     return {
       status: result.exitCode === 0 ? "ok" : "failed",

@@ -2,6 +2,7 @@ import { withFileLock, writeJsonAtomically, isMissingFile } from "../utils/fileS
 import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
+import { WorkflowEventStore, WorkflowEventInput } from "./WorkflowEventStore";
 import {
   CreateWorkflowRunInput,
   NodeRun,
@@ -11,10 +12,12 @@ import {
 } from "./types";
 
 export class WorkflowRunStore {
+  readonly events: WorkflowEventStore;
   private readonly runsPath: string;
   private readonly nodeRunsPath: string;
 
   constructor(private readonly baseDir: string) {
+    this.events = new WorkflowEventStore(baseDir);
     this.runsPath = path.join(baseDir, "runs.json");
     this.nodeRunsPath = path.join(baseDir, "node-runs.json");
   }
@@ -33,17 +36,20 @@ export class WorkflowRunStore {
       const id = input.id ?? randomUUID();
       const run: WorkflowRun = {
         id,
-        taskId: input.task.id,
+        taskId: input.task?.id,
+        source: input.task ? "task" : "standalone",
         workflowId: input.workflow.id,
         workflowVersion: input.workflow.version,
         workflowSnapshot: structuredClone(input.workflow),
         workspace: input.workspace ? structuredClone(input.workspace) : undefined,
         executionSessionId: input.executionSessionId ?? `workflow-${id}`,
         executionSnapshot: {
-          task: structuredClone(input.task),
+          task: input.task ? structuredClone(input.task) : undefined,
+          input: structuredClone(input.input ?? { title: input.task?.title ?? input.workflow.name, description: input.task?.description ?? "" }),
+          maxSteps: input.maxSteps ?? 25,
           settings: input.settings ? structuredClone(input.settings) : undefined,
           nodeTargets: input.nodeTargets ? structuredClone(input.nodeTargets) : undefined,
-          accessMode: input.task.accessMode ?? "default"
+          accessMode: input.accessMode ?? input.task?.accessMode ?? "default"
         },
         status: "queued",
         currentNodeId: input.workflow.entryNodeId,
@@ -54,6 +60,7 @@ export class WorkflowRunStore {
 
       record.runs.unshift(run);
       await this.writeRuns(record);
+      await this.recordEvent({ runId: run.id, type: "run.status", level: "info", message: "Workflow queued" });
       return run;
     });
   }
@@ -74,15 +81,19 @@ export class WorkflowRunStore {
         return null;
       }
 
-      if (["workspace", "executionSessionId", "executionSnapshot", "workflowSnapshot", "taskId", "workflowId", "workflowVersion"].some((field) => Object.prototype.hasOwnProperty.call(patch, field))) {
+      if (["workspace", "executionSessionId", "executionSnapshot", "workflowSnapshot", "taskId", "source", "workflowId", "workflowVersion"].some((field) => Object.prototype.hasOwnProperty.call(patch, field))) {
         throw new Error("Workflow execution snapshots cannot be changed after run creation.");
       }
 
+      const previousStatus = run.status;
       Object.assign(run, {
         ...patch,
         updatedAt: new Date().toISOString()
       });
       await this.writeRuns(record);
+      if (previousStatus !== run.status) await this.recordEvent({ runId, type: "run.status",
+        level: run.status === "failed" ? "error" : ["waiting", "blocked", "interrupted", "cancelled"].includes(run.status) ? "warning" : "info",
+        message: `Workflow ${run.status}`, detail: run.error, nodeId: run.currentNodeId });
       return run;
     });
   }
@@ -106,6 +117,9 @@ export class WorkflowRunStore {
 
       record.nodeRuns.push(nodeRun);
       await this.writeNodeRuns(record);
+      await this.recordEvent({ runId: nodeRun.runId, nodeId: nodeRun.nodeId, nodeRunId: nodeRun.id,
+        agentRunId: nodeRun.agentRunId, operationId: nodeRun.operationId,
+        type: "node.started", level: "info", message: "Step started" });
       return nodeRun;
     });
   }
@@ -121,10 +135,23 @@ export class WorkflowRunStore {
 
       if (patch.progress && nodeRun.status !== "running") return nodeRun;
 
+      const previousStatus = nodeRun.status;
       Object.assign(nodeRun, patch);
       await this.writeNodeRuns(record);
+      if (patch.status && patch.status !== previousStatus) await this.recordEvent({
+        runId: nodeRun.runId, nodeId: nodeRun.nodeId, nodeRunId: nodeRun.id,
+        agentRunId: nodeRun.agentRunId, operationId: nodeRun.operationId,
+        type: "node.completed", level: patch.status === "failed" ? "error" : ["waiting", "blocked", "cancelled"].includes(patch.status) ? "warning" : "info",
+        message: `Step ${patch.status === "ok" ? "completed" : patch.status}`, detail: nodeRun.output?.summary ?? nodeRun.error
+      });
       return nodeRun;
     });
+  }
+
+  async recordEvent(event: WorkflowEventInput): Promise<void> {
+    // Observability is separate from operation checkpoints: logging failure must not replay effects.
+    try { await this.events.append(event); }
+    catch (error) { console.warn("Could not persist workflow event", error instanceof Error ? error.message : "unknown error"); }
   }
 
   private async readRuns(): Promise<WorkflowRunRecord> {

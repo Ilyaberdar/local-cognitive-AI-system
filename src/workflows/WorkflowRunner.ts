@@ -3,19 +3,21 @@ import { randomUUID } from "crypto";
 import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { TaskStore } from "../tasks/TaskStore";
-import { Task } from "../tasks/types";
+import { Task, TaskStatus } from "../tasks/types";
 import { FsmEngine } from "./FsmEngine";
 import { NodeExecutorRegistry } from "./nodes/NodeExecutor";
 import { WorkflowRunStore } from "./WorkflowRunStore";
 import { WorkflowStore } from "./WorkflowStore";
-import { renderWorkflowTemplate } from "./template";
+import { buildAgentInput } from "./template";
+import { validateRunOptions } from "./runOptions";
 import { ProviderTarget } from "../types";
 import {
   NodeResult,
   WorkflowDefinition,
   WorkflowNode,
   WorkflowRun,
-  WorkflowRunConflictError
+  WorkflowRunConflictError,
+  WorkflowRunOptions
 } from "./types";
 
 const stopped = (run: WorkflowRun): boolean => ["done", "failed", "cancelled", "waiting", "blocked", "interrupted"].includes(run.status);
@@ -32,7 +34,7 @@ export class WorkflowRunner {
     private readonly runStore: WorkflowRunStore,
     private readonly fsmEngine: FsmEngine,
     private readonly executors: NodeExecutorRegistry,
-    private readonly workspaceResolver?: Pick<WorkspaceResolver, "forTask" | "validate">,
+    private readonly workspaceResolver?: Pick<WorkspaceResolver, "forTask" | "validate"> & Partial<Pick<WorkspaceResolver, "forWorkflowRun">>,
     private readonly sessionSettingsStore?: Pick<SessionSettingsStore, "get">
   ) {}
 
@@ -47,7 +49,7 @@ export class WorkflowRunner {
           await this.blockRun(run, "This legacy run has no workspace snapshot. Cancel it and start a new run with a selected project or managed task workspace.");
         } else if (run.status === "running") {
           await this.runStore.updateRun(run.id, { status: "interrupted", error: "Execution was interrupted. Resume to recover its saved operation; uncertain effects will not be repeated." });
-          await this.taskStore.setStatus(run.taskId, "interrupted");
+          await this.setTaskStatus(run.taskId, "interrupted");
         }
       });
     }
@@ -73,9 +75,29 @@ export class WorkflowRunner {
         if (target) nodeTargets[node.id] = target;
       }
       const run = await this.runStore.createRun({ task, workflow, workspace, settings, nodeTargets, executionSessionId, id });
-      await this.taskStore.setStatus(task.id, "in_progress", { workflowVersion: workflow.version, lastRunId: run.id });
+      await this.setTaskStatus(task?.id, "in_progress", { workflowVersion: workflow.version, lastRunId: run.id });
       return run;
     });
+  }
+
+  async startStandalone(workflow: WorkflowDefinition, options: WorkflowRunOptions = {}): Promise<WorkflowRun> {
+    const validation = this.workflowStore.validate(workflow);
+    if (!validation.ok) throw Object.assign(new Error(validation.errors.join("; ")), { statusCode: 400 });
+    const errors = validateRunOptions(options);
+    if (errors.length) throw Object.assign(new Error(errors.join("; ")), { statusCode: 400 });
+    if (!this.workspaceResolver?.forWorkflowRun) throw new Error("Standalone workspaces are unavailable.");
+    const id = randomUUID();
+    const executionSessionId = `workflow-${id}`;
+    const workspace = await this.workspaceResolver.forWorkflowRun(id, options);
+    const settings = await this.sessionSettingsStore?.get(executionSessionId);
+    const nodeTargets: Record<string, ProviderTarget> = {};
+    for (const node of workflow.nodes.filter(node => node.type === "agent")) {
+      const target = this.executors.get(node.type).snapshotTarget?.(node, settings);
+      if (target) nodeTargets[node.id] = target;
+    }
+    return this.runStore.createRun({ id, workflow, workspace, settings, nodeTargets, executionSessionId,
+      input: { title: workflow.name, description: options.description ?? "" },
+      accessMode: options.accessMode ?? "default", maxSteps: options.maxSteps ?? 25 });
   }
 
   runNextStep(runId: string): Promise<WorkflowRun> {
@@ -103,15 +125,17 @@ export class WorkflowRunner {
         try { await this.workspaceResolver.validate(run.workspace); }
         catch (error) { return { run: await this.blockRun(run, error instanceof Error ? error.message : "Workspace is unavailable.") }; }
       }
-      const task = run.executionSnapshot?.task ?? await this.requireTask(run.taskId);
+      const task = run.executionSnapshot?.task ?? (run.taskId ? await this.requireTask(run.taskId) : undefined);
       const workflow = await this.workflowForRun(run);
       const node = this.requireNode(workflow, run.currentNodeId);
+      const stepLimit = run.executionSnapshot?.maxSteps ?? 25;
+      if (Number(run.state.completedSteps ?? 0) >= stepLimit) return { run: await this.blockRun(run, `Workflow exceeded max step limit (${stepLimit}).`) };
       const previousNodeRuns = await this.runStore.listNodeRuns(run.id);
       if (run.status === "running" && previousNodeRuns.some((item) => item.status === "running")) {
         const interrupted = (await this.runStore.updateRun(run.id, {
           status: "interrupted", error: "The previous execution was interrupted. Resume to recover the saved operation; an uncertain command will not be repeated."
         }))!;
-        await this.taskStore.setStatus(run.taskId, "interrupted");
+        await this.setTaskStatus(run.taskId, "interrupted");
         return { run: interrupted };
       }
       const invocationId = typeof run.state.nodeInvocationId === "string" && run.state.activeNodeId === node.id
@@ -120,7 +144,7 @@ export class WorkflowRunner {
       const operationId = `${agentRunId}:operation`;
       const agentInput = node.type === "agent" ? (
         run.state.activeNodeId === node.id && typeof run.state.activeAgentInput === "string" ? run.state.activeAgentInput :
-          renderWorkflowTemplate(String(node.config.promptTemplate ?? "{{task.title}}\n\n{{task.description}}"), {
+          buildAgentInput({
             task, workflow, run, node, previousNodeRuns, workspace: run.workspace
           })
       ) : undefined;
@@ -129,37 +153,44 @@ export class WorkflowRunner {
         activeAgentInput: agentInput
       } }))!;
       const nodeRun = await this.runStore.appendNodeRun({
-        runId, taskId: task.id, workflowId: workflow.id, nodeId: node.id, status: "running",
+        runId, taskId: task?.id, workflowId: workflow.id, nodeId: node.id, status: "running",
         agentRunId: node.type === "agent" ? agentRunId : undefined,
-        operationId: ["file_search", "file_write", "command"].includes(node.type) ? operationId : undefined,
-        input: { taskId: task.id, nodeConfig: node.config }, startedAt: new Date().toISOString()
+        operationId: ["file_search", "file_read", "file_write", "command", "web_fetch"].includes(node.type) ? operationId : undefined,
+        input: { taskId: task?.id, nodeConfig: node.config }, startedAt: new Date().toISOString()
       });
-      await this.taskStore.setStatus(task.id, "in_progress");
+      await this.setTaskStatus(task?.id, "in_progress");
       return { run, task, workflow, node, previousNodeRuns, nodeRun, agentRunId, operationId, agentInput };
     });
     if (!prepared.nodeRun) return prepared.run;
     const { run, task, workflow, node, previousNodeRuns, nodeRun, agentRunId, operationId, agentInput } = prepared;
     let progressWrite: Promise<unknown> = Promise.resolve();
     let lastProgressAt = 0;
-    let lastPhase = "";
+    let lastProgressKey = "";
     let finished = false;
     let result: NodeResult;
     try {
       controller.signal.throwIfAborted();
       result = await this.executors.get(node.type).execute({
         task, workflow, run, node, previousNodeRuns, signal: controller.signal,
-        workspace: run.workspace, accessMode: run.executionSnapshot?.accessMode ?? task.accessMode ?? "default",
+        workspace: run.workspace, accessMode: run.executionSnapshot?.accessMode ?? task?.accessMode ?? "default",
         settings: run.executionSnapshot?.settings, agentRunId, operationId, agentInput,
         onProgress: (event) => {
           if (finished || controller.signal.aborted) return;
+          const key = JSON.stringify([event.phase, event.label, event.detail, event.agents, event.agentRunId, event.operationId]);
           const now = Date.now();
-          if (event.phase === lastPhase && now - lastProgressAt < 500) return;
-          lastPhase = event.phase;
+          if (!event.output && key === lastProgressKey && now - lastProgressAt < 500) return;
+          lastProgressKey = key;
           lastProgressAt = now;
           progressWrite = progressWrite.then(async () => {
-            if (finished || controller.signal.aborted) return;
-            await this.runStore.updateNodeRun(nodeRun.id, { progress: event });
-          }).catch(() => {});
+            await this.runStore.recordEvent({ runId, nodeId: node.id, nodeRunId: nodeRun.id,
+              agentRunId: event.agentRunId ?? nodeRun.agentRunId, operationId: event.operationId ?? nodeRun.operationId,
+              at: event.at, type: event.output ? "node.output" : "node.progress",
+              level: event.phase === "tool_error" ? "error" : event.output?.stream === "stderr" || event.phase === "correction" ? "warning" : "info",
+              phase: event.phase,
+              message: event.output ? event.output.stream : event.label,
+              detail: event.output?.text ?? event.detail, stream: event.output?.stream });
+            if (!event.output) await this.runStore.updateNodeRun(nodeRun.id, { progress: event });
+          }).catch(error => { console.warn("Could not update workflow progress", error instanceof Error ? error.message : "unknown error"); });
         },
         approval: run.state.approvedNodeId === node.id ? readRecord(run.state.approvedOperation) : undefined
       });
@@ -176,7 +207,7 @@ export class WorkflowRunner {
     return this.advanceAfterNode(runId, task, workflow, node, result);
   }
 
-  runUntilStopped(runId: string, maxSteps = 25): Promise<WorkflowRun> {
+  runUntilStopped(runId: string, maxSteps?: number): Promise<WorkflowRun> {
     const existing = WorkflowRunner.loops.get(runId);
     if (existing) return existing;
     const operation = this.executeUntilStopped(runId, maxSteps).finally(() => WorkflowRunner.loops.delete(runId));
@@ -184,8 +215,9 @@ export class WorkflowRunner {
     return operation;
   }
 
-  private async executeUntilStopped(runId: string, maxSteps: number): Promise<WorkflowRun> {
+  private async executeUntilStopped(runId: string, requestedMaxSteps?: number): Promise<WorkflowRun> {
     let run = await this.requireRun(runId);
+    const maxSteps = requestedMaxSteps ?? run.executionSnapshot?.maxSteps ?? 25;
     for (let step = 0; step < maxSteps; step += 1) {
       if (stopped(run)) return run;
       run = await this.runNextStep(run.id);
@@ -196,7 +228,7 @@ export class WorkflowRunner {
       const updated = await this.runStore.updateRun(runId, {
         status: "blocked", error: `Workflow exceeded max step limit (${maxSteps}).`
       });
-      await this.taskStore.setStatus(run.taskId, "blocked");
+      await this.setTaskStatus(run.taskId, "blocked");
       return updated ?? run;
     });
   }
@@ -207,7 +239,7 @@ export class WorkflowRunner {
       const run = await this.requireRun(runId);
       if (["done", "failed", "cancelled"].includes(run.status)) return run;
       const updated = await this.runStore.updateRun(runId, { status: "cancelled", completedAt: new Date().toISOString() });
-      await this.taskStore.setStatus(run.taskId, "cancelled");
+      await this.setTaskStatus(run.taskId, "cancelled");
       return updated ?? run;
     });
   }
@@ -216,7 +248,7 @@ export class WorkflowRunner {
     const reviewed = await withFileLock(`workflow-run:${runId}`, async () => {
       const run = await this.requireRun(runId);
       if (run.status !== "waiting") throw new WorkflowRunConflictError("Only a waiting run can be reviewed.");
-      const task = run.executionSnapshot?.task ?? await this.requireTask(run.taskId);
+      const task = run.executionSnapshot?.task ?? (run.taskId ? await this.requireTask(run.taskId) : undefined);
       const workflow = await this.workflowForRun(run);
       const node = this.requireNode(workflow, run.currentNodeId);
       const waiting = readRecord(readRecord(run.state.nodeResults)[node.id]);
@@ -266,7 +298,7 @@ export class WorkflowRunner {
       if (!run.workspace || !run.executionSnapshot) throw new WorkflowRunConflictError("This run has no workspace snapshot. Start a new run.");
       await this.workspaceResolver?.validate(run.workspace);
       const updated = (await this.runStore.updateRun(runId, { status: "queued", error: undefined }))!;
-      await this.taskStore.setStatus(run.taskId, "in_progress");
+      await this.setTaskStatus(run.taskId, "in_progress");
       return updated;
     });
     if (background) { this.runInBackground(runId); return resumed; }
@@ -279,7 +311,7 @@ export class WorkflowRunner {
         const run = await this.requireRun(runId);
         if (stopped(run)) return;
         await this.runStore.updateRun(runId, { status: "failed", error: error instanceof Error ? error.message : "Workflow failed", completedAt: new Date().toISOString() });
-        await this.taskStore.setStatus(run.taskId, "failed");
+        await this.setTaskStatus(run.taskId, "failed");
       });
     }).catch((error) => { console.error("Could not persist workflow failure", error); });
   }
@@ -292,7 +324,7 @@ export class WorkflowRunner {
 
   private async advanceAfterNode(
     runId: string,
-    task: Task,
+    task: Task | undefined,
     workflow: WorkflowDefinition,
     node: WorkflowNode,
     result: NodeResult
@@ -300,7 +332,7 @@ export class WorkflowRunner {
     return withFileLock(`workflow-run:${runId}`, () => this.advanceUnlocked(runId, task, workflow, node, result));
   }
 
-  private async advanceUnlocked(runId: string, task: Task, workflow: WorkflowDefinition, node: WorkflowNode, result: NodeResult): Promise<WorkflowRun> {
+  private async advanceUnlocked(runId: string, task: Task | undefined, workflow: WorkflowDefinition, node: WorkflowNode, result: NodeResult): Promise<WorkflowRun> {
     const latestRun = await this.requireRun(runId);
     if (["done", "failed", "cancelled"].includes(latestRun.status)) return latestRun;
     const unknown = result.data.unknown === true || (Array.isArray(result.data.tools) && result.data.tools.some(tool =>
@@ -308,6 +340,7 @@ export class WorkflowRunner {
     const preserveInvocation = result.status === "needs_input" || unknown;
     const state = {
       ...latestRun.state,
+      completedSteps: Number(latestRun.state.completedSteps ?? 0) + (preserveInvocation ? 0 : 1),
       approvedNodeId: undefined,
       approvedOperation: undefined,
       activeNodeId: preserveInvocation ? latestRun.state.activeNodeId : undefined,
@@ -332,7 +365,7 @@ export class WorkflowRunner {
     if (unknown) {
       const updated = (await this.runStore.updateRun(runId, { status: "blocked", state,
         error: result.error ?? "An operation's outcome is unknown. Inspect its effects before starting another run; it was not repeated." }))!;
-      await this.taskStore.setStatus(task.id, "blocked");
+      await this.setTaskStatus(task?.id, "blocked");
       return updated;
     }
 
@@ -344,7 +377,7 @@ export class WorkflowRunner {
         completedAt: new Date().toISOString()
       });
 
-      await this.taskStore.setStatus(task.id, runStatus);
+      await this.setTaskStatus(task?.id, runStatus);
       return updated ?? latestRun;
     }
 
@@ -353,7 +386,7 @@ export class WorkflowRunner {
         status: "waiting",
         state
       });
-      await this.taskStore.setStatus(task.id, "waiting");
+      await this.setTaskStatus(task?.id, "waiting");
       return updated ?? latestRun;
     }
 
@@ -364,13 +397,18 @@ export class WorkflowRunner {
       const updated = await this.runStore.updateRun(runId, {
         status,
         state,
-        error: `No transition matched from node "${node.id}" after event "${result.event}".`,
+        error: result.status === "failed" ? result.error || result.summary : `No transition matched from node "${node.id}" after event "${result.event}".`,
         completedAt: status === "failed" ? new Date().toISOString() : undefined
       });
-      await this.taskStore.setStatus(task.id, status);
+      await this.setTaskStatus(task?.id, status);
       return updated ?? latestRun;
     }
 
+    const nodeRun = (await this.runStore.listNodeRuns(runId)).filter(item => item.nodeId === node.id).at(-1);
+    if (nodeRun) await this.runStore.updateNodeRun(nodeRun.id, { transitionId: transition.id });
+    await this.runStore.recordEvent({ runId, nodeId: node.id, nodeRunId: nodeRun?.id, transitionId: transition.id,
+      type: "transition", level: "info", message: `Next: ${workflow.nodes.find(item => item.id === transition.to)?.label ?? transition.to}`,
+      detail: `${node.id} → ${transition.to}${transition.label ? ` · ${transition.label}` : ""}` });
     return (await this.runStore.updateRun(runId, {
       status: "queued",
       currentNodeId: transition.to,
@@ -380,8 +418,12 @@ export class WorkflowRunner {
 
   private async blockRun(run: WorkflowRun, error: string): Promise<WorkflowRun> {
     const updated = (await this.runStore.updateRun(run.id, { status: "blocked", error }))!;
-    await this.taskStore.setStatus(run.taskId, "blocked");
+    await this.setTaskStatus(run.taskId, "blocked");
     return updated;
+  }
+
+  private async setTaskStatus(taskId: string | undefined, status: TaskStatus, extra?: Partial<Task>): Promise<void> {
+    if (taskId) await this.taskStore.setStatus(taskId, status, extra);
   }
 
   private async requireTask(taskId: string): Promise<Task> {

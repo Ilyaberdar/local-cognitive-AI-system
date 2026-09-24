@@ -87,6 +87,8 @@ import { NodeExecutorRegistry } from "../workflows/nodes/NodeExecutor";
 import { SaveFileNodeExecutor } from "../workflows/nodes/SaveFileNodeExecutor";
 import { TerminalNodeExecutor } from "../workflows/nodes/TerminalNodeExecutor";
 import { WebSearchNodeExecutor } from "../workflows/nodes/WebSearchNodeExecutor";
+import { WebFetchNodeExecutor } from "../workflows/nodes/WebFetchNodeExecutor";
+import { ReadFileNodeExecutor } from "../workflows/nodes/ReadFileNodeExecutor";
 import { WorkflowRunner } from "../workflows/WorkflowRunner";
 import { WorkflowRunStore } from "../workflows/WorkflowRunStore";
 import { WorkflowStore } from "../workflows/WorkflowStore";
@@ -715,6 +717,8 @@ export const buildRuntime = async (
         braveApiKey: process.env.BRAVE_SEARCH_API_KEY,
         searxngUrl: process.env.SEARXNG_URL
       }),
+      new WebFetchNodeExecutor(),
+      new ReadFileNodeExecutor(operationExecutor),
       new SaveFileNodeExecutor({
         accessMode: config.filesystem.accessMode,
         allowedDirectories: config.filesystem.allowedDirectories,

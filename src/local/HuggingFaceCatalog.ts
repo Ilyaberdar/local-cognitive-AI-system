@@ -3,7 +3,11 @@ import path from "path";
 import { CatalogModel, CatalogPage, CatalogVariant, LocalModelError, ModelArtifact } from "./types";
 import { validateArtifactPath } from "./ModelLibraryStore";
 import { writeJsonAtomically } from "../utils/fileStore";
-import { isProjectorPath } from "./ModelArtifacts";
+import { isAuxiliaryModelPath, isProjectorPath } from "./ModelArtifacts";
+
+const standaloneVariants = (model: CatalogModel): CatalogModel => ({
+  ...model, variants: model.variants.filter(variant => variant.files.length > 0 && !variant.files.some(file => isAuxiliaryModelPath(file.path)))
+});
 
 const origin = "https://huggingface.co";
 const repoPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,150}$/;
@@ -29,11 +33,11 @@ export class HuggingFaceCatalog {
     const seedPath = process.env.LOCAL_MODEL_CATALOG_PATH || path.resolve(process.cwd(), "resources/models/recommended.json");
     try {
       const seed = JSON.parse(await fs.readFile(seedPath, "utf8")) as { items?: CatalogModel[] };
-      this.recommended = (seed.items ?? []).filter((model) => this.isValidModel(model)).map(model => ({ ...model, projectors: model.projectors ?? [] }));
+      this.recommended = (seed.items ?? []).filter((model) => this.isValidModel(model)).map(model => standaloneVariants({ ...model, projectors: model.projectors ?? [] }));
     } catch { this.recommended = []; }
     try {
       const entries = JSON.parse(await fs.readFile(path.join(this.dataDir, "catalog-cache.json"), "utf8")) as CatalogModel[];
-      for (const model of entries) if (this.isValidModel(model)) this.cache.set(`${model.repoId}@${model.revision}`, model);
+      for (const model of entries) if (this.isValidModel(model)) this.cache.set(`${model.repoId}@${model.revision}`, standaloneVariants(model));
     } catch {}
     for (const model of this.recommended) this.cache.set(`${model.repoId}@${model.revision}`, model);
   }
@@ -113,7 +117,7 @@ export const groupVariants = (siblings: NonNullable<HfRecord["siblings"]>): Cata
   const groups = new Map<string, { files: ModelArtifact[]; parts?: number; indices: Set<number> }>();
   for (const item of siblings) {
     const file = item.rfilename ?? "";
-    if (!/\.gguf$/i.test(file) || isProjectorPath(file) || /(?:^|\/)adapter[-_.]/i.test(file)) continue;
+    if (!/\.gguf$/i.test(file) || isAuxiliaryModelPath(file)) continue;
     try { validateArtifactPath(file); } catch { continue; }
     const sizeBytes = item.lfs?.size ?? item.size; const sha256 = item.lfs?.sha256;
     if (!sizeBytes || !Number.isSafeInteger(sizeBytes) || !sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) continue;

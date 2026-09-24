@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { createHash } from "crypto";
-import { ApprovalHandler, PendingApproval, SubagentAccessMode, ToolExecutionResult } from "../types";
+import { ApprovalHandler, PendingApproval, ProcessProgressEvent, SubagentAccessMode, ToolExecutionResult } from "../types";
 import { WorkspaceSnapshot } from "../workspace/types";
 import { withFileLock } from "../utils/fileStore";
 import { runCommand } from "../utils/runCommand";
@@ -11,6 +11,7 @@ import { OperationStore, SavedOperation } from "./OperationStore";
 import { WorkspaceFileService } from "./WorkspaceFileService";
 
 export interface OperationInput {
+  onProgress?: (event: ProcessProgressEvent) => void;
   id:string; agentRunId:string; workspace:WorkspaceSnapshot; accessMode:SubagentAccessMode;
   tool:string; arguments:Record<string,unknown>;
   approval?:{id:string;approved:boolean}; pauseForApproval?:boolean;
@@ -90,7 +91,11 @@ export class OperationExecutor {
           const args=saved.action.arguments;
           if([args.executable,...args.args as string[]].some(item=>String(item).includes("\0"))) throw new Error("Command contains a null byte.");
           const cwd=await canonicalPath(String(args.cwd));
-          const execution=await runCommand(String(args.executable),args.args as string[],cwd,Number(args.timeoutMs),input.signal);
+          input.onProgress?.({ phase: "tools", label: "Running command", detail: `${args.executable} ${(args.args as string[]).join(" ")}`,
+            at: new Date().toISOString(), operationId: input.id, agentRunId: input.agentRunId });
+          const execution=await runCommand(String(args.executable),args.args as string[],cwd,Number(args.timeoutMs),input.signal,
+            (stream, text) => input.onProgress?.({ phase: "tools", label: "Running command", at: new Date().toISOString(),
+              operationId: input.id, agentRunId: input.agentRunId, output: { stream, text } }));
           result={tool:"command",ok:execution.exitCode===0,output:JSON.stringify(execution),metadata:{operation:"command",executable:args.executable,args:args.args,cwd,...execution}};
         } else result=await this.files.execute(saved.action,input.workspace,input.signal);
         saved.result={...result,metadata:{...result.metadata,operationId:input.id}};

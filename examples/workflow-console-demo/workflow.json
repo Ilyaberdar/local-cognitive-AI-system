@@ -1,0 +1,78 @@
+{
+  "id": "workflow-console-demo",
+  "name": "Workflow Console Demo",
+  "version": 1,
+  "description": "Creates a file, streams stdout and stderr with pauses, checks the exit code, and waits for your review. No model required.",
+  "entryNodeId": "start",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "entry",
+      "label": "Start demo",
+      "position": { "x": 0, "y": 0 },
+      "config": {}
+    },
+    {
+      "id": "write-file",
+      "type": "file_write",
+      "label": "Create demo file",
+      "position": { "x": 300, "y": 0 },
+      "config": {
+        "approval": "inherit",
+        "path": "demo-output.txt",
+        "mode": "overwrite",
+        "contentTemplate": "Workflow console demo\nStatus: file created successfully.\nMarker: WORKFLOW-CONSOLE-DEMO-OK\n"
+      }
+    },
+    {
+      "id": "print-file",
+      "type": "command",
+      "label": "Watch live output",
+      "position": { "x": 600, "y": 0 },
+      "config": {
+        "approval": "inherit",
+        "executable": "sh",
+        "args": [
+          "-c",
+          "set -eu\nprintf '[1/3] Reading the saved file in 2 seconds...\\n'\nsleep 2\ncat demo-output.txt\ngrep -q '^Marker: WORKFLOW-CONSOLE-DEMO-OK$' demo-output.txt\nsleep 2\nprintf '[2/3] File content verified.\\n'\nprintf 'Demo diagnostic: this line comes from stderr.\\n' >&2\nsleep 2\nprintf '[3/3] Command finished successfully.\\n'"
+        ],
+        "cwd": ".",
+        "timeoutMs": 30000
+      }
+    },
+    {
+      "id": "check-result",
+      "type": "decision",
+      "label": "Check command result",
+      "position": { "x": 0, "y": 240 },
+      "config": {
+        "path": "nodes.print-file.data.exitCode",
+        "operator": "eq",
+        "value": 0
+      }
+    },
+    {
+      "id": "review",
+      "type": "human_review",
+      "label": "Review the console",
+      "position": { "x": 300, "y": 240 },
+      "config": {
+        "prompt": "Check the live stdout/stderr in Console and demo-output.txt in this demo project. Select Approve & continue to finish."
+      }
+    },
+    {
+      "id": "done",
+      "type": "terminal",
+      "label": "Demo complete",
+      "position": { "x": 600, "y": 240 },
+      "config": { "runStatus": "done" }
+    }
+  ],
+  "transitions": [
+    { "id": "start-write", "from": "start", "to": "write-file", "priority": 100, "guard": { "type": "status", "equals": "ok" } },
+    { "id": "write-print", "from": "write-file", "to": "print-file", "priority": 100, "guard": { "type": "status", "equals": "ok" } },
+    { "id": "print-check", "from": "print-file", "to": "check-result", "priority": 100, "guard": { "type": "status", "equals": "ok" } },
+    { "id": "check-review", "from": "check-result", "to": "review", "label": "exit code = 0", "priority": 100, "guard": { "type": "event", "equals": "decision.true" } },
+    { "id": "review-done", "from": "review", "to": "done", "priority": 100, "guard": { "type": "event", "equals": "human_review.approved" } }
+  ]
+}

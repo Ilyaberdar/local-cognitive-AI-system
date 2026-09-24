@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { NodeConfigFields } from "./NodeConfigFields";
+import { ModelPicker } from "./ModelPicker";
+import { RunSettings } from "./RunSettings";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -16,10 +19,12 @@ import {
 } from "@xyflow/react";
 import { FsmNode } from "./FsmNode";
 import { GuardEdge } from "./GuardEdge";
-import { toFlowEdges, toFlowNodes, uniqueId, type FsmNodeData, type FsmEdgeData } from "./workflowAdapter";
+import { WorkflowConsole } from "./WorkflowConsole";
+import { toFlowEdges, toFlowNodes, uniqueId, renameNodeBindings, type FsmNodeData, type FsmEdgeData } from "./workflowAdapter";
 import type {
   TransitionGuard,
   WorkflowDefinition,
+  WorkflowConsoleViewState,
   WorkflowEditorProps,
   WorkflowNodeDefinition,
   WorkflowNodeType,
@@ -29,7 +34,9 @@ import type {
 const RUNNABLE_NODE_TYPES: Array<{ type: WorkflowNodeType; label: string }> = [
   { type: "agent", label: "Agent" },
   { type: "file_search", label: "Files" },
-  { type: "web_search", label: "Web" },
+  { type: "web_search", label: "Search web" },
+  { type: "web_fetch", label: "Read webpage" },
+  { type: "file_read", label: "Read file" },
   { type: "file_write", label: "Save" },
   { type: "command", label: "Command" },
   { type: "decision", label: "Decision" },
@@ -66,15 +73,98 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   const draftRef = useRef(draft);
   const [nodes, setNodes, applyNodeChanges] = useNodesState(toFlowNodes(draft));
   const [edges, setEdges, applyEdgeChanges] = useEdgesState(flowEdges(draft));
-  const [selected, setSelected] = useState<{ kind: "node" | "edge"; id: string } | null>(null);
+  const [selected, setSelected] = useState<{ kind: "node" | "edge"; id: string } | null>(props.initialViewState?.selected ?? null);
   const [configError, setConfigError] = useState("");
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [mapOpen, setMapOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(props.initialViewState?.inspectorOpen ?? true);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runError, setRunError] = useState("");
+  const [mapOpen, setMapOpen] = useState(props.initialViewState?.mapOpen ?? false);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDetailsElement>(null);
+  const [consoleNodeId, setConsoleNodeId] = useState(props.initialViewState?.consoleNodeId ?? "");
+  const [followActive, setFollowActive] = useState(props.initialViewState?.followActive ?? false);
+  const execution = props.execution;
+  useEffect(() => {
+    if (consoleNodeId && execution?.run.workflowSnapshot && !execution.run.workflowSnapshot.nodes.some(node => node.id === consoleNodeId)) setConsoleNodeId("");
+  }, [execution?.run.id, execution?.run.workflowSnapshot, consoleNodeId]);
+  const activeRun = Boolean(execution && !["done", "failed", "cancelled"].includes(execution.run.status));
+  const readOnly = activeRun || runBusy || props.starting;
+  const consoleCapture = useRef<() => WorkflowConsoleViewState>(undefined);
+  const runSettingsOpen = useRef(props.initialViewState?.runSettingsOpen ?? false);
+  const inspectorRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => { if (inspectorRef.current) inspectorRef.current.scrollTop = props.initialViewState?.inspectorScrollTop ?? 0; }, []);
+  useLayoutEffect(() => {
+    props.onCaptureState?.(() => ({ selected, inspectorOpen, mapOpen, consoleNodeId, followActive,
+      viewport: flow.getViewport(), runSettingsOpen: runSettingsOpen.current,
+      inspectorScrollTop: inspectorRef.current?.scrollTop ?? 0, console: consoleCapture.current?.() }));
+  });
+  const pendingReview = execution?.run.status === "waiting"
+    ? execution.nodeRuns.filter(run => run.nodeId === execution.run.currentNodeId && run.status === "waiting").at(-1) : undefined;
+  const reviewKey = pendingReview ? `${execution!.run.id}:${pendingReview.id}:${pendingReview.output?.data?.approvalId ?? "review"}` : "";
+  const [reviewState, setReviewState] = useState({ key: "", busy: false, error: "" });
+  const reviewingRef = useRef("");
+  const decideReview = useCallback(async (approved: boolean) => {
+    if (!execution || !pendingReview || !props.onReview || reviewingRef.current) return;
+    const approval = pendingReview.output?.data;
+    if (approval?.permissionRequired && typeof approval.approvalId !== "string") return;
+    reviewingRef.current = reviewKey;
+    setReviewState({ key: reviewKey, busy: true, error: "" });
+    try {
+      await props.onReview(execution.run.id, { approved,
+        ...(approval?.permissionRequired ? { approvalId: String(approval.approvalId) } : { waitingNodeRunId: pendingReview.id }) });
+      setReviewState({ key: reviewKey, busy: false, error: "" });
+    } catch (error) {
+      setReviewState({ key: reviewKey, busy: false, error: error instanceof Error ? error.message : String(error) });
+    } finally { reviewingRef.current = ""; }
+  }, [execution, pendingReview, props.onReview, reviewKey]);
+  const focusNode = useCallback((id: string) => {
+    const node = draft.nodes.find(item => item.id === id);
+    if (node) void flow.setCenter(node.position.x + 110, node.position.y + (pendingReview?.nodeId === id ? -70 : 60),
+      { zoom: pendingReview?.nodeId === id ? 0.85 : Math.max(0.75, flow.getZoom()), duration: pendingReview?.nodeId === id ? 0 : motion ? 240 : 0 });
+  }, [draft.nodes, flow, motion, pendingReview?.nodeId]);
+  useEffect(() => {
+    if (followActive && execution?.run.currentNodeId) focusNode(execution.run.currentNodeId);
+  }, [followActive, execution?.run.currentNodeId, focusNode]);
+  useEffect(() => {
+    if (!reviewKey || !pendingReview) return;
+    const node = draft.nodes.find(item => item.id === pendingReview.nodeId);
+    if (!node) return;
+    // Leave space above the node for the unscaled approval card, including on small windows.
+    let frame = 0;
+    const center = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => void flow.setCenter(node.position.x + 110, node.position.y - 70, { zoom: 0.85, duration: 0 }));
+    };
+    const observer = new ResizeObserver(center);
+    if (canvasRef.current) observer.observe(canvasRef.current);
+    center();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [reviewKey, draft.nodes, flow, motion]);
   const displayedNodes = useMemo(() => {
-    const runByNode = new Map((props.nodeRuns ?? []).map((run) => [run.nodeId, run]));
-    return nodes.map((node) => ({ ...node, data: { ...node.data, run: runByNode.get(node.id) } }));
-  }, [nodes, props.nodeRuns]);
+    const runByNode = new Map((execution?.nodeRuns ?? props.nodeRuns ?? []).map((run) => [run.nodeId, run]));
+    if (execution?.run.currentNodeId) {
+      const id = execution.run.currentNodeId;
+      const previous = runByNode.get(id);
+      const status = execution.run.status;
+      if (["queued", "waiting", "interrupted", "cancelled", "blocked", "failed"].includes(status) &&
+        (!previous || ["running", "waiting"].includes(previous.status) || status === "queued" || status === "failed")) {
+        runByNode.set(id, { ...previous, nodeId: id, status, progress: undefined });
+      }
+    }
+    return nodes.map((node) => ({ ...node, selected: selected?.kind === "node" && selected.id === node.id, data: { ...node.data, run: runByNode.get(node.id),
+      review: pendingReview?.nodeId === node.id && props.onReview ? {
+        busy: reviewState.key === reviewKey && reviewState.busy,
+        error: reviewState.key === reviewKey ? reviewState.error : "", decide: decideReview
+      } : undefined } }));
+  }, [nodes, props.nodeRuns, execution, pendingReview, props.onReview, reviewState, reviewKey, decideReview, selected]);
+  const displayedEdges = useMemo(() => {
+    const visited = new Set(execution?.nodeRuns.map(run => run.transitionId).filter(Boolean));
+    const lastTransition = execution?.events.filter(event => event.type === "transition").at(-1)?.transitionId ??
+      execution?.nodeRuns.filter(run => run.transitionId).at(-1)?.transitionId;
+    return edges.map(edge => ({ ...edge, selected: selected?.kind === "edge" && selected.id === edge.id, markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16,
+      color: visited.has(edge.id) ? "var(--accent)" : "var(--muted)" }, data: { ...edge.data!, visited: visited.has(edge.id),
+      active: edge.id === lastTransition && edge.target === execution?.run.currentNodeId && ["running", "queued"].includes(execution.run.status) } }));
+  }, [edges, execution, selected]);
 
   useEffect(() => {
     const dismissOutside = (event: PointerEvent) => {
@@ -100,6 +190,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   }, []);
 
   const commit = useCallback((mutate: (next: WorkflowDefinition) => void) => {
+    if (readOnly) return;
     const next = cloneWorkflow(draftRef.current);
     mutate(next);
     next.updatedAt = new Date().toISOString();
@@ -108,7 +199,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
     setNodes(toFlowNodes(next));
     setEdges(flowEdges(next));
     props.onChange(cloneWorkflow(next));
-  }, [props.onChange, setEdges, setNodes]);
+  }, [props.onChange, readOnly, setEdges, setNodes]);
 
   const selectedNode = selected?.kind === "node"
     ? draft.nodes.find((node) => node.id === selected.id) ?? null
@@ -220,10 +311,15 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
       const node = next.nodes.find((item) => item.id === previousId);
       if (!node) return;
       node.id = nextId;
+      next.nodes.forEach(item => { item.config = renameNodeBindings(item.config, previousId, nextId) as Record<string, unknown>; });
       if (next.entryNodeId === previousId) next.entryNodeId = nextId;
       next.transitions.forEach((transition) => {
         if (transition.from === previousId) transition.from = nextId;
         if (transition.to === previousId) transition.to = nextId;
+        if (transition.guard.type === "json_path") {
+          const prefix = `state.nodeResults.${previousId}`;
+          if (transition.guard.path === prefix || transition.guard.path.startsWith(`${prefix}.`)) transition.guard.path = `state.nodeResults.${nextId}${transition.guard.path.slice(prefix.length)}`;
+        }
       });
     });
     setSelected({ kind: "node", id: nextId });
@@ -241,15 +337,29 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   };
 
   return (
-    <div className={`fsm-editor ${inspectorOpen ? "" : "fsm-editor--inspector-hidden"}`}>
+    <div className={`fsm-editor ${inspectorOpen ? "" : "fsm-editor--inspector-hidden"} ${execution ? "fsm-editor--run" : ""} ${pendingReview ? "fsm-editor--approval" : ""}`}>
       <div className="fsm-toolbar">
         <div>
           <strong>{draft.name}</strong>
-          <span>{draft.nodes.length} nodes · {draft.transitions.length} transitions</span>
+          <span>{execution ? `Run ${execution.run.id.slice(0, 8)} · v${draft.version} · ${draft.nodes.length} nodes` : `${draft.nodes.length} nodes · ${draft.transitions.length} transitions`}</span>
         </div>
         <div className="fsm-toolbar__actions">
+          {execution && props.onStop && activeRun ? <button type="button" className="danger fsm-stop-button" disabled={runBusy} onClick={async () => {
+            setRunBusy(true); try { await props.onStop!(execution.run.id); } catch (error) { setRunError(String(error)); } finally { setRunBusy(false); }
+          }}>Stop</button> : null}
+          {execution?.run.status === "interrupted" && props.onResume ? <button type="button" disabled={runBusy} onClick={async () => {
+            setRunBusy(true); setRunError(""); try { await props.onResume!(execution.run.id); } catch (error) { setRunError(String(error)); } finally { setRunBusy(false); }
+          }}>Resume</button> : null}
+          {!activeRun && props.onRun ? <button type="button" className="fsm-run-button" disabled={runBusy || props.starting || Boolean(configError)} onClick={async () => {
+            setRunBusy(true); setRunError("");
+            try { await props.onRun!(cloneWorkflow(draftRef.current)); } catch (error) { setRunError(error instanceof Error ? error.message : String(error)); } finally { setRunBusy(false); }
+          }}>{runBusy || props.starting ? "Starting…" : "▶ Run"}</button> : null}
+          {execution ? <>
+            <button type="button" onClick={() => execution.run.currentNodeId && focusNode(execution.run.currentNodeId)}>Focus active</button>
+            <button type="button" aria-pressed={followActive} onClick={() => setFollowActive(value => !value)}>Follow active</button>
+          </> : null}
           <details className="fsm-add-menu" ref={addMenuRef}>
-            <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>Add step</summary>
+            <summary aria-disabled={readOnly} onClick={event => { if (readOnly) event.preventDefault(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>Add step</summary>
             <div className="fsm-add-menu__items" onClick={() => {
               if (addMenuRef.current) addMenuRef.current.open = false;
             }}>
@@ -266,7 +376,11 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
         </div>
       </div>
 
-      {props.validation ? (
+      {runError ? <div className="fsm-field-error" role="alert">{runError}</div> : null}
+      <RunSettings key={draft.id} options={draft.runDefaults ?? {}} projects={props.projects} onChooseFolder={props.onChooseFolder}
+        hasRun={Boolean(execution)} disabled={readOnly} initiallyOpen={props.initialViewState?.runSettingsOpen} onOpenChange={open => { runSettingsOpen.current = open; }}
+        onUpdate={runDefaults => updateWorkflow({ runDefaults })} />
+      {props.validation && !props.validation.ok ? (
         <div className={`fsm-validation ${props.validation.ok ? "is-valid" : "is-invalid"}`}>
           <strong>{props.validation.ok ? "Workflow valid" : "Validation failed"}</strong>
           {!props.validation.ok ? <span>{props.validation.errors.join(" ")}</span> : null}
@@ -274,16 +388,17 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
       ) : null}
 
       <div className="fsm-workspace">
-        <div className="fsm-canvas">
+        <div className="fsm-canvas" ref={canvasRef}>
           <ReactFlow
             nodes={displayedNodes}
-            edges={edges}
+            edges={displayedEdges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             colorMode={props.colorMode}
             proOptions={{ hideAttribution: true }}
             defaultMarkerColor="var(--muted)"
-            fitView
+            fitView={!props.initialViewState?.viewport}
+            defaultViewport={props.initialViewState?.viewport}
             fitViewOptions={{ padding: 0.25, maxZoom: 1.15 }}
             zoomOnDoubleClick={motion}
             onDoubleClick={event => {
@@ -291,7 +406,10 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
             }}
             minZoom={0.25}
             maxZoom={1.8}
-            deleteKeyCode={["Backspace", "Delete"]}
+            deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
+            nodesDraggable={!readOnly}
+            nodesConnectable={!readOnly}
+            edgesReconnectable={!readOnly}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeDragStop={onNodeDragStop}
@@ -323,20 +441,24 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
           </ReactFlow>
         </div>
 
-        <aside className="fsm-inspector" hidden={!inspectorOpen}>
+        <aside className="fsm-inspector" ref={inspectorRef} hidden={!inspectorOpen}>
           <div className="fsm-inspector__header">
             <div>
               <span>Inspector</span>
               <strong>{selectedNode?.label ?? selectedEdge?.label ?? selectedEdge?.id ?? "Workflow"}</strong>
             </div>
-            {selected ? <button type="button" className="danger" onClick={deleteSelected}>Delete</button> : null}
+            {selected ? <button type="button" className="danger" disabled={readOnly} onClick={deleteSelected}>Delete</button> : null}
           </div>
 
+          {readOnly ? <p className="fsm-model-hint">Run in progress. Settings unlock when it finishes or you press Stop.</p> : null}
+          <fieldset className="fsm-settings-fields" disabled={readOnly}>
           {!selected ? (
             <WorkflowFields draft={draft} onUpdate={updateWorkflow} />
           ) : selectedNode ? (
             <NodeFields
+              disabled={Boolean(readOnly)}
               node={selectedNode}
+              nodes={draft.nodes}
               entryNodeId={draft.entryNodeId}
               providers={props.providers}
               configError={configError}
@@ -349,9 +471,11 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
           ) : selectedEdge ? (
             <EdgeFields edge={selectedEdge} onUpdate={updateEdge} />
           ) : null}
+          </fieldset>
         </aside>
       </div>
-      <div className="fsm-editor__hint">Connect node handles to create transitions. Select a node or transition to edit it.</div>
+      <WorkflowConsole providers={props.providers} execution={execution} workflow={execution?.run.workflowSnapshot ?? draft}
+        nodeFilter={consoleNodeId} onFilter={setConsoleNodeId} onFocus={focusNode} initialState={props.initialViewState?.console} onCaptureState={capture => { consoleCapture.current = capture; }} />
     </div>
   );
 }
@@ -366,13 +490,15 @@ function WorkflowFields({ draft, onUpdate }: {
       <Field label="Name"><input value={draft.name} onChange={(event) => onUpdate({ name: event.target.value })} /></Field>
       <Field label="Version"><input type="number" min="1" value={draft.version} onChange={(event) => onUpdate({ version: Math.max(1, Number(event.target.value) || 1) })} /></Field>
       <Field label="Description"><textarea rows={4} value={draft.description ?? ""} onChange={(event) => onUpdate({ description: event.target.value })} /></Field>
-      <p className="fsm-model-hint">Choose a project when creating a task. The same workflow can run in different folders.</p>
+      <p className="fsm-model-hint">Choose a folder in Run settings, then press Run. The same workflow can also run from a task.</p>
     </div>
   );
 }
 
-function NodeFields({ node, entryNodeId, providers, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
+function NodeFields({ node, nodes, disabled, entryNodeId, providers, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
   node: WorkflowNodeDefinition;
+  nodes: WorkflowNodeDefinition[];
+  disabled: boolean;
   entryNodeId: string;
   providers: WorkflowEditorProps["providers"];
   configError: string;
@@ -392,7 +518,7 @@ function NodeFields({ node, entryNodeId, providers, configError, onConfigError, 
       <Field label="Label"><input value={node.label} onChange={(event) => onUpdate({ label: event.target.value })} /></Field>
       <Field label="Type">
         <select value={node.type} onChange={(event) => onUpdate({ type: event.target.value as WorkflowNodeType })}>
-          {["entry", "agent", "file_search", "web_search", "file_write", "command", "decision", "tool", "human_review", "terminal"].map((type) => <option key={type}>{type}</option>)}
+          {["entry", "agent", "file_search", "file_read", "web_search", "web_fetch", "file_write", "command", "decision", "tool", "human_review", "terminal"].map((type) => <option key={type}>{type}</option>)}
         </select>
       </Field>
       {entryNodeId !== node.id ? <button type="button" onClick={onSetEntry}>Set as entry</button> : <div className="fsm-inline-status">Entry node</div>}
@@ -400,32 +526,33 @@ function NodeFields({ node, entryNodeId, providers, configError, onConfigError, 
         <>
           <Field label="Provider">
             <select aria-label="Provider" value={providerId} onChange={(event) => onConfigUpdate({ providerId: event.target.value, model: "" })}>
-              <option value="">Task/session default</option>
+              <option value="">Run default</option>
               {providerId && !provider ? <option value={providerId} disabled>{providerId} · unavailable</option> : null}
               {providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </Field>
           <Field label="Model">
-            {provider?.installedOnly ? <>
-              <select aria-label="Model" aria-describedby={`fsm-model-note-${node.id}`} value={model} onChange={(event) => onConfigUpdate({ model: event.target.value })}>
-                <option value="">{provider.defaultModel ? `Provider default: ${provider.modelLabels?.[provider.defaultModel] || provider.defaultModel}` : "Choose an installed model"}</option>
-                {model && !provider.models.includes(model) ? <option value={model} disabled>{model} · unavailable</option> : null}
-                {provider.models.map((item) => <option key={item} value={item}>{provider.modelLabels?.[item] || item}</option>)}
-              </select>
-              {model && !provider.models.includes(model) ? <span id={`fsm-model-note-${node.id}`} className="fsm-model-warning">This saved model is not on this device. Download it or select an installed model.</span> : !provider.models.length ? <span id={`fsm-model-note-${node.id}`} className="fsm-model-warning">Download a model in Models before running this node.</span> : <span id={`fsm-model-note-${node.id}`} className="fsm-model-hint">Installed models load automatically when this node runs.</span>}
-            </> : <>
-              <input aria-label="Model" list={`fsm-models-${node.id}`} value={model} placeholder={provider?.defaultModel ?? "Provider default"} onChange={(event) => onConfigUpdate({ model: event.target.value })} />
-              <datalist id={`fsm-models-${node.id}`}>{(provider?.models ?? []).map((item) => <option key={item} value={item} />)}</datalist>
-            </>}
+            <ModelPicker key={`${node.id}-${providerId}`} provider={provider} value={model} disabled={disabled}
+              describedBy={provider?.installedOnly ? `fsm-model-note-${node.id}` : undefined} onChange={model => onConfigUpdate({ model })} />
+            {provider?.installedOnly ? <span id={`fsm-model-note-${node.id}`} className={(model || provider.defaultModel) && !provider.models.includes(model || provider.defaultModel!) || !provider.models.length ? "fsm-model-warning" : "fsm-model-hint"}>
+              {(model || provider.defaultModel) && !provider.models.includes(model || provider.defaultModel!) ? "This model is unavailable or incompatible. Check Models and choose a supported model." : !provider.models.length ? "Download a model in Models before running this node." : "Installed models load automatically when this node runs."}
+            </span> : null}
           </Field>
         </>
       ) : null}
-      {["agent", "file_search", "file_write", "command"].includes(node.type) ? <>
-        <p className="fsm-model-hint">Paths start in the task’s project folder, or its own persistent folder when no project is selected. Access follows the task’s setting.</p>
+      {["agent", "file_search", "file_read", "file_write", "command"].includes(node.type) ? <>
+        <p className="fsm-model-hint">Paths start in the run’s workspace folder.</p>
         <div className="fsm-output-contract"><span>Workspace bindings</span><code>{"{{workspace.rootPath}} · {{workspace.outputDir}} · {{project.name}} · {{project.id}}"}</code></div>
       </> : null}
-      {["file_write", "command"].includes(node.type) ? <Field label="Step approval"><select value={String(node.config.approval ?? (node.config.access === "full" ? "inherit" : "always"))} onChange={event => onConfigUpdate({ approval: event.target.value })}><option value="inherit">Follow task access</option><option value="always">Always ask for this step</option></select></Field> : null}
+      {["agent", "file_read", "file_search", "file_write", "command", "web_fetch"].includes(node.type) ? <Field label="Step access"><select aria-label="Step access" value={["never", "always"].includes(String(node.config.approval)) ? String(node.config.approval) : ""} onChange={event => onConfigUpdate({ approval: event.target.value })}>
+        {!["never", "always"].includes(String(node.config.approval)) ? <option value="" disabled>Existing rules · choose to override</option> : null}
+        <option value="always">Ask</option><option value="never">Full access · no requests</option>
+      </select><span className="fsm-model-hint">Ask shows Approve / Reject above this node. Full access runs this step’s actions without asking.</span>
+        {!["never", "always"].includes(String(node.config.approval)) ? <span className="fsm-model-hint">This saved step keeps its previous access rules until you choose a mode.</span> : null}
+      </Field> : null}
       {node.type === "agent" ? <p className="fsm-model-hint">Agents read files, inspect tool results, and continue until done or the execution limit is reached.</p> : null}
+      <NodeConfigFields node={node} nodes={nodes} onUpdate={onConfigUpdate} />
+      <details className="fsm-advanced-config"><summary>Advanced JSON</summary>
       <Field label="Config JSON">
         <textarea
           key={`${node.id}-${JSON.stringify(node.config)}`}
@@ -443,6 +570,7 @@ function NodeFields({ node, entryNodeId, providers, configError, onConfigError, 
           }}
         />
       </Field>
+      </details>
       <div className="fsm-output-contract">
         <span>Output bindings</span>
         <code>{nodeOutputBindings(node)}</code>
@@ -517,8 +645,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function defaultNodeConfig(type: WorkflowNodeType): Record<string, unknown> {
-  if (type === "agent") return { mode: "code", promptTemplate: "{{task.title}}\n\n{{task.description}}" };
+  if (type === "agent") return { mode: "code", promptTemplate: "{{input.title}}\n\n{{input.description}}", approval: "always" };
+  if (type === "web_fetch") return { urlTemplate: "https://example.com", maxChars: 12000, approval: "always" };
+  if (type === "file_read") return { path: "findings.md", startLine: 1, approval: "always" };
   if (type === "file_search") return {
+    approval: "always",
     root: ".",
     queryTemplate: "{{task.description}}",
     include: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.json", "**/*.md"],
@@ -533,13 +664,13 @@ function defaultNodeConfig(type: WorkflowNodeType): Record<string, unknown> {
     limit: 8
   };
   if (type === "file_write") return {
-    approval: "inherit",
+    approval: "always",
     path: "workflow-output.md",
     mode: "overwrite",
     contentTemplate: "{{nodes.agent.data.response}}"
   };
   if (type === "command") return {
-    approval: "inherit",
+    approval: "always",
     executable: "npm",
     args: ["test"],
     cwd: ".",
@@ -560,6 +691,8 @@ function nodeOutputBindings(node: WorkflowNodeDefinition): string {
 
   switch (node.type) {
     case "agent": return `${prefix}.data.response · ${prefix}.data.tools`;
+    case "web_fetch": return `${prefix}.data.text · ${prefix}.data.url · ${prefix}.data.truncated`;
+    case "file_read": return `${prefix}.data.content · ${prefix}.data.path · ${prefix}.data.truncated`;
     case "file_search": return `${prefix}.data.results · ${prefix}.data.scannedFiles`;
     case "web_search": return `${prefix}.data.results · ${prefix}.data.query`;
     case "file_write": return `${prefix}.data.path · ${prefix}.data.bytes`;

@@ -9,7 +9,7 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { artifactDownloadUrl, validateRevision } from "./HuggingFaceCatalog";
 import { getFreeDiskBytes, readGGUFMetadata } from "./ModelCompatibility";
 import { CatalogModel, CatalogVariant, DownloadJob, LibraryModel, LocalModelError, ModelArtifact } from "./types";
-import { allModelArtifacts, assertVisionProjector } from "./ModelArtifacts";
+import { allModelArtifacts, assertStandaloneModel, assertVisionProjector } from "./ModelArtifacts";
 
 export const sha256File = async (filePath: string, signal?: AbortSignal): Promise<string> => {
   const hash = createHash("sha256");
@@ -32,6 +32,7 @@ export class ModelDownloadService {
     if (model.gated) throw new LocalModelError("This model requires access from Hugging Face. Gated downloads are not supported in this release.", 403);
     validateRevision(model.revision);
     if (!variant.files.length) throw new LocalModelError("This variant has no complete verified GGUF artifact set.");
+    assertStandaloneModel(undefined, variant.files.map(file => file.path));
     const projector = projectorPath ? model.projectors?.find(file => file.path === projectorPath) : undefined;
     if (projectorPath && !projector) throw new LocalModelError("Select a vision adapter from this pinned repository revision.", 400, "invalid_projector");
     if (projector && variant.files.some(file => file.path === projector.path)) throw new LocalModelError("The vision adapter must be separate from the main model weights.");
@@ -73,6 +74,7 @@ export class ModelDownloadService {
     if (this.disposed) throw new LocalModelError("Downloads are shutting down.", 503);
     const job = this.store.getJob(id);
     if (["completed", "downloading", "verifying", "queued"].includes(job.state)) return job;
+    assertStandaloneModel(undefined, job.files.map(file => file.path));
     const installed = this.store.listModels().find(model => model.id === job.libraryId);
     if (installed) this.assertSameProjector(installed.projector, job.projector);
     if (this.store.listJobs().some(other => other.id !== job.id && other.libraryId === job.libraryId && ["queued", "downloading", "verifying", "paused"].includes(other.state))) throw new LocalModelError("Another download for this model already exists. Resume or cancel that download first.", 409, "download_conflict");
@@ -175,6 +177,7 @@ export class ModelDownloadService {
     }
     signal.throwIfAborted();
     const metadata = await readGGUFMetadata(await this.store.safePath(folder, job.files[0].path));
+    assertStandaloneModel(metadata, job.files.map(file => file.path));
     if (job.projector) assertVisionProjector(await readGGUFMetadata(await this.store.safePath(folder, job.projector.path)));
     signal.throwIfAborted();
     if (this.active?.id === job.id) this.active.committing = true;

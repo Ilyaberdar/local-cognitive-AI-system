@@ -12,7 +12,7 @@ export class LlamaCppProvider implements LLMProvider {
     capabilities: { local: true, managed: true, jsonMode: true, reasoning: false, vision: true } }; }
   async listModels(): Promise<ProviderModel[]> {
     if (this.options.enabled === false) return [];
-    return (await this.service.listAllModels()).map((model) => ({ id: model.id, providerId: this.id, providerName: this.name, displayName: model.displayName, vision: Boolean(model.projector) }));
+    return (await this.service.listAllModels()).filter(model => model.compatibility?.canLoad !== false).map((model) => ({ id: model.id, providerId: this.id, providerName: this.name, displayName: model.displayName, vision: Boolean(model.projector) }));
   }
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     if (this.options.enabled === false) return { provider: this.id, model: request.model ?? this.defaultModel, text: "", error: "Local models are disabled in Settings." };

@@ -1,0 +1,209 @@
+{
+  "id": "standalone-bonsai-research",
+  "name": "Bonsai Research → Code → Report",
+  "version": 1,
+  "description": "Read the IANA registry, research it with Bonsai, save findings, let a second Bonsai agent read them and write Python, then verify the sorted JSON and Markdown report.",
+  "entryNodeId": "entry",
+  "runDefaults": {
+    "description": "Research the reserved example domains and produce a sorted report.",
+    "accessMode": "default",
+    "maxSteps": 25
+  },
+  "nodes": [
+    {
+      "id": "entry",
+      "type": "entry",
+      "label": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "config": {}
+    },
+    {
+      "id": "web",
+      "type": "web_fetch",
+      "label": "Read IANA registry",
+      "position": {
+        "x": 310,
+        "y": 0
+      },
+      "config": {
+        "urlTemplate": "https://www.iana.org/assignments/special-use-domain-names/special-use-domain-names.xhtml",
+        "maxChars": 9000,
+        "approval": "inherit"
+      }
+    },
+    {
+      "id": "research",
+      "type": "agent",
+      "label": "Bonsai · Research",
+      "position": {
+        "x": 620,
+        "y": 0
+      },
+      "config": {
+        "providerId": "llamacpp",
+        "model": "gguf-4c0139a20d027bbd29e2d595",
+        "mode": "code",
+        "promptTemplate": "Research the supplied IANA registry text. Extract only the three reserved example domains ending in .com, .net, and .org. Return a concise Markdown note with those three domain names and the source URL. Use only the supplied reference data. Do not write files or run commands in this step. Keep the answer under 120 words.",
+        "contextTemplate": "Source: {{nodes.web.data.url}}\n{{nodes.web.data.text}}",
+        "reasoningBudget": 0
+      }
+    },
+    {
+      "id": "save-findings",
+      "type": "file_write",
+      "label": "Save findings",
+      "position": {
+        "x": 930,
+        "y": 0
+      },
+      "config": {
+        "path": "research/findings.md",
+        "contentTemplate": "{{nodes.research.data.response}}",
+        "mode": "overwrite",
+        "approval": "inherit"
+      }
+    },
+    {
+      "id": "developer",
+      "type": "agent",
+      "label": "Bonsai · Read and code",
+      "position": {
+        "x": 0,
+        "y": 240
+      },
+      "config": {
+        "providerId": "llamacpp",
+        "model": "gguf-4c0139a20d027bbd29e2d595",
+        "mode": "code",
+        "inputFiles": [
+          "{{nodes.save-findings.data.path}}"
+        ],
+        "promptTemplate": "Read the input findings file with file.read. Then use file.write to create sort_domains.py in the workspace. Write a small Python 3 script using only the standard library: read research/findings.md, extract full domain names with re.findall('example[.](?:com|net|org)', text), deduplicate them, sort them alphabetically, write the JSON array to sorted-domains.json, and print the sorted names. For a new file use expectedVersion:\"missing\"; if the script already exists, read it before updating it with its returned version. Do not run the script; the next workflow command will do that. After the file is written, return a short Markdown report with the three sorted domains and the script filename. Complete the file operation before returning the report.",
+        "reasoningBudget": 0
+      }
+    },
+    {
+      "id": "save-report",
+      "type": "file_write",
+      "label": "Save final report",
+      "position": {
+        "x": 310,
+        "y": 240
+      },
+      "config": {
+        "path": "report.md",
+        "contentTemplate": "{{nodes.developer.data.response}}",
+        "mode": "overwrite",
+        "approval": "inherit"
+      }
+    },
+    {
+      "id": "verify",
+      "type": "command",
+      "label": "Run and verify code",
+      "position": {
+        "x": 620,
+        "y": 240
+      },
+      "config": {
+        "executable": "sh",
+        "args": [
+          "-c",
+          "python3 sort_domains.py && python3 -c 'import json,pathlib; expected=['\"'\"'example.com'\"'\"','\"'\"'example.net'\"'\"','\"'\"'example.org'\"'\"']; actual=json.loads(pathlib.Path('\"'\"'sorted-domains.json'\"'\"').read_text()); assert actual==expected,(actual,expected); report=pathlib.Path('\"'\"'report.md'\"'\"').read_text(); assert all(d in report for d in expected),report; assert pathlib.Path('\"'\"'research/findings.md'\"'\"').stat().st_size>0; print('\"'\"'VERIFIED: findings, generated Python, sorted JSON and final Markdown report'\"'\"')'"
+        ],
+        "cwd": ".",
+        "timeoutMs": 30000,
+        "approval": "inherit"
+      }
+    },
+    {
+      "id": "done",
+      "type": "terminal",
+      "label": "Done",
+      "position": {
+        "x": 930,
+        "y": 240
+      },
+      "config": {
+        "runStatus": "done"
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "id": "entry-next",
+      "from": "entry",
+      "to": "web",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    },
+    {
+      "id": "web-next",
+      "from": "web",
+      "to": "research",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    },
+    {
+      "id": "research-next",
+      "from": "research",
+      "to": "save-findings",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    },
+    {
+      "id": "save-findings-next",
+      "from": "save-findings",
+      "to": "developer",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    },
+    {
+      "id": "developer-next",
+      "from": "developer",
+      "to": "save-report",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    },
+    {
+      "id": "save-report-next",
+      "from": "save-report",
+      "to": "verify",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    },
+    {
+      "id": "verify-next",
+      "from": "verify",
+      "to": "done",
+      "priority": 100,
+      "guard": {
+        "type": "status",
+        "equals": "ok"
+      }
+    }
+  ],
+  "createdAt": "",
+  "updatedAt": ""
+}

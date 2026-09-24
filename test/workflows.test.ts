@@ -27,7 +27,7 @@ class FakeAgentExecutor implements NodeExecutor {
     return {
       status: "ok",
       event: "agent.completed",
-      summary: `processed:${context.task.title}`,
+      summary: `processed:${context.task?.title}`,
       data: {
         response: "done"
       }

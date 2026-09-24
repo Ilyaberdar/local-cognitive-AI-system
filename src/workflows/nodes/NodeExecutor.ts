@@ -12,7 +12,7 @@ import {
 } from "../types";
 
 export interface NodeExecutionContext {
-  task: Task;
+  task?: Task;
   workflow: WorkflowDefinition;
   run: WorkflowRun;
   node: WorkflowNode;

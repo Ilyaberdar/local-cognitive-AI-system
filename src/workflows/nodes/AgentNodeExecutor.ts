@@ -1,8 +1,10 @@
 import { CognitiveEngine } from "../../core/CognitiveEngine";
 import { ProcessResult, ProviderTarget, SessionSettings } from "../../types";
 import { NodeResult, WorkflowNode } from "../types";
-import { renderWorkflowTemplate } from "../template";
+import { buildAgentInput } from "../template";
+import { withLocalThinkingBudget } from "../../llm/InferenceThinking";
 import { NodeExecutor, NodeExecutionContext } from "./NodeExecutor";
+import { nodeAccess } from "./NodeAccess";
 
 export class AgentNodeExecutor implements NodeExecutor {
   readonly type = "agent" as const;
@@ -24,10 +26,7 @@ export class AgentNodeExecutor implements NodeExecutor {
   }
 
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
-    const prompt = context.agentInput ?? renderWorkflowTemplate(
-      String(context.node.config.promptTemplate ?? "{{task.title}}\n\n{{task.description}}"),
-      context
-    );
+    const prompt = context.agentInput ?? buildAgentInput(context);
     const mode = readMode(context.node.config.mode);
     const frozenTarget = context.run.executionSnapshot?.nodeTargets?.[context.node.id];
     const providerId = frozenTarget ? frozenTarget.providerId : readOptionalString(context.node.config.providerId);
@@ -37,15 +36,17 @@ export class AgentNodeExecutor implements NodeExecutor {
     const agentRunId = context.agentRunId ?? `workflow-${context.run.id}:${context.node.id}`;
     const workspace = context.workspace ?? context.run.workspace;
     const approvalId = typeof context.approval?.approvalId === "string" ? context.approval.approvalId : undefined;
-    const result = await this.engine.process({
+    const result = await withLocalThinkingBudget(typeof context.node.config.reasoningBudget === "number" ? context.node.config.reasoningBudget : undefined, () => this.engine.process({
       input: prompt,
       providerId,
       model,
       signal: context.signal,
       onProgress: context.onProgress,
       ...(workspace ? { execution: {
+        contextMode: "explicit",
+        localReasoningBudget: typeof context.node.config.reasoningBudget === "number" ? context.node.config.reasoningBudget : undefined,
         workspace,
-        accessMode: context.accessMode ?? context.run.executionSnapshot?.accessMode ?? context.task.accessMode ?? "default",
+        accessMode: nodeAccess(context).accessMode,
         agentRunId,
         pauseForApproval: true,
         requireApproval: context.node.config.approval === "always",
@@ -57,15 +58,16 @@ export class AgentNodeExecutor implements NodeExecutor {
         channel: "system"
       },
       metadata: {
-        attachments: context.task.attachments,
+        attachments: context.task?.attachments,
+        includePreviousAttachments: false,
         mode,
-        taskId: context.task.id,
+        taskId: context.task?.id,
         workflowId: context.workflow.id,
         workflowVersion: context.workflow.version,
         runId: context.run.id,
         nodeId: context.node.id
       }
-    });
+    }));
 
     const unknownOperation = result.tools.find(tool => tool.metadata?.unknown === true);
     if (unknownOperation) return {
