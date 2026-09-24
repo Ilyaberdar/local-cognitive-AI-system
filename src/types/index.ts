@@ -400,6 +400,8 @@ export interface LLMImage {
 
 export interface LLMRequest {
   outputPurpose?: "agent-action";
+  /** Per-request thinking token budget for the bundled llama.cpp runtime. */
+  localReasoningBudget?: number;
   prompt: string;
   images?: LLMImage[];
   systemPrompt?: string;
@@ -444,6 +446,9 @@ export interface ExecutionContext {
 
 /** Server-owned execution parameters. HTTP/MCP metadata must never populate this. */
 export interface InternalExecutionContext {
+  /** Workflow nodes receive selected inputs, without automatic project/chat recall. */
+  contextMode?: "explicit";
+  localReasoningBudget?: number;
   workspace: WorkspaceSnapshot;
   accessMode: SubagentAccessMode;
   agentRunId: string;
@@ -454,6 +459,9 @@ export interface InternalExecutionContext {
 }
 
 export interface ProcessProgressEvent {
+  output?: { stream: "stdout" | "stderr"; text: string };
+  agentRunId?: string;
+  operationId?: string;
   phase: string;
   label: string;
   detail?: string;

@@ -42,17 +42,19 @@ export class AgentLoopRunner {
       context.signal?.throwIfAborted();
       if(run.pending){
         const pending=run.pending;
-        context.onProgress?.({phase:"tools",label:pending.action.tool,detail:String(pending.action.arguments.path??pending.action.arguments.cwd??""),at:new Date().toISOString()});
+        context.onProgress?.({phase:"tools",label:pending.action.tool,detail:String(pending.action.arguments.path??pending.action.arguments.cwd??""),agentRunId:input.id,operationId:pending.id,at:new Date().toISOString()});
         const outcome=await this.operations.execute({id:pending.id,agentRunId:input.id,workspace:context.workspace,
           accessMode:context.sessionSettings.defaultAccessMode,tool:pending.action.tool,arguments:pending.action.arguments,
           approval:context.execution?.approval,pauseForApproval:context.execution?.pauseForApproval,requestApproval:context.requestApproval,
           requireApproval:context.execution?.requireApproval,
-          readOnly:input.readOnly,signal:context.signal}).catch(error=>{
+          readOnly:input.readOnly,signal:context.signal,onProgress:context.onProgress}).catch(error=>{
             if(context.signal?.aborted)throw error;
             return {result:{tool:pending.action.tool.startsWith("file.")?"file":"command",ok:false,output:error instanceof Error?error.message:String(error)} as ToolExecutionResult,pendingApproval:undefined};
           });
         if(outcome.pendingApproval){run.status="waiting";pending.approval=outcome.pendingApproval;await this.store.save(run);return this.result(run,outcome.pendingApproval);}
         if(!outcome.result)throw new Error("Operation did not return a result.");
+        context.onProgress?.({phase:outcome.result.ok?"tool_result":"tool_error",label:`${pending.action.tool} ${outcome.result.ok?"completed":"failed"}`,
+          detail:outcome.result.output.slice(0,1200),agentRunId:input.id,operationId:pending.id,at:new Date().toISOString()});
         run.tools.push(outcome.result);
         run.turns.push({type:"result",content:JSON.stringify({...outcome.result,action:pending.action.tool})});
         delete run.pending;run.status="running";
@@ -61,9 +63,10 @@ export class AgentLoopRunner {
         if(outcome.result.metadata?.permissionRequired){run.error=outcome.result.output;break;}
         continue;
       }
-      context.onProgress?.({phase:"generating",label:"Working in project",detail:`Step ${run.steps+1}`,at:new Date().toISOString()});
+      context.onProgress?.({phase:"generating",label:"Working in project",detail:`Step ${run.steps+1}`,agentRunId:input.id,at:new Date().toISOString()});
       const generated=await this.generate(input,run,{
         outputPurpose:"agent-action",
+        localReasoningBudget:context.execution?.localReasoningBudget,
         model:input.target.model,
         systemPrompt:[
           "You are an agent working with real files. Follow the user's task and use tools to obtain evidence before making claims.",
@@ -97,6 +100,8 @@ export class AgentLoopRunner {
         await this.store.save(run);
       }catch(error){
         run.repairs++;
+        context.onProgress?.({phase:"correction",label:"Invalid action format",detail:`Correction ${run.repairs}/${run.limits.maxRepairs}: ${error instanceof Error?error.message:String(error)}`,
+          agentRunId:input.id,at:new Date().toISOString()});
         run.turns.push({type:"format_error",content:error instanceof Error?error.message:String(error)});
         if(run.repairs>=run.limits.maxRepairs){run.error=`Agent could not produce a valid next action after ${run.limits.maxRepairs===3?"three":run.limits.maxRepairs} corrections.`;break;}
         await this.store.save(run);
@@ -133,6 +138,10 @@ export class AgentLoopRunner {
         if(available<512)throw new Error("The user task and required agent protocol exceed the configured context limit. Shorten the task or increase AGENT_CONTEXT_CHARS.");
         const supporting=truncate(run.instructions,Math.min(16000,Math.floor(available/3)),"\n[SUPPORTING CONTEXT TRUNCATED: request the relevant source when needed]\n");
         request={...request,signal:controller.signal,timeoutMs:remainingMs,
+          onProgress: event => input.context.onProgress?.({ phase: event.phase,
+            label: event.phase === "queued" ? "Waiting for model" : event.phase === "loading" ? "Loading model" : "Generating",
+            detail: `${event.model}${event.queuePosition ? ` · queue position ${event.queuePosition}` : ""} · Step ${run.steps}`,
+            agentRunId: input.id, at: new Date().toISOString() }),
           systemPrompt:supporting?`${request.systemPrompt}\n\n${supporting}`:request.systemPrompt,
           prompt:`${prefix}${this.transcript(run,available-supporting.length-2)}${suffix}`};
         // Reserve before inference: an interrupted request cannot regain a consumed turn.
@@ -146,6 +155,7 @@ export class AgentLoopRunner {
       }catch(error){
         if(started!==undefined){run.activeMs+=Math.max(0,Date.now()-started);await this.store.save(run);}
         if(input.context.signal?.aborted)throw error;
+        if(controller.signal.aborted)return {error:`Agent group reached its active generation time limit (${limits.maxActiveMs} ms).`};
         return {error:error instanceof Error?error.message:String(error)};
       }finally{clearTimeout(timeout);input.context.signal?.removeEventListener("abort",abort);}
     });

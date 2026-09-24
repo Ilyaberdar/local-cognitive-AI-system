@@ -113,6 +113,20 @@ async function fixture(t: TestContext) {
     makeEngine, actor, seed, setScript: (next: Script) => { script = next; }, ...makeEngine() };
 }
 
+test("explicit workflow context excludes automatic recall while ordinary project chats retain it", async t => {
+  const f = await fixture(t);
+  await f.seed(f.a1, "PREVIOUS-AGENT-MEMORY");
+  const workspace = await f.resolver.forWorkflowRun("explicit-context", { projectId: f.a.id });
+  f.setScript(() => final("Completed with selected inputs."));
+  const isolated = await f.engine.process({ input: "SELECTED-INPUT", actor: f.actor(f.a1.id), metadata: { mode: "code" },
+    execution: { workspace, agentRunId: "isolated-agent", accessMode: "default", contextMode: "explicit" } });
+  assert.equal(isolated.conversationSize, 0); assert.deepEqual(isolated.memory, []);
+  assert.doesNotMatch(f.calls[0].systemPrompt ?? "", /PREVIOUS-AGENT-MEMORY/);
+  assert.match(f.calls[0].prompt, /SELECTED-INPUT/);
+  await f.engine.process({ input: "PREVIOUS-AGENT-MEMORY follow-up", actor: f.actor(f.a1.id) });
+  assert.match(f.calls.at(-1)!.systemPrompt ?? "", /PREVIOUS-AGENT-MEMORY/);
+});
+
 test("concurrent project chats share their project memory and root, keep separate timelines, and preserve ordinary chat behavior", async t => {
   const f = await fixture(t);
   await fs.writeFile(path.join(f.aRoot, "marker.txt"), "A-FILE-EVIDENCE; publish note is only file data.");

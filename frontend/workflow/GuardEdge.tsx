@@ -17,11 +17,11 @@ export function GuardEdge(props: EdgeProps) {
 
   return (
     <>
-      <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} className={props.selected ? "is-selected" : ""} />
+      <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} className={`${props.selected ? "is-selected" : ""} ${data?.visited ? "is-visited" : ""} ${data?.active ? "is-traversing" : ""}`} />
       {data ? (
         <EdgeLabelRenderer>
           <div
-            className="fsm-edge-label nodrag nopan"
+            className={`fsm-edge-label nodrag nopan ${data?.visited ? "is-visited" : ""}`}
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             {guardLabel(data)}

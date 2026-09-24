@@ -5,6 +5,7 @@ import { OutputSanitizer } from "./OutputSanitizer";
 import { LLMRegistry } from "./LLMRegistry";
 import { currentInferenceProgress } from "./InferenceProgress";
 import { currentInferenceImages, validateImages } from "./InferenceImages";
+import { currentLocalThinkingBudget } from "./InferenceThinking";
 
 export class LLMService {
   constructor(
@@ -22,7 +23,8 @@ export class LLMService {
       return { provider: provider.id, model: request.model ?? provider.defaultModel, text: "", error: `Provider ${provider.name} is disabled or not configured.` };
     }
     const images = validateImages(request.images ?? currentInferenceImages());
-    const response = await provider.generateText({ ...request, images, onProgress: request.onProgress ?? currentInferenceProgress() });
+    const response = await provider.generateText({ ...request, images, onProgress: request.onProgress ?? currentInferenceProgress(),
+      localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() });
     request.signal?.throwIfAborted();
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
     const text = request.outputPurpose === "agent-action"

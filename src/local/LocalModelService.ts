@@ -11,7 +11,7 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
 import { LlamaCppRuntime } from "./LlamaCppRuntime";
-import { allModelArtifacts, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
+import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
 import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, ModelArtifact } from "./types";
 
 export class LocalModelService implements LocalModelManager {
@@ -86,7 +86,7 @@ export class LocalModelService implements LocalModelManager {
       const current = runtime.modelId === model.id;
       const state = current ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[runtime.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : "unloaded";
       return { ...model, sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
-        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true),
+        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, undefined, model.files.map(file => file.path)),
         error: state === "error" ? runtime.error : undefined };
     });
     return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence };
@@ -182,6 +182,7 @@ export class LocalModelService implements LocalModelManager {
       const stat = await fs.stat(file);
       if (!stat.isFile()) throw new LocalModelError("The import path is not a regular file.");
       const metadata = await readGGUFMetadata(file);
+      if (!isProjectorMetadata(metadata)) assertStandaloneModel(metadata, [path.basename(file)]);
       sources.push({ source: file, metadata, artifact: { path: path.basename(file), sizeBytes: stat.size, sha256: await sha256File(file, this.lifetime.signal) } });
     }
     const projectors = sources.filter(file => isProjectorMetadata(file.metadata));
@@ -270,7 +271,7 @@ export class LocalModelService implements LocalModelManager {
     this.assertLibrary();
     if (!this.options.enabled) throw new LocalModelError("Local models are disabled in Settings.", 503);
     const model = this.store.getModel(id);
-    const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true);
+    const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true, undefined, model.files.map(file => file.path));
     if (!compatibility.canLoad) throw new LocalModelError(compatibility.reasons.join(" "), 409, "model_incompatible");
     await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model));
   }

@@ -6,7 +6,7 @@ import { createHash } from "crypto";
 import test from "node:test";
 import { AgentLoopRunner } from "../src/agents/runtime/AgentLoopRunner";
 import { OperationExecutor } from "../src/tools/OperationExecutor";
-import { ExecutionContext, LLMRequest } from "../src/types";
+import { ExecutionContext, LLMRequest, ProcessProgressEvent } from "../src/types";
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
 import { LLMService } from "../src/llm/LLMService";
 import { LLMRegistry } from "../src/llm/LLMRegistry";
@@ -37,6 +37,41 @@ async function fixture(t:test.TestContext){
   return {root,work,context,operations,calls,set,run,llm};
 }
 const action=(tool:string,args:Record<string,unknown>)=>({type:"tool_call",tool,arguments:args});
+
+test("workspace agent forwards model loading phases and live tool output with operation identity", async t => {
+  const f = await fixture(t);
+  const events: ProcessProgressEvent[] = [];
+  f.context.onProgress = event => events.push(event);
+  f.context.sessionSettings.defaultAccessMode = "full";
+  let calls = 0;
+  const llm = { generateObject: async (request: LLMRequest) => {
+    for (const phase of ["queued", "loading", "generating"] as const) request.onProgress?.({ phase, model: "test-model", queuePosition: phase === "queued" ? 2 : undefined });
+    const data = calls++ === 0 ? action("command.run", { executable: process.execPath, args: ["-e", "console.log('live agent output')"], cwd: ".", timeoutMs: 2000 }) : { type: "final", text: "Verified." };
+    return { data, response: { provider: "fixture", model: "test", text: JSON.stringify(data), usage: {} } };
+  } } as unknown as LLMService;
+  const result = await new AgentLoopRunner(llm, f.operations, f.root).run({ id: "live-agent", input: "Run a command", instructions: "", context: f.context, target: f.context.activeTarget });
+  assert.equal(result.error, undefined);
+  assert.deepEqual(events.filter(event => event.agentRunId === "live-agent" && ["Waiting for model", "Loading model", "Generating"].includes(event.label)).map(event => event.phase), ["queued", "loading", "generating", "queued", "loading", "generating"]);
+  assert.match(events.find(event => event.phase === "queued")!.detail!, /queue position 2/);
+  const output = events.find(event => event.output?.text.includes("live agent output"));
+  assert.equal(output?.output?.stream, "stdout"); assert.equal(output?.agentRunId, "live-agent"); assert.ok(output?.operationId);
+  const completed = events.find(event => event.phase === "tool_result");
+  assert.equal(completed?.label, "command.run completed");
+  assert.equal(completed?.operationId, output?.operationId);
+  assert.match(completed?.detail ?? "", /live agent output/);
+});
+
+test("activity reports tool errors and format corrections without changing execution", async t => {
+  const f = await fixture(t);
+  const events: ProcessProgressEvent[] = [];
+  f.context.onProgress = event => events.push(event);
+  f.context.sessionSettings.defaultAccessMode = "full";
+  f.set([action("file.read", { path: "missing.txt" }), { type: "invalid" }, { type: "final", text: "The file is missing." }]);
+  const result = await f.run();
+  assert.equal(result.error, undefined);
+  assert.equal(events.find(event => event.phase === "tool_error")?.label, "file.read failed");
+  assert.match(events.find(event => event.phase === "correction")?.detail ?? "", /Correction 1\/3/);
+});
 
 test("agent consumes list/read results, changes the observed version and verifies actual files before final",async t=>{
   const f=await fixture(t);await fs.writeFile(path.join(f.work,"value.txt"),"number=1\n");
@@ -209,6 +244,19 @@ test("the durable shared active-time budget excludes time spent waiting for perm
   f.set([]);
   assert.match((await restarted.run({ ...request, id: "timed:agent:main" })).error!, /active generation time limit/);
   assert.equal(f.calls.length, 3);
+});
+
+test("agent thinking budget reaches inference and timeout reports its actual cause", async t => {
+  const f = await fixture(t);
+  f.context.execution = { workspace: f.context.workspace!, accessMode: "default", agentRunId: "timeout", localReasoningBudget: 0 };
+  t.mock.method(f.llm, "generateObject", async (request: LLMRequest) => {
+    assert.equal(request.localReasoningBudget, 0);
+    return new Promise((_resolve, reject) => request.signal!.addEventListener("abort", () => reject(new Error("Request cancelled")), { once: true }));
+  });
+  const result = await new AgentLoopRunner(f.llm, f.operations, f.root, { maxActiveMs: 1000 }).run({
+    id: "timeout", input: "Read files", instructions: "", context: f.context, target: f.context.activeTarget
+  });
+  assert.match(result.error!, /active generation time limit \(1000 ms\)/);
 });
 
 test("configured context and correction limits bound generation while preserving the explicit maxSteps override", async t => {

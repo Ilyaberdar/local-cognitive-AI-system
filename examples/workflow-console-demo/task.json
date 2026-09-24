@@ -1,0 +1,8 @@
+{
+  "title": "Workflow Console Demo",
+  "description": "Run the six-step console demo: create demo-output.txt, watch stdout and stderr arrive with two-second pauses, then approve the review to finish.",
+  "workflowId": "workflow-console-demo",
+  "projectId": "__DEMO_PROJECT_ID__",
+  "accessMode": "full",
+  "priority": "normal"
+}

@@ -1,6 +1,7 @@
 import { OperationExecutor } from "../../tools/OperationExecutor";
 import { NodeResult } from "../types";
 import { NodeExecutionContext } from "./NodeExecutor";
+import { nodeAccess } from "./NodeAccess";
 
 /** All workspace nodes use the same durable executor as conversational agents. */
 export async function executeWorkflowOperation(
@@ -15,13 +16,16 @@ export async function executeWorkflowOperation(
   const id = context.operationId ?? `${agentRunId}:operation`;
   const approvalId = typeof context.approval?.approvalId === "string" ? context.approval.approvalId : undefined;
   const config = context.node.config;
-  const requireApproval = config.approval === "always" || (
-    context.node.type !== "file_search" && config.approval !== "inherit" && config.access !== "full"
+  context.onProgress?.({ phase: "tools", label: tool, detail: String(args.path ?? args.query ?? args.cwd ?? ""),
+    at: new Date().toISOString(), operationId: id, agentRunId });
+  const access = nodeAccess(context);
+  const requireApproval = access.requireApproval || (
+    !["file_search", "file_read"].includes(context.node.type) && !["inherit", "never"].includes(String(config.approval)) && config.access !== "full"
   );
   const outcome = await executor.execute({
     id, agentRunId, workspace,
-    accessMode: context.accessMode ?? context.run.executionSnapshot?.accessMode ?? context.task.accessMode ?? "default",
-    tool, arguments: args, signal: context.signal, pauseForApproval: true, requireApproval,
+    accessMode: access.accessMode,
+    tool, arguments: args, signal: context.signal, onProgress: context.onProgress, pauseForApproval: true, requireApproval,
     captureVersion: tool === "file.write" || tool === "file.append",
     // This identity belongs to one frozen node invocation. Reuse its proposal after both approval and a crash.
     resumePrepared: true,

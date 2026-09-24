@@ -1,16 +1,10 @@
 import fs from "fs/promises";
 import { getSystemMemory } from "../utils/systemMemory";
 import { GGUFMetadata, LocalModelError, LocalModelOptions, ModelCompatibility } from "./types";
+import { standaloneModelIssue } from "./ModelArtifacts";
 
 const GiB = 1024 ** 3;
 export const GGUF_INSPECTION_VERSION = 2;
-// Let the bundled loader validate decoder architectures. A hand-maintained
-// allowlist must not reject newer text models already supported by llama.cpp.
-const nonTextArchitectures = new Set([
-  "clip", "bert", "modern-bert", "nomic-bert", "nomic-bert-moe", "neo-bert",
-  "jina-bert-v2", "jina-bert-v3", "eurobert", "t5encoder", "gemma-embedding",
-  "llama-embed", "pangu-embedded", "wavtokenizer-dec", "qwen3tts", "pockettts"
-]);
 const deltaNetArchitectures = new Set(["qwen35", "qwen35moe", "qwen3next"]);
 
 export const evaluateCompatibility = (
@@ -19,7 +13,8 @@ export const evaluateCompatibility = (
   metadata?: GGUFMetadata,
   freeDiskBytes?: number,
   installed = false,
-  memory = getSystemMemory()
+  memory = getSystemMemory(),
+  files: readonly string[] = []
 ): ModelCompatibility => {
   // KV cache is shared RAM on Apple Silicon, not a second VRAM allowance.
   const layers = Math.max(0, (metadata?.blockCount ?? 0) - (metadata?.nextnPredictLayers ?? 0));
@@ -46,9 +41,8 @@ export const evaluateCompatibility = (
   const memoryWarningBytes = Math.floor(memory.total * options.memoryLimitPercent / 100);
   const warnings: string[] = [];
   const blockingIssues: ModelCompatibility["blockingIssues"] = [];
-  if (metadata && (nonTextArchitectures.has(metadata.architecture) || ["adapter", "projector", "mmproj"].includes(metadata.generalType ?? ""))) {
-    blockingIssues.push({ code: "model_type", message: `This ${metadata.generalType || metadata.architecture} GGUF is not a standalone text-generation model. Select the model's main GGUF weights.` });
-  }
+  const modelIssue = standaloneModelIssue(metadata, files);
+  if (modelIssue) blockingIssues.push({ code: "model_type", message: modelIssue });
   // Estimates and the user's threshold are advisory; they must not impose an
   // artificial 75% cap. Only weights larger than all device memory are blocked.
   if (sizeBytes > memory.total) {
@@ -66,7 +60,7 @@ export const evaluateCompatibility = (
   if (metadata?.contextLength && options.contextSize > metadata.contextLength) warnings.push(`The configured context exceeds this model's trained context (${metadata.contextLength} tokens).`);
   if (!metadata) warnings.push("Memory is an estimate. GGUF metadata is checked after download and runtime support is verified when loading.");
   return { status: blockingIssues.length ? "incompatible" : warnings.length ? "warning" : "compatible", estimatedMemoryBytes, kvCacheBytes, recurrentStateBytes,
-    canLoad: !blockingIssues.some(issue => issue.code !== "disk_space"), canDownload: !blockingIssues.some(issue => issue.code === "disk_space"), blockingIssues,
+    canLoad: !blockingIssues.some(issue => issue.code !== "disk_space"), canDownload: !blockingIssues.some(issue => issue.code === "disk_space" || issue.code === "model_type"), blockingIssues,
     totalMemoryBytes: memory.total, availableMemoryBytes, memoryWarningBytes, requiredDiskBytes, freeDiskBytes, warnings, reasons: blockingIssues.map(issue => issue.message) };
 };
 

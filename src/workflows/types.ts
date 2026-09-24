@@ -7,6 +7,8 @@ export type WorkflowNodeType =
   | "agent"
   | "file_search"
   | "web_search"
+  | "web_fetch"
+  | "file_read"
   | "file_write"
   | "command"
   | "decision"
@@ -40,6 +42,7 @@ export type TransitionGuard =
     };
 
 export interface WorkflowDefinition {
+  runDefaults?: WorkflowRunOptions;
   id: string;
   name: string;
   version: number;
@@ -73,14 +76,17 @@ export interface WorkflowTransition {
 
 export interface WorkflowRun {
   id: string;
-  taskId: string;
+  taskId?: string;
+  source?: "task" | "standalone";
   workflowId: string;
   workflowVersion: number;
   workflowSnapshot?: WorkflowDefinition;
   workspace?: WorkspaceSnapshot;
   executionSessionId?: string;
   executionSnapshot?: {
-    task: Task;
+    task?: Task;
+    input?: WorkflowInput;
+    maxSteps?: number;
     settings?: SessionSettings;
     accessMode: SubagentAccessMode;
     nodeTargets?: Record<string, ProviderTarget>;
@@ -117,12 +123,13 @@ export interface StoredNodeResult {
 }
 
 export interface NodeRun {
+  transitionId?: string;
   agentRunId?: string;
   operationId?: string;
   progress?: import("../types").ProcessProgressEvent;
   id: string;
   runId: string;
-  taskId: string;
+  taskId?: string;
   workflowId: string;
   nodeId: string;
   status: NodeRunStatus;
@@ -135,12 +142,25 @@ export interface NodeRun {
 
 export interface CreateWorkflowRunInput {
   id?: string;
-  task: Task;
+  task?: Task;
+  input?: WorkflowInput;
+  accessMode?: SubagentAccessMode;
+  maxSteps?: number;
   workflow: WorkflowDefinition;
   workspace?: WorkspaceSnapshot;
   executionSessionId?: string;
   settings?: SessionSettings;
   nodeTargets?: Record<string, ProviderTarget>;
+}
+
+export interface WorkflowInput { title: string; description: string; }
+
+export interface WorkflowRunOptions {
+  description?: string;
+  projectId?: string;
+  rootPath?: string;
+  accessMode?: SubagentAccessMode;
+  maxSteps?: number;
 }
 
 export interface WorkflowValidationResult {

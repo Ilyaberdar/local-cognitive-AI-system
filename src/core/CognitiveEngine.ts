@@ -52,8 +52,9 @@ export class CognitiveEngine {
     if(request.execution)sessionSettings.defaultAccessMode=request.execution.accessMode;
     const activeTarget = resolveProviderTarget(request, sessionSettings.defaultTarget ?? { providerId: this.defaultProviderId });
     const providerId = activeTarget.providerId;
-    const memory = await this.memoryService.retrieve(normalizedInput, { actor });
-    const conversation = await this.memoryService.recent({ actor, limit: 12 });
+    const explicitContext = request.execution?.contextMode === "explicit";
+    const memory = explicitContext ? [] : await this.memoryService.retrieve(normalizedInput, { actor });
+    const conversation = explicitContext ? [] : await this.memoryService.recent({ actor, limit: 12 });
     const currentAttachments = validateAttachments(request.metadata?.attachments);
     // A workflow uses its task's current attachment list; removing a task file
     // must also remove it from later runs. Chat follow-ups retain recent files.

@@ -21,7 +21,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   constructor(
     private readonly options: HttpProviderOptions,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly fetchImpl?: typeof fetch
   ) {
     this.id = options.id;
     this.name = options.name;
@@ -37,7 +38,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   async listModels(): Promise<ProviderModel[]> {
-    const response = await fetch(`${this.options.baseUrl}/models`, {
+    const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl}/models`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -76,8 +77,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     try {
       const images = validateImages(request.images);
-      const useChat = images.length > 0 && this.id !== "openai";
-      const response = await fetch(`${this.options.baseUrl}/${useChat ? "chat/completions" : "responses"}`, {
+      const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
+      if (localBudget !== undefined && (!Number.isInteger(localBudget) || localBudget < 0 || localBudget > 32768)) throw new Error("Local thinking budget must be 0–32768 tokens.");
+      const useChat = (images.length > 0 && this.id !== "openai") || localBudget !== undefined;
+      const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl}/${useChat ? "chat/completions" : "responses"}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -91,13 +94,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
           model,
           messages: [
             ...(request.systemPrompt ? [{ role: "system", content: request.systemPrompt }] : []),
-            { role: "user", content: [
+            { role: "user", content: images.length ? [
               { type: "text", text: request.prompt },
               ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
-            ] }
+            ] : request.prompt }
           ],
           max_tokens: request.maxTokens,
           temperature: request.temperature,
+          ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
+            ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           ...(request.responseFormat ? { response_format: request.responseFormat } : {})
         } : {
           model,

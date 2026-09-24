@@ -10,7 +10,7 @@ import { WorkspaceSnapshot } from "./types";
 export class WorkspaceResolver {
   readonly managedWorkspaces: ManagedWorkspaceStore;
   constructor(
-    config: Pick<AppConfig, "appDataDir">,
+    private readonly config: Pick<AppConfig, "appDataDir">,
     private readonly projectStore: ProjectStore,
     private readonly sessionIndexStore: SessionIndexStore
   ) { this.managedWorkspaces = new ManagedWorkspaceStore(config.appDataDir); }
@@ -25,6 +25,30 @@ export class WorkspaceResolver {
     const { rootPath } = await this.managedWorkspaces.ensure(task.id);
     return { version: 1, kind: "task", rootPath, outputDir: rootPath, allowedDirectories: [rootPath],
       taskId: task.id, memoryScope: `task:${task.id}` };
+  }
+
+  async forWorkflowRun(runId: string, options: { projectId?: string; rootPath?: string }): Promise<WorkspaceSnapshot> {
+    if (options.projectId && options.rootPath) throw new ProjectError(400, "Choose a project or a folder, not both.");
+    if (options.projectId) return this.forProject(options.projectId);
+    let rootPath: string;
+    if (options.rootPath) {
+      if (!path.isAbsolute(options.rootPath)) throw new ProjectError(400, "Workflow folder must be an absolute path.");
+      rootPath = await fs.realpath(options.rootPath).catch(() => { throw new ProjectError(400, "Workflow folder does not exist."); });
+    } else {
+      if (!/^[a-z0-9-]{1,160}$/i.test(runId)) throw new ProjectError(400, "Invalid run identifier.");
+      const parent = path.join(this.config.appDataDir, "workspaces", "workflow-runs");
+      await fs.mkdir(parent, { recursive: true });
+      const base = await fs.realpath(parent);
+      const planned = path.join(base, runId);
+      // A new UUID folder must not follow a pre-existing symlink.
+      await fs.mkdir(planned);
+      rootPath = await fs.realpath(planned);
+      if (rootPath !== planned) throw new ProjectError(409, "Workflow folder changed while being created.");
+    }
+    const workspace: WorkspaceSnapshot = { version: 1, kind: "workflow", rootPath, outputDir: rootPath,
+      allowedDirectories: [rootPath], memoryScope: `workflow:${runId}` };
+    await this.validate(workspace);
+    return workspace;
   }
 
   async validate(snapshot: WorkspaceSnapshot): Promise<void> {

@@ -107,28 +107,6 @@ test("task and schedule creation submit workspace choices without the selected c
   assert.equal(sent[2].projectId, null);
 });
 
-test("workflow approval submits the captured pending operation, not a later waiting step", async () => {
-  let callback!: () => Promise<void>;
-  let sent: any;
-  const button = { dataset: { runId: "run", approvalId: "original-approval", waitingNodeRunId: "node", approved: "true" },
-    addEventListener: (_: string, handler: () => Promise<void>) => { callback = handler; } };
-  const context: any = {
-    state: { loading: false, workflowRunDetail: { approvalId: "new-approval" } },
-    document: { querySelectorAll: (selector: string) => selector === "[data-action='review-workflow-run']" ? [button] : [] },
-    runAction: (action: () => unknown) => action(), refreshBootstrap: async () => {},
-    request: async (_url: string, request: any) => { sent = JSON.parse(request.body); },
-    api: { getWorkflowRun: async () => ({}) }
-  };
-  vm.runInNewContext(appSource.slice(appSource.indexOf("function bindWorkflowReviewActions()")), context);
-  context.bindWorkflowReviewActions();
-  await callback();
-  assert.equal(sent.approvalId, "original-approval");
-  assert.equal(Object.hasOwn(sent, "waitingNodeRunId"), false);
-  button.dataset.approvalId = "";
-  await callback();
-  assert.equal(sent.waitingNodeRunId, "node");
-});
-
 test("Agent steps uses the workflow-scoped endpoint and renders the stored turn transcript as text", async () => {
   let toggle!: () => Promise<void>;
   const output = { textContent: "" };

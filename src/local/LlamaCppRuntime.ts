@@ -8,6 +8,7 @@ import { LLMRequest, LLMResponse } from "../types";
 import { Logger } from "../utils/Logger";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { LocalModelError, LocalModelOptions, LocalRuntimeSnapshot } from "./types";
+import { fetchLocalInference } from "./fetchLocalInference";
 
 export class LlamaCppRuntime {
   private child?: ChildProcess;
@@ -103,7 +104,7 @@ export class LlamaCppRuntime {
     if (!this.endpoint || !this.child || this.state !== "ready" || request.model !== this.modelId) throw new LocalModelError("The selected local model is not ready.", 503);
     if (request.images?.length && !this.projectorPath) throw new LocalModelError("This local model has no vision adapter. Attach its matching mmproj GGUF before sending images.", 400, "vision_unavailable");
     const provider = new OpenAICompatibleProvider({ id: "llamacpp", name: "Local models", model: this.modelId!,
-      baseUrl: this.endpoint, apiKey: this.token, timeoutMs: this.options.generationTimeoutMs }, this.logger);
+      baseUrl: this.endpoint, apiKey: this.token, timeoutMs: this.options.generationTimeoutMs }, this.logger, fetchLocalInference);
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
     const result = await provider.generateText({ ...request, signal, previousResponseId: undefined });
     signal.throwIfAborted();

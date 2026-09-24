@@ -173,3 +173,10 @@
   .mm-download-numbers { flex-direction: column; }
   .mm-tabs > button { padding: 8px 10px; }
 }
+
+/* Runtime feedback remains active when decorative interface motion is disabled. */
+.model-manager .mm-loading-spinner { width: 13px; height: 13px; flex: 0 0 13px; border-width: 2px; }
+html[data-motion=off] .model-manager .mm-loading-spinner { animation: button-spin .8s linear infinite !important; }
+@media (prefers-reduced-motion: reduce) {
+  html[data-motion=off] .model-manager .mm-loading-spinner { animation: none !important; }
+}

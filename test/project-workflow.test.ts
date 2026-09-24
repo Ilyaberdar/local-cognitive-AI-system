@@ -91,6 +91,9 @@ test("project workflow searches, writes and runs commands only in its saved work
   await assert.rejects(fs.stat(path.join(f.unrelatedDir, "result.json")), { code: "ENOENT" });
   const nodeRuns = await f.runStore.listNodeRuns(run.id);
   assert.equal(nodeRuns.find(item => item.nodeId === "command")?.output?.data.stdout, `${f.projectDir}\n`);
+  const events = (await f.runStore.events.list(run.id)).events;
+  const output = events.find(event => event.type === "node.output" && event.nodeId === "command");
+  assert.equal(output?.detail, `${f.projectDir}\n`); assert.ok(output?.nodeRunId); assert.ok(output?.operationId);
 });
 
 test("tasks without a project retain independent output across runs and task deletion", async t => {

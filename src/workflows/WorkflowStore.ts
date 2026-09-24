@@ -2,6 +2,7 @@ import { withFileLock, writeJsonAtomically, isMissingFile } from "../utils/fileS
 import fs from "fs/promises";
 import path from "path";
 import { defaultTaskWorkflow } from "./defaultWorkflows";
+import { validateRunOptions } from "./runOptions";
 import {
   WorkflowDefinition,
   WorkflowDefinitionRecord,
@@ -121,6 +122,7 @@ export class WorkflowStore {
     }
     if (errors.length) return { ok: false, errors };
     const workflow = input as unknown as WorkflowDefinition;
+    if (workflow.runDefaults !== undefined) errors.push(...validateRunOptions(workflow.runDefaults));
     const nodeIds = new Set(workflow.nodes.map((node) => node.id));
     const transitionIds = new Set(workflow.transitions.map((transition) => transition.id));
     const supportedTypes = new Set([
@@ -128,6 +130,8 @@ export class WorkflowStore {
       "agent",
       "file_search",
       "web_search",
+      "web_fetch",
+      "file_read",
       "file_write",
       "command",
       "decision",
@@ -186,6 +190,9 @@ export class WorkflowStore {
       }
 
       errors.push(...validateNodeConfig(node));
+      for (const match of JSON.stringify(node.config).matchAll(/{{\s*nodes\.([^{}.\s]+)[^{}]*}}/g)) {
+        if (!nodeIds.has(match[1])) errors.push(`Workflow node ${node.id} references missing step ${match[1]}. Choose an existing step result.`);
+      }
     }
 
     for (const transition of workflow.transitions) {
@@ -283,8 +290,8 @@ const hasReachableTerminal = (workflow: WorkflowDefinition, entryNodeId: string)
 
 const validateNodeConfig = (node: WorkflowNode): string[] => {
   const errors: string[] = [];
-  if (node.config.approval !== undefined && node.config.approval !== "inherit" && node.config.approval !== "always") {
-    errors.push(`Workflow node ${node.id} config.approval must be inherit or always.`);
+  if (node.config.approval !== undefined && !["inherit", "always", "never"].includes(String(node.config.approval))) {
+    errors.push(`Workflow node ${node.id} config.approval must be inherit, always or never.`);
   }
   const requireString = (key: string): void => {
     if (typeof node.config[key] !== "string" || !String(node.config[key]).trim()) {
@@ -299,6 +306,21 @@ const validateNodeConfig = (node: WorkflowNode): string[] => {
   };
 
   switch (node.type) {
+    case "agent":
+      if (node.config.reasoningBudget !== undefined && (!Number.isInteger(node.config.reasoningBudget) || Number(node.config.reasoningBudget) < 0 || Number(node.config.reasoningBudget) > 32768)) errors.push(`Workflow node ${node.id} thinking budget must be 0–32768 tokens.`);
+      if (node.config.promptTemplate !== undefined && typeof node.config.promptTemplate !== "string") errors.push(`Workflow node ${node.id} prompt must be text.`);
+      if (node.config.contextTemplate !== undefined && typeof node.config.contextTemplate !== "string") errors.push(`Workflow node ${node.id} context must be text.`);
+      if (node.config.inputFiles !== undefined && (!Array.isArray(node.config.inputFiles) || node.config.inputFiles.some((file: unknown) => typeof file !== "string"))) errors.push(`Workflow node ${node.id} inputFiles must be a list of paths.`);
+      break;
+    case "web_fetch":
+      requireString("urlTemplate");
+      if (node.config.maxChars !== undefined && (!Number.isInteger(node.config.maxChars) || Number(node.config.maxChars) < 500 || Number(node.config.maxChars) > 100000)) errors.push(`Workflow node ${node.id} text limit must be 500–100000.`);
+      break;
+    case "file_read":
+      requireString("path");
+      for (const key of ["startLine", "endLine"]) if (node.config[key] !== undefined && (!Number.isInteger(node.config[key]) || Number(node.config[key]) < 1)) errors.push(`Workflow node ${node.id} ${key} must be a positive integer.`);
+      if (Number(node.config.endLine) < Number(node.config.startLine ?? 1)) errors.push(`Workflow node ${node.id} endLine must not precede startLine.`);
+      break;
     case "file_search":
       requireString("root");
       break;
