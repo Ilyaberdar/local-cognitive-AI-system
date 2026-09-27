@@ -11,8 +11,9 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
 import { LlamaCppRuntime } from "./LlamaCppRuntime";
+import { inspectModelStorage } from "./ModelStorageInventory";
 import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
-import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, ModelArtifact } from "./types";
+import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact } from "./types";
 
 export class LocalModelService implements LocalModelManager {
   readonly providerId = "llamacpp";
@@ -30,11 +31,15 @@ export class LocalModelService implements LocalModelManager {
   private initializationError?: string;
   private freeDiskBytes?: number;
   private switchingStorage = false;
+  private storage?: LocalModelStorageSnapshot;
+  private storageCheckedAt = 0;
+  private storageInspection?: Promise<void>;
+  private readonly fileErrors = new Map<string, string>();
 
   constructor(private options: LocalModelOptions, private readonly logger: Logger) {
     this.store = new ModelLibraryStore(options.dataDir, options.modelsDir);
     this.catalog = new HuggingFaceCatalog(options.dataDir);
-    this.downloads = new ModelDownloadService(this.store, () => this.emit());
+    this.downloads = new ModelDownloadService(this.store, () => { this.storageCheckedAt = 0; this.emit(); });
     this.runtime = new LlamaCppRuntime(options, logger, () => this.emit());
     this.scheduler = new LocalInferenceScheduler(() => this.emit());
     this.events.setMaxListeners(30);
@@ -49,6 +54,7 @@ export class LocalModelService implements LocalModelManager {
         this.logger.warn("Local model library is unavailable", { error: this.initializationError });
       }
       if (!this.initializationError) {
+        await this.recoverDownloadedModels();
         for (const model of this.store.listModels()) {
           if (model.metadata?.inspectionVersion === GGUF_INSPECTION_VERSION) continue;
           try {
@@ -62,6 +68,7 @@ export class LocalModelService implements LocalModelManager {
       await this.catalog.init();
       await this.runtime.init();
       this.freeDiskBytes = await getFreeDiskBytes(this.options.modelsDir);
+      if (!this.initializationError) await this.inspectStorage();
       this.emit();
     })();
     return this.initPromise;
@@ -84,12 +91,18 @@ export class LocalModelService implements LocalModelManager {
     if (this.initializationError) { runtime.status = "unavailable"; runtime.error = this.initializationError; }
     const models = this.store.listModels().map((model): LibraryModel => {
       const current = runtime.modelId === model.id;
-      const state = current ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[runtime.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : "unloaded";
+      const state = current ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[runtime.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : this.fileErrors.has(model.id) ? "error" : "unloaded";
       return { ...model, sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
         busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, undefined, model.files.map(file => file.path)),
-        error: state === "error" ? runtime.error : undefined };
+        error: state === "error" ? (current ? runtime.error : this.fileErrors.get(model.id)) : undefined };
     });
-    return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence };
+    return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence, storage: this.storage ? structuredClone(this.storage) : undefined };
+  }
+  getContextWindow(): number { return this.runtime.snapshot().effectiveContextSize ?? this.options.contextSize; }
+  async refreshSnapshot(): Promise<LocalModelSnapshot> {
+    await this.init();
+    if (!this.initializationError && !this.switchingStorage && Date.now() - this.storageCheckedAt > 5000) await this.inspectStorage();
+    return this.snapshot();
   }
   subscribe(listener: (event: LocalModelEvent) => void): () => void { this.events.on("event", listener); return () => this.events.off("event", listener); }
   async listAllModels(): Promise<LibraryModel[]> { await this.init(); return this.snapshot().models; }
@@ -120,12 +133,10 @@ export class LocalModelService implements LocalModelManager {
     await this.init(); this.assertLibrary();
     const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
     await this.scheduler.run(modelId, async () => {
-      try {
-        await this.ensureLoaded(modelId, signal);
-        signal.throwIfAborted();
-      } finally {
-        if (signal.aborted) await this.runtime.stop();
-      }
+      // Loading cancellation is handled by the runtime. A cancelled request for
+      // an already resident model must not unload it.
+      await this.ensureLoaded(modelId, signal);
+      signal.throwIfAborted();
     }, signal);
   }
   async unloadModel(identifier: string, callerSignal?: AbortSignal): Promise<void> {
@@ -140,7 +151,7 @@ export class LocalModelService implements LocalModelManager {
     await this.scheduler.run("__delete", async () => {
       if (this.scheduler.isModelBusy(id)) throw new LocalModelError("The model was queued for inference. Wait before deleting it.", 409, "model_busy");
       if (this.runtime.currentModelId === id) await this.runtime.stop();
-      await this.store.removeModel(id); this.emit();
+      await this.store.removeModel(id); this.fileErrors.delete(id); this.storageCheckedAt = 0; this.emit();
     }, this.lifetime.signal);
   }
 
@@ -158,8 +169,9 @@ export class LocalModelService implements LocalModelManager {
         signal.throwIfAborted(); request.onProgress?.({ phase: "generating", model: modelId });
         return await this.runtime.generateText({ ...request, model: modelId, signal });
       } finally {
-        // Ensure cancelled decoding is stopped before the next queued agent acquires the slot.
-        if (signal.aborted) await this.runtime.stop();
+        // The runtime settles cancelled decoding before releasing the queue slot.
+        // Only application shutdown should discard an otherwise healthy model.
+        if (this.lifetime.signal.aborted) await this.runtime.stop();
       }
     }, signal, (queuePosition) => request.onProgress?.({ phase: "queued", model: modelId, queuePosition }));
   }
@@ -212,7 +224,7 @@ export class LocalModelService implements LocalModelManager {
       const model: LibraryModel = { id, libraryId: id, displayName: metadata.name || path.basename(variant.id, ".gguf"), providerId: "llamacpp", providerName: "Local models",
         variantId: variant.id, quantization: variant.quantization, license: "imported — see original model license", installedAt: new Date().toISOString(), owned: true,
         sizeBytes: totalBytes, files: variant.files, projector, vision: Boolean(projector), metadata, loaded: false, loadedInstanceIds: [], state: "unloaded" };
-      await fs.rename(staging, this.store.modelDirectory(id)); await this.store.putModel(model); this.emit(); return this.snapshot().models.find((item) => item.id === id)!;
+      await fs.rename(staging, this.store.modelDirectory(id)); await this.store.putModel(model); this.storageCheckedAt = 0; this.emit(); return this.snapshot().models.find((item) => item.id === id)!;
     } finally { await fs.rm(staging, { recursive: true, force: true }); }
   }
 
@@ -274,6 +286,50 @@ export class LocalModelService implements LocalModelManager {
     const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true, undefined, model.files.map(file => file.path));
     if (!compatibility.canLoad) throw new LocalModelError(compatibility.reasons.join(" "), 409, "model_incompatible");
     await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model));
+  }
+  private inspectStorage(): Promise<void> {
+    this.storageInspection ??= (async () => {
+      const models = this.store.listModels();
+      for (const model of models) {
+        try { await this.store.verifiedModelPath(model); this.fileErrors.delete(model.id); }
+        catch { this.fileErrors.set(model.id, "Model files are missing or changed on disk. Restore the original files or download the model again."); }
+      }
+      this.storage = await inspectModelStorage(this.options.modelsDir, models);
+      this.freeDiskBytes = await getFreeDiskBytes(this.options.modelsDir);
+      this.storage.freeDiskBytes = this.freeDiskBytes;
+      this.storageCheckedAt = Date.now();
+    })().finally(() => { this.storageInspection = undefined; });
+    return this.storageInspection;
+  }
+  private async recoverDownloadedModels(): Promise<void> {
+    // A completed rename followed by a crash before library.json was persisted used to
+    // strand whole model files. Recover only an exact, hash-verified saved download.
+    const installed = new Set(this.store.listModels().map(model => model.id));
+    for (const job of this.store.listJobs()) {
+      if (installed.has(job.libraryId) || job.state === "cancelled") continue;
+      const directory = this.store.modelDirectory(job.libraryId);
+      const stat = await fs.lstat(directory).catch(() => undefined);
+      if (!stat?.isDirectory() || stat.isSymbolicLink()) continue;
+      try {
+        for (const file of allModelArtifacts(job)) {
+          const candidate = await this.store.safePath(directory, file.path);
+          const info = await fs.stat(candidate);
+          if (!info.isFile() || info.size !== file.sizeBytes || await sha256File(candidate, this.lifetime.signal) !== file.sha256) throw new Error("Saved model artifacts did not pass integrity checking.");
+        }
+        const metadata = await readGGUFMetadata(await this.store.safePath(directory, job.files[0].path));
+        assertStandaloneModel(metadata, job.files.map(file => file.path));
+        if (job.projector) assertVisionProjector(await readGGUFMetadata(await this.store.safePath(directory, job.projector.path)));
+        await this.store.putModel({ id: job.libraryId, libraryId: job.libraryId, displayName: job.name, providerId: "llamacpp", providerName: "Local models",
+          repoId: job.repoId, revision: job.revision, variantId: job.variantId, quantization: job.quantization, license: job.license,
+          sizeBytes: modelDiskBytes(job), installedAt: job.updatedAt, owned: true, files: job.files, projector: job.projector, vision: Boolean(job.projector), metadata,
+          loaded: false, loadedInstanceIds: [], state: "unloaded" });
+        await this.store.putJob({ ...job, state: "completed", downloadedBytes: modelDiskBytes(job), totalBytes: modelDiskBytes(job), progress: 100, speedBytesPerSecond: 0, error: undefined });
+        installed.add(job.libraryId);
+        this.logger.info("Recovered an installed model from its verified download", { modelId: job.libraryId });
+      } catch (error) {
+        this.logger.warn("Unregistered downloaded model files were preserved", { modelId: job.libraryId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   }
   private decorateCatalog(model: CatalogModel): CatalogModel {
     return { ...model, variants: model.variants.map((variant) => ({ ...variant, compatibility: evaluateCompatibility(variant.sizeBytes, this.options, undefined, this.freeDiskBytes) })) };
@@ -346,7 +402,8 @@ export class LocalModelService implements LocalModelManager {
       this.lifetime.signal.throwIfAborted();
       await this.runtime.reconfigure(options);
       this.store = nextStore; this.options = options;
-      this.downloads = new ModelDownloadService(nextStore, () => this.emit());
+      this.downloads = new ModelDownloadService(nextStore, () => { this.storageCheckedAt = 0; this.emit(); });
+      this.storageCheckedAt = 0;
       // Keep original owned files as a backup. RuntimeManager commits the new settings only
       // after this copy succeeds, so a crash on either side of that commit leaves a usable library.
       await oldStore.dispose();
@@ -355,7 +412,7 @@ export class LocalModelService implements LocalModelManager {
       if (this.store === oldStore) {
         for (const folder of created.reverse()) await fs.rm(folder, { recursive: true, force: true }).catch(() => {});
         await nextStore.dispose();
-        this.downloads = new ModelDownloadService(oldStore, () => this.emit());
+        this.downloads = new ModelDownloadService(oldStore, () => { this.storageCheckedAt = 0; this.emit(); });
         await this.runtime.reconfigure(this.options);
       }
       throw error;

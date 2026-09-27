@@ -2,6 +2,7 @@ import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../t
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { validateImages } from "./InferenceImages";
+import { readNativeAgentResponse, responseMessages } from "./ResponseItems";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -13,6 +14,7 @@ import {
   resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
+import { unsupportedFeature } from "./provider-utils";
 
 export class OpenAICompatibleProvider implements LLMProvider {
   readonly id: string;
@@ -79,8 +81,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const images = validateImages(request.images);
       const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
       if (localBudget !== undefined && (!Number.isInteger(localBudget) || localBudget < 0 || localBudget > 32768)) throw new Error("Local thinking budget must be 0–32768 tokens.");
-      const useChat = (images.length > 0 && this.id !== "openai") || localBudget !== undefined;
-      const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl}/${useChat ? "chat/completions" : "responses"}`, {
+      const useChat = (images.length > 0 && this.id !== "openai") || localBudget !== undefined ||
+        (this.id !== "openai" && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
+      const nativeTools = this.id === "openai" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
+      const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -103,13 +107,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
           temperature: request.temperature,
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
-          ...(request.responseFormat ? { response_format: request.responseFormat } : {})
+          ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
+            ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
+            : request.responseFormat } : {})
         } : {
           model,
-          input: images.length ? [{ role: "user", content: [
+          input: images.length || nativeTools || request.inputItems?.length ? [{ role: "user", content: [
             { type: "input_text", text: request.prompt },
             ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" }))
-          ] }] : request.prompt,
+          ] }, ...(request.inputItems ?? [])] : request.prompt,
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
           ...((request.reasoningEffort ?? this.options.reasoningEffort) ? { reasoning: { effort: request.reasoningEffort ?? this.options.reasoningEffort } } : {}),
@@ -118,7 +124,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
                 max_output_tokens: request.maxTokens
               }
             : {}),
-          ...(request.responseFormat
+          ...(nativeTools ? {
+            tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters, strict: true })),
+            parallel_tool_calls: false,
+            store: false,
+            include: ["reasoning.encrypted_content"]
+          } : {}),
+          ...(!nativeTools && request.responseFormat
             ? {
                 text: {
                   format: request.responseFormat
@@ -133,18 +145,25 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const body = await response.text();
         let detail = body.slice(0, 1500);
         try { detail = readResponseError(JSON.parse(body)) ?? detail; } catch { /* Keep plain HTTP error details. */ }
+        const unsupported = unsupportedFeature(response.status, detail, request);
+        if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         throw new Error(`${this.id} request failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);
       }
 
       const payload = (await response.json()) as Record<string, unknown>;
       const text = readResponseText(payload);
-      const error = readResponseError(payload) || (!text ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
+      const action = nativeTools ? readNativeAgentResponse(payload, nativeTools) : undefined;
+      const ambiguousJson = !nativeTools && request.responseFormat && responseMessages(payload).length > 1
+        ? "The provider returned multiple final messages for one JSON response; they were not concatenated." : undefined;
+      const error = readResponseError(payload) || (!text && !action ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
 
       return {
         provider: this.id,
         model,
         text,
         error,
+        ...action,
+        ...(ambiguousJson ? { protocolError: ambiguousJson } : {}),
         raw: payload,
         responseId: typeof payload.id === "string" ? payload.id : undefined,
         usage: readUsage(payload),

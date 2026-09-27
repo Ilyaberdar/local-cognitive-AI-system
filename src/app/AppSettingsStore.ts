@@ -7,6 +7,7 @@ import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileS
 import { constants } from "node:fs";
 import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
 import { validateSettingsPatch, defaultUiPreferences } from "./settingsValidation";
+import { normalizeAgentLimits } from "../agents/runtime/AgentLimits";
 
 export class AppSettingsStore {
   private readonly filePath: string;
@@ -36,12 +37,14 @@ export class AppSettingsStore {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid application settings.");
     const settings = this.normalize(parsed);
     const requiresMigration = parsed.schemaVersion === undefined || parsed.schemaVersion < 1;
+    const migrateLegacyAnthropicOutput = parsed.providers?.anthropic?.maxTokens === 1024 && this.baseConfig.providers.anthropic.maxTokens > 1024;
+    if (migrateLegacyAnthropicOutput) settings.providers.anthropic.maxTokens = this.baseConfig.providers.anthropic.maxTokens;
     if (requiresMigration) {
       await fs.copyFile(this.filePath, path.join(this.appDataDir, "settings.pre-llamacpp.json"), constants.COPYFILE_EXCL).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST") throw error;
       });
     }
-    if (!parsed.memory?.localProfileId || requiresMigration || parsed.mcp?.client === undefined) await this.write(settings);
+    if (!parsed.memory?.localProfileId || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput) await this.write(settings);
     return settings;
   }
 
@@ -83,6 +86,7 @@ export class AppSettingsStore {
       ...current,
       ui: { ...defaultUiPreferences, ...current.ui, ...patch.ui, version: 1 },
       localModels: { ...this.localDefaults(), ...current.localModels, ...patch.localModels },
+      agentLimits: { ...current.agentLimits, ...patch.agentLimits },
       llm: {
         ...current.llm,
         defaultProvider: patch.llm?.defaultProvider ?? current.llm.defaultProvider
@@ -172,6 +176,7 @@ export class AppSettingsStore {
     return {
       schemaVersion: 1,
       localModels: this.localDefaults(),
+      agentLimits: normalizeAgentLimits(this.baseConfig.agentLimits),
       llm: {
         defaultProvider: this.baseConfig.llm.defaultProvider
       },
@@ -285,6 +290,7 @@ export class AppSettingsStore {
       ...(input.ui ? { ui: { ...defaultUiPreferences, ...input.ui, version: 1 as const } } : {}),
       schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 1 ? input.schemaVersion : 1,
       localModels: this.normalizeLocalModels(input.localModels),
+      agentLimits: normalizeAgentLimits(input.agentLimits ?? defaults.agentLimits),
       llm: {
         ...input.llm,
         defaultProvider: input.llm?.defaultProvider ?? defaults.llm.defaultProvider

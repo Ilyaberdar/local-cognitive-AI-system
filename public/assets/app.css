@@ -542,11 +542,15 @@ a {
 
 .message-stream {
   display: grid;
+  /* Long preformatted lines must not determine the width of the chat column. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   align-content: start;
+  min-width: 0;
   min-height: 0;
   height: 100%;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
   scroll-behavior: auto;
@@ -569,6 +573,7 @@ a {
 .message {
   padding: 14px 16px;
   border: 0;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -633,10 +638,55 @@ a {
 }
 
 .message-content {
+  min-width: 0;
   white-space: normal;
   line-height: 1.6;
   word-break: break-word;
 }
+
+.message-markdown { min-width: 0; max-width: 100%; line-height: 1.65; overflow-wrap: anywhere; }
+.message-markdown > :first-child { margin-top: 0; }
+.message-markdown > :last-child { margin-bottom: 0; }
+.message-markdown p, .message-markdown ul, .message-markdown ol { margin: 0 0 14px; }
+.message-markdown li > p { margin-bottom: 5px; }
+.message-markdown h1, .message-markdown h2, .message-markdown h3, .message-markdown h4 { line-height: 1.35; margin: 24px 0 12px; }
+.message-markdown h1 { font-size: 1.45em; }
+.message-markdown h2 { font-size: 1.25em; }
+.message-markdown h3, .message-markdown h4 { font-size: 1.1em; }
+.message-markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.message-markdown :not(pre) > code { font-family: "SFMono-Regular", Menlo, monospace; font-size: .9em; background: var(--highlight); padding: 2px 5px; border: 1px solid var(--line); border-radius: 5px; }
+.message-markdown blockquote { margin: 16px 0; padding: 2px 16px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+.message-markdown hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+.markdown-code { min-width: 0; max-width: 100%; margin: 16px 0; border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; background: var(--bg-panel); }
+.markdown-code__header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--highlight); color: var(--muted); font-size: 12px; }
+.markdown-code__header > span { min-width: 0; overflow-wrap: anywhere; }
+.markdown-code__copy { flex-shrink: 0; padding: 4px 8px; font-size: 11px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.markdown-code__copy:hover { color: var(--text); background: var(--highlight); }
+.markdown-code pre { min-width: 0; max-width: 100%; overflow: auto; overscroll-behavior-x: contain; margin: 0; padding: 16px; tab-size: 2; white-space: pre; overflow-wrap: normal; word-break: normal; }
+.markdown-code code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; color: var(--text); }
+.markdown-table { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; }
+.markdown-table table { border-collapse: collapse; width: 100%; font-size: .94em; }
+.markdown-table th, .markdown-table td { border-bottom: 1px solid var(--line); padding: 10px 14px; text-align: left; min-width: 130px; vertical-align: top; }
+.markdown-table th { background: var(--highlight); font-weight: 600; }
+.markdown-table tr:last-child td { border-bottom: 0; }
+.tool-output-metadata { font-size: 11px; color: var(--muted); }
+.tool-output-metadata summary { cursor: pointer; }
+.tool-output-metadata pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
+.process-card .markdown-code pre { max-height: min(42vh, 340px); }
+.hljs-comment, .hljs-quote { color: #89939f; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #c9a6f2; }
+.hljs-string, .hljs-regexp, .hljs-addition { color: #9ecb9b; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: #e1b88a; }
+.hljs-title, .hljs-section, .hljs-attr, .hljs-attribute { color: #95c8f0; }
+.hljs-built_in, .hljs-type { color: #e0ca8c; }
+.hljs-deletion { color: #eea0a0; }
+[data-theme="light"] .hljs-comment, [data-theme="light"] .hljs-quote { color: #626b75; }
+[data-theme="light"] .hljs-keyword, [data-theme="light"] .hljs-selector-tag, [data-theme="light"] .hljs-literal { color: #7d3fa1; }
+[data-theme="light"] .hljs-string, [data-theme="light"] .hljs-regexp, [data-theme="light"] .hljs-addition { color: #286b3b; }
+[data-theme="light"] .hljs-number, [data-theme="light"] .hljs-symbol { color: #955215; }
+[data-theme="light"] .hljs-title, [data-theme="light"] .hljs-section, [data-theme="light"] .hljs-attr, [data-theme="light"] .hljs-attribute { color: #1b6398; }
+[data-theme="light"] .hljs-built_in, [data-theme="light"] .hljs-type { color: #80570b; }
+[data-theme="light"] .hljs-deletion { color: #a62f37; }
 
 .message-text-block {
   white-space: pre-wrap;
@@ -775,12 +825,16 @@ a {
 
 .process-card-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 8px;
   margin: 0 0 12px;
 }
 
 .subagent-card-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 8px;
   margin: 0 0 12px;
 }
@@ -884,7 +938,8 @@ a {
   background: #080808;
   padding: 10px;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
-  max-height: min(58vh, 620px);
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
 }
 
@@ -1108,15 +1163,20 @@ a {
 
 .process-card__output {
   margin: 8px 0 0;
+  min-width: 0;
+  max-width: 100%;
   max-height: 220px;
   overflow: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
   color: var(--muted);
   font-family: "SFMono-Regular", "Menlo", monospace;
   font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.45;
-  white-space: pre-wrap;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .chat-activity-bar {
@@ -2714,3 +2774,7 @@ a {
 @media (prefers-reduced-motion: reduce) {
   .activity-scan span { animation: none; }
 }
+.workflow-agent-response { min-width: 0; }
+.workflow-activity .markdown-code pre { white-space: pre; overflow: auto; max-height: none; padding: 14px 16px; }
+.workflow-activity .message-markdown p { white-space: normal; }
+.node-run-card .message-markdown { min-width: 0; max-width: 100%; }

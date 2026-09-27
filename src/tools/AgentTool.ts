@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { LLMFunctionTool, LLMResponseFormat } from "../types";
+import { strictJsonSchema } from "../llm/StructuredOutput";
 
 const filePath = z.string().min(1).max(4096).refine(value => !value.includes("\0"), "Path contains a null byte.");
 const text = z.string().max(1_000_000);
@@ -23,13 +25,39 @@ export function parseAgentAction(value: unknown): AgentAction {
   if (["file.write", "file.replace", "file.append", "file.delete"].includes(tool) && typeof shape.arguments.expectedVersion !== "string") {
     throw new Error(`${tool} requires arguments.expectedVersion. For a NEW file pass the exact string "missing". For an existing file, read it first and copy its returned version. No action was executed.`);
   }
-  return { tool, arguments: agentToolSchemas[tool].parse(shape.arguments) };
+  const args = { ...shape.arguments };
+  for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) if (args[key] === null && field.isOptional()) delete args[key];
+  return { tool, arguments: agentToolSchemas[tool].parse(args) };
 }
 export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search"].includes(tool);
 
+export function agentFunctionTools(readOnly = false): LLMFunctionTool[] {
+  return Object.entries(agentToolSchemas).filter(([name]) => !readOnly || readTool(name)).map(([action, schema]) => {
+    const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
+    const required = (json.required ?? []) as string[];
+    return { name: action.replaceAll(".", "_"), action,
+      description: `Execute ${action} in the workspace. ${action.startsWith("file.") && !readTool(action) ? 'Read existing files first and pass their returned expectedVersion; use "missing" only for a new file.' : "Use the actual result as evidence before answering."}${action === "file.search" || action === "file.read" ? " Pass a search result's absolutePath directly to file.read; its path is relative to the search root, not necessarily the workspace." : ""}`,
+      parameters: strictJsonSchema(json), optionalArguments: Object.keys(schema.shape).filter(key => !required.includes(key)) };
+  });
+}
+
+/** The wrapper keeps a valid object root even on APIs that disallow a root union. */
+export function agentActionFormat(readOnly = false, finalOnly = false): LLMResponseFormat {
+  const alternatives: Record<string, unknown>[] = (finalOnly ? [] : agentFunctionTools(readOnly)).map(tool => ({
+    type: "object", properties: { type: { const: "tool_call", type: "string" }, tool: { const: tool.action, type: "string" }, arguments: tool.parameters },
+    required: ["type", "tool", "arguments"], additionalProperties: false
+  }));
+  alternatives.push({ type: "object", properties: { type: { const: "final", type: "string" }, text: { type: "string", minLength: 1 } },
+    required: ["type", "text"], additionalProperties: false });
+  return { type: "json_schema", name: "agent_action", strict: true, schema: {
+    type: "object", properties: { action: { anyOf: alternatives } }, required: ["action"], additionalProperties: false
+  } };
+}
+
 export const agentToolInstructions = `Available tools (arguments are JSON):
 file.list {path:".",limit?:100}
-file.search {path:".",query:"literal text",limit?:40,maxFiles?:500}
+file.search {path:".",query:"literal text",include?:["*.ts"],exclude?:["*.test.ts"],limit?:40,maxFiles?:500}
+Search filename globs such as *.ts match at every depth. Globs containing / are relative to the search root. An empty query finds file paths. Pass a result's absolutePath directly to file.read; its path is relative to the search root, not necessarily the workspace. Narrow the root or query when results are truncated.
 file.read {path,startLine?:1,endLine?}
 file.write {path,content,expectedVersion}
 Example to create a new file: {"type":"tool_call","tool":"file.write","arguments":{"path":"result.txt","content":"your actual content","expectedVersion":"missing"}}

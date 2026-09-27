@@ -9,13 +9,19 @@ import { AgentLimits } from "./AgentLimits";
 export interface AgentRun {
   id:string; fingerprint:string; input:string; instructions:string;
   status:"running"|"waiting"|"completed"|"failed";
-  turns:Array<{type:"tool"|"result"|"format_error";content:string}>;
+  turns:Array<{type:"tool"|"result"|"format_error";content:string;diagnostic?:{responseId?:string;preview:string;outputTypes:string[]}}>;
   tools:ToolExecutionResult[];
-  pending?:{action:AgentAction;id:string;approval?:PendingApproval};
+  pending?:{action:AgentAction;id:string;approval?:PendingApproval;callId?:string;outputItems?:Record<string,unknown>[]};
+  nativeContinuation?: Record<string,unknown>[];
+  consecutiveRepairs?: number;
+  protocol?: "native" | "schema" | "json" | "text";
   steps:number; repairs:number; activeMs:number; final?:string;error?:string;usage:TokenUsage;
   budgetId?: string;
   limits?: AgentLimits;
   maxSteps?: number;
+  /** Fixed at the first generation; a resume cannot reclaim another agent's time. */
+  activeTimeLimitMs?: number;
+  finalizationReason?: string;
 }
 export interface AgentBudget { id: string; memberIds: string[]; limits: AgentLimits; }
 export class AgentRunStore {

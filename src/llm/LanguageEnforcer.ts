@@ -1,5 +1,6 @@
 import { LanguagePreference, ProviderTarget } from "../types";
 import { LLMService } from "./LLMService";
+import { objectFormat } from "./StructuredOutput";
 
 interface TranslationPayload {
   items?: string[];
@@ -47,6 +48,7 @@ export class LanguageEnforcer {
           language
         )}. Output valid JSON only.`,
         model: target.model,
+        responseFormat: objectFormat("translation", { items: { type: "array", items: { type: "string" } } }),
         images: [],
         signal,
         prompt: [

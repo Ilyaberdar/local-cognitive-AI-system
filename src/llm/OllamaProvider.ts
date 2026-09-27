@@ -11,6 +11,7 @@ import {
   resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
+import { unsupportedFeature } from "./provider-utils";
 
 export class OllamaProvider implements LLMProvider {
   readonly id = "ollama";
@@ -84,6 +85,7 @@ export class OllamaProvider implements LLMProvider {
           prompt: buildComposedPrompt(request),
           ...(images.length ? { images: images.map(image => decodeImage(image).data) } : {}),
           stream: false,
+          ...(request.responseFormat ? { format: request.responseFormat.type === "json_schema" ? request.responseFormat.schema : "json" } : {}),
           ...(typeof request.maxTokens === "number"
             ? {
                 options: {
@@ -96,15 +98,19 @@ export class OllamaProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`Ollama request failed with status ${response.status}`);
+        const detail = (await response.text()).slice(0, 1500);
+        const unsupported = unsupportedFeature(response.status, detail, request);
+        if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
+        throw new Error(`Ollama request failed with status ${response.status}: ${detail}`);
       }
 
-      const payload = (await response.json()) as { response?: string };
+      const payload = (await response.json()) as { response?: string; done_reason?: string; error?: string };
 
       return {
         provider: this.id,
         model,
         text: payload.response?.trim() || buildFallbackResponse(request, this.id, model).text,
+        error: payload.error || (payload.done_reason === "length" ? "Model response stopped at the token limit. No action was executed." : undefined),
         raw: payload,
         usage: readUsage(payload)
       };

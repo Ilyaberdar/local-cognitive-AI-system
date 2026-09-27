@@ -8,8 +8,10 @@ import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
 import { watchWorkflowRun } from "./workflow-live.js";
+import { renderMarkdown, renderCodeBlock, bindMarkdownActions } from "./markdown-renderer.js";
 
 const app = document.querySelector("#app");
+bindMarkdownActions(app);
 const sessionSetupMotion = createSessionSetupMotion();
 let systemMetricsPollTimer = null;
 let sessionLoadSequence = 0;
@@ -145,7 +147,10 @@ const api = {
     request("/chat", {
       method: "POST",
       body: JSON.stringify(payload),
-      timeoutMs: 900000,
+      // An advisor can legitimately run longer than fifteen minutes on a local
+      // model. Do not turn that into a client-side cancellation while the
+      // backend is still making progress; the Stop control remains explicit.
+      timeoutMs: 0,
       controller
     }),
   reviewProcessRun: (requestId, sessionId, approvalId, approved) =>
@@ -360,6 +365,12 @@ const modelManager = createModelManager({
     if (runtime) state.bootstrap.localModels = { ...state.bootstrap.localModels, models: localModels, runtime };
     updateLocalModelTestProgress();
     updateAttachmentGuidance();
+    updateLoadedModelIndicators();
+  },
+  onContextChange: async (contextSize) => {
+    const response = await api.updateAppSettings({ localModels: { contextSize } });
+    state.bootstrap.appSettings = response.settings;
+    for (const key of ["providers", "availableModels"]) if (response[key] !== undefined) state.bootstrap[key] = response[key];
   },
   onUse: async (model) => {
     if (!state.activeSessionId || !state.sessionSettings) await createChatInProject(state.activeProjectId);
@@ -2259,6 +2270,7 @@ function renderWorkflowRunTrace(selectedRun) {
 
 function renderNodeRunCard(nodeRun) {
   const output = nodeRun.output;
+  const response = typeof output?.data?.response === "string" ? output.data.response : "";
   const target = output?.data?.target;
   const agentRunId = nodeRun.agentRunId || output?.data?.agentRunId;
   const targetLabel = target?.providerId ? formatProviderTarget(target.providerId, target.model) : "";
@@ -2269,7 +2281,7 @@ function renderNodeRunCard(nodeRun) {
         <strong>${escapeHtml(nodeRun.nodeId)}</strong>
         <span class="badge ${statusTone(nodeRun.status)}">${escapeHtml(nodeRun.status)}</span>
       </div>
-      <p>${["running", "queued"].includes(nodeRun.status) && nodeRun.progress ? '<span class="activity-scan" aria-hidden="true"></span> ' : ""}${escapeHtml(output?.summary ?? nodeRun.error ?? nodeRun.progress?.label ?? "Node is still running.")}</p>
+      ${response ? renderMarkdown(response) : `<p>${["running", "queued"].includes(nodeRun.status) && nodeRun.progress ? '<span class="activity-scan" aria-hidden="true"></span> ' : ""}${escapeHtml(output?.summary ?? nodeRun.error ?? nodeRun.progress?.label ?? "Node is still running.")}</p>`}
       <div class="task-meta">
         <span>${escapeHtml(targetLabel || output?.event || "no-event")}</span>
         <span>${formatDate(nodeRun.completedAt ?? nodeRun.startedAt)}</span>
@@ -2716,6 +2728,7 @@ function renderMessageContent(message) {
 }
 
 function renderAssistantMessageContent(rawContent) {
+  if (!rawContent.startsWith("Debate Result\n")) return renderPlainMessageText(rawContent);
   const marker = "\nJudge Conclusion\n";
   const markerIndex = rawContent.indexOf(marker);
 
@@ -2740,7 +2753,7 @@ function renderAssistantMessageContent(rawContent) {
       ? `
         <section class="judge-conclusion">
           <div class="judge-conclusion__label">Judge Conclusion</div>
-          <blockquote class="judge-conclusion__body">${escapeHtml(conclusion)}</blockquote>
+          <div class="judge-conclusion__body">${renderMarkdown(conclusion)}</div>
         </section>
       `
       : "",
@@ -2753,23 +2766,25 @@ function renderAssistantMessageContent(rawContent) {
 function renderPlainMessageText(value) {
   const chunks = [];
   const plainLines = [];
+  let metadataAllowed = true;
   const flushPlainLines = () => {
     const text = plainLines.join("\n").replace(/^\n+|\n+$/g, "");
     plainLines.length = 0;
     if (text) {
-      chunks.push(`<div class="message-text-block">${renderInlineMessageText(text)}</div>`);
+      chunks.push(renderMarkdown(text));
     }
   };
 
   for (const line of value.split(/\r?\n/)) {
     const runtimeMatch = line.match(/^(Delegated agents|Agent status|Final response|Provider|Model):\s*(.+)$/i);
-    if (runtimeMatch) {
+    if (runtimeMatch && metadataAllowed) {
       flushPlainLines();
       chunks.push(renderRuntimeMetaLine(runtimeMatch[1], runtimeMatch[2]));
       continue;
     }
 
-    plainLines.push(normalizeFallbackResponseLine(line));
+    plainLines.push(metadataAllowed ? normalizeFallbackResponseLine(line) : line);
+    if (line.trim() && !["Response", "Code Response"].includes(line.trim())) metadataAllowed = false;
   }
 
   flushPlainLines();
@@ -2903,7 +2918,7 @@ function renderSubagentCard(agent) {
         <span>${escapeHtml(getModelDisplayName(agent.provider, agent.model) || "model")}</span>
         <span>access=${escapeHtml(agent.accessMode || "default")}</span>
       </div>
-      <pre class="subagent-card__output">${escapeHtml(output)}</pre>
+      <div class="subagent-card__output">${renderMarkdown(output)}</div>
     </details>
   `;
 }
@@ -2960,7 +2975,7 @@ function renderFileToolCard(tool) {
         ${tool.ok && targetPath && !["delete", "directory", "create directory"].includes(operation) ? renderReviewButton(targetPath) : ""}
       </div>
       ${targetPath ? renderFilePathBar(targetPath, fileOperationLabel(operation), "", false) : ""}
-      ${metadata.diff ? renderFileDiffBlock(targetPath, metadata.diff, operation, false) : renderToolOutput(tool.output)}
+      ${metadata.diff ? renderFileDiffBlock(targetPath, metadata.diff, operation, false) : renderToolOutput(tool.output, operation === "read" ? targetPath : undefined)}
     </section>
   `;
 }
@@ -3059,8 +3074,20 @@ function renderDiffRow(row) {
   `;
 }
 
-function renderToolOutput(output) {
+function renderToolOutput(output, filePath) {
   const text = String(output || "").trim();
+  if (filePath) {
+    try {
+      const data = JSON.parse(text);
+      if (data && typeof data.content === "string") {
+        const extension = String(filePath).split(".").pop().toLowerCase();
+        const content = data.content.replace(/^\d+: /gm, "");
+        const label = `${extension} · lines ${data.startLine ?? 1}–${data.endLine ?? "?"}${data.truncated ? " · partial" : ""}`;
+        const { content: _content, ...metadata } = data;
+        return `${renderCodeBlock(content, extension, label)}<details class="tool-output-metadata"><summary>Read details</summary><pre>${escapeHtml(JSON.stringify(metadata, null, 2))}</pre></details>`;
+      }
+    } catch { /* Legacy or plain tool output is still readable. */ }
+  }
   return text ? `<pre class="process-card__output">${escapeHtml(text)}</pre>` : "";
 }
 
@@ -4778,6 +4805,24 @@ function formatLocalModelReferences(value) {
   return String(value ?? "").replace(/\bgguf-[a-z0-9]+\b/g, (modelId) => getModelDisplayName("llamacpp", modelId));
 }
 
+function isModelLoaded(providerId, modelId) {
+  const matches = (model) => model.providerId === providerId && (model.id === modelId || model.libraryId === modelId || model.loadedInstanceIds?.includes(modelId));
+  const model = (state.bootstrap?.allManagedModels ?? []).find(matches);
+  if (model) return Boolean(model.loaded || model.loadedInstanceIds?.length || model.state === "ready" || model.runtimeState === "ready");
+  return (state.bootstrap?.loadedModels ?? []).some(matches);
+}
+
+function updateLoadedModelIndicators() {
+  document.querySelectorAll("select[data-local-model-provider]").forEach((select) => {
+    const providerId = select.dataset.localModelProvider;
+    for (const item of select.options) {
+      if (item.value && !item.disabled) item.textContent = `${getModelDisplayName(providerId, item.value)}${isModelLoaded(providerId, item.value) ? " · Loaded" : ""}`;
+    }
+    const badge = select.parentElement.querySelector("[data-model-loaded]");
+    if (badge) badge.hidden = !isModelLoaded(providerId, select.value);
+  });
+}
+
 function getLoadedModelOptions(providerId) {
   return (state.bootstrap?.loadedModels ?? [])
     .filter((model) => !providerId || model.providerId === providerId)
@@ -5714,12 +5759,14 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
 
   if (isLocalProvider(providerId)) {
     const unavailable = resolvedValue && !options.includes(resolvedValue);
+    const orderedOptions = [...options].sort((a, b) => Number(isModelLoaded(providerId, b)) - Number(isModelLoaded(providerId, a)));
     return `
-      <select name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
+      <select name="${escapeAttr(name)}" data-local-model-provider="${escapeAttr(providerId)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
         <option value="">${providerId === "llamacpp" && !options.length ? "Download a model in Models" : "Select model"}</option>
         ${unavailable ? `<option value="${escapeAttr(resolvedValue)}" selected disabled>${escapeHtml(resolvedValue)} · unavailable</option>` : ""}
-        ${options.map((modelId) => option(modelId, resolvedValue, getModelDisplayName(providerId, modelId))).join("")}
+        ${orderedOptions.map((modelId) => option(modelId, resolvedValue, `${getModelDisplayName(providerId, modelId)}${isModelLoaded(providerId, modelId) ? " · Loaded" : ""}`)).join("")}
       </select>
+      <span class="badge success model-loaded-badge" data-model-loaded ${isModelLoaded(providerId, resolvedValue) ? "" : "hidden"}>Loaded</span>
       ${unavailable ? '<div class="mm-unavailable-target">This saved model is unavailable. Select a model from the library.</div>' : ""}
     `;
   }
@@ -5913,6 +5960,9 @@ function bindSessionSetupFieldSync() {
   if (!form) {
     return;
   }
+  form.addEventListener("change", (event) => {
+    if (event.target.matches("select[data-local-model-provider]")) updateLoadedModelIndicators();
+  });
 
   const mappings = [
     ["defaultProvider", "defaultModel", "default-model-options"],

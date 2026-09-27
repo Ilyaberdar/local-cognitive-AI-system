@@ -2,6 +2,7 @@ node_modules
 dist
 public/assets/workflow-editor.js
 public/assets/workflow-editor.css
+public/assets/markdown-renderer.js
 /release/
 .env
 .env.*

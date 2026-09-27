@@ -1,4 +1,5 @@
 import { LLMService } from "../llm/LLMService";
+import { debateFormat } from "../llm/StructuredOutput";
 import { AgentDebateResponse, DebateProfile, OutputStyle, ProviderTarget } from "../types";
 import { buildDebateGuidance, buildLanguageInstruction } from "../judge/DebateProfiles";
 import { LanguageEnforcer } from "../llm/LanguageEnforcer";
@@ -55,6 +56,7 @@ export class SupportAgent {
     const { data, response } = await this.llmService.generateObject<DebatePayload>(
       {
         systemPrompt: "You are a rigorous analyst producing only structured JSON.",
+        responseFormat: debateFormat,
         model: target.model,
         maxTokens: getStyleTokenBudget(outputStyle),
         signal,

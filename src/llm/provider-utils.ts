@@ -1,4 +1,5 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderRateLimit, TokenUsage } from "../types";
+import { messageText, responseMessages, responseRefusal } from "./ResponseItems";
 
 export interface HttpProviderOptions {
   enabled?: boolean;
@@ -22,7 +23,12 @@ export const createDescriptor = (
   capabilities: {
     local: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
     managed: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
-    jsonMode: ["openai", "llamacpp"].includes(options.id),
+    jsonMode: ["openai", "llamacpp", "lmstudio", "ollama", "gemini"].includes(options.id),
+    nativeTools: ["openai", "anthropic", "gemini"].includes(options.id),
+    // Anthropic agents use native tools. If a compatibility endpoint rejects
+    // tools, fall back directly to JSON rather than sending an unsupported
+    // output_config schema payload as a second failed request.
+    structuredOutputs: ["openai", "llamacpp", "lmstudio", "ollama", "gemini"].includes(options.id),
     reasoning: options.id === "openai",
     vision: ["openai", "anthropic", "gemini", "llamacpp", "lmstudio", "ollama"].includes(options.id)
   }
@@ -30,6 +36,13 @@ export const createDescriptor = (
 
 export const buildComposedPrompt = (request: LLMRequest): string =>
   request.systemPrompt ? `${request.systemPrompt}\n\n${request.prompt}` : request.prompt;
+
+/** Downgrade only an explicitly unsupported protocol, never auth, quota, timeout or execution failures. */
+export function unsupportedFeature(status: number, detail: string, request: LLMRequest): LLMResponse["unsupportedFeature"] {
+  if (![400, 404, 422, 501].includes(status) || !/not support|unsupported|not available|not implemented|unknown (?:field|parameter)|unrecognized|extra inputs/i.test(detail)) return;
+  if (request.tools?.length && /tool|function/i.test(detail)) return "tools";
+  if (request.responseFormat && /schema|format|structured|json|grammar/i.test(detail)) return request.responseFormat.type === "json_schema" ? "schema" : "json";
+}
 
 export const resolveRequestTimeoutMs = (
   configuredTimeoutMs: number,
@@ -87,6 +100,11 @@ export const readResponseText = (payload: unknown): string => {
     if (Array.isArray(content)) return content.filter(part => part?.type === "text").map(part => part.text ?? "").join("\n").trim();
   }
 
+  // Preserve message/channel boundaries. A Responses convenience output_text may contain commentary too.
+  if (Array.isArray(record.output)) {
+    return responseMessages(record).map(messageText).filter(Boolean).join("\n").trim();
+  }
+
   if (typeof record.output_text === "string" && record.output_text.trim()) {
     return record.output_text.trim();
   }
@@ -95,62 +113,19 @@ export const readResponseText = (payload: unknown): string => {
     return record.response.trim();
   }
 
-  if (Array.isArray(record.output)) {
-    const assistantMessageParts: string[] = [];
-    const textParts: string[] = [];
-
-    for (const item of record.output) {
-      if (!item || typeof item !== "object") {
-        continue;
-      }
-
-      const outputItem = item as Record<string, unknown>;
-      if (outputItem.type === "reasoning") continue;
-      const isAssistantMessage =
-        outputItem.type === "message" && outputItem.role === "assistant";
-      const content = outputItem.content;
-
-      if (!Array.isArray(content)) {
-        continue;
-      }
-
-      for (const part of content) {
-        if (!part || typeof part !== "object") {
-          continue;
-        }
-
-        const contentPart = part as Record<string, unknown>;
-        if (contentPart.type === "reasoning_text") continue;
-
-        if (isAssistantMessage && typeof contentPart.output_text === "string") {
-          assistantMessageParts.push(contentPart.output_text);
-        }
-
-        if (isAssistantMessage && typeof contentPart.text === "string") {
-          assistantMessageParts.push(contentPart.text);
-        }
-
-        if (typeof contentPart.text === "string") {
-          textParts.push(contentPart.text);
-        }
-
-        if (typeof contentPart.output_text === "string") {
-          textParts.push(contentPart.output_text);
-        }
-      }
-    }
-
-    if (assistantMessageParts.length > 0) {
-      return assistantMessageParts.join("\n").trim();
-    }
-
-    return textParts.join("\n").trim();
-  }
 
   return "";
 };
 
 export const readResponseError = (payload: Record<string, unknown>): string | undefined => {
+  const refusal = responseRefusal(payload);
+  if (refusal) return refusal;
+  if (Array.isArray(payload.choices)) {
+    const choice = payload.choices[0];
+    if (choice?.message?.refusal) return `Model refused the request: ${choice.message.refusal}`;
+    if (["length", "content_filter"].includes(choice?.finish_reason)) return `Model response stopped: ${choice.finish_reason}. No action was executed.`;
+  }
+  if (payload.done_reason === "length") return "Model response stopped at the token limit. No action was executed.";
   const error = payload.error;
   if (typeof error === "string" && error) return error;
   if (error && typeof error === "object") {

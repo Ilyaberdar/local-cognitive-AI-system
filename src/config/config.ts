@@ -242,7 +242,7 @@ export const config: AppConfig = {
       timeoutMs: Number(process.env.ANTHROPIC_TIMEOUT_MS ?? defaultTimeoutMs),
       apiKey: toOptional(process.env.ANTHROPIC_API_KEY),
       version: process.env.ANTHROPIC_VERSION ?? "2023-06-01",
-      maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS ?? 1024)
+      maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS ?? 4096)
     },
     gemini: {
       baseUrl: process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com",

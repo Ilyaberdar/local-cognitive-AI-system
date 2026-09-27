@@ -31,8 +31,8 @@ test("local inference accepts delayed headers without invoking fetch's separate 
   const result = await provider.generateText({ prompt: "Write a file", systemPrompt: "Use tools", responseFormat: { type: "json_object" } });
   assert.equal(result.error, undefined);
   assert.equal(result.text, "Файл готов");
-  assert.deepEqual(received, { path: "/v1/responses", authorization: "Bearer local-test", body: {
-    model: "bonsai", input: "Write a file", instructions: "Use tools", text: { format: { type: "json_object" } }
+  assert.deepEqual(received, { path: "/v1/chat/completions", authorization: "Bearer local-test", body: {
+    model: "bonsai", messages: [{ role: "system", content: "Use tools" }, { role: "user", content: "Write a file" }], response_format: { type: "json_object" }
   } });
 });
 

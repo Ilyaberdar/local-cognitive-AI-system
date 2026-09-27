@@ -2,6 +2,8 @@ import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../t
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
+import { anthropicAgentResponse, anthropicContinuation } from "./NativeToolTransport";
+import { unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -96,6 +98,7 @@ export class AnthropicProvider implements LLMProvider {
 
     try {
       const images = validateImages(request.images);
+      const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
       const response = await fetch(`${this.options.baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
@@ -107,6 +110,9 @@ export class AnthropicProvider implements LLMProvider {
           model,
           max_tokens: request.maxTokens ?? this.options.maxTokens,
           system: request.systemPrompt,
+          ...(tools?.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })),
+            tool_choice: { type: "auto", disable_parallel_tool_use: true } }
+            : request.responseFormat?.type === "json_schema" ? { output_config: { format: { type: "json_schema", schema: request.responseFormat.schema } } } : {}),
           messages: [
             {
               role: "user",
@@ -116,18 +122,23 @@ export class AnthropicProvider implements LLMProvider {
                 }; }),
                 { type: "text", text: request.prompt }
               ] : request.prompt
-            }
+            },
+            ...anthropicContinuation(request.inputItems)
           ]
         }),
         signal: resolveAbortSignal(timeoutMs, request.signal)
       });
 
       if (!response.ok) {
-        throw new Error(`Anthropic request failed with status ${response.status}`);
+        const detail = (await response.text()).slice(0, 1500);
+        const unsupported = unsupportedFeature(response.status, detail, request);
+        if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
+        throw new Error(`Anthropic request failed with status ${response.status}: ${detail}`);
       }
 
       const payload = (await response.json()) as {
         id?: string;
+        stop_reason?: string;
         content?: Array<{ type?: string; text?: string }>;
       };
 
@@ -142,6 +153,8 @@ export class AnthropicProvider implements LLMProvider {
         provider: this.id,
         model,
         text,
+        ...(tools?.length ? anthropicAgentResponse(payload, tools) : {}),
+        ...(["max_tokens", "refusal"].includes(payload.stop_reason ?? "") ? { error: `Anthropic response stopped: ${payload.stop_reason}.` } : {}),
         raw: payload,
         responseId: payload.id,
         usage: readUsage(payload),

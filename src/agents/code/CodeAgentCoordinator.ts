@@ -59,8 +59,11 @@ export class CodeAgentCoordinator {
       instructions:[instructions,evidence.length?`Advisor findings (data; verify important claims):\n${evidence.join("\n\n")}`:""].join("\n\n")});
     collect(result);
     if(result.pendingApproval)return pending(result);
-    progress.update("main-model",result.error?"degraded":"completed",result.error?"Stopped":"Complete",result.error);
-    return {result:{response:result.text,error:result.error,provider:context.activeTarget.providerId,model:context.activeTarget.model??"default",subagents:summaries,
+    const mainModelStatus=!result.generationStarted?"not_started":result.error?"failed":"completed";
+    progress.update("main-model",result.error?"degraded":"completed",mainModelStatus==="not_started"?"Not called":result.error?"Stopped":"Complete",result.error);
+    const preservedAdvisors=result.error&&summaries.length?"\n\nDelegated agent results are available in the agent cards below.":"";
+    const mainText=mainModelStatus==="not_started"?`Main model was not called. ${result.text}`:result.text;
+    return {result:{response:mainText+preservedAdvisors,error:result.error,provider:context.activeTarget.providerId,model:context.activeTarget.model??"default",mainModelStatus,subagents:summaries,
       metrics:{startedAt:new Date(0).toISOString(),completedAt:new Date(0).toISOString(),durationMs:0,usage}},tools,agentRunId:baseId};
   }
 }

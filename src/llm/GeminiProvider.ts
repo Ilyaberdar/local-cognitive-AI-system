@@ -2,6 +2,8 @@ import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../t
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
+import { geminiAgentResponse, geminiContinuation } from "./NativeToolTransport";
+import { unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -103,6 +105,7 @@ export class GeminiProvider implements LLMProvider {
 
     try {
       const images = validateImages(request.images);
+      const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -115,6 +118,8 @@ export class GeminiProvider implements LLMProvider {
                 parts: [{ text: request.systemPrompt }]
               }
             : undefined,
+          ...(tools?.length ? { tools: [{ functionDeclarations: tools.map(tool => ({ name: tool.name, description: tool.description, parametersJsonSchema: tool.parameters })) }],
+            toolConfig: { functionCallingConfig: { mode: "AUTO" } } } : {}),
           contents: [
             {
               role: "user",
@@ -122,30 +127,38 @@ export class GeminiProvider implements LLMProvider {
                 const decoded = decodeImage(image);
                 return { inline_data: { mime_type: decoded.mimeType, data: decoded.data } };
               })]
-            }
+            },
+            ...geminiContinuation(request.inputItems)
           ],
           generationConfig: {
             temperature: request.temperature,
-            maxOutputTokens: request.maxTokens
+            maxOutputTokens: request.maxTokens,
+            ...(!tools?.length && request.responseFormat ? { responseMimeType: "application/json",
+              ...(request.responseFormat.type === "json_schema" ? { responseJsonSchema: request.responseFormat.schema } : {}) } : {})
           }
         }),
         signal: resolveAbortSignal(timeoutMs, request.signal)
       });
 
       if (!response.ok) {
-        throw new Error(`Gemini request failed with status ${response.status}`);
+        const detail = (await response.text()).slice(0, 1500);
+        const unsupported = unsupportedFeature(response.status, detail, request);
+        if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
+        throw new Error(`Gemini request failed with status ${response.status}: ${detail}`);
       }
 
       const payload = (await response.json()) as {
         candidates?: Array<{
+          finishReason?: string;
           content?: {
-            parts?: Array<{ text?: string }>;
+            parts?: Array<{ text?: string; thought?: boolean }>;
           };
         }>;
       };
 
       const text =
         payload.candidates?.[0]?.content?.parts
+          ?.filter(part => !part.thought)
           ?.map((part) => part.text?.trim())
           .filter(Boolean)
           .join("\n") || buildFallbackResponse(request, this.id, model).text;
@@ -154,6 +167,9 @@ export class GeminiProvider implements LLMProvider {
         provider: this.id,
         model,
         text,
+        ...(tools?.length ? geminiAgentResponse(payload.candidates?.[0]?.content ?? {}, tools) : {}),
+        ...(payload.candidates?.[0]?.finishReason && payload.candidates[0].finishReason !== "STOP"
+          ? { error: `Gemini response stopped: ${payload.candidates[0].finishReason}.` } : {}),
         raw: payload,
         usage: readUsage(payload)
       };

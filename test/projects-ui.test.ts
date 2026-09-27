@@ -42,6 +42,30 @@ test("compact project tree keeps an older active chat visible and hides archived
   assert.equal((html.match(/data-sidebar-scroll=/g) ?? []).length, 1);
 });
 
+test("working chats replace Delete with status in both lists and remain visible after switching chats", () => {
+  const context: any = { icon: () => "" };
+  vm.runInNewContext(projectsSource, context);
+  const state: any = {
+    activeSessionId: "plain", activeChatRequest: { sessionId: "p-7" },
+    bootstrap: { projects: [{ id: "p", name: "Project", rootPath: "/project" }],
+      sessions: [{ id: "plain", title: "Ordinary" }, ...Array.from({ length: 8 }, (_, i) => ({ id: `p-${i}`, title: `Project ${i}`, projectId: "p" }))] }
+  };
+  const ui = context.createProjectsUi({ getState: () => state });
+  let html = ui.sidebar();
+  assert.match(html, /Project 7 is working/);
+  assert.doesNotMatch(html, /aria-label="Delete Project 7"/);
+  assert.match(html, /aria-label="Delete Ordinary"/);
+  state.activeChatRequest = null;
+  state.pendingRequest = { sessionId: "plain" };
+  html = ui.sidebar();
+  assert.match(html, /Ordinary is working/);
+  assert.doesNotMatch(html, /aria-label="Delete Ordinary"/);
+  state.pendingRequest = null;
+  html = ui.sidebar();
+  assert.doesNotMatch(html, /session-working/);
+  assert.match(html, /aria-label="Delete Ordinary"/);
+});
+
 test("empty project selection and last chat removal never create an unrelated conversation", async () => {
   let created = 0;
   const state: any = { activeProjectId: "empty", activeSessionId: null, messages: ["old"], sessionSettings: {},

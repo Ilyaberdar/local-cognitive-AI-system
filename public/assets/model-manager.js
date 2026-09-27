@@ -21,12 +21,13 @@ const downloadedOf = (item) => Number(item?.downloadedBytes ?? item?.receivedByt
 const modelState = (model) => model?.runtimeState || model?.runtimeStatus || model?.state || (model?.loaded || model?.loadedInstanceIds?.length ? "ready" : "unloaded");
 
 // Catalog traffic and download progress stay isolated from the conversation DOM.
-export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, notify, isVisible }) {
+export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, onContextChange, notify, isVisible }) {
   const state = {
     tab: "catalog", source: "recommended", query: "", cursor: null, catalog: [], catalogLoading: false,
     catalogLoaded: false, catalogError: "", catalogWarning: "", runtime: null, downloads: [], connected: false, connectionError: "",
     detail: null, detailRepoId: "", detailLoading: false, detailError: "", variantId: "", projectorPath: "",
-    actions: new Set(), deleteId: "", started: false, eventSequence: 0
+    actions: new Set(), deleteId: "", started: false, eventSequence: 0,
+    contextDraft: null, contextSaving: false, contextError: "", contextSaved: false, storage: null, storageOpen: false
   };
   let root = null;
   let events = null;
@@ -85,11 +86,48 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const status = runtime?.status || "idle";
     const missing = ["unavailable", "missing", "error", "unsupported"].includes(status);
     const label = status === "ready" && runtime?.busy ? "Running inference" : { ready: "Runtime ready", running: "Runtime ready", idle: "Ready when needed", stopped: "Ready when needed", loading: "Loading model", stopping: "Stopping runtime", starting: "Starting runtime", unavailable: "Runtime unavailable", missing: "Runtime not installed", error: "Runtime needs attention", unsupported: "Unsupported platform" }[status] || status;
+    const contextSize = runtime?.effectiveContextSize;
     return `<div class="mm-runtime-strip" data-mm-runtime>
       <div class="mm-runtime-status"><span class="mm-status-dot ${missing ? "is-warning" : "is-success"}"></span><span>${escape(label)}</span>${runtime?.backend ? `<span class="mm-runtime-backend">${escape(runtime.backend)}</span>` : ""}${runtime?.queueLength ? `<span>${runtime.queueLength} waiting</span>` : ""}</div>
-      <div class="mm-resource-list">${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
+      <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
       ${missing && (runtime?.message || runtime?.error) ? `<div class="mm-runtime-message">${escape(runtime.message || runtime.error)}</div>` : ""}
     </div>`;
+  }
+
+  function renderContextControl() {
+    const configured = getContext().settings?.localModels?.contextSize ?? 4096;
+    return `<form class="mm-context-control" id="mm-context-form">
+      <div><label for="mm-context-size">Context size</label><p class="subtle">Tokens shared by the conversation, tools and answer. Larger context uses more memory.</p><p class="subtle">Saved: ${Number(configured).toLocaleString()} tokens · Applied when the model loads.</p></div>
+      <div class="mm-context-input"><input id="mm-context-size" name="contextSize" type="number" min="512" max="131072" step="1" required value="${escape(state.contextDraft ?? configured)}" aria-label="Local model context size in tokens" ${state.contextSaving ? "disabled" : ""} /><button class="ghost-button" type="submit" ${state.contextSaving ? "disabled" : ""}>${state.contextSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save context"}</button></div>
+      ${state.contextError ? `<div class="mm-inline-error" role="alert">${escape(state.contextError)}</div>` : state.contextSaved ? '<div class="subtle mm-context-feedback" role="status">Context saved. The active context is shown above once the model is ready.</div>' : ""}
+    </form>`;
+  }
+
+  function renderStorage() {
+    const storage = state.storage || getContext().storage;
+    if (!storage) return "";
+    const external = asArray(storage.externalLibraries);
+    return `<details class="mm-storage" id="mm-storage" ${state.storageOpen ? "open" : ""}><summary><span>Model storage</span><span>${bytes(storage.managedBytes)} in this app${external.length ? ` · ${bytes(external.reduce((sum, library) => sum + Number(library.sizeBytes || 0), 0))} in other libraries` : ""}</span></summary>
+      <div class="mm-storage-body"><div class="mm-storage-row"><strong>This app</strong><span>${bytes(storage.managedBytes)}</span></div>
+      ${storage.partialBytes ? `<div class="mm-storage-row"><span>Partial downloads</span><span>${bytes(storage.partialBytes)}</span></div>` : ""}${storage.untrackedBytes ? `<div class="mm-storage-row"><span>Other files in the model folder</span><span>${bytes(storage.untrackedBytes)}</span></div>` : ""}
+      ${external.map(library => `<section class="mm-storage-library"><div class="mm-storage-row"><strong>${escape(library.name)}</strong><span>${bytes(library.sizeBytes)}</span></div><p class="subtle mm-storage-path">${escape(library.path)}</p><p class="subtle">Stored separately. GGUF models can be imported; MLX models use their own runtime.</p>${asArray(library.models).map(model => `<div class="mm-storage-row"><span>${escape(model.name)} <span class="badge">${escape(model.format)}</span></span><span>${bytes(model.sizeBytes)}</span></div>`).join("")}</section>`).join("")}
+      ${asArray(storage.warnings).map(warning => `<p class="subtle">${escape(warning)}</p>`).join("")}</div></details>`;
+  }
+
+  async function saveContext() {
+    if (state.contextSaving) return;
+    const contextSize = Number(state.contextDraft ?? getContext().settings?.localModels?.contextSize ?? 4096);
+    if (!Number.isInteger(contextSize) || contextSize < 512 || contextSize > 131072) {
+      state.contextError = "Enter a whole number between 512 and 131072 tokens.";
+      repaint(); return;
+    }
+    state.contextSaving = true; state.contextError = ""; state.contextSaved = false; repaint();
+    try {
+      await onContextChange(contextSize);
+      state.contextDraft = null; state.contextSaved = true;
+      await refresh();
+    } catch (error) { state.contextError = error.message || "Unable to save the context size."; }
+    finally { state.contextSaving = false; repaint(); }
   }
 
   function renderDownload(job) {
@@ -200,7 +238,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   function render() {
     const installed = models();
     return `<div class="model-manager" id="local-model-manager"><section class="panel mm-main-panel"><div class="mm-heading"><div><div class="mm-eyebrow">Private inference, on your computer</div><h2>Local models</h2><p class="subtle">Download a model once. Use it in chats, agents and workflows.</p></div><div class="mm-library-summary"><strong>${installed.length}</strong><span>on device</span><span class="mm-summary-divider"></span><strong>${installed.filter((model) => modelState(model) === "ready").length}</strong><span>loaded</span></div></div>
-      ${renderRuntime()}<div class="mm-tabs" role="tablist" aria-label="Local model library"><button type="button" id="mm-tab-catalog" role="tab" aria-selected="${state.tab === "catalog"}" aria-controls="mm-catalog" data-mm-action="tab" data-mm-id="catalog">${icon("search")}Catalog</button><button type="button" id="mm-tab-device" role="tab" aria-selected="${state.tab === "device"}" aria-controls="mm-device" data-mm-action="tab" data-mm-id="device">${icon("models")}On device<span class="mm-count">${installed.length}</span></button><span class="mm-live-status" title="${state.connected ? "Live model and download updates" : "Reconnecting; snapshots are refreshed automatically"}"><span class="mm-status-dot ${state.connected ? "is-success" : ""}"></span>${state.connected ? "Live" : "Connecting"}</span></div>
+      ${renderRuntime()}${renderContextControl()}${renderStorage()}<div class="mm-tabs" role="tablist" aria-label="Local model library"><button type="button" id="mm-tab-catalog" role="tab" aria-selected="${state.tab === "catalog"}" aria-controls="mm-catalog" data-mm-action="tab" data-mm-id="catalog">${icon("search")}Catalog</button><button type="button" id="mm-tab-device" role="tab" aria-selected="${state.tab === "device"}" aria-controls="mm-device" data-mm-action="tab" data-mm-id="device">${icon("models")}On device<span class="mm-count">${installed.length}</span></button><span class="mm-live-status" title="${state.connected ? "Live model and download updates" : "Reconnecting; snapshots are refreshed automatically"}"><span class="mm-status-dot ${state.connected ? "is-success" : ""}"></span>${state.connected ? "Live" : "Connecting"}</span></div>
       ${state.connectionError ? `<div class="mm-inline-error" role="status">${escape(state.connectionError)}</div>` : ""}
       ${renderDownloads()}${state.tab === "catalog" ? renderCatalog() : renderLibrary()}
     </section>${renderDetail()}</div>`;
@@ -317,6 +355,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
         state.connectionError = "";
         if (state.eventSequence === startedAtSequence) {
           state.runtime = snapshot?.runtime || snapshot;
+          if (snapshot?.storage) state.storage = snapshot.storage;
           if (Array.isArray(snapshot?.models)) onLibraryChange(snapshot.models, state.runtime);
           if (Array.isArray(snapshot?.downloads)) state.downloads = snapshot.downloads;
         }
@@ -342,6 +381,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const previousModels = modelSignature();
     state.connectionError = "";
     if (data.runtime) state.runtime = data.runtime;
+    if (data.storage) state.storage = data.storage;
     if (Array.isArray(data.downloads)) state.downloads = data.downloads;
     if (Array.isArray(data.models)) onLibraryChange(data.models, state.runtime);
     else if (Array.isArray(data.library)) onLibraryChange(data.library, state.runtime, true);
@@ -420,6 +460,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       void perform(button.dataset.mmAction, button.dataset.mmId || "");
     });
     root.querySelector("#mm-search-input")?.addEventListener("input", (event) => { state.query = event.target.value; });
+    root.querySelector("#mm-context-size")?.addEventListener("input", (event) => { state.contextDraft = event.target.value; state.contextSaved = false; });
+    root.querySelector("#mm-context-form")?.addEventListener("submit", (event) => { event.preventDefault(); void saveContext(); });
+    root.querySelector("#mm-storage")?.addEventListener("toggle", (event) => { state.storageOpen = event.target.open; });
     root.querySelector("#mm-search-form")?.addEventListener("submit", (event) => { event.preventDefault(); state.source = "search"; void loadCatalog(); });
     root.querySelector("#mm-variant")?.addEventListener("change", (event) => { state.variantId = event.target.value; repaint(); });
     root.querySelector("#mm-projector")?.addEventListener("change", (event) => { state.projectorPath = event.target.value; repaint(); });

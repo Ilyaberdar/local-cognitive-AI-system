@@ -1,4 +1,5 @@
 import type { McpClientConfiguration, McpClientConfigurationPatch } from "../mcp/client/types";
+import type { AgentLimits } from "../agents/runtime/AgentLimits";
 import type { WorkspaceSnapshot } from "../workspace/types";
 
 export type Mode = "hypothesis" | "code" | "general";
@@ -144,6 +145,7 @@ export interface AppSettings {
   schemaVersion?: number;
   ui?: UiPreferences;
   localModels?: LocalModelSettings;
+  agentLimits: AgentLimits;
   llm: {
     defaultProvider: string;
   };
@@ -179,6 +181,7 @@ export interface AppSettings {
 export interface AppSettingsPatch {
   ui?: Partial<Omit<UiPreferences, "version">>;
   localModels?: Partial<LocalModelSettings>;
+  agentLimits?: Partial<AgentLimits>;
   llm?: {
     defaultProvider?: string;
   };
@@ -350,6 +353,7 @@ export interface HypothesisResult {
 
 export interface TextModeResult {
   error?: string;
+  mainModelStatus?: "completed" | "failed" | "not_started";
   response: string;
   toolPayload?: string;
   provider: string;
@@ -398,6 +402,18 @@ export interface LLMImage {
   dataUrl: string;
 }
 
+export interface LLMFunctionTool {
+  name: string;
+  action: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  optionalArguments: string[];
+}
+
+export type LLMResponseFormat = { type: "json_object" } | {
+  type: "json_schema"; name: string; schema: Record<string, unknown>; strict: true;
+};
+
 export interface LLMRequest {
   outputPurpose?: "agent-action";
   /** Per-request thinking token budget for the bundled llama.cpp runtime. */
@@ -413,9 +429,10 @@ export interface LLMRequest {
   onProgress?: (event: { phase: "queued" | "loading" | "generating"; model: string; queuePosition?: number }) => void;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   previousResponseId?: string;
-  responseFormat?: {
-    type: "json_object";
-  };
+  responseFormat?: LLMResponseFormat | null;
+  tools?: LLMFunctionTool[];
+  /** Complete Responses output items and their matching tool results, never flattened into text. */
+  inputItems?: Record<string, unknown>[];
 }
 
 export interface LLMResponse {
@@ -427,6 +444,11 @@ export interface LLMResponse {
   usage?: TokenUsage;
   rateLimit?: ProviderRateLimit;
   error?: string;
+  protocolError?: string;
+  unsupportedFeature?: "tools" | "schema" | "json";
+  agentAction?: { type: "tool_call"; tool: string; arguments: Record<string, unknown> } | { type: "final"; text: string };
+  toolCallId?: string;
+  outputItems?: Record<string, unknown>[];
 }
 
 export interface ExecutionContext {
@@ -537,6 +559,8 @@ export interface ProviderDescriptor {
     local: boolean;
     managed: boolean;
     jsonMode: boolean;
+    nativeTools?: boolean;
+    structuredOutputs?: boolean;
     reasoning: boolean;
     vision?: boolean;
   };

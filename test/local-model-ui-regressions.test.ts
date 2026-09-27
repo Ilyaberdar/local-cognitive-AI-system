@@ -19,6 +19,59 @@ const deferred = <T>() => {
 const modelUseCallback = fragment("  onUse: async (model) => {", "  onDefault:").trim().replace(/^onUse:\s*/, "").replace(/,$/, "");
 const modelLabelHelpers = fragment("function getModelDisplayName", "function getLoadedModelOptions");
 
+test("local selectors show loaded models first without changing the configured selection", () => {
+  const context: any = { state: { bootstrap: { allManagedModels: [
+    { id: "gguf-small", providerId: "llamacpp", displayName: "Small", state: "unloaded" },
+    { id: "gguf-qwen", providerId: "llamacpp", displayName: "Qwen 27B", loaded: true, state: "ready" }
+  ], loadedModels: [] } },
+    isLocalProvider: () => true, getProviderConfiguredModel: () => "", sessionModelLabel: () => "Model",
+    escapeHtml: String, escapeAttr: String,
+    option: (value: string, current: string, label: string) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`
+  };
+  vm.runInNewContext(modelLabelHelpers + fragment("function renderSessionModelControl", "function renderCodeAgentCard"), context);
+  const render = (model: string) => context.renderSessionModelControl("codeAgentModel:0", "llamacpp", model, ["gguf-small", "gguf-qwen"], "models");
+  let html = render("gguf-small");
+  assert.ok(html.indexOf('value="gguf-qwen"') < html.indexOf('value="gguf-small"'));
+  assert.match(html, /value="gguf-small" selected/);
+  assert.match(html, /Qwen 27B · Loaded/);
+  assert.match(html, /data-model-loaded hidden/);
+  html = render("gguf-qwen");
+  assert.match(html, /data-model-loaded >Loaded/);
+  context.state.bootstrap.allManagedModels[1].loaded = false;
+  context.state.bootstrap.allManagedModels[1].state = "unloaded";
+  assert.doesNotMatch(render("gguf-qwen"), /Qwen 27B · Loaded/);
+});
+
+test("local context save preserves a failed draft and reports actual runtime context separately", async () => {
+  const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8");
+  const from = managerSource.indexOf("  function renderRuntime()");
+  const until = managerSource.indexOf("  function renderDownload(", from);
+  const state: any = { contextDraft: "32768", contextSaving: false, contextError: "", contextSaved: false, catalog: [],
+    runtime: { status: "ready", contextSize: 32768, effectiveContextSize: 8192 } };
+  const settings = { localModels: { contextSize: 4096 } };
+  let refreshes = 0; let fail = true;
+  const context: any = { state, escape: String, bytes: String, asArray: (value: unknown) => Array.isArray(value) ? value : [], variantsOf: () => [], models: () => [],
+    getContext: () => ({ settings }), repaint() {}, refresh: async () => { refreshes++; },
+    onContextChange: async (size: number) => { if (fail) throw new Error("Runtime is busy"); settings.localModels.contextSize = size; }
+  };
+  vm.runInNewContext(managerSource.slice(from, until), context);
+  await context.saveContext();
+  assert.equal(state.contextDraft, "32768");
+  assert.equal(state.contextSaved, false);
+  assert.match(context.renderContextControl(), /Runtime is busy/);
+  fail = false;
+  await context.saveContext();
+  assert.equal(settings.localModels.contextSize, 32768);
+  assert.equal(state.contextDraft, null);
+  assert.equal(refreshes, 1);
+  assert.match(context.renderContextControl(), /value="32768"/);
+  assert.match(context.renderRuntime(), /Active context: <strong>8,192 tokens/);
+  state.contextDraft = "invalid";
+  await context.saveContext();
+  assert.match(state.contextError, /whole number/);
+  assert.equal(refreshes, 1);
+});
+
 test("memory warnings cannot disguise an architecture or disk failure in model cards", () => {
   const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8");
   const body = managerSource.slice(managerSource.indexOf("  function compatibility("), managerSource.indexOf("  function renderCompatibility("));

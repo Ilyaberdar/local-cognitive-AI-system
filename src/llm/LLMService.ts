@@ -6,6 +6,7 @@ import { LLMRegistry } from "./LLMRegistry";
 import { currentInferenceProgress } from "./InferenceProgress";
 import { currentInferenceImages, validateImages } from "./InferenceImages";
 import { currentLocalThinkingBudget } from "./InferenceThinking";
+import { parseJsonDocument, validateStructuredObject } from "./StructuredOutput";
 
 export class LLMService {
   constructor(
@@ -14,6 +15,18 @@ export class LLMService {
     private readonly logger: Logger,
     private readonly sanitizer: OutputSanitizer
   ) {}
+
+  getContextWindow(providerId: string): number | undefined {
+    return this.registry.get(providerId).getContextWindow?.();
+  }
+
+  supportsNativeTools(providerId: string): boolean {
+    return this.registry.get(providerId).getDescriptor().capabilities?.nativeTools === true;
+  }
+
+  supportsStructuredOutputs(providerId: string): boolean {
+    return this.registry.get(providerId).getDescriptor().capabilities?.structuredOutputs === true;
+  }
 
   async generateText(request: LLMRequest, providerId?: string): Promise<LLMResponse> {
     request.signal?.throwIfAborted();
@@ -34,7 +47,7 @@ export class LLMService {
     return {
       ...response,
       text,
-      error: response.error || (!text ? "The model returned an empty response." : undefined)
+      error: response.error || (!text && !response.agentAction && !response.protocolError ? "The model returned an empty response." : undefined)
     };
   }
 
@@ -43,27 +56,49 @@ export class LLMService {
     providerId?: string
   ): Promise<{ data: T | null; response: LLMResponse }> {
     const targetProviderId = providerId ?? this.defaultProviderId;
+    const capabilities = this.registry.get(targetProviderId).getDescriptor().capabilities;
+    const native = request.outputPurpose === "agent-action" && capabilities?.nativeTools && request.tools?.length;
     const schemaHint = [
       request.prompt,
       "",
       "Return valid JSON only. No markdown fence. No explanation outside JSON."
     ].join("\n");
 
-    const response = await this.generateText(
-      {
+    let generation: LLMRequest = {
         ...request,
-        prompt: schemaHint,
-        responseFormat:
-          this.registry.get(targetProviderId).getDescriptor().capabilities?.jsonMode
-            ? {
-                type: "json_object" as const
-              }
-            : request.responseFormat
-      },
-      targetProviderId
-    );
+        prompt: native ? request.prompt : schemaHint,
+        responseFormat: native || request.responseFormat === null ? undefined : request.responseFormat?.type === "json_schema" && capabilities?.structuredOutputs
+          ? request.responseFormat : capabilities?.jsonMode ? { type: "json_object" } : undefined
+      };
+    let response = await this.generateText(generation, targetProviderId);
+    // Agent actions negotiate inside their persisted loop, where retries count against its budget.
+    // Other structured requests use the same conservative compatibility fallback here.
+    if (request.outputPurpose !== "agent-action") {
+      for (let attempt = 0; attempt < 2 && response.unsupportedFeature; attempt++) {
+        generation = { ...generation, responseFormat: generation.responseFormat?.type === "json_schema" && capabilities?.jsonMode
+          ? { type: "json_object" } : null };
+        response = await this.generateText(generation, targetProviderId);
+      }
+    }
 
-    const data = tryParseJson<T>(response.text);
+    let data: T | null = null;
+    if (!response.error && !response.protocolError) {
+      if (response.agentAction) data = response.agentAction as unknown as T;
+      else if (request.outputPurpose === "agent-action") {
+        try { data = parseJsonDocument(response.text) as T; } catch { /* The saved agent loop supplies its bounded correction. */ }
+      } else data = tryParseJson<T>(response.text);
+    }
+    if (!response.error && !response.protocolError && request.outputPurpose !== "agent-action" && request.responseFormat?.type === "json_schema") {
+      try {
+        data = parseJsonDocument(response.text) as T;
+        const error = validateStructuredObject(data, request.responseFormat.schema);
+        if (error) throw new Error(error);
+      } catch (error) {
+        data = null;
+        response.error = `Invalid structured response: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    if (response.protocolError && request.outputPurpose !== "agent-action") response.error ??= response.protocolError;
 
     if (!data) {
       this.logger.warn("Failed to parse model JSON response", {

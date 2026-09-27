@@ -97,13 +97,22 @@ test("native runtime uses loopback authentication, unload/reload, and recovers a
 const http = require('http'); const fs = require('fs');
 const args = process.argv.slice(2); const arg = name => args[args.indexOf(name)+1];
 const model = arg('--model');
+let processing = false; let invalidSlots = false; let cancelDue = 0;
 const server = http.createServer(async (req,res) => {
  if(req.url === '/health') { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({status:'ok'})); return; }
  if(req.headers.authorization !== 'Bearer ' + process.env.LLAMA_API_KEY) {res.statusCode=401;res.end('{}');return;}
+ if(req.url === '/props') {res.setHeader('Content-Type','application/json');res.end(JSON.stringify({default_generation_settings:{n_ctx:model.includes('clamped') ? 1024 : Number(arg('--ctx-size'))}}));return;}
+ if(req.url === '/slots') {
+   // Match the native queue: excessive polling resets its quiet disconnect wait.
+   if(cancelDue && Date.now() >= cancelDue) {processing=false;cancelDue=0;}
+   else if(cancelDue) cancelDue=Date.now()+1100;
+   res.end(JSON.stringify(invalidSlots ? {} : [{id:0,is_processing:processing}]));return;
+ }
  let body=''; for await (const chunk of req) body += chunk;
  const payload = body ? JSON.parse(body) : {};
  fs.writeFileSync(model + '.request.json', JSON.stringify({url:req.url,payload}));
  if(payload.input === 'crash') {process.exit(7); return;}
+ if(payload.input === 'hold' || payload.input === 'hang') {processing=true;invalidSlots=payload.input==='hang';res.once('close',()=>{cancelDue=Date.now()+1100;});return;}
  res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(req.url === '/v1/chat/completions' ? {choices:[{message:{role:'assistant',content:'An image description'},finish_reason:'stop'}]} : {status:'completed',output_text:'Local final answer',id:'ephemeral'}));
 });
 server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model + '.process.json', JSON.stringify({pid:process.pid,port:server.address().port,args})));
@@ -118,8 +127,21 @@ server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model +
   const first = JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8"));
   const unauthorized = await fetch(`http://127.0.0.1:${first.port}/v1/models`); assert.equal(unauthorized.status, 401);
   assert.equal(runtime.snapshot().modelId, "tiny"); assert.equal("token" in runtime.snapshot(), false);
+  assert.equal(runtime.snapshot().effectiveContextSize, 2048);
+  assert.equal(first.args[first.args.indexOf("--ctx-size") + 1], "2048");
   const response = await runtime.generateText({ model: "tiny", prompt: "hello" });
   assert.equal(response.text, "Local final answer"); assert.equal(response.responseId, undefined);
+  const cancelledAt = Date.now();
+  await assert.rejects(runtime.generateText({ model: "tiny", prompt: "hold", signal: AbortSignal.timeout(80) }), /abort|timeout|cancel/i);
+  assert.ok(Date.now() - cancelledAt >= 1100, "Allow the native disconnect check to settle before polling");
+  assert.equal(runtime.status, "ready"); assert.equal(runtime.snapshot().modelId, "tiny");
+  assert.equal((await runtime.generateText({ model: "tiny", prompt: "after cancellation" })).text, "Local final answer");
+  assert.equal(JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8")).pid, first.pid);
+  options.generationTimeoutMs = 80;
+  const timedOut = await runtime.generateText({ model: "tiny", prompt: "hold" });
+  assert.ok(timedOut.error, "The provider's own timeout must still be reported");
+  assert.equal(runtime.status, "ready", "Provider timeouts also preserve the loaded model");
+  options.generationTimeoutMs = 5000;
   const images = [{ name: "image.png", dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVRsAAAAASUVORK5CYII=" }];
   await assert.rejects(runtime.generateText({ model: "tiny", prompt: "Describe the image", images }), /no vision adapter/);
   await runtime.load("tiny", modelPath);
@@ -156,4 +178,17 @@ server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model +
   assert.equal((await runtime.generateText({ model: "tiny", prompt: "guardian recovered" })).text, "Local final answer");
   await runtime.reconfigure({ ...options, contextSize: 4096 });
   assert.equal(runtime.status, "stopped"); assert.equal(runtime.snapshot().contextSize, 4096);
+  assert.equal(runtime.snapshot().effectiveContextSize, undefined);
+  await runtime.load("tiny", modelPath);
+  assert.equal(runtime.snapshot().effectiveContextSize, 4096);
+  const reconfigured = JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8"));
+  assert.equal(reconfigured.args[reconfigured.args.indexOf("--ctx-size") + 1], "4096");
+  await runtime.load("clamped", path.join(directory, "clamped.gguf"));
+  assert.equal(runtime.snapshot().contextSize, 4096);
+  assert.equal(runtime.snapshot().effectiveContextSize, 1024, "Report the server context instead of presenting requested settings as measured values");
+  await assert.rejects(runtime.generateText({ model: "clamped", prompt: "hang", signal: AbortSignal.timeout(80) }), /abort|timeout|cancel/i);
+  assert.equal(runtime.status, "error", "An unverifiable cancelled slot must unload to recover");
+  assert.match(runtime.snapshot().error!, /unloaded to recover/);
+  await runtime.load("tiny", modelPath);
+  assert.equal((await runtime.generateText({ model: "tiny", prompt: "after cancellation recovery" })).text, "Local final answer");
 });

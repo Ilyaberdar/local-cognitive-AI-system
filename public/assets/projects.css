@@ -15,6 +15,12 @@
 .sidebar-conversations .session-title { line-height: 1.5; font-weight: 400; }
 /* Layout centering must not depend on transforms, which motion settings can disable. */
 .sidebar-conversations .session-delete { top: 0; bottom: 0; margin-block: auto; transform: none; }
+.sidebar-conversations .session-working { opacity: 1; color: var(--text); pointer-events: none; }
+.sidebar-conversations .session-working .button-spinner { width: 13px; height: 13px; margin: 0; border-width: 2px; }
+html[data-motion=off] .sidebar-conversations .session-working .button-spinner { animation: button-spin .8s linear infinite !important; }
+@media (prefers-reduced-motion: reduce) {
+  html[data-motion=off] .sidebar-conversations .session-working .button-spinner { animation: none !important; }
+}
 .sidebar-empty { color: var(--faint); padding: 4px 8px; font-size: calc(11px * var(--font-scale, 1)); margin: 0; }
 .project-group { margin-bottom: 10px; }
 .project-group:last-child { margin-bottom: 0; }
