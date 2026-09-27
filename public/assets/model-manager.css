@@ -14,6 +14,26 @@
 .mm-runtime-backend { border-left: 1px solid var(--line-strong); padding-left: 8px; color: var(--muted); }
 .mm-resource-list { gap: 12px; }
 .mm-runtime-message { flex-basis: 100%; color: var(--warning); overflow-wrap: anywhere; line-height: 1.5; }
+.model-loaded-badge { justify-self: start; width: fit-content; margin-top: 4px; }
+.model-loaded-badge[hidden] { display: none; }
+.mm-context-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.mm-context-control label { font-size: calc(12px * var(--font-scale, 1)); font-weight: 550; }
+.mm-context-control p { margin: 4px 0 0; }
+.mm-context-input { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mm-context-input input { width: 130px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font: inherit; }
+.mm-context-input button { white-space: nowrap; }
+.mm-context-control > .mm-inline-error, .mm-context-feedback { flex-basis: 100%; }
+.mm-storage { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: calc(11px * var(--font-scale, 1)); }
+.mm-storage summary { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 18px; cursor: pointer; }
+.mm-storage summary > span:first-child::before { content: "▸"; display: inline-block; margin-right: 8px; }
+.mm-storage[open] summary > span:first-child::before { transform: rotate(90deg); }
+.mm-storage summary > span:last-child { color: var(--muted); }
+.mm-storage-body { margin-top: 14px; display: grid; gap: 8px; }
+.mm-storage-library { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 3px; }
+.mm-storage-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding-block: 4px; }
+.mm-storage-row > span:first-child, .mm-storage-path { overflow-wrap: anywhere; min-width: 0; }
+.mm-storage-row > span:last-child { flex-shrink: 0; color: var(--muted); }
+.mm-storage-path { margin: 4px 0; }
 .mm-status-dot { display: inline-block; flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
 .mm-status-dot.is-success { background: var(--success); }
 .mm-status-dot.is-warning { background: var(--warning); }

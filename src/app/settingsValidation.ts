@@ -34,6 +34,10 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     modelsDir: "string", contextSize: [512, 131072], gpuLayers: [0, 999], memoryLimitPercent: [10, 90],
     loadTimeoutMs: [10000, 1800000], generationTimeoutMs: [10000, 3600000]
   });
+  if (patch.agentLimits !== undefined) check(object(patch.agentLimits, "agentLimits"), "agentLimits", {
+    maxSteps: [0, Number.MAX_SAFE_INTEGER], advisorMaxSteps: [0, Number.MAX_SAFE_INTEGER], maxTotalSteps: [0, Number.MAX_SAFE_INTEGER],
+    maxActiveMs: [0, Number.MAX_SAFE_INTEGER], maxRepairs: [1, 10], contextChars: [4096, 200000]
+  });
   if (patch.llm !== undefined) check(object(patch.llm, "llm"), "llm", { defaultProvider: "string" });
   if (patch.providers !== undefined) for (const [id, provider] of Object.entries(object(patch.providers, "providers"))) {
     check(object(provider, `providers.${id}`), `providers.${id}`, {

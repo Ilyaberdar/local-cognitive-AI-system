@@ -56,6 +56,12 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       number('localModels.memoryLimitPercent', 'Memory warning threshold (%)', 10, 90),
       number('localModels.loadTimeoutMs', 'Load timeout (ms)', 10000, 1800000), number('localModels.generationTimeoutMs', 'Generation timeout (ms)', 10000, 3600000)
     ];
+    if (name === 'agents') return [
+      number('agentLimits.maxSteps', 'Main agent turns', 0, undefined, 'One turn is one model decision: request a tool or return the final answer.'),
+      number('agentLimits.advisorMaxSteps', 'Advisor turns', 0, undefined, 'Applies to each configured subagent.'),
+      number('agentLimits.maxTotalSteps', 'All agents, total turns', 0, undefined, 'Keeps a multi-agent run bounded only when you choose a value.'),
+      number('agentLimits.maxActiveMs', 'Generation time limit (ms)', 0, undefined, '0 disables the automatic clock limit. You can still stop a chat yourself.')
+    ];
     if (name === 'memory' && id === 'advanced') return [
       select('memory.worldPartition.strategy', 'Partition strategy', ['auto', 'global', 'partitioned']),
       number('memory.worldPartition.activationThreshold', 'Activation threshold / user', 1, 1000000000),
@@ -93,7 +99,10 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       // The existing model picker is reused with a unique accessible label.
       control = control.replace(/<(select|input) /, `<$1 id="${id}" `);
     } else if (spec.type === 'textarea') control = `<textarea ${common} rows="3">${escape(value)}</textarea>`;
-    else control = `<input ${common} type="${['number', 'url'].includes(spec.type) ? spec.type : 'text'}" value="${escape(value)}" ${spec.type === 'number' ? `min="${spec.min}" max="${spec.max}" step="1" required` : ''} />${spec.type === 'directory' && window.desktopModels?.selectDirectory ? '<button type="button" class="ghost-button" data-directory>Choose folder</button>' : ''}`;
+    else {
+      const numberAttributes = spec.type === 'number' ? `${Number.isFinite(spec.min) ? `min="${spec.min}"` : ''} ${Number.isFinite(spec.max) ? `max="${spec.max}"` : ''} step="1" required` : '';
+      control = `<input ${common} type="${['number', 'url'].includes(spec.type) ? spec.type : 'text'}" value="${escape(value)}" ${numberAttributes} />${spec.type === 'directory' && window.desktopModels?.selectDirectory ? '<button type="button" class="ghost-button" data-directory>Choose folder</button>' : ''}`;
+    }
     return `<div class="settings-row" data-setting="${escape(spec.name)}"><div><label for="${id}">${escape(spec.label)}</label>${spec.description ? `<p>${escape(spec.description)}</p>` : ''}</div><div class="settings-control">${control}</div></div>`;
   }
   function form(specs, leadingRows = '') {
@@ -117,7 +126,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'usage') return note('Usage statistics are not available yet', 'This version does not maintain a complete usage ledger across chats, agents, workflows and providers. Token totals, subscription limits and lifetime activity cannot be reported reliably.');
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. Configurable desktop notifications are not available in this release.');
     if (name === 'connections') return note('Account connections unavailable', 'External account authorization and OAuth connection management will arrive in a later stage. Configure the current integrations in Plugins.') + link('plugins', 'Plugins');
-    if (name === 'agents') return note('Agent settings belong to each task', 'Choose agents, models and tool permissions in the chat setup or workflow editor. Existing participant limits and overrides are preserved.') + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
+    if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
     if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
     if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata']].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>`;
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them.</p><button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>`;

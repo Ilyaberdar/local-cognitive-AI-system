@@ -148,8 +148,25 @@ export interface LocalRuntimeSnapshot {
   queueLength: number;
   busy: boolean;
   contextSize: number;
+  /** Context reported by the running native server; absent while unloaded or unverified. */
+  effectiveContextSize?: number;
   memoryLimitPercent: number;
   modelsDir: string;
+}
+
+export interface LocalModelStorageSnapshot {
+  managedBytes: number;
+  partialBytes: number;
+  untrackedBytes: number;
+  freeDiskBytes?: number;
+  externalLibraries: Array<{
+    providerId: string;
+    name: string;
+    path: string;
+    sizeBytes: number;
+    models: Array<{ name: string; path: string; sizeBytes: number; format: "GGUF" | "MLX" | "Mixed" | "Other" }>;
+  }>;
+  warnings: string[];
 }
 
 export interface LocalModelSnapshot {
@@ -157,6 +174,7 @@ export interface LocalModelSnapshot {
   downloads: DownloadJob[];
   runtime: LocalRuntimeSnapshot;
   sequence: number;
+  storage?: LocalModelStorageSnapshot;
 }
 
 export interface LocalModelEvent {

@@ -1,4 +1,4 @@
-import { ProcessProgressEvent } from "../src/types";
+import { ProcessProgressEvent, ProcessResult } from "../src/types";
 import { normalizeDebatePayload } from "../src/agents/debatePayload";
 import { LanguageEnforcer } from "../src/llm/LanguageEnforcer";
 import assert from "node:assert/strict";
@@ -381,7 +381,7 @@ test("response formatter hides mock fallback prompt digests", () => {
 
 test("response formatter summarizes subagents without inline output blocks", () => {
   const formatter = new ResponseFormatter();
-  const content = formatter.formatForChat({
+  const processResult: ProcessResult = {
     input: "заспавни 2 сабагента",
     mode: "code",
     providerId: "lmstudio",
@@ -422,8 +422,8 @@ test("response formatter summarizes subagents without inline output blocks", () 
         judge: { providerId: "local" }
       }
     }
-  });
-
+  };
+  const content = formatter.formatForChat(processResult);
   assert.match(content, /Multi-agent run/);
   assert.match(content, /Delegated agents: @Atlas/);
   assert.match(content, /Agent status: 1 ok/);
@@ -434,6 +434,19 @@ test("response formatter summarizes subagents without inline output blocks", () 
   assert.doesNotMatch(content, /secret code|secret task|<<<DRAFT>>>|<<<TASK:/);
   assert.doesNotMatch(content, /role=advisor/);
   assert.doesNotMatch(content, /access=default/);
+  if (!("response" in processResult.result)) throw new Error("Expected text fixture");
+  processResult.result.error = "Agent time budget exhausted.";
+  processResult.result.response = "Saved advisor findings.";
+  processResult.result.mainModelStatus = "not_started";
+  const skipped = formatter.formatForChat(processResult);
+  assert.match(skipped, /Main model not called: lmstudio:qwen\/qwen3\.5-9b/);
+  assert.match(skipped, /Run stopped before the main model/);
+  assert.doesNotMatch(skipped, /Final response:|Final answer/);
+  processResult.result.mainModelStatus = "failed";
+  const failed = formatter.formatForChat(processResult);
+  assert.match(failed, /Main model did not produce a final answer/);
+  assert.doesNotMatch(failed, /Main model not called:|Final response:/);
+  assert.match(failed, /Saved advisor findings/);
 });
 
 test("explicit subagent mentions route general sessions into independent code agents", async () => {

@@ -1,4 +1,5 @@
 import { LLMService } from "../llm/LLMService";
+import { objectFormat } from "../llm/StructuredOutput";
 import { LanguageEnforcer } from "../llm/LanguageEnforcer";
 import { buildDebateGuidance, buildLanguageInstruction } from "./DebateProfiles";
 import {
@@ -74,6 +75,8 @@ export class Judge {
     const { data, response } = await this.llmService.generateObject<JudgePayload>(
       {
         systemPrompt: "You are an impartial judge producing only structured JSON.",
+        responseFormat: objectFormat("judgment", { verdict: { type: "string", enum: ["support", "attack"] },
+          confidence: { type: "number", minimum: 0, maximum: 1 }, reasoning: { type: "string" }, conclusion: { type: "string" } }),
         model: judgeTarget.model,
         maxTokens: getStyleTokenBudget(outputStyle),
         signal,

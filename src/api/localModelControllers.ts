@@ -25,7 +25,7 @@ export const createLocalModelRouter = (getService: () => LocalModelService): Rou
   }));
   router.delete("/local/models/:libraryId", route(async (req, res) => { await getService().deleteModel(String(req.params.libraryId)); res.json({ ok: true }); }));
   router.post("/local/models/:libraryId/projector", route(async (req, res) => res.json(await getService().attachProjector(String(req.params.libraryId), string(req.body?.path, "path")))));
-  router.get("/local/runtime", route(async (_req, res) => res.json(getService().snapshot())));
+  router.get("/local/runtime", route(async (_req, res) => res.json(await getService().refreshSnapshot())));
   router.get("/local/events", (req, res) => {
     res.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" }); res.flushHeaders();
     const service = getService();

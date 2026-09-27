@@ -28,6 +28,53 @@ The goal is simple: one personal system you can use every day for research, codi
 
 Run everyday chats, switch modes, configure subagents, and keep each conversation in its own session.
 
+### Chat access and approvals
+
+Use the access icon beside **Ready / Local models** in the composer. Each chat saves its own mode, which also governs its agents:
+
+- **Ask for approval** (`ask`): confirm file changes, commands, plugin actions, and access outside the configured workspace. Workspace reads do not require confirmation.
+- **Approve for me** (`default`): allow workspace reads and edits; ask before deletions, external access, commands, and plugin actions. Command approval is conservative; there is no automatic command risk classifier.
+- **Full access** (`full`): execute requested actions without confirmation, including outside the configured workspace, subject to the OS account's permissions.
+
+The approval card shows the proposed paths and contents or command arguments. **Approve** executes that saved proposal once; **Cancel** skips it. Stopping generation or closing the connection cancels pending approvals. Changing access affects subsequent requests. Permission cannot be granted by text in a prompt or attachment.
+
+For example, ask the model to ``Write file `hello.txt` containing hello`` or `Ping example.com once`. Command proposals run with separate executable/argument fields and a 30-second timeout. Malformed proposals do not execute. This is an application approval policy, not an OS sandbox; approved commands run with the application's OS permissions. Workflow node reviews remain separate. Headless callers without an approval handler receive a permission-required result for actions that need confirmation.
+
+### Local voice input (desktop)
+
+Click the microphone beside **Send**, speak, then press the checkmark to finish.
+Whisper transcribes locally and appends the result to the current draft.
+Review the text and press **Send** separately. **Esc** or the cross cancels only
+the current dictation. The existing draft is preserved. Recordings are limited
+to five minutes; switching chats stops recording and saves the result to the
+original chat's draft. Recording and transcription survive ordinary UI updates.
+
+The small arrow beside the microphone opens voice settings: choose **Higher
+accuracy** (Whisper Large v3 Turbo, 1.5 GiB, five decoding candidates) or **Faster**
+(Whisper Small, 465 MiB). Each multilingual model can be downloaded or removed
+independently. New installations default to higher accuracy; existing Small
+installations keep working until you select and download the larger model.
+Choose Auto/Russian/Ukrainian/English (an explicit language is useful for short
+dictation with mixed-language technical names), or click
+**Choose microphone…** to grant access and list input devices. The model is
+downloaded once and verified by SHA-256. Audio stays on the device and temporary
+recordings are deleted after recognition/cancellation. On a recognition error,
+Retry keeps the current audio in memory until retry or cancellation. Sent text
+uses the selected chat provider. Agent access modes do not grant microphone access.
+
+macOS asks for microphone access on first use. If denied, use **Microphone
+permissions** in voice settings and restart after changing the system permission.
+The embedded speech engine runs separately from the chat model. The first
+recognition may take longer while the GPU prepares its kernels.
+
+For development, install CMake and a C++ compiler, then run `npm run prepare:speech`
+before `npm run electron`. macOS builds target 13.3 or later and use Metal;
+Windows builds must prepare speech on Windows. Packaged builds include the runtime
+but download speech model weights on demand. Verify an assembled package with
+`node scripts/verify-speech-runtime.mjs "release/mac-arm64/Local Cognitive AI System.app"`.
+Voice input currently requires the desktop preload bridge; browser-only mode
+continues to support text input.
+
 ### Orchestration Tasks
 
 ![Orchestration task board with Todo, In Progress, and Done columns](images/orchestration-tasks.png)
@@ -101,6 +148,18 @@ for the current conversation, and **Set default** changes the application defaul
 Installed models are available to code/debate agents and workflow nodes even
 when unloaded; the first request loads them automatically. Local requests share
 one queue, while cloud providers can run alongside them.
+Finishing a response, cancelling it, or reaching an agent deadline keeps the
+current model loaded. After cancellation, the queue waits for llama.cpp to
+confirm its decoding slot is idle. An unresponsive or invalid slot is unloaded
+with an explicit recovery error. Manual unload, switching models, runtime
+reconfiguration, and application shutdown can still release the model.
+
+The **Context size** control on Models saves the local runtime setting. **Active
+context** shows the size confirmed by the loaded llama.cpp process. Local model
+selectors mark **Loaded** models and list them first. **Model storage** separates
+this app's files, partial downloads, external LM Studio libraries (including
+MLX weights that use a different runtime), and recognized temporary test model
+libraries; inspecting storage does not delete files.
 
 Downloads support pause, resume, cancellation, SHA-256 verification, and complete
 multi-file GGUF variants. Public text models are supported; gated repositories,
@@ -492,6 +551,12 @@ If `restricted` is enabled, file operations are allowed only inside listed direc
 
 ## Daily Usage Patterns
 
+### Review edited files
+
+Click **Review** in a completed file card to open the complete current file in the right panel. **Session Setup** and **Review** share that panel; each chat keeps its own open files. Both tabs share the same saved panel size and header controls for resizing, expanding, and hiding. Review also includes **Refresh**, **Copy file**, and **Open in editor**, which prefers Visual Studio Code and falls back to a text editor when it is unavailable (the system text editor on macOS, Notepad on Windows; gedit on Linux).
+
+Select text in the file, click **+**, write a comment, and choose **Send to chat** (or press Cmd/Ctrl+Enter). The message includes the path, line numbers, and quoted selection; your existing chat draft stays intact. Direct comments such as “Change this…” or “Замени…” edit only that range, subject to the chat's access mode. The app preserves surrounding content and rejects an edit if the file changes before it is applied. Review supports text files up to 5 MB and selections up to 5,000 characters.
+
 ### 1. Normal chat
 
 Use `general` mode when you just want one model to answer.
@@ -580,6 +645,30 @@ flowchart LR
   MEM --> OM["OpenMemoryAdapter"]
 ```
 
+## Projects and task workspaces
+
+The sidebar stacks **Projects** above ordinary **Chats**, separated by a thin divider. Sections grow with their content, share a scroll area, and can collapse to their headers; their state is remembered. Add a project with a name and an existing absolute directory (the desktop app has a folder picker), then create any number of chats inside it. Rename or archive projects from the folder row; archiving preserves files and history, and a project can be restored. Project folders are not moved or deleted by the application. Changing an existing project's root is intentionally rejected; register the new directory as another project.
+
+Tasks and schedules select a **Workflow**, **Project**, and **Access** policy. The small **+** next to Project creates and selects a project without losing the form. A Workflow is a reusable definition: the same definition can run in different projects. Task/Trace details show the resolved folder and an **Open folder** action. An active or waiting run keeps a snapshot of the task, workspace, settings, and node model targets; edits to the task cannot redirect it.
+
+Without a project, each task receives a persistent directory at `<APP_DATA_DIR>/workspaces/tasks/<taskId>/workspace`. It is reused for later runs of that task. Deleting the task card preserves its files; `<APP_DATA_DIR>/workspaces/managed.json` records these directories. There is no automatic cleanup. Ordinary chats retain their existing filesystem area and compatibility execution flow.
+
+Project chats and Workflow agents use a structured loop: read/search → observe actual tool output → edit or run a check → observe the result → final answer. Tools include list, search, read, write, replace, append, mkdir, delete, and commands with an explicit working directory. Existing-file edits check the version returned by reading the file. Advisers and debate researchers have read-only tools. Files, attachments, and tool output are treated as source material, not permission grants. Explicit Notion/plugin requests use the existing connector policy and a saved operation journal; file/command intent matching is not executed again after the new loop.
+
+Access applies to every agent and Workflow file/command node:
+
+| Policy | Reads inside workspace | Writes inside workspace | Delete, commands, outside paths |
+| --- | --- | --- | --- |
+| Ask | Allowed | Confirmation | Confirmation |
+| Approve for me | Allowed | Allowed | Confirmation |
+| Full | Allowed | Allowed | Allowed |
+
+A node can require extra confirmation with `approval: "always"`; it cannot override the task's policy. Legacy node `access: "default"` requests extra confirmation and `access: "full"` inherits the task policy. Commands run with the operating system privileges of the application; the workspace policy is not an OS sandbox.
+
+Workflow approval pauses the exact saved operation and continues the same agent. Restarted running work becomes **interrupted** and requires **Resume**. A command/plugin whose effect is uncertain becomes **blocked** and is not automatically replayed, including through retry transitions. Project/task memory is isolated by workspace, user, and channel while each chat/run retains its own history.
+
+Agent turn settings are available in **Settings → Agents** and can also be set in `agentLimits` in the config file or these environment variables: `AGENT_MAX_STEPS` (24), `AGENT_ADVISOR_MAX_STEPS` (12), `AGENT_MAX_TOTAL_STEPS` (72), `AGENT_MAX_ACTIVE_MS` (0), `AGENT_MAX_REPAIRS` (3), and `AGENT_CONTEXT_CHARS` (48000). A turn is one model decision: request a tool or return a final answer. Entering `0` disables a turn or time limit; the settings have no hidden upper ceiling. The automatic generation-time limit is disabled by default, so an advisor is not stopped to reserve an arbitrary share for another agent. Provider timeouts and user cancellation still apply. The last permitted turn of a bounded run is reserved for a final answer from the evidence already collected. Tool output and context have explicit truncation markers; local agent prompts also follow the configured runtime context. Local agent turns default to at most 512 reasoning tokens and 4096 output tokens, reduced for small context windows; an explicit workflow reasoning budget retains its configured behavior. After exhausted format repairs or a truncated generation, an agent with observed tool results attempts a final answer when turns remain. Partial advisor output remains in its expandable card rather than being appended as raw JSON to the chat response. Invalid actions are never executed as guessed commands.
+
 ## Runtime Flow
 
 1. User sends a message from the browser or Telegram.
@@ -587,14 +676,14 @@ flowchart LR
 3. `ModeDetector` chooses `general`, `hypothesis`, or `code`.
 4. The router runs the matching execution flow.
 5. The selected provider(s) generate output.
-6. Tools are called if the prompt implies a tool action.
+6. Project/task agents execute structured tool turns and feed the results back to the model. Ordinary chats use the existing intent-based compatibility tools.
 7. Results are formatted, saved in memory, and shown in the UI.
 
 ## Code Mode Behavior
 
 `code` mode supports configured subagents.
 
-Current behavior:
+Ordinary-chat compatibility behavior:
 
 - subagents can use any configured provider/model, including LM Studio models or API providers
 - prompts that mention `spawn subagent`, `subagent`, or `сабагент` are routed into code mode automatically
@@ -698,6 +787,18 @@ npm run dev
 npm run build
 npm run test
 ```
+
+### Electron UI checks
+
+Use Playwright's Electron launcher and `withNativeWindowSize` from
+`scripts/electron-ui-viewport.cjs` to check different window sizes. It resizes the
+native window and restores it in `finally`, including after a failed assertion.
+Avoid `page.setViewportSize()` on a visible Electron window: it overrides only the
+renderer size and leaves unused transparent space around the UI. The helper also
+clears any remaining viewport override. Check the full native window, not just a
+screenshot cropped to an emulated viewport. After deliberately reproducing an
+emulation issue, use `BrowserWindow.webContents.capturePage()` for the final
+capture: Playwright can retain the old viewport in its screenshot settings.
 
 ## Current Notes
 

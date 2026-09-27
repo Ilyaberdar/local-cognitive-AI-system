@@ -10,6 +10,18 @@ import { withFileLock } from "../utils/fileStore";
 const hash = (content: Buffer | string) => createHash("sha256").update(content).digest("hex");
 const maxReadBytes = 5 * 1024 * 1024;
 const maxResultBytes = 48_000;
+
+function searchGlob(pattern: string): RegExp {
+  // Like a filename filter in recursive search, "*.ts" also matches
+  // "agents/Atlas.ts". A slash (or explicit ./) anchors a filter to the root.
+  const rootRelative = pattern.startsWith("./") || pattern.includes("/");
+  const normalized = pattern.replace(/^\.\//, "");
+  const expression = normalized.split("**/").map(part => part.split("**").map(piece =>
+    piece.split("*").map(literal => literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")
+  ).join(".*")).join("(?:.*/)?");
+  return new RegExp((rootRelative ? "^" : "^(?:.*/)?") + expression + "$");
+}
+
 export class WorkspaceFileService {
   async prepare(action: AgentAction, workspace: WorkspaceSnapshot): Promise<AgentAction> {
     const key = action.tool === "command.run" ? "cwd" : "path";
@@ -111,12 +123,11 @@ export class WorkspaceFileService {
   }
   private async search(root: string, query: string, limit: number, maxFiles: number, signal?: AbortSignal,args:Record<string,unknown>={}): Promise<ToolExecutionResult> {
     const queue = [root];
-    const matches: Array<{path: string; line?: number; text?: string}> = [];
+    const matches: Array<{path: string; absolutePath: string; line?: number; text?: string}> = [];
     let scannedFiles = 0;
     const excluded = new Set([".git", "node_modules", "dist", "release"]);
-    const glob=(pattern:string)=>new RegExp("^"+pattern.split("**/").map(part=>part.split("**").map(piece=>piece.split("*").map(literal=>literal.replace(/[.+?^${}()|[\]\\]/g,"\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?")+"$");
-    const include=(args.include as string[]|undefined)?.map(glob);
-    const exclude=(args.exclude as string[]|undefined)?.map(glob)??[];
+    const include=(args.include as string[]|undefined)?.map(searchGlob);
+    const exclude=(args.exclude as string[]|undefined)?.map(searchGlob)??[];
     while (queue.length && scannedFiles < maxFiles && matches.length < limit) {
       signal?.throwIfAborted();
       const dir = queue.shift()!;
@@ -128,15 +139,16 @@ export class WorkspaceFileService {
         if(exclude.some(pattern=>pattern.test(relative)||pattern.test(relative+"/"))) continue;
         if (item.isDirectory()) { queue.push(file); continue; }
         if (!item.isFile() || !await isWorkspacePath(file,[root])) continue;
-        if (++scannedFiles > maxFiles) break;
+        if (scannedFiles >= maxFiles) break;
+        scannedFiles++;
         if(include?.length&&!include.some(pattern=>pattern.test(relative)))continue;
-        if (!query) matches.push({path:relative});
+        if (!query) matches.push({path:relative,absolutePath:file});
         else {
           const stat = await fs.stat(file);
           if (stat.size > Number(args.maxFileBytes??524288)) continue;
           const content = await this.read(file).catch(()=>"");
           for (const [i,line] of content.split("\n").entries()) {
-            if (line.toLocaleLowerCase().includes(query.toLocaleLowerCase())) matches.push({path:relative,line:i+1,text:line.slice(0,500)});
+            if (line.toLocaleLowerCase().includes(query.toLocaleLowerCase())) matches.push({path:relative,absolutePath:file,line:i+1,text:line.slice(0,500)});
             if (matches.length >= limit) break;
           }
         }

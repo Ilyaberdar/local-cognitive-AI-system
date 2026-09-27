@@ -17,6 +17,7 @@ export class LlamaCppRuntime {
   private state: LocalRuntimeSnapshot["status"] = "stopped";
   private modelId?: string;
   private projectorPath?: string;
+  private effectiveContextSize?: number;
   private error?: string;
   private logTail = "";
   private stopping?: Promise<void>;
@@ -29,7 +30,8 @@ export class LlamaCppRuntime {
   snapshot(): LocalRuntimeSnapshot {
     return { status: this.state, version: "b10809", backend: process.platform === "darwin" && this.options.gpuLayers !== 0 ? "Metal" : "CPU",
       platform: process.platform, architecture: process.arch, modelId: this.modelId, error: this.error,
-      queueLength: 0, busy: false, contextSize: this.options.contextSize, memoryLimitPercent: this.options.memoryLimitPercent, modelsDir: this.options.modelsDir };
+      queueLength: 0, busy: false, contextSize: this.options.contextSize, effectiveContextSize: this.effectiveContextSize,
+      memoryLimitPercent: this.options.memoryLimitPercent, modelsDir: this.options.modelsDir };
   }
   async init(): Promise<void> {
     if (!this.options.enabled) { this.setState("unavailable", "Local models are disabled in Settings."); return; }
@@ -53,7 +55,7 @@ export class LlamaCppRuntime {
     this.logTail = "";
     this.setState("loading");
     const args = ["--model", modelPath, "--alias", modelId, "--host", "127.0.0.1", "--port", String(port),
-      "--ctx-size", String(this.options.contextSize), "--n-gpu-layers", String(this.options.gpuLayers), "--parallel", "1", "--jinja", "--no-webui", "--no-agent"];
+      "--ctx-size", String(this.options.contextSize), "--n-gpu-layers", String(this.options.gpuLayers), "--parallel", "1", "--slots", "--jinja", "--no-webui", "--no-agent"];
     if (projectorPath) args.push("--mmproj", projectorPath);
     const compiledHost = path.join(__dirname, "RuntimeProcessHost.js");
     const compiled = await fs.access(compiledHost).then(() => true, () => false);
@@ -75,7 +77,7 @@ export class LlamaCppRuntime {
       // A SIGKILL of the guardian must not leave a second native model consuming memory.
       if (nativePid) this.nativeCleanup = this.terminateNative(nativePid);
       if (this.child !== child) return;
-      this.child = undefined; this.endpoint = undefined;
+      this.child = undefined; this.endpoint = undefined; this.effectiveContextSize = undefined;
       if (this.state !== "stopping") {
         this.setState("error", `Local runtime exited (${code ?? "signal"}). ${this.logTail.slice(-1600)}`);
         this.logger.warn("Local inference runtime exited", { code, modelId });
@@ -92,6 +94,8 @@ export class LlamaCppRuntime {
         } catch (error) { if (deadline.aborted) throw error; }
         await delay(100, undefined, { signal: deadline });
       }
+      deadline.throwIfAborted();
+      await this.verifyContext(port, deadline);
       deadline.throwIfAborted(); this.setState("ready");
     } catch (error) {
       const message = signal?.aborted ? "Model loading cancelled." : deadline.aborted ? "Model loading timed out. Choose a smaller model or increase the load timeout." : error instanceof Error ? error.message : "Model loading failed.";
@@ -103,14 +107,54 @@ export class LlamaCppRuntime {
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     if (!this.endpoint || !this.child || this.state !== "ready" || request.model !== this.modelId) throw new LocalModelError("The selected local model is not ready.", 503);
     if (request.images?.length && !this.projectorPath) throw new LocalModelError("This local model has no vision adapter. Attach its matching mmproj GGUF before sending images.", 400, "vision_unavailable");
+    let cancelled = false;
+    const transport: typeof fetch = async (input, init) => {
+      try { return await fetchLocalInference(input, init); }
+      catch (error) { cancelled ||= Boolean(init?.signal?.aborted); throw error; }
+    };
     const provider = new OpenAICompatibleProvider({ id: "llamacpp", name: "Local models", model: this.modelId!,
-      baseUrl: this.endpoint, apiKey: this.token, timeoutMs: this.options.generationTimeoutMs }, this.logger, fetchLocalInference);
+      baseUrl: this.endpoint, apiKey: this.token, timeoutMs: this.options.generationTimeoutMs }, this.logger, transport);
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
-    const result = await provider.generateText({ ...request, signal, previousResponseId: undefined });
-    signal.throwIfAborted();
-    if (!this.child || this.state !== "ready") throw new LocalModelError(this.error ?? "The local runtime stopped during generation.", 503);
-    // llama.cpp does not persist Responses IDs between calls. Conversation is composed by the app.
-    return { ...result, responseId: undefined };
+    try {
+      const result = await provider.generateText({ ...request, signal, previousResponseId: undefined });
+      signal.throwIfAborted();
+      if (!this.child || this.state !== "ready") throw new LocalModelError(this.error ?? "The local runtime stopped during generation.", 503);
+      // llama.cpp does not persist Responses IDs between calls. Conversation is composed by the app.
+      return { ...result, responseId: undefined };
+    } finally {
+      // Closing the HTTP request cancels decoding. Keep the scheduler slot until
+      // the native server confirms it is idle, without discarding loaded weights.
+      if (cancelled || signal.aborted) await this.settleCancelledGeneration();
+    }
+  }
+
+  private async settleCancelledGeneration(): Promise<void> {
+    const child = this.child;
+    if (!child || !this.endpoint || this.state !== "ready" || this.lifetime.signal.aborted) return;
+    // A 27B model can still be inside a native prompt-processing batch when the
+    // socket closes. Slot queries use that same native task queue.
+    const deadline = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30000)]);
+    try {
+      // b10809 checks disconnects after a quiet one-second result-queue wait.
+      // Frequent /slots results wake that shared queue and can starve the check.
+      await delay(1250, undefined, { signal: deadline });
+      while (this.child === child && this.state === "ready") {
+        const response = await fetchLocalInference(`${this.endpoint.replace(/\/v1$/, "")}/slots`, {
+          headers: { Authorization: `Bearer ${this.token}` }, signal: deadline
+        });
+        if (!response.ok) throw new Error(`Slot check failed (HTTP ${response.status}).`);
+        const slots: unknown = await response.json();
+        if (!Array.isArray(slots) || !slots.length || slots.some(slot => !slot || typeof slot.is_processing !== "boolean")) throw new Error("Invalid native slot state.");
+        if (slots.every(slot => !slot.is_processing)) return;
+        await delay(1500, undefined, { signal: deadline });
+      }
+    } catch (error) {
+      if (this.child !== child || this.lifetime.signal.aborted) return;
+      this.logger.warn("Cancelled local generation did not release its slot; unloading the runtime to recover", { modelId: this.modelId,
+        reason: error instanceof Error ? error.message : String(error) });
+      await this.stop();
+      this.setState("error", "The cancelled generation did not release its slot. The model was unloaded to recover; the next request can load it again.");
+    }
   }
 
   async stop(): Promise<void> {
@@ -133,10 +177,26 @@ export class LlamaCppRuntime {
       });
     }
     await this.nativeCleanup;
-    this.child = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined; this.projectorPath = undefined;
+    this.child = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined; this.projectorPath = undefined; this.effectiveContextSize = undefined;
     this.setState("stopped");
   }
   private executable(): string { return this.options.executablePath || path.join(this.options.runtimeDir, process.platform === "win32" ? "llama-server.exe" : "llama-server"); }
+  private async verifyContext(port: number, signal: AbortSignal): Promise<void> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/props`, {
+        headers: { Authorization: `Bearer ${this.token}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(3000)])
+      });
+      if (!response.ok) return;
+      const properties = await response.json() as { default_generation_settings?: { n_ctx?: number }; n_ctx?: number };
+      const actual = properties.default_generation_settings?.n_ctx ?? properties.n_ctx;
+      if (!Number.isSafeInteger(actual) || actual! <= 0) return;
+      this.effectiveContextSize = actual;
+      if (actual !== this.options.contextSize) this.logger.warn("Local runtime context differs from configured context", { configured: this.options.contextSize, effective: actual });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      this.logger.warn("Could not verify the native runtime context", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   private async terminateNative(pid: number): Promise<void> {
     if (process.platform !== "win32") { try { process.kill(-pid, "SIGKILL"); } catch {} return; }
     await new Promise<void>((resolve) => {

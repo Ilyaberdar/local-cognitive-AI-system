@@ -1,4 +1,4 @@
-import { ProcessResult } from "../types";
+import { ProcessResult, TextModeResult } from "../types";
 
 export class ResponseFormatter {
   formatForChat(result: ProcessResult, options?: { maxChars?: number }): string {
@@ -94,10 +94,11 @@ export class ResponseFormatter {
                 "",
                 ...this.renderMultiAgentSummary(result.result.subagents ?? [], {
                   provider: result.result.provider,
-                  model: result.result.model
+                  model: result.result.model,
+                  status: result.result.mainModelStatus ?? (result.result.error ? "failed" : "completed")
                 }),
                 "",
-                "Final answer",
+                result.result.mainModelStatus === "not_started" ? "Run stopped before the main model" : result.result.error ? "Run result (incomplete)" : "Final answer",
                 "",
                 textResponse
               ]
@@ -143,7 +144,7 @@ export class ResponseFormatter {
         ? Agents
         : never
       : never>,
-    finalTarget: { provider: string; model: string }
+    finalTarget: { provider: string; model: string; status: TextModeResult["mainModelStatus"] }
   ): string[] {
     const delegatedAgents = subagents.filter((agent) => agent.role === "advisor");
     const okCount = delegatedAgents.filter((agent) => agent.status === "ok").length;
@@ -155,7 +156,11 @@ export class ResponseFormatter {
       "Multi-agent run",
       `Delegated agents: ${names}`,
       `Agent status: ${status}`,
-      `Final response: Main model via ${finalTarget.provider}:${finalTarget.model}`
+      finalTarget.status === "not_started"
+        ? `Main model not called: ${finalTarget.provider}:${finalTarget.model}`
+        : finalTarget.status === "failed"
+          ? `Main model did not produce a final answer: ${finalTarget.provider}:${finalTarget.model}`
+          : `Final response: Main model via ${finalTarget.provider}:${finalTarget.model}`
     ];
   }
 

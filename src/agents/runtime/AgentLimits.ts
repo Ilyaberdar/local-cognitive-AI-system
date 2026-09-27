@@ -8,13 +8,17 @@ export interface AgentLimits {
 }
 
 export const defaultAgentLimits: Readonly<AgentLimits> = Object.freeze({
-  maxSteps: 24, advisorMaxSteps: 6, maxTotalSteps: 48,
-  maxActiveMs: 600_000, maxRepairs: 3, contextChars: 48_000
+  maxSteps: 24, advisorMaxSteps: 12, maxTotalSteps: 72,
+  // A clock deadline cancelled local advisors midway through a useful answer.
+  // Zero means unlimited; the provider and the user can still cancel a run.
+  maxActiveMs: 0, maxRepairs: 3, contextChars: 48_000
 });
 
 const bounds: Record<keyof AgentLimits, [number, number]> = {
-  maxSteps: [1, 200], advisorMaxSteps: [1, 48], maxTotalSteps: [1, 400],
-  maxActiveMs: [1_000, 3_600_000], maxRepairs: [1, 10], contextChars: [4_096, 200_000]
+  // A configured step or time limit is an operator choice, not a hidden product
+  // cap. Zero disables the corresponding limit.
+  maxSteps: [0, Number.MAX_SAFE_INTEGER], advisorMaxSteps: [0, Number.MAX_SAFE_INTEGER], maxTotalSteps: [0, Number.MAX_SAFE_INTEGER],
+  maxActiveMs: [0, Number.MAX_SAFE_INTEGER], maxRepairs: [1, 10], contextChars: [4_096, 200_000]
 };
 
 const environment: Record<keyof AgentLimits, string> = {
@@ -45,9 +49,13 @@ export function readAgentLimits(fileValue: unknown, env: NodeJS.ProcessEnv = pro
   return normalizeAgentLimits(values);
 }
 
-/** Existing runs keep their original ceiling; tightening server limits also applies on resume. */
+/** A zero current setting intentionally lifts a legacy stored ceiling. */
 export function restrictAgentLimits(saved: AgentLimits | undefined, current: AgentLimits): AgentLimits {
   if (!saved) return current;
   const prior = normalizeAgentLimits(saved);
-  return Object.fromEntries((Object.keys(current) as Array<keyof AgentLimits>).map(key => [key, Math.min(prior[key], current[key])])) as unknown as AgentLimits;
+  return Object.fromEntries((Object.keys(current) as Array<keyof AgentLimits>).map(key => {
+    if (current[key] === 0) return [key, 0];
+    if (prior[key] === 0) return [key, current[key]];
+    return [key, Math.min(prior[key], current[key])];
+  })) as unknown as AgentLimits;
 }

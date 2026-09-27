@@ -11,6 +11,25 @@ const deferred = <T>() => {
 };
 const functionSource = (name: string, next: string) => source.slice(source.indexOf(name), source.indexOf(next, source.indexOf(name)));
 
+test("chat requests have no browser deadline while an explicit Stop remains available", async () => {
+  const calls: Array<{ url: string; options: { timeoutMs?: number; controller?: AbortController } }> = [];
+  const start = source.indexOf("const api = {");
+  const end = source.indexOf("\n};", start) + 3;
+  const context: any = {
+    request: (url: string, options: { timeoutMs?: number; controller?: AbortController }) => {
+      calls.push({ url, options });
+      return Promise.resolve({});
+    }
+  };
+  vm.runInNewContext(`${source.slice(start, end)}; globalThis.chatApi = api;`, context);
+  const controller = new AbortController();
+  await context.chatApi.sendChat({ input: "Keep researching" }, controller);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/chat");
+  assert.equal(calls[0].options.timeoutMs, 0);
+  assert.equal(calls[0].options.controller, controller);
+});
+
 test("chat submit locks before setup save and old cleanup cannot reset a new request", async () => {
   const setup = deferred<void>(); const answer = deferred<{ sessionId: string }>(); const sent = deferred<void>();
   const state: any = { activeSessionId: "a", activeChatRequest: null, chatSubmitting: false,

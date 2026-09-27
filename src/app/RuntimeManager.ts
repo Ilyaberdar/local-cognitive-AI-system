@@ -114,6 +114,7 @@ export class RuntimeManager {
         loadTimeoutMs: local.loadTimeoutMs, generationTimeoutMs: local.generationTimeoutMs,
         memoryLimitPercent: local.memoryLimitPercent
       } : {}) },
+      agentLimits: settings.agentLimits,
       llm: {
         defaultProvider: settings.llm.defaultProvider
       },

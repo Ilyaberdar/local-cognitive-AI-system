@@ -28,6 +28,7 @@ import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LMStudioManager } from "../llm/LMStudioManager";
 import { LanguageEnforcer } from "../llm/LanguageEnforcer";
 import { LLMService } from "../llm/LLMService";
+import { objectFormat } from "../llm/StructuredOutput";
 import { OllamaModelManager } from "../llm/OllamaModelManager";
 import { OllamaProvider } from "../llm/OllamaProvider";
 import { OutputSanitizer } from "../llm/OutputSanitizer";
@@ -326,6 +327,9 @@ const runCodeSwarm = async (
     }>({
       model: mainAgent.model,
       systemPrompt: "You are the main model assigning bounded review tasks to the selected agents. Output JSON only.",
+      responseFormat: objectFormat("assignments", { assignments: { type: "array", items: {
+        type: "object", properties: { id: { type: "string" }, task: { type: "string" } },
+        required: ["id", "task"], additionalProperties: false } } }),
       prompt: [
         "Your draft did not include a valid assignment for every selected agent.",
         `User request: ${input}`,

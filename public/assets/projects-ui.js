@@ -39,10 +39,14 @@ export function createProjectsUi(options) {
   };
   const expandedLists = new Set();
   const sectionToggle = (section, label) => `<button id="sidebar-toggle-${section}" class="sidebar-section-label" type="button" data-action="toggle-sidebar-section" data-sidebar-section="${section}" aria-expanded="${!collapsedSections.has(section)}" aria-controls="sidebar-${section}-content">${icon(collapsedSections.has(section) ? "chevronRight" : "chevronDown")}<span>${label}</span></button>`;
-  const sessionRow = (session, activeId) => `<div class="session-row ${session.id === activeId ? "active" : ""}">
+  const sessionRow = (session, activeId) => {
+    const state = options.getState();
+    const running = state.activeChatRequest?.sessionId === session.id || state.pendingRequest?.sessionId === session.id;
+    return `<div class="session-row ${session.id === activeId ? "active" : ""} ${running ? "is-running" : ""}">
     <button class="session-item ${session.id === activeId ? "active" : ""}" data-action="open-session" data-session-id="${escape(session.id)}" title="${escape(session.title)}${session.updatedAt ? ` · ${escape(new Date(session.updatedAt).toLocaleString())}` : ""}" ${session.id === activeId ? 'aria-current="page"' : ""}><span class="session-title">${escape(session.title)}</span></button>
-    <button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${escape(session.id)}" aria-label="Delete ${escape(session.title)}" title="Delete chat">${icon("close")}</button>
+    ${running ? `<span class="session-delete session-working" role="status" aria-label="${escape(session.title)} is working" title="Chat is working"><span class="button-spinner" aria-hidden="true"></span></span>` : `<button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${escape(session.id)}" aria-label="Delete ${escape(session.title)}" title="Delete chat">${icon("close")}</button>`}
   </div>`;
+  };
 
   function sidebar() {
     const state = options.getState();
@@ -59,6 +63,8 @@ export function createProjectsUi(options) {
           const visible = sessions.slice(0, limit);
           const active = sessions.find(session => session.id === state.activeSessionId);
           if (active && !visible.includes(active)) visible.push(active);
+          const working = sessions.find(session => session.id === state.activeChatRequest?.sessionId || session.id === state.pendingRequest?.sessionId);
+          if (working && !visible.includes(working)) visible.push(working);
           return `<div class="project-group">
             <div class="project-row">
               <button id="sidebar-project-folder-${escape(project.id)}" class="project-folder" type="button" data-action="toggle-project" data-project-id="${escape(project.id)}" data-project-color="${folderColor(project)}" aria-label="${isOpen ? "Collapse" : "Expand"} ${escape(project.name)}" aria-expanded="${isOpen}" title="${isOpen ? "Collapse" : "Expand"}">${icon("folder")}</button>

@@ -1,4 +1,5 @@
 import { FollowOutputButton } from "./FollowOutputButton";
+import { renderMarkdown } from "../markdown/index.js";
 import { useMemo } from "react";
 import type { RefObject } from "react";
 import type { ProviderOption, WorkflowDefinition, WorkflowExecution, WorkflowLogEvent } from "./types";
@@ -57,6 +58,12 @@ export function WorkflowActivity({ execution, workflow, providers, events, recor
     const model = typeof node.config.model === "string" ? node.config.model : provider?.defaultModel;
     return model ? provider?.modelLabels?.[model] ?? model : provider?.name ?? "Agent";
   };
+  const agentResponse = (event: WorkflowLogEvent) => {
+    if (event.type !== "node.completed" || nodes.get(event.nodeId ?? "")?.type !== "agent") return undefined;
+    const saved = execution?.nodeRuns.find(run => event.nodeRunId ? run.id === event.nodeRunId : run.nodeId === event.nodeId);
+    const response = saved?.output?.data?.response;
+    return typeof response === "string" && response ? response : undefined;
+  };
   return <section className="workflow-activity" aria-label="Agent activity">
     <header className="workflow-output__pane-header"><strong>Agent activity</strong>
       <FollowOutputButton following={follow} target="activity" onToggle={() => onFollow(!follow)} />
@@ -75,7 +82,8 @@ export function WorkflowActivity({ execution, workflow, providers, events, recor
           <span>{event.nodeId ? nodes.get(event.nodeId)?.label ?? event.nodeId : "Workflow"}</span>
           {modelLabel(event.nodeId) ? <small>{modelLabel(event.nodeId)}</small> : null}
         </div> : null}
-        <div className="workflow-activity__action"><ActivityIcon event={event} /><div><strong>{actionLabel(event)}</strong><Detail text={event.detail} /></div>
+        <div className="workflow-activity__action"><ActivityIcon event={event} /><div><strong>{actionLabel(event)}</strong>
+          {agentResponse(event) ? <details className="workflow-agent-response"><summary>Response</summary><div dangerouslySetInnerHTML={{ __html: renderMarkdown(agentResponse(event)) }} /></details> : <Detail text={event.detail} />}</div>
           <time title={event.at}>{new Date(event.at).toLocaleTimeString([], { hour12: false })}</time></div>
       </article>) : <div className="workflow-console__empty">{!execution ? "Actions and results will appear here when you run the workflow." : "No activity in this view yet."}</div>}
     </div>

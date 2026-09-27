@@ -71,6 +71,7 @@ const root = __dirname;
 const args = process.argv.slice(2);
 const arg = name => args[args.indexOf(name) + 1];
 const control = () => JSON.parse(fs.readFileSync(path.join(root, 'native-control.json'), 'utf8'));
+let processing = false;
 const server = http.createServer(async (request, response) => {
   response.setHeader('Content-Type', 'application/json');
   if (request.url === '/health') {
@@ -82,9 +83,16 @@ const server = http.createServer(async (request, response) => {
   if (request.headers.authorization !== 'Bearer ' + process.env.LLAMA_API_KEY) {
     response.statusCode = 401; response.end('{}'); return;
   }
+  if (request.url === '/props') {
+    response.end(JSON.stringify({ default_generation_settings: { n_ctx: Number(arg('--ctx-size')) } }));
+    return;
+  }
+  if (request.url === '/slots') { response.end(JSON.stringify([{ id: 0, is_processing: processing }])); return; }
   let body = '';
   for await (const chunk of request) body += chunk;
   const payload = JSON.parse(body || '{}');
+  processing = true;
+  response.once('close', () => { setTimeout(() => { processing = false; }, 120); });
   fs.appendFileSync(path.join(root, 'native-requests.jsonl'), JSON.stringify({ model: payload.model, url: request.url }) + '\\n');
   if (control().holdResponses) return;
   response.end(JSON.stringify({ status: 'completed', output_text: 'The answer is 5.' }));
@@ -290,9 +298,12 @@ test("inbound MCP rejects unloading during inference and cancellation releases t
   assert.ok(isAlive(native.pid));
   controller.abort();
   await rejected;
-  await eventually(async () => !(await status()).runtime.busy && !isAlive(native.pid), "Chat cancellation must free inference and stop decoding");
+  await eventually(async () => !(await status()).runtime.busy, "Chat cancellation must wait for decoding to stop");
+  assert.ok(isAlive(native.pid), "Cancellation must keep the loaded native model resident");
+  assert.equal((await status()).models[0].loaded, true);
   await control({});
   const next = success<{ result: { response: string; error?: string } }>(await call("local_ai_chat", { input: "Hello again", mode: "general" }));
   assert.equal(next.result.error, undefined);
   assert.equal(next.result.response, "The answer is 5.");
+  assert.equal((await nativeProcess())!.pid, native.pid, "The next request reuses the same loaded process");
 });

@@ -1,6 +1,7 @@
 import { buildDebateGuidance, buildLanguageInstruction } from "../judge/DebateProfiles";
 import { LanguageEnforcer } from "../llm/LanguageEnforcer";
 import { LLMService } from "../llm/LLMService";
+import { objectFormat } from "../llm/StructuredOutput";
 import {
   AgentDebateResponse,
   DebateProfile,
@@ -48,6 +49,8 @@ export class HypothesisAdvisorAgent {
     const { data, response } = await this.llmService.generateObject<AdvisorPayload>(
       {
         systemPrompt: "You are an independent debate advisor producing only structured JSON.",
+        responseFormat: objectFormat("advisor", { stance: { type: "string", enum: ["pro", "contra"] },
+          summary: { type: "string" }, arguments: { type: "array", items: { type: "string" } } }),
         model: target.model,
         maxTokens: getStyleTokenBudget(outputStyle),
         signal,

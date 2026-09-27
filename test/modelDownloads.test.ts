@@ -5,7 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { ModelLibraryStore, validateArtifactPath } from "../src/local/ModelLibraryStore";
+import { ModelLibraryStore, modelLibraryId, validateArtifactPath } from "../src/local/ModelLibraryStore";
 import { ModelDownloadService } from "../src/local/ModelDownloadService";
 import { artifactDownloadUrl, groupVariants } from "../src/local/HuggingFaceCatalog";
 import { readGGUFMetadata } from "../src/local/ModelCompatibility";
@@ -186,4 +186,52 @@ test("interrupted download records recover as paused and cancelling removes only
   const recovered = new ModelLibraryStore(path.join(root, "metadata"), path.join(root, "models")); await recovered.init();
   assert.equal(recovered.getJob(job.id).state, "paused"); assert.match(recovered.getJob(job.id).error ?? "", /restarted/);
   await recovered.dispose();
+});
+
+test("startup recovers a renamed complete download without another transfer and preserves corrupt orphan files", async (t) => {
+  const { root, store } = await setup();
+  const { model, variant } = modelFor(gguf());
+  const now = new Date().toISOString();
+  const libraryId = modelLibraryId(model.repoId, model.revision, variant.id);
+  const job = { id: "download-recover", libraryId, repoId: model.repoId, revision: model.revision, variantId: variant.id,
+    name: model.name, quantization: variant.quantization, license: model.license, files: variant.files,
+    state: "verifying" as const, totalBytes: variant.sizeBytes, downloadedBytes: variant.sizeBytes, progress: 100, speedBytesPerSecond: 0, createdAt: now, updatedAt: now };
+  await store.putJob(job);
+  await fs.mkdir(store.modelDirectory(libraryId));
+  await fs.writeFile(path.join(store.modelDirectory(libraryId), variant.files[0].path), gguf());
+  const badId = "gguf-corrupt-orphan";
+  await store.putJob({ ...job, id: "download-corrupt", libraryId: badId });
+  await fs.mkdir(store.modelDirectory(badId));
+  const badPath = path.join(store.modelDirectory(badId), variant.files[0].path);
+  await fs.writeFile(badPath, Buffer.alloc(gguf().length));
+  const missingId = "gguf-previously-removed";
+  await store.putJob({ ...job, id: "download-removed", libraryId: missingId, state: "completed" });
+  await store.dispose();
+  const service = new LocalModelService({ enabled: true, dataDir: store.dataDir, modelsDir: store.modelsDir, runtimeDir: root,
+    contextSize: 32768, gpuLayers: 0, loadTimeoutMs: 5000, generationTimeoutMs: 5000, memoryLimitPercent: 75 }, new Logger());
+  t.after(async () => { await service.dispose(); await fs.rm(root, { recursive: true, force: true }); });
+  await service.init();
+  assert.deepEqual((await service.listAllModels()).map(item => item.id), [libraryId]);
+  assert.equal(service.listDownloads().find(item => item.id === job.id)?.state, "completed");
+  assert.equal(service.snapshot().storage?.managedBytes, gguf().length);
+  assert.equal(service.snapshot().storage?.untrackedBytes, gguf().length);
+  assert.equal(service.getContextWindow(), 32768);
+  assert.deepEqual(await fs.readFile(badPath), Buffer.alloc(gguf().length));
+});
+
+test("an installed model with missing weights stays visible with an actionable error", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "llama-missing-model-"));
+  const options = { enabled: true, dataDir: path.join(root, "metadata"), modelsDir: path.join(root, "models"), runtimeDir: root,
+    contextSize: 4096, gpuLayers: 0, loadTimeoutMs: 5000, generationTimeoutMs: 5000, memoryLimitPercent: 75 };
+  const initial = new LocalModelService(options, new Logger());
+  const file = path.join(root, "tiny-Q4_K_M.gguf"); await fs.writeFile(file, gguf());
+  const imported = await initial.importModel([file]);
+  await initial.dispose();
+  await fs.unlink(path.join(options.modelsDir, imported.id, imported.files[0].path));
+  const restarted = new LocalModelService(options, new Logger());
+  t.after(async () => { await restarted.dispose(); await fs.rm(root, { recursive: true, force: true }); });
+  await restarted.init();
+  const models = await restarted.listAllModels();
+  assert.equal(models.length, 1); assert.equal(models[0].id, imported.id);
+  assert.equal(models[0].state, "error"); assert.match(models[0].error ?? "", /missing or changed/);
 });
