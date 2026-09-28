@@ -19,6 +19,9 @@ let workflowPollInFlight = false;
 let workflowEditorHandle = null;
 let workflowEditorModulePromise = null;
 let workflowEditorMountGeneration = 0;
+let synthesisWorkspaceHandle = null;
+let synthesisWorkspaceModulePromise = null;
+let synthesisWorkspaceMountGeneration = 0;
 let workflowLiveConnection = null;
 const workflowEventCache = new Map();
 const workflowWorkspaces = new Map();
@@ -467,7 +470,7 @@ async function init() {
 
 function syncRouteFromHash() {
   const route = window.location.hash.replace(/^#\/?/, "");
-  state.route = ["chat", "orchestration", "models"].includes(route) ? route : "chat";
+  state.route = ["chat", "orchestration", "synthesis", "models"].includes(route) ? route : "chat";
 }
 
 async function refreshBootstrap() {
@@ -600,6 +603,7 @@ function applyTheme(theme, persist = true) {
   localStorage.setItem("lcai.theme", nextTheme);
   window.desktopAppearance?.setTheme(resolveTheme(nextTheme));
   workflowEditorHandle?.setColorMode(resolveTheme(nextTheme));
+  synthesisWorkspaceHandle?.setColorMode(resolveTheme(nextTheme));
   document.querySelectorAll("[data-action='set-theme']").forEach((button) => {
     button.classList.toggle("active", button.dataset.theme === nextTheme);
     button.setAttribute("aria-pressed", String(button.dataset.theme === nextTheme));
@@ -623,6 +627,10 @@ function render(options = {}) {
   const nativeTitlebar = ["darwin", "win32"].includes(window.desktopAppearance?.platform);
   app.dataset.view = viewKey;
   unmountWorkflowEditor();
+  // Keep the React tree, selections and activity scroll intact when the shell refreshes.
+  const synthesisHost = synthesisWorkspaceHandle ? document.querySelector("#synthesis-workspace") : null;
+  synthesisHost?.remove();
+  synthesisWorkspaceMountGeneration += 1;
 
   app.innerHTML = `
     ${glassFilters()}
@@ -641,12 +649,16 @@ function render(options = {}) {
           <section class="route route--orchestration ${state.route === "orchestration" ? "active" : ""}">
             ${renderOrchestrationRoute()}
           </section>
+          <section class="route route--synthesis ${state.route === "synthesis" ? "active" : ""}">
+            <div id="synthesis-workspace"></div>
+          </section>
         </div>
         ${renderToasts()}
       </main>
     </div>
   `;
 
+  if (synthesisHost) document.querySelector("#synthesis-workspace")?.replaceWith(synthesisHost);
   bindEvents();
   projectsUi.bind();
   settingsShell.bindProfile();
@@ -657,6 +669,7 @@ function render(options = {}) {
   sessionSetupMotion.restore(setupViewport, options.setupAddedId);
   bindGlassLighting(app);
   mountActiveWorkflowEditor();
+  mountActiveSynthesisWorkspace();
   if (state.route === "chat") {
     restoreStoredMessageStreamScroll();
   }
@@ -749,6 +762,7 @@ function renderSidebar(nativeTitlebar = false) {
       <nav class="nav" aria-label="Main navigation">
         ${renderNavButton("chat", "Chat")}
         ${renderNavButton("orchestration", "Workflow")}
+        ${renderNavButton("synthesis", "Synthesis")}
         ${renderNavButton("models", "Models")}
       </nav>
 
@@ -1982,6 +1996,38 @@ function connectWorkflowRun(detail, generation, workspace) {
       }
     }
   });
+}
+
+async function mountActiveSynthesisWorkspace() {
+  if (synthesisWorkspaceHandle) {
+    synthesisWorkspaceHandle.setProjects(state.bootstrap?.projects ?? []);
+    synthesisWorkspaceHandle.setActive(state.route === "synthesis");
+    return;
+  }
+  const container = document.querySelector("#synthesis-workspace");
+  if (!container || state.route !== "synthesis") return;
+  const generation = synthesisWorkspaceMountGeneration;
+  container.innerHTML = '<div class="empty compact">Loading Synthesis…</div>';
+  try {
+    synthesisWorkspaceModulePromise ??= import("/assets/synthesis-workspace.js");
+    const module = await synthesisWorkspaceModulePromise;
+    if (generation !== synthesisWorkspaceMountGeneration || !container.isConnected || state.route !== "synthesis") return;
+    container.innerHTML = "";
+    synthesisWorkspaceHandle = module.mountSynthesisWorkspace(container, {
+      projects: state.bootstrap?.projects ?? [],
+      colorMode: resolveTheme(state.ui.theme),
+      active: true,
+      onCreateProject: () => projectsUi.openCreateProject(created => {
+        synthesisWorkspaceHandle?.setProjects(state.bootstrap?.projects ?? []);
+        synthesisWorkspaceHandle?.selectProject(created.id);
+      })
+    });
+  } catch (error) {
+    synthesisWorkspaceModulePromise = null;
+    if (generation === synthesisWorkspaceMountGeneration && container.isConnected) {
+      container.innerHTML = `<div class="empty">Unable to load Synthesis: ${escapeHtml(error.message)}</div>`;
+    }
+  }
 }
 
 async function mountActiveWorkflowEditor() {
@@ -4787,6 +4833,8 @@ function routeTitle(route) {
   switch (route) {
     case "orchestration":
       return "Tasks & workflows";
+    case "synthesis":
+      return "Synthesis";
     case "models":
       return "Models";
     case "plugins":

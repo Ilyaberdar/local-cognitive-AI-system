@@ -78,6 +78,7 @@ export class RuntimeManager {
 
   private async build(settings: AppSettings): Promise<AppRuntime> {
     if (this.disposed) throw new Error("Runtime has been disposed");
+    await this.runtime?.synthesis.dispose();
     const mergedConfig = this.applySettings(settings);
     if (!this.localModelService) {
       const service = new LocalModelService(localModelOptions(mergedConfig), this.logger);
@@ -98,7 +99,7 @@ export class RuntimeManager {
     if (this.disposing) return this.disposing;
     this.disposed = true;
     // Abort active inference before awaiting a settings operation queued behind it.
-    const disposing = Promise.all([this.localModelService?.dispose(), this.mcpClients.dispose()]);
+    const disposing = Promise.all([this.runtime?.synthesis.dispose(), this.localModelService?.dispose(), this.mcpClients.dispose()]);
     this.disposing = (async () => { await this.operations; await disposing; })();
     return this.disposing;
   }

@@ -2,6 +2,8 @@ node_modules
 dist
 public/assets/workflow-editor.js
 public/assets/workflow-editor.css
+public/assets/synthesis-workspace.js
+public/assets/index-*.mjs
 public/assets/markdown-renderer.js
 /release/
 .env
@@ -18,10 +20,14 @@ data/app/settings.json
 data/app/sessions.json
 data/app/tasks/
 data/app/workflows/
+data/app/synthesis/
 data/sessions/
 sessions.json
 sessions/
 docs/
+!/docs/
+/docs/*
+!/docs/lc-language.md
 logo/
 screenshots/
 .tmp/

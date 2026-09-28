@@ -100,8 +100,10 @@ import { OperationExecutor } from "../tools/OperationExecutor";
 import { AgentLoopRunner } from "../agents/runtime/AgentLoopRunner";
 import { CodeAgentCoordinator } from "../agents/code/CodeAgentCoordinator";
 import { PluginOperationExecutor } from "../tools/PluginOperationExecutor";
+import { SynthesisService } from "../synthesis/SynthesisService";
 
 export interface AppRuntime {
+  synthesis: SynthesisService;
   projectStore: ProjectStore;
   workspaceResolver: WorkspaceResolver;
   sessionIndexStore: SessionIndexStore;
@@ -744,7 +746,14 @@ export const buildRuntime = async (
   const mcpClients = sharedMcpClients ?? new McpClientManager();
   if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
 
+  const synthesis = new SynthesisService(config.appDataDir, {
+    projects: projectStore, models: localModelManager, llm: llmService,
+    loadModel: (model, signal) => localModelService.loadModel(model.id, signal)
+  });
+  await synthesis.init();
+
   return {
+    synthesis,
     projectStore,workspaceResolver,sessionIndexStore,agentLoopRunner,operationExecutor,
     localModelService,
     mcpClients,

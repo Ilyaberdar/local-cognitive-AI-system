@@ -1,0 +1,36 @@
+implement Calculator7B using "calculator-v1" {
+    limit iterations 6, time 15m, cost 0usd;
+    policy = "local-files-v1";
+
+    available = await models.list(provider = "llamacpp");
+    selected = models.select(available, max_size = 6GiB, prefer = "qwen2.5-7b");
+    developer = await models.load(selected);
+
+    spec = freeze(Calculator7B.spec);
+    candidate = checkout("calculator-7b");
+    feedback = none;
+
+    while (!accepted(candidate, spec)) {
+        candidate = await developer.revise(candidate, spec, feedback,
+            file = "calculator.js", format = "source",
+            instruction = "Write a global calculate(a,b,operation) function with numeric + - * / and throw Error on division by zero. Then wire #calculate click: convert #a.value and #b.value using Number, call calculate, display numeric answer in #result.textContent; catch errors and display Error. Wire #clear click to empty both input values and result text. Do not name a button variable calculate because that would shadow the function. No other behavior is needed.");
+        candidate = await developer.revise(candidate, spec, feedback,
+            file = "index.html", format = "source",
+            instruction = "Write complete HTML with title Calculator. Head links style.css using link rel=stylesheet. Body has label/input type=number id=a, label/input type=number id=b, labeled select id=operation with option values + - * /, button id=calculate, button id=clear, output id=result. End body with exactly one script src=calculator.js. No inline JavaScript, no other scripts. Do not omit the second input or any label.");
+        candidate = await developer.revise(candidate, spec, feedback,
+            file = "style.css", format = "source",
+            instruction = "Write only a tiny dark CSS stylesheet: dark body background, light text, centered main content, spaced labeled inputs, select, buttons and visible result. Use at most 12 rules. No JavaScript, no HTML, no imports, no url resources. Stop after the last closing brace.");
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        checkpoint(candidate, evidence, verdict);
+
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        feedback = verdict.violations;
+    }
+    return unresolved();
+}

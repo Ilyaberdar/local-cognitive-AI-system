@@ -21,6 +21,7 @@ const paths = {
 
   chat: '<path d="M4 10.5 12 4l8 6.5M6.5 9v10h4v-5h3v5h4V9"/>',
   orchestration: '<rect x="4" y="5" width="16" height="14" rx="3"/><path d="M9.3 5v14m5.4-14v14M6.7 9h0m5.3 3h0m5.3-3h0"/>',
+  synthesis: '<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18"/>',
   models: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Zm0 9 8-4.5M12 12 4 7.5M12 12v9"/>',
   plugins: '<path d="M9 4h6v4h2a3 3 0 1 1 0 6h-2v6H9v-4H7a3 3 0 1 1 0-6h2V4Z"/>',
   settings: '<path d="m9.5 4 .7-2h3.6l.7 2 1.6 1 2.2-.4 1.8 3.1-1.4 1.7v2l1.4 1.7-1.8 3.1-2.2-.4-1.6 1-.7 2h-3.6l-.7-2-1.6-1-2.2.4-1.8-3.1L5 11.4v-2L3.6 7.7l1.8-3.1 2.2.4 1.9-1Z" transform="translate(0 1.5)"/><circle cx="12" cy="12" r="3"/>',
