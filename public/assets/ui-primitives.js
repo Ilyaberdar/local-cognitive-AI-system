@@ -12,6 +12,8 @@ const paths = {
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8m-8 4h5"/>',
   code: '<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18"/>',
   externalLink: '<path d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/>',
+  expand: '<path d="M14 4h6v6M20 4l-6 6M10 20H4v-6m0 6 6-6"/>',
+  contract: '<path d="M20 4l-6 6m0-6v6h6M4 20l6-6m-6 0h6v6"/>',
   hand: '<path d="M8 12V5a1.5 1.5 0 0 1 3 0v6-8a1.5 1.5 0 0 1 3 0v8-6a1.5 1.5 0 0 1 3 0v7-3a1.5 1.5 0 0 1 3 0v5c0 5-3 8-7 8-3 0-5-2-7-5l-3-4a1.5 1.5 0 0 1 2-2l3 3"/>',
   shield: '<path d="m12 3 8 4v5c0 5-4 8-8 10-4-2-8-5-8-10V7l8-4Z"/><path d="m9 10 3 2-3 2m5 1h2"/>',
   shieldAlert: '<path d="m12 3 8 4v5c0 5-4 8-8 10-4-2-8-5-8-10V7l8-4Z"/><path d="M12 8v5m0 4h.01"/>',

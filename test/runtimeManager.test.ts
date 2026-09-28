@@ -137,14 +137,16 @@ test("UI preference saves keep the same runtime and do not reconfigure local inf
   const previous = manager.getRuntime();
   let rebuilds = 0;
   t.mock.method(service, "reconfigure", async () => { rebuilds++; });
-  const saved = await manager.updateSettings({ ui: { theme: "system", animations: false, fontScale: 130 } });
+  const saved = await manager.updateSettings({ ui: { theme: "system", animations: false, fontScale: 130, codeFontSize: 11 } });
   assert.equal(saved.runtime, previous);
   assert.equal(rebuilds, 0);
   assert.equal(saved.settings.ui?.animations, false);
   assert.equal(saved.settings.ui?.theme, "system");
   assert.equal(saved.settings.ui?.fontScale, 130);
+  assert.equal(saved.settings.ui?.codeFontSize, 11);
   const themeOnly = await manager.updateSettings({ ui: { theme: "light" } });
   assert.equal(themeOnly.settings.ui?.fontScale, 130);
+  assert.equal(themeOnly.settings.ui?.codeFontSize, 11);
   assert.equal(themeOnly.runtime, previous);
 });
 
@@ -172,6 +174,9 @@ test("invalid entity fields reject without publishing settings; serialized prefe
   await assert.rejects(manager.updateSettings({ providers: { openai: { timeoutMs: -1 } } }), /Invalid providers.openai.timeoutMs/);
   await assert.rejects(manager.updateSettings({ ui: { animations: "yes" as never } }), /Invalid ui.animations/);
   await assert.rejects(manager.updateSettings({ ui: { fontScale: 200 } }), /Invalid ui.fontScale/);
+  for (const codeFontSize of [9, 21, 12.5, "12"]) {
+    await assert.rejects(manager.updateSettings({ ui: { codeFontSize: codeFontSize as number } }), /Invalid ui.codeFontSize/);
+  }
   assert.deepEqual(await store.get(), previous);
   await Promise.all([
     manager.updateSettings({ ui: { theme: "light" } }),

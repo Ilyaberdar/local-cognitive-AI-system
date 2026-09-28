@@ -8,7 +8,7 @@ import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
 import { watchWorkflowRun } from "./workflow-live.js";
-import { renderMarkdown, renderCodeBlock, bindMarkdownActions } from "./markdown-renderer.js";
+import { renderMarkdown, renderCodeBlock, renderCodeLines, bindMarkdownActions } from "./markdown-renderer.js";
 
 const app = document.querySelector("#app");
 bindMarkdownActions(app);
@@ -33,6 +33,7 @@ const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
   : "dark";
 document.documentElement.dataset.theme = resolveTheme(initialTheme);
 applyFontScale(Number(localStorage.getItem("lcai.fontScale")) || 100);
+applyCodeFontSize(Number(localStorage.getItem("lcai.codeFontSize")) || 12);
 if (window.desktopAppearance) {
   document.documentElement.dataset.desktop = window.desktopAppearance.platform;
   window.desktopAppearance.setTheme(resolveTheme(initialTheme));
@@ -299,6 +300,7 @@ const projectsUi = createProjectsUi({
 });
 
 const reviewPanel = createReviewPanel({
+  highlightLines: renderCodeLines,
   sessionId: () => state.activeSessionId,
   isCollapsed: () => state.ui.sessionSetupCollapsed,
   showPanel: () => {
@@ -406,11 +408,17 @@ function applyUiPreferences(preferences) {
   if (preferences.theme) applyTheme(preferences.theme, false);
   if (typeof preferences.animations === "boolean") setAnimations(preferences.animations);
   if (typeof preferences.fontScale === "number") applyFontScale(preferences.fontScale);
+  if (typeof preferences.codeFontSize === "number") applyCodeFontSize(preferences.codeFontSize);
 }
 function applyFontScale(value) {
   const scale = Number.isFinite(value) && value >= 85 && value <= 150 ? value : 100;
   document.documentElement.style.setProperty("--font-scale", String(scale / 100));
   localStorage.setItem("lcai.fontScale", String(scale));
+}
+function applyCodeFontSize(value) {
+  const size = Number.isInteger(value) && value >= 10 && value <= 20 ? value : 12;
+  document.documentElement.style.setProperty("--code-font-size", `${size}px`);
+  localStorage.setItem("lcai.codeFontSize", String(size));
 }
 const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
   getContext: () => ({ ...state.bootstrap, route: state.route }),
@@ -612,21 +620,17 @@ function render(options = {}) {
   const presentation = capturePresentationState();
   const viewKey = `${state.route}:${state.route === "orchestration" ? state.orchestrationTab : state.activeSessionId}`;
   const viewChanged = app.dataset.view !== viewKey;
+  const nativeTitlebar = ["darwin", "win32"].includes(window.desktopAppearance?.platform);
   app.dataset.view = viewKey;
   unmountWorkflowEditor();
 
   app.innerHTML = `
     ${glassFilters()}
-    <div class="shell ${viewChanged ? "view-enter" : ""} ${state.ui.sidebarCollapsed ? "shell--sidebar-collapsed" : ""}" style="--sidebar-width: ${Math.max(180, state.ui.sidebarWidth || 232)}px;">
-      ${renderSidebar()}
+    <div class="shell ${nativeTitlebar ? "shell--native-titlebar" : ""} ${viewChanged ? "view-enter" : ""} ${state.ui.sidebarCollapsed ? "shell--sidebar-collapsed" : ""}" style="--sidebar-width: ${Math.max(180, state.ui.sidebarWidth || 232)}px;">
+      ${nativeTitlebar ? renderAppTopbar(true) : ""}
+      ${renderSidebar(nativeTitlebar)}
       <main class="main">
-        <header class="app-topbar">
-          <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
-          <div class="app-topbar__actions">
-            ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
-            <span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>
-          </div>
-        </header>
+        ${nativeTitlebar ? "" : renderAppTopbar(false)}
         <div class="content-shell">
           <section class="route route--chat ${state.route === "chat" ? "active" : ""}">
             ${renderChatRoute()}
@@ -716,18 +720,32 @@ function flashSavedButton(key) {
   }, 1000);
 }
 
-function renderSidebar() {
+function renderSidebarToggle() {
+  return `<button class="sidebar-toggle icon-button" type="button" data-action="toggle-sidebar" aria-label="Toggle navigation" aria-expanded="${!state.ui.sidebarCollapsed}" title="${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}">${icon("sidebar")}</button>`;
+}
+
+function renderAppTopbar(nativeTitlebar) {
+  return `<header class="app-topbar ${nativeTitlebar ? "app-topbar--native" : ""}">
+    ${nativeTitlebar ? `<div class="window-navigation">${renderSidebarToggle()}<span class="brand-name">Cognitive</span></div>` : ""}
+    <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
+    <div class="app-topbar__actions">
+      ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
+      <span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>
+    </div>
+  </header>`;
+}
+
+function renderSidebar(nativeTitlebar = false) {
   const providerCount = state.bootstrap?.providers?.length ?? 0;
   const pluginCount = state.bootstrap?.plugins?.length ?? 0;
 
   return `
     <aside class="sidebar liquid-glass">
-      <div class="sidebar-brand">
+      ${nativeTitlebar ? "" : `<div class="sidebar-brand">
         <span class="brand-name">Cognitive</span>
-        <button class="sidebar-toggle icon-button" type="button" data-action="toggle-sidebar" aria-label="Toggle navigation" aria-expanded="${!state.ui.sidebarCollapsed}" title="${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}">${icon("sidebar")}</button>
-      </div>
+        ${renderSidebarToggle()}
+      </div>`}
       <div class="sidebar-resize-handle" data-action="resize-sidebar" title="Resize navigation"></div>
-      <button class="new-task-button liquid-glass" type="button" data-action="new-session" title="${currentProject() ? `New chat in ${escapeAttr(currentProject().name)}` : "New chat"}" aria-label="New chat">${icon("plus")}<span>New chat</span></button>
       <nav class="nav" aria-label="Main navigation">
         ${renderNavButton("chat", "Chat")}
         ${renderNavButton("orchestration", "Workflow")}
@@ -1242,7 +1260,7 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
         </div>
 
         <div class="chat-settings__grid compact">
-          <div class="field">
+          <div class="field session-title-field">
             <label>Title</label>
             <input name="sessionTitle" value="${escapeAttr(currentSession?.title ?? "")}" />
           </div>
@@ -1407,6 +1425,7 @@ function renderOrchestrationRoute() {
           <button class="primary-button" type="button" data-action="toggle-task-panel" data-panel="task-create">${icon("plus")}New task</button>` : ""}
           ${activeTab === "workflow" ? `<button class="ghost-button workflow-side-toggle ${state.ui.workflowSideCollapsed ? "" : "is-active"}" type="button" data-action="toggle-workflow-side" aria-label="Toggle workflows panel" aria-expanded="${!state.ui.workflowSideCollapsed}" aria-controls="workflow-side-panel" title="${state.ui.workflowSideCollapsed ? "Show workflows and run trace" : "Hide workflows and run trace"}">${icon("sidebar")}<span>Workflows &amp; trace</span></button>` : ""}
           <button class="ghost-button refresh-button" type="button" data-action="refresh-orchestration" title="Refresh" aria-label="Refresh orchestration">${icon("refresh")}<span>Refresh</span></button>
+          ${activeTab === "workflow" ? `<div id="workflow-settings-control"></div>` : ""}
         </div>
       </div>
       ${
@@ -2000,6 +2019,7 @@ async function mountActiveWorkflowEditor() {
     container.innerHTML = "";
     workflowMountedKey = key;
     workflowEditorHandle = module.mountWorkflowEditor(container, {
+      settingsContainer: document.querySelector("#workflow-settings-control"),
       workflow: cloneWorkflow(workflow), providers, projects: state.bootstrap?.projects ?? [],
       initialViewState: workspace.ui, starting: Boolean(workspace.pendingStart),
       onChooseFolder: window.desktopProjects ? () => window.desktopProjects.selectDirectory() : undefined,

@@ -1,7 +1,7 @@
 import { NodeConfigFields } from "./NodeConfigFields";
 import { ModelPicker } from "./ModelPicker";
 import { RunSettings } from "./RunSettings";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -76,6 +76,35 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   const [selected, setSelected] = useState<{ kind: "node" | "edge"; id: string } | null>(props.initialViewState?.selected ?? null);
   const [configError, setConfigError] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(props.initialViewState?.inspectorOpen ?? true);
+  const [inspectorWidth, setInspectorWidth] = useState(() => {
+    const saved = props.initialViewState?.inspectorWidth ?? Number(localStorage.getItem("lcai.workflowInspectorWidth"));
+    return Number.isFinite(saved) && saved >= 260 && saved <= 560 ? saved : 320;
+  });
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const inspectorDrag = useRef<{ x: number; width: number; current: number } | null>(null);
+  const [resizingInspector, setResizingInspector] = useState(false);
+  const maxInspectorWidth = Math.max(260, Math.min(560, workspaceWidth - (workspaceWidth > 760 ? 328 : 32)));
+  const visibleInspectorWidth = Math.min(inspectorWidth, maxInspectorWidth);
+  const resizeInspector = (width: number, persist = false) => {
+    const next = Math.round(Math.max(260, Math.min(maxInspectorWidth, width)));
+    setInspectorWidth(next);
+    if (persist) localStorage.setItem("lcai.workflowInspectorWidth", String(next));
+    return next;
+  };
+  const finishInspectorResize = () => {
+    if (inspectorDrag.current) localStorage.setItem("lcai.workflowInspectorWidth", String(inspectorDrag.current.current));
+    inspectorDrag.current = null;
+    setResizingInspector(false);
+  };
+  useLayoutEffect(() => {
+    const element = workspaceRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setWorkspaceWidth(element.clientWidth));
+    setWorkspaceWidth(element.clientWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const [runBusy, setRunBusy] = useState(false);
   const [runError, setRunError] = useState("");
   const [mapOpen, setMapOpen] = useState(props.initialViewState?.mapOpen ?? false);
@@ -94,7 +123,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
   const inspectorRef = useRef<HTMLElement>(null);
   useLayoutEffect(() => { if (inspectorRef.current) inspectorRef.current.scrollTop = props.initialViewState?.inspectorScrollTop ?? 0; }, []);
   useLayoutEffect(() => {
-    props.onCaptureState?.(() => ({ selected, inspectorOpen, mapOpen, consoleNodeId, followActive,
+    props.onCaptureState?.(() => ({ selected, inspectorOpen, inspectorWidth, mapOpen, consoleNodeId, followActive,
       viewport: flow.getViewport(), runSettingsOpen: runSettingsOpen.current,
       inspectorScrollTop: inspectorRef.current?.scrollTop ?? 0, console: consoleCapture.current?.() }));
   });
@@ -377,7 +406,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
       </div>
 
       {runError ? <div className="fsm-field-error" role="alert">{runError}</div> : null}
-      <RunSettings key={draft.id} options={draft.runDefaults ?? {}} projects={props.projects} onChooseFolder={props.onChooseFolder}
+      <RunSettings key={draft.id} container={props.settingsContainer} options={draft.runDefaults ?? {}} projects={props.projects} onChooseFolder={props.onChooseFolder}
         hasRun={Boolean(execution)} disabled={readOnly} initiallyOpen={props.initialViewState?.runSettingsOpen} onOpenChange={open => { runSettingsOpen.current = open; }}
         onUpdate={runDefaults => updateWorkflow({ runDefaults })} />
       {props.validation && !props.validation.ok ? (
@@ -387,7 +416,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
         </div>
       ) : null}
 
-      <div className="fsm-workspace">
+      <div className="fsm-workspace" ref={workspaceRef} data-resizing={resizingInspector || undefined} style={{ "--inspector-width": `${visibleInspectorWidth}px` } as CSSProperties}>
         <div className="fsm-canvas" ref={canvasRef}>
           <ReactFlow
             nodes={displayedNodes}
@@ -441,13 +470,28 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
           </ReactFlow>
         </div>
 
-        <aside className="fsm-inspector" ref={inspectorRef} hidden={!inspectorOpen}>
+        {inspectorOpen ? <div className="fsm-inspector-resize" role="separator" aria-label="Resize inspector" aria-orientation="vertical"
+          tabIndex={0} aria-valuemin={260} aria-valuemax={maxInspectorWidth} aria-valuenow={visibleInspectorWidth} aria-valuetext={`${visibleInspectorWidth} pixels`}
+          onKeyDown={event => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            resizeInspector(event.key === "Home" ? 260 : event.key === "End" ? maxInspectorWidth : visibleInspectorWidth + (event.key === "ArrowLeft" ? 20 : -20), true);
+          }}
+          onDoubleClick={() => resizeInspector(320, true)}
+          onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); inspectorDrag.current = { x: event.clientX, width: visibleInspectorWidth, current: visibleInspectorWidth }; setResizingInspector(true); event.currentTarget.setPointerCapture(event.pointerId); }}
+          onPointerMove={event => { const drag = inspectorDrag.current; if (drag) drag.current = resizeInspector(drag.width + drag.x - event.clientX); }}
+          onPointerUp={finishInspectorResize} onPointerCancel={finishInspectorResize} onLostPointerCapture={finishInspectorResize}
+          title="Drag to resize · Double-click to reset" /> : null}
+        <aside className="fsm-inspector" ref={inspectorRef} hidden={!inspectorOpen} aria-label="Workflow inspector">
           <div className="fsm-inspector__header">
             <div>
               <span>Inspector</span>
               <strong>{selectedNode?.label ?? selectedEdge?.label ?? selectedEdge?.id ?? "Workflow"}</strong>
             </div>
-            {selected ? <button type="button" className="danger" disabled={readOnly} onClick={deleteSelected}>Delete</button> : null}
+            <div className="fsm-inspector__actions">
+              {selected ? <button type="button" className="danger" disabled={readOnly} onClick={deleteSelected}>Delete</button> : null}
+              <button type="button" className="fsm-inspector__close" aria-label="Close inspector" title="Close inspector" onClick={() => setInspectorOpen(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+            </div>
           </div>
 
           {readOnly ? <p className="fsm-model-hint">Run in progress. Settings unlock when it finishes or you press Stop.</p> : null}
@@ -490,7 +534,7 @@ function WorkflowFields({ draft, onUpdate }: {
       <Field label="Name"><input value={draft.name} onChange={(event) => onUpdate({ name: event.target.value })} /></Field>
       <Field label="Version"><input type="number" min="1" value={draft.version} onChange={(event) => onUpdate({ version: Math.max(1, Number(event.target.value) || 1) })} /></Field>
       <Field label="Description"><textarea rows={4} value={draft.description ?? ""} onChange={(event) => onUpdate({ description: event.target.value })} /></Field>
-      <p className="fsm-model-hint">Choose a folder in Run settings, then press Run. The same workflow can also run from a task.</p>
+      <p className="fsm-model-hint">Choose a folder in Workflow settings, then press Run. The same workflow can also run from a task.</p>
     </div>
   );
 }

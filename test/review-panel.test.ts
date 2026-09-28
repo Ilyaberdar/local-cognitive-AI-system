@@ -198,6 +198,8 @@ test("Review keeps file state per chat, ignores late opens and reloads current c
   id = "A"; assert.equal(panel.isOpen(), false);
   hold = false; await panel.open("/file.py"); assert.match(panel.render(), /first/);
   content = "second"; await panel.open("/file.py"); assert.match(panel.render(), /second/);
+  content = "refreshed"; await panel.refresh(); assert.match(panel.render(), /refreshed/);
+  assert.doesNotMatch(panel.render(), /<code[^>]*>second<\/code>/);
   id = "B"; assert.equal(panel.render(), null);
 });
 

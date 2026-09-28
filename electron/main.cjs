@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeTheme, systemPreferences, shell, powerMonitor } = require("electron");
 const net = require("net");
 const path = require("path");
+const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
 
 let mainWindow;
 let backendHandle;
@@ -93,10 +94,9 @@ const createWindow = async (url) => {
     minHeight: 680,
     title: "Local Cognitive AI System",
     show: false,
-    backgroundColor: isMac ? "#00000000" : "#181a1d",
+    backgroundColor: isMac ? "#00000000" : windowsTitleBarOverlay(nativeTheme.shouldUseDarkColors).color,
+    ...windowChromeOptions(process.platform, nativeTheme.shouldUseDarkColors),
     ...(isMac ? {
-      titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 18, y: 18 },
       transparent: true,
       ...(liquidGlass ? {} : { vibrancy: "sidebar", visualEffectState: "followWindow" })
     } : {}),
@@ -129,6 +129,15 @@ const createWindow = async (url) => {
 ipcMain.on("appearance:set-theme", (event, theme) => {
   if (event.sender === mainWindow?.webContents && ["dark", "light"].includes(theme)) {
     nativeTheme.themeSource = theme;
+  }
+});
+
+// Keep the native Windows caption buttons in step with light/dark app themes.
+nativeTheme.on("updated", () => {
+  if (process.platform === "win32" && mainWindow && !mainWindow.isDestroyed()) {
+    const overlay = windowsTitleBarOverlay(nativeTheme.shouldUseDarkColors);
+    mainWindow.setTitleBarOverlay(overlay);
+    mainWindow.setBackgroundColor(overlay.color);
   }
 });
 
