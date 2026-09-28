@@ -39,7 +39,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'voice') return [field('voice.microphone', 'Microphone', 'text', { description: 'Input device, headset, input level and permissions' }), field('voice.language', 'Language'), field('voice.recognition', 'Recognition model')];
     if (name === 'appearance') return [
       select('ui.theme', 'Theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], 'Uses the same theme as the main sidebar.'),
-      field('ui.fontScale', 'Text size', 'font-scale', { description: 'Scale text across the app, including chats and workflow. Default: 100%.' }),
+      field('ui.fontScale', 'Text size', 'font-scale', { description: 'Scale interface text and messages across the app. Code has its own size. Default: 100%.' }),
+      field('ui.codeFontSize', 'Code text size', 'code-font-size', { description: 'Code blocks in chat, workflow responses and Review. Independent of text size. Default: 12 px.' }),
       bool('ui.animations', 'Animations', 'Motion is reduced automatically when your system requests it.')
     ];
     if (name === 'providers' && id && settings().providers?.[id]) {
@@ -92,6 +93,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const common = `id="${id}" name="${escape(spec.name)}"`;
     if (spec.type === 'boolean') control = `<input ${common} type="checkbox" role="switch" ${value ? 'checked' : ''} />`;
     else if (spec.type === 'font-scale') control = `<div class="settings-font-scale"><input ${common} type="range" min="85" max="150" step="5" value="${value ?? 100}" aria-valuetext="${value ?? 100}%" /><output for="${id}">${value ?? 100}%</output></div>`;
+    else if (spec.type === 'code-font-size') control = `<div class="settings-font-scale"><input ${common} type="range" min="10" max="20" step="1" value="${value ?? 12}" aria-valuetext="${value ?? 12} px" /><output for="${id}">${value ?? 12} px</output></div><pre class="settings-code-preview" aria-label="Code size preview"><code><span class="hljs-keyword">const</span> message = <span class="hljs-string">"Hello, world"</span>;</code></pre>`;
     else if (spec.type === 'select') control = `<select ${common}>${spec.choices.map(choice => { const [key, label] = Array.isArray(choice) ? choice : [choice, choice]; return `<option value="${escape(key)}" ${String(value) === key ? 'selected' : ''}>${escape(label)}</option>`; }).join('')}</select>`;
     else if (spec.type === 'secret') control = `<div class="settings-secret"><input ${common} type="password" autocomplete="new-password" value="" placeholder="${get(settings(), spec.name) ? 'Saved key · leave blank to keep' : 'Enter API key'}" /><button type="button" class="ghost-button" data-clear="${escape(spec.name)}">Remove key</button><small data-secret-state="${escape(spec.name)}">${Object.hasOwn(dirty(page), spec.name) ? dirty(page)[spec.name] === '' ? 'Key will be removed on Apply.' : 'Replacement key entered.' : 'Blank input keeps the existing key.'}</small></div>`;
     else if (spec.type === 'model') {
@@ -212,22 +214,23 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const preference = specs.length && specs.every(spec => spec.name.startsWith('ui.'));
     element?.addEventListener('input', event => {
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
-      const value = spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale'].includes(spec.type) ? Number(event.target.value) : event.target.value;
+      const value = spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
       if (spec.type === 'secret' && value === '') delete dirty(current)[spec.name]; else dirty(current)[spec.name] = value;
       results.delete(current);
       root.querySelector('.settings-test-result')?.remove();
       if (!statuses.get(current)?.busy) setStatus(current, { text: 'Unsaved changes' });
       if (spec.type === 'secret') root.querySelector(`[data-secret-state="${spec.name}"]`).textContent = value ? 'Replacement key entered.' : 'Blank input keeps the existing key.';
-      if (spec.type === 'font-scale') {
-        event.target.setAttribute('aria-valuetext', `${value}%`);
-        event.target.nextElementSibling.value = `${value}%`;
-        applyPreferences({ fontScale: value });
+      if (['font-scale', 'code-font-size'].includes(spec.type)) {
+        const label = spec.type === 'font-scale' ? `${value}%` : `${value} px`;
+        event.target.setAttribute('aria-valuetext', label);
+        event.target.nextElementSibling.value = label;
+        applyPreferences(entityPatch({ [spec.name]: value }).ui);
       }
     });
     element?.addEventListener('change', event => {
       if (!preference) return;
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
-      dirty(current)[spec.name] = spec.type === 'boolean' ? event.target.checked : spec.type === 'font-scale' ? Number(event.target.value) : event.target.value;
+      dirty(current)[spec.name] = spec.type === 'boolean' ? event.target.checked : ['font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
       applyPreferences(entityPatch(dirty(current)).ui || {});
       void save(current);
     });

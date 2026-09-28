@@ -9,7 +9,7 @@
 .settings-search input { width: 100%; min-width: 0; padding: 0; height: 36px; background: transparent; border: 0; box-shadow: none; outline-offset: 3px; }
 .settings-group { margin-bottom: 16px; }
 .settings-group h2 { font-size: calc(11px * var(--font-scale, 1)); font-weight: 500; color: var(--muted); margin: 0 10px 5px; }
-.settings-nav-row { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 6px 10px; border-radius: 10px; text-decoration: none; color: var(--text); font-size: calc(12px * var(--font-scale, 1)); }
+.settings-nav-row { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 6px 10px; border-radius: 10px; text-decoration: none; color: var(--text); font-size: var(--text-ui); }
 .settings-nav-row .ui-icon { width: 17px; height: 17px; color: var(--muted); flex-shrink: 0; }
 .settings-nav-row:hover, .settings-back:hover { background: var(--highlight); }
 .settings-nav-row.active { background: var(--control-active); box-shadow: inset 0 1px 0 var(--highlight); }
@@ -73,28 +73,41 @@
 .settings-search-result strong { font-size: calc(12px * var(--font-scale, 1)); font-weight: 500; }
 .settings-search-result small { margin-top: 3px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 .settings-highlight { outline: 2px solid var(--accent-border); outline-offset: 6px; border-radius: 8px; }
-.local-avatar { display: inline-grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--control-active); color: var(--muted); }
+.local-avatar { display: inline-grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 9px; background: var(--control-active); color: var(--muted); }
 .local-avatar .ui-icon { width: 17px; height: 17px; }
 .local-profile-button { flex: 0 0 100%; display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 12px; border: 0; border-radius: 10px; color: var(--text); background: transparent; text-align: left; }
-.local-profile-button:hover { background: var(--highlight); }
+.local-profile-button:hover, .local-profile-button[aria-expanded=true] { background: var(--highlight); }
 .local-profile-button > .ui-icon { margin-left: auto; width: 16px; height: 16px; }
 .local-profile-label { font-size: calc(12px * var(--font-scale, 1)); }
-.shell--sidebar-collapsed .local-profile-button { width: 42px; min-height: 42px; justify-content: center; flex: 0 0 auto; }
+.shell--sidebar-collapsed .local-profile-button { width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 11px; justify-content: center; flex: 0 0 auto; }
+.shell--sidebar-collapsed .local-profile-button .local-avatar { width: 32px; height: 32px; }
 .shell--sidebar-collapsed .local-profile-button > .ui-icon, .shell--sidebar-collapsed .local-profile-label { display: none; }
-.profile-menu { position: fixed; inset: auto; margin: 0; width: 274px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; padding: 8px; border: 1px solid var(--line-strong); border-radius: 18px; background: var(--bg-panel); color: var(--text); box-shadow: var(--glass-shadow); }
-.profile-menu-header { display: flex; gap: 10px; align-items: center; padding: 10px 6px 15px; margin-bottom: 5px; border-bottom: 1px solid var(--line); }
-.profile-menu-header small { display: block; color: var(--muted); margin-top: 2px; font-size: calc(11px * var(--font-scale, 1)); }
-.profile-menu button { display: flex; align-items: center; gap: 10px; min-height: 39px; width: 100%; padding: 8px 9px; border: 0; border-radius: 9px; color: var(--text); background: transparent; text-align: left; font: inherit; }
-.profile-menu button:hover, .profile-menu button:focus-visible { background: var(--control-active); }
+.profile-menu { position: fixed; inset: auto; margin: 0; width: 280px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; padding: 6px; border: 1px solid var(--line-strong); border-radius: 16px; background: color-mix(in srgb, var(--bg-panel) 97%, transparent); color: var(--text); box-shadow: var(--popover-shadow); backdrop-filter: blur(32px) saturate(1.08); -webkit-backdrop-filter: blur(32px) saturate(1.08); }
+.profile-menu::before { opacity: .25; }
+.profile-menu-header { display: flex; gap: 10px; align-items: center; padding: 12px 16px 14px; margin: 0 -6px 5px; border-bottom: 1px solid var(--line); font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; }
+.profile-menu-header .local-avatar { width: 34px; height: 34px; margin-left: 0; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--highlight); box-shadow: inset 0 1px 0 var(--highlight); }
+.profile-menu-header .local-avatar .ui-icon { width: 21px; height: 21px; }
+.profile-menu-header small { display: block; color: var(--muted); margin-top: 3px; font-size: calc(11px * var(--font-scale, 1)); font-weight: 400; }
+.profile-menu button { display: flex; align-items: center; gap: 10px; min-height: 32px; width: 100%; margin: 0; padding: 6px 12px; border: 0; border-radius: 7px; color: var(--text); background: transparent; text-align: left; font: calc(13px * var(--font-scale, 1))/1.4 var(--font-ui); }
+.profile-menu button:hover, .profile-menu button:focus-visible { background: var(--highlight); }
 .profile-menu button:disabled { opacity: .45; }
-.profile-menu button .ui-icon { width: 18px; height: 18px; }
+.profile-menu button .ui-icon { width: 17px; height: 17px; color: var(--muted); }
+.profile-menu button[data-profile-route=about] { margin-top: 5px; padding-top: 9px; border-top: 1px solid var(--line); border-radius: 0 0 7px 7px; }
+.settings-code-preview { width: 100%; margin: 6px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--control-bg); color: var(--text); font: var(--code-font-size, 12px)/1.65 var(--font-mono); }
+.settings-code-preview code { font: inherit; }
+@media (prefers-reduced-transparency: reduce) {
+  .profile-menu { background: var(--bg-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
 .local-profile-view { display: flex; align-items: center; flex-direction: column; padding: 24px 0 40px; }
 .local-profile-view .local-avatar { width: 82px; height: 82px; margin-bottom: 22px; }
 .local-profile-view .ui-icon { width: 38px; height: 38px; }
 .local-profile-view h2 { font-size: calc(24px * var(--font-scale, 1)); font-weight: 500; margin: 0 0 8px; }
 .local-profile-view p { margin: 0; color: var(--muted); }
-html[data-desktop=darwin] .settings-sidebar { padding-top: 58px; }
-html[data-desktop=darwin] .settings-sidebar::before { content: ''; position: fixed; top: 0; left: 0; width: 246px; height: 44px; -webkit-app-region: drag; }
+/* Settings hide the app underneath. Retain a separate draggable title strip
+   so neither platform's native controls overlap a settings action. */
+html:is([data-desktop=darwin], [data-desktop=win32]) #settings-root { top: var(--desktop-titlebar-height); }
+html:is([data-desktop=darwin], [data-desktop=win32]) #settings-root::before { content: ''; position: fixed; inset: 0 0 auto; height: var(--desktop-titlebar-height); background: var(--bg); box-shadow: inset 0 -1px var(--line); -webkit-app-region: drag; }
+html:is([data-desktop=darwin], [data-desktop=win32]) .settings-shell { height: calc(100dvh - var(--desktop-titlebar-height)); }
 @media(max-width:760px) {
   .local-profile-button { flex: 0 0 auto; width: 36px; padding: 2px; }
   .local-profile-label, .local-profile-button > .ui-icon { display: none; }

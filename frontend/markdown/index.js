@@ -18,11 +18,40 @@ const aliases = { js: "javascript", jsx: "javascript", ts: "typescript", tsx: "t
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 const escape = md.utils.escapeHtml;
 
-export function renderCodeBlock(content, language = "", label = "") {
+function highlightCode(content, language = "") {
   const name = String(language).trim().split(/\s+/)[0].toLowerCase();
   const supported = aliases[name] || name;
-  const code = content.length <= 80_000 && hljs.getLanguage(supported)
+  return content.length <= 80_000 && hljs.getLanguage(supported)
     ? hljs.highlight(content, { language: supported, ignoreIllegals: true }).value : escape(content);
+}
+
+// Highlight the whole file so multiline tokens retain their grammar context,
+// then balance spans per row to preserve Review's line selection and offsets.
+export function renderCodeLines(content, filePath = "") {
+  const name = String(filePath).split(/[\\/]/).at(-1).toLowerCase();
+  const extension = name.includes(".") ? name.split(".").at(-1) : name;
+  const language = ({ mjs: "javascript", cjs: "javascript", mts: "typescript", cts: "typescript", svg: "xml", vue: "xml", bashrc: "bash", zsh: "bash", zshrc: "bash" })[extension] || extension;
+  const source = String(content).replace(/\r?\n$/, "");
+  const html = highlightCode(source, language);
+  const lines = [], spans = [];
+  let line = "";
+  for (const token of html.split(/(<\/?span\b[^>]*>|\r?\n)/)) {
+    if (/^\r?\n$/.test(token)) {
+      lines.push(line + "</span>".repeat(spans.length));
+      line = spans.join("");
+    } else {
+      line += token;
+      if (token.startsWith("<span")) spans.push(token);
+      else if (token === "</span>") spans.pop();
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
+export function renderCodeBlock(content, language = "", label = "") {
+  const name = String(language).trim().split(/\s+/)[0].toLowerCase();
+  const code = highlightCode(content, language);
   return `<section class="markdown-code"><div class="markdown-code__header"><span>${escape(label || name || "text")}</span><button type="button" class="markdown-code__copy" data-code-copy>Copy code</button></div><pre tabindex="0"><code class="hljs">${code}</code></pre></section>`;
 }
 

@@ -136,6 +136,7 @@ export interface UiPreferences {
   theme: "dark" | "light" | "system";
   animations: boolean;
   fontScale: number;
+  codeFontSize: number;
   language: LanguagePreference;
   outputStyle: OutputStyle;
   mode: SessionMode;

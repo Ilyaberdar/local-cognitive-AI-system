@@ -105,6 +105,7 @@ export interface WorkflowConsoleViewState {
 export interface WorkflowEditorViewState {
   selected: { kind: "node" | "edge"; id: string } | null;
   inspectorOpen: boolean;
+  inspectorWidth?: number;
   mapOpen: boolean;
   consoleNodeId: string;
   followActive: boolean;
@@ -115,6 +116,7 @@ export interface WorkflowEditorViewState {
 }
 
 export interface WorkflowEditorProps {
+  settingsContainer?: HTMLElement | null;
   onReview?: (runId: string, decision: { approved: boolean; approvalId?: string; waitingNodeRunId?: string }) => Promise<void>;
   projects?: Array<{ id: string; name: string; rootPath: string; archivedAt?: string }>;
   onRun?: (workflow: WorkflowDefinition) => Promise<void>;

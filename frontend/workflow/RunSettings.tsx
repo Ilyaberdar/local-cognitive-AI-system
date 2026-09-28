@@ -1,24 +1,61 @@
-import { useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Field } from "./NodeConfigFields";
 import type { WorkflowEditorProps, WorkflowRunOptions } from "./types";
 
-export function RunSettings({ options, projects = [], onUpdate, onChooseFolder, disabled, initiallyOpen, onOpenChange, hasRun }: {
+export function RunSettings({ options, projects = [], onUpdate, onChooseFolder, disabled, initiallyOpen, onOpenChange, hasRun, container }: {
   options: WorkflowRunOptions; projects: WorkflowEditorProps["projects"]; onUpdate: (options: WorkflowRunOptions) => void;
   onChooseFolder?: WorkflowEditorProps["onChooseFolder"];
   hasRun?: boolean; disabled?: boolean; initiallyOpen?: boolean; onOpenChange: (open: boolean) => void;
+  container?: HTMLElement | null;
 }) {
-  const [folderMode, setFolderMode] = useState(options.rootPath !== undefined);
-  const [open, setOpen] = useState(initiallyOpen ?? false);
+  const folderMode = options.rootPath !== undefined;
+  const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  const id = useId();
+  const panelRef = useRef<HTMLElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const position = () => {
+    const panel = panelRef.current;
+    const trigger = triggerRef.current;
+    if (!panel || !trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const top = Math.min(rect.bottom + 10, window.innerHeight - 100);
+    panel.style.top = `${Math.max(12, top)}px`;
+    panel.style.right = `${Math.min(Math.max(12, window.innerWidth - rect.right), Math.max(12, window.innerWidth - 440 - 12))}px`;
+    panel.style.maxHeight = `${window.innerHeight - Math.max(12, top) - 12}px`;
+  };
+  useLayoutEffect(() => { if (initiallyOpen) panelRef.current?.showPopover(); }, []);
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [open]);
   const update = (patch: Partial<WorkflowRunOptions>) => onUpdate({ ...options, ...patch });
-  return <details className="fsm-run-settings" open={open} onToggle={event => { const next = event.currentTarget.open; setOpen(next); onOpenChange(next); }}>
-    <summary><strong>Run settings</strong><span>{options.projectId ? projects.find(item => item.id === options.projectId)?.name ?? "Project unavailable" : folderMode ? options.rootPath || "Choose a folder" : "New run folder"}</span></summary>
+  const control = <>
+    <button ref={triggerRef} type="button" className={`ghost-button workflow-settings-toggle${open ? " is-active" : ""}`}
+      popoverTarget={id} aria-haspopup="dialog" aria-expanded={open} aria-controls={id} aria-label="Workflow settings" title="Workflow settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 3-.6 2.3-2 .9-2.2-.6-2 3.4 1.6 1.7v2.6L2.7 15l2 3.4 2.2-.6 2 .9.6 2.3h4.9l.6-2.3 2-.9 2.2.6 2-3.4-1.6-1.7v-2.6L21.2 9l-2-3.4-2.2.6-2-.9-.6-2.3z" /><circle cx="12" cy="12" r="3" /></svg>
+    </button>
+    <section ref={panelRef} id={id} className="fsm-run-settings" popover="auto" role="dialog" aria-labelledby={`${id}-title`}
+      onBeforeToggle={event => { if (event.newState === "open") position(); }}
+      onToggle={event => { const next = event.newState === "open"; setOpen(next); onOpenChange(next); }}>
+    <header className="fsm-run-settings__header">
+      <div><h2 id={`${id}-title`}>Workflow settings</h2><p>Configure the next run</p></div>
+      <button type="button" className="fsm-run-settings__close" popoverTarget={id} popoverTargetAction="hide" aria-label="Close workflow settings" onClick={() => triggerRef.current?.focus()}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+      </button>
+    </header>
     <fieldset className="fsm-settings-fields" disabled={disabled}>
-      <div className={`fsm-run-settings__fields${folderMode ? " fsm-run-settings__fields--folder" : ""}`}>
+      <div className="fsm-run-settings__fields">
         <div className="fsm-run-settings__workspace">
         <Field label="Workspace"><select value={options.projectId || (folderMode ? "__folder" : "__managed")} onChange={event => {
           const value = event.target.value;
-          setFolderMode(value === "__folder");
+          setError("");
           onUpdate({ ...options, projectId: value.startsWith("__") ? undefined : value, rootPath: value === "__folder" ? "" : undefined });
         }}>
           <option value="__managed">New folder for this run</option><option value="__folder">Choose a folder…</option>
@@ -43,9 +80,10 @@ export function RunSettings({ options, projects = [], onUpdate, onChooseFolder, 
         <Field label="Run input"><textarea rows={2} value={options.description ?? ""} placeholder="Shared instructions available to nodes as {{input.description}}" onChange={event => update({ description: event.target.value })} /></Field>
 
         </div>
-      <p className="fsm-model-hint">{hasRun ? "Settings apply to the next run. " : ""}Save keeps these defaults. Each agent uses its selected model.</p>
-      {error ? <p className="fsm-field-error">{error}</p> : null}
+      <p className="fsm-model-hint fsm-run-settings__footer">{disabled ? "Settings are locked while this run is active. " : hasRun ? "Settings apply to the next run. " : ""}Save keeps these defaults. Each agent uses its selected model.</p>
+      {error ? <p className="fsm-field-error" role="alert">{error}</p> : null}
       </div>
     </fieldset>
-  </details>;
+  </section></>;
+  return container ? createPortal(control, container) : control;
 }

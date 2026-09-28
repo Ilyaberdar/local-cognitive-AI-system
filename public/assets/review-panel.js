@@ -15,6 +15,13 @@ export function selectionMessage(file, selection, comment) {
 }
 
 export function createReviewPanel(host) {
+  const highlightedFiles = new WeakMap();
+  function highlightedLines(file) {
+    if (!highlightedFiles.has(file)) {
+      highlightedFiles.set(file, host.highlightLines?.(file.content, file.path) || linesOf(file.content).map(escape));
+    }
+    return highlightedFiles.get(file);
+  }
   const sessions = new Map();
   let bindings;
   let openSequence = 0;
@@ -37,7 +44,7 @@ export function createReviewPanel(host) {
       <button type="button" role="tab" aria-selected="${!open}" class="right-panel-tab ${!open ? "active" : ""}" data-review-action="setup">Session Setup</button>
       <button type="button" role="tab" aria-selected="${open}" class="right-panel-tab ${open ? "active" : ""}" data-review-action="review">${host.icon("file")} Review</button>
       </div>
-      <button type="button" class="ghost-button panel-expand icon-button" data-review-action="expand" aria-label="${expanded ? "Restore split view" : "Expand panel"}" title="${expanded ? "Restore split view" : "Expand panel"}">${expanded ? "↙" : "↗"}</button>
+      <button type="button" class="ghost-button panel-expand icon-button" data-review-action="expand" aria-label="${expanded ? "Restore split view" : "Expand panel"}" title="${expanded ? "Restore split view" : "Expand panel"}">${host.icon(expanded ? "contract" : "expand")}</button>
       <button class="ghost-button setup-toggle icon-button" type="button" data-action="toggle-session-setup" aria-label="${collapsed ? "Show panel" : "Hide panel"}" aria-expanded="${!collapsed}" title="${collapsed ? "Show panel" : "Hide panel"}">${host.icon(collapsed ? "chevronLeft" : "chevronRight")}</button>
     </div>`;
   }
@@ -46,7 +53,7 @@ export function createReviewPanel(host) {
     if (!isOpen()) return null;
     const view = session();
     const file = activeFile(view);
-    const lines = file ? linesOf(file.content) : [];
+    const lines = file ? highlightedLines(file) : [];
     const diff = file?.change?.afterHash === file?.version ? file?.change?.diff : null;
     const start = Number(diff?.changeStartLine || 1);
     return `<aside class="panel chat-settings review-panel ${host.isCollapsed?.() ? "chat-settings--collapsed" : ""}" aria-label="Review">
@@ -55,7 +62,7 @@ export function createReviewPanel(host) {
       <div class="review-toolbar">
         <span class="review-caption">${diff ? `<span class="diff-summary__add">+${Number(diff.added)}</span> <span class="diff-summary__remove">−${Number(diff.removed)}</span>` : ""}</span>
         <div class="review-toolbar__actions">
-          ${file ? `<button type="button" class="ghost-button" data-review-action="refresh" title="Reload file from disk">↻</button>
+          ${file ? `<button type="button" class="ghost-button" data-review-action="refresh" aria-label="Reload file from disk" title="Reload file from disk">${host.icon("refresh")}</button>
           <button type="button" class="ghost-button" data-review-action="copy" aria-label="Copy file" title="Copy file">${host.icon("copy")}</button>
           <button type="button" class="ghost-button" data-review-action="editor">Open in editor ${host.icon("externalLink")}</button>` : ""}
         </div>
@@ -69,7 +76,7 @@ export function createReviewPanel(host) {
         const number = index + 1;
         const added = diff && number >= start && number < start + diff.added;
         const selected = view.commentOpen && view.selection?.version === file.version && number >= view.selection.startLine && number <= view.selection.endLine;
-        return `<div class="review-line ${added ? "review-line--add" : ""} ${selected ? "review-line--selected" : ""}" data-review-line="${number}"><span class="review-line__number" aria-hidden="true">${number}</span><code>${escape(line)}</code></div>`;
+        return `<div class="review-line ${added ? "review-line--add" : ""} ${selected ? "review-line--selected" : ""}" data-review-line="${number}"><span class="review-line__number" aria-hidden="true">${number}</span><code class="hljs">${line}</code></div>`;
       }).join("")}</div>
       <div class="review-footer">Select text, then press + to ask in chat.</div>` : `<div class="review-empty">Open an edited file with the <strong>Review</strong> button in chat.</div>`}
       <button type="button" class="review-selection-plus" data-review-action="comment" aria-label="Ask about selected text" title="Ask about selected text" hidden>${host.icon("plus")}</button>
@@ -110,6 +117,7 @@ export function createReviewPanel(host) {
       const next = await host.readFile(file.path, id);
       if (id !== host.sessionId() || activeFile(view) !== file) return;
       if (next.version !== file.version) clearSelection(view);
+      highlightedFiles.delete(file);
       Object.assign(file, next, { error: null, change: host.findChange(file.path) });
     } catch (error) { file.error = error.message; }
     if (id === host.sessionId() && activeFile(view) === file) host.changed();

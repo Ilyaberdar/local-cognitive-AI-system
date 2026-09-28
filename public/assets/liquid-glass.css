@@ -9,28 +9,34 @@
 
 :root, html[data-theme="dark"] {
   color-scheme: dark;
-  --font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Match Codex's native UI stack: SF Pro on macOS, Segoe UI on Windows.
+     Both are supplied by the OS, so packaged apps also work offline. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-content: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --text-ui: calc(14px * var(--font-scale, 1));
+  --text-control: calc(13px * var(--font-scale, 1));
+  --text-caption: calc(12px * var(--font-scale, 1));
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --mono-font: var(--font-mono);
   --surface-strong: var(--surface-3);
-  --bg: #181a1d;
-  --bg-elevated: #1c1e21;
-  --bg-soft: #222529;
-  --bg-panel: #202226;
-  --sidebar-bg: rgba(32, 36, 41, .55);
-  --surface: #202226;
-  --surface-1: #202226;
-  --surface-2: #272a2e;
-  --surface-3: #303338;
-  --surface-hover: #34373d;
-  --control-bg: #25282c;
-  --control-active: #383d45;
-  --line: rgba(220, 229, 242, .105);
-  --line-strong: rgba(220, 229, 242, .23);
-  --highlight: rgba(255, 255, 255, .055);
-  --text: #eff0f3;
-  --muted: #a0a4ae;
-  --faint: #747a85;
+  --bg: #111214;
+  --bg-elevated: #141519;
+  --bg-soft: #1b1d21;
+  --bg-panel: #18191d;
+  --sidebar-bg: rgba(22, 25, 29, .64);
+  --surface: #18191d;
+  --surface-1: #18191d;
+  --surface-2: #1e2025;
+  --surface-3: #272a30;
+  --surface-hover: #2c2f35;
+  --control-bg: #141519;
+  --control-active: #2a2d34;
+  --line: rgba(230, 233, 242, .075);
+  --line-strong: rgba(230, 233, 242, .16);
+  --highlight: rgba(255, 255, 255, .035);
+  --text: #ecedef;
+  --muted: #a0a2ab;
+  --faint: #838791;
   --accent: #b4c9eb;
   --accent-text: #e2eaf8;
   --accent-soft: #303946;
@@ -39,16 +45,18 @@
   --success: #8bcca6;
   --danger: #ed9295;
   --warning: #d9b980;
-  --glass-fill: rgba(116, 132, 158, .10);
-  --glass-rim: rgba(235, 242, 255, .28);
-  --glass-shine: rgba(222, 238, 255, .14);
-  --glass-shadow: 0 10px 30px rgba(0, 0, 0, .15), inset 0 1px 0 rgba(255, 255, 255, .13), inset 0 -1px 0 rgba(196, 213, 240, .06);
+  --glass-fill: rgba(101, 114, 139, .085);
+  --glass-rim: rgba(235, 242, 255, .20);
+  --glass-shine: rgba(222, 238, 255, .10);
+  --glass-shadow: 0 10px 30px rgba(0, 0, 0, .20), inset 0 1px 0 rgba(255, 255, 255, .09), inset 0 -1px 0 rgba(196, 213, 240, .035);
+  --popover-bg: rgba(22, 23, 28, .9);
+  --popover-shadow: 0 24px 64px rgba(0, 0, 0, .48), 0 4px 12px rgba(0, 0, 0, .24), inset 0 1px 0 rgba(255, 255, 255, .075);
   --shadow: inset 0 1px 0 var(--highlight), 0 4px 16px rgba(0, 0, 0, .08);
   --radius-lg: 24px;
   --radius-md: 16px;
   --radius-sm: 10px;
   --sidebar-width: 232px;
-  --sidebar-collapsed-width: 72px;
+  --sidebar-collapsed-width: 64px;
   --layout-gap: 16px;
   --panel-padding: 20px;
   --control-height: 34px;
@@ -88,29 +96,31 @@ html[data-theme="light"] {
   --glass-rim: rgba(255, 255, 255, .85);
   --glass-shine: rgba(255, 255, 255, .62);
   --glass-shadow: 0 6px 24px rgba(45, 64, 94, .08), inset 0 1px 0 #fff, inset 0 -1px 0 rgba(70, 94, 126, .10);
+  --popover-bg: rgba(248, 249, 252, .93);
+  --popover-shadow: 0 24px 64px rgba(45, 64, 94, .16), 0 4px 12px rgba(45, 64, 94, .08), inset 0 1px 0 #fff;
   --shadow: inset 0 1px 0 #fff, 0 3px 16px rgba(45, 64, 94, .04);
 }
 
 html, body {
   font-family: var(--font-ui);
-  font-size: calc(13px * var(--font-scale, 1));
+  font-size: var(--text-ui);
+  font-weight: 430;
   line-height: 1.5;
-  font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   background: var(--bg);
 }
-/* Reserve an inset for both the native window buttons and macOS's wider
-   screen-sharing indicator, which can extend to x=86 in the title bar. */
-html[data-desktop="darwin"] { --sidebar-collapsed-width: 104px; }
 html[data-desktop="darwin"], html[data-desktop="darwin"] body { background: transparent; }
 html[data-desktop="darwin"] .shell { background: transparent; }
-html[data-desktop="darwin"] .sidebar { padding-top: 46px; }
 html[data-desktop="darwin"] .sidebar::after { backdrop-filter: none; }
-html[data-desktop="darwin"] .app-topbar { -webkit-app-region: drag; }
-html[data-desktop="darwin"] :is(button, input, select, textarea, a) { -webkit-app-region: no-drag; }
+html:is([data-desktop="darwin"], [data-desktop="win32"]) {
+  --desktop-titlebar-height: env(titlebar-area-height, 60px);
+}
+html[data-desktop="darwin"] { --desktop-titlebar-height: env(titlebar-area-height, 28px); }
+html:is([data-desktop="darwin"], [data-desktop="win32"]) .app-topbar { -webkit-app-region: drag; }
+html:is([data-desktop="darwin"], [data-desktop="win32"]) :is(button, input, select, textarea, a) { -webkit-app-region: no-drag; }
 html[data-desktop="darwin"] .sidebar-brand { -webkit-app-region: drag; }
 [hidden] { display: none !important; }
-button, input, textarea, select { font-family: var(--font-ui); font-size: calc(12px * var(--font-scale, 1)); }
+button, input, textarea, select { font-family: var(--font-ui); font-size: var(--text-control); }
 /* One centered caret and a reserved trailing inset for every dropdown. */
 :root select:not([multiple]):not([size]) {
   appearance: none;
@@ -124,7 +134,7 @@ button, input, textarea, select { font-family: var(--font-ui); font-size: calc(1
 html[data-theme=light] select:not([multiple]):not([size]) {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23626b7b' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-button { -webkit-tap-highlight-color: transparent; }
+button { font-weight: 500; -webkit-tap-highlight-color: transparent; }
 button:disabled { cursor: not-allowed; opacity: .45; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
   /* Keep keyboard focus inside the control, without a detached outer ring. */
@@ -164,7 +174,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .shell { height: 100dvh; background: var(--bg); transition: none; }
 .sidebar {
   flex: 0 0 auto; position: relative; height: 100dvh;
-  width: var(--sidebar-width); min-width: 72px; max-width: 50vw;
+  width: var(--sidebar-width); min-width: var(--sidebar-collapsed-width); max-width: 50vw;
   padding: 18px 12px 16px; gap: 18px; overflow: hidden;
   background: var(--sidebar-bg); border: 0; border-right: 1px solid var(--line);
   border-radius: 0; transition: width 420ms var(--motion), padding 420ms var(--motion);
@@ -176,21 +186,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   -webkit-backdrop-filter: blur(30px) saturate(1.3);
 }
 .sidebar-brand { display: flex; align-items: center; gap: 10px; height: 28px; flex: 0 0 auto; padding: 0 2px; }
-.brand-name { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; font-size: calc(18px * var(--font-scale, 1)); font-weight: 600; line-height: 1.25; letter-spacing: -.4px; }
+.brand-name { font-family: var(--font-ui); font-size: calc(18px * var(--font-scale, 1)); font-weight: 600; line-height: 1.25; letter-spacing: -.4px; }
 .sidebar-toggle, .shell--sidebar-collapsed .sidebar-toggle { position: static; margin-left: auto; width: 28px; height: 28px; min-width: 28px; border: 0; border-radius: 8px; background: transparent; }
-.new-task-button {
-  display: flex; justify-content: center; align-items: center; gap: 10px;
-  width: 100%; min-height: 42px; flex: 0 0 auto; padding: 9px 12px;
-  border: 1px solid var(--glass-rim); border-radius: 17px;
-  background: var(--glass-fill); box-shadow: var(--glass-shadow);
-  color: var(--text); font-size: calc(12px * var(--font-scale, 1)); font-weight: 550;
-  transition: transform 280ms var(--motion), background 200ms;
-}
-.new-task-button:hover { background: var(--control-active); }
-.new-task-button:active { transform: scale(.975); }
 .sidebar :is([data-action="new-project"], [data-action="new-session"]) .ui-icon { width: 12px; height: 12px; }
 .nav { gap: 6px; margin: 0; flex: 0 0 auto; }
-.nav-button { position: relative; min-height: 44px; padding: 7px 10px; border: 1px solid transparent; border-radius: 22px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); font-weight: 480; box-shadow: none; transition: color 240ms ease, background 240ms ease, border-color 240ms ease, box-shadow 240ms ease; }
+.nav-button { position: relative; min-height: 40px; padding: 6px 10px; border: 1px solid transparent; border-radius: 11px; color: var(--muted); font-size: var(--text-ui); font-weight: 500; box-shadow: none; transition: color 240ms ease, background 240ms ease, border-color 240ms ease, box-shadow 240ms ease; }
 .nav-button::before { opacity: 0; transition: opacity 220ms; }
 .nav-button:hover { color: var(--text); background: var(--highlight); border-color: transparent; }
 .nav-button.active { color: var(--text); background: var(--glass-fill); border-color: var(--glass-rim); box-shadow: var(--glass-shadow); }
@@ -215,13 +215,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @property --rim-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes rim-light { to { --rim-angle: 360deg; } }
 .sidebar-section { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line); }
-.sidebar-header { font-size: calc(11px * var(--font-scale, 1)); text-transform: none; letter-spacing: 0; padding: 0 8px; height: 24px; }
+.sidebar-header { font-size: var(--text-caption); text-transform: none; letter-spacing: 0; padding: 0 8px; height: 24px; }
 .sidebar-header .icon-button { width: 24px; min-width: 24px; height: 24px; }
 .session-list { display: flex; flex-direction: column; gap: 3px; max-height: none; overflow: auto; padding: 0; }
 .session-row { align-items: center; gap: 0; position: relative; }
 .session-item { padding: 10px 26px 10px 10px; border: 0; border-radius: 12px; min-height: 40px; }
 .session-item:hover, .session-item.active { background: var(--highlight); border-color: transparent; box-shadow: none; }
-.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--font-scale, 1)); color: var(--text); }
+.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); color: var(--text); }
 .session-meta { margin-top: 3px; font-size: calc(10px * var(--font-scale, 1)); color: var(--faint); }
 .session-delete { position: absolute; right: 3px; width: 23px; height: 23px; border-radius: 50%; display: grid; place-items: center; opacity: 0; }
 .session-delete .ui-icon { width: 13px; height: 13px; }
@@ -230,34 +230,54 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .runtime-disclosure { font-size: calc(10px * var(--font-scale, 1)); color: var(--muted); }
 .runtime-disclosure summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; }
 .runtime-disclosure > div { padding: 8px 0; max-width: 170px; line-height: 1.6; }
-.theme-switch { display: inline-flex; flex-shrink: 0; border: 1px solid var(--line-strong); border-radius: 20px; padding: 3px; background: var(--glass-fill); }
-.theme-switch .icon-button { width: 26px; height: 26px; min-width: 26px; }
+.theme-switch { display: inline-flex; flex-shrink: 0; border: 1px solid var(--line-strong); border-radius: 11px; padding: 3px; background: var(--glass-fill); }
+.theme-switch .icon-button { width: 26px; height: 26px; min-width: 26px; border-radius: 7px; }
 .theme-switch .ui-icon { width: 15px; height: 15px; }
 .theme-switch .active { color: var(--text); background: var(--highlight); box-shadow: inset 0 1px 0 var(--glass-rim); }
 .sidebar-resize-handle { right: 0; width: 4px; }
 .shell--sidebar-collapsed { --sidebar-width: var(--sidebar-collapsed-width) !important; }
-.shell--sidebar-collapsed .sidebar { width: var(--sidebar-collapsed-width); padding: 18px 9px 16px; align-items: center; }
+.shell--sidebar-collapsed .sidebar { width: var(--sidebar-collapsed-width); padding: 14px 11px 14px 12px; align-items: center; gap: 14px; }
 .shell--sidebar-collapsed .sidebar-brand { justify-content: center; width: 100%; }
-.shell--sidebar-collapsed :is(.brand-name, .new-task-button > span, .sidebar-section) { display: none; }
+.shell--sidebar-collapsed :is(.brand-name, .sidebar-section) { display: none; }
 .shell--sidebar-collapsed .sidebar-toggle { margin: 0; }
-.shell--sidebar-collapsed .new-task-button { min-height: 42px; width: 44px; border-radius: 50%; padding: 0; }
-.shell--sidebar-collapsed .nav { width: 52px; gap: 12px; }
-.shell--sidebar-collapsed .nav-button { width: 48px; height: 48px; padding: 0; border-radius: 50%; }
+.shell--sidebar-collapsed .nav { width: 40px; gap: 8px; }
+.shell--sidebar-collapsed .nav-button { width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 11px; }
 .shell--sidebar-collapsed .nav-label { display: flex; justify-content: center; }
-.shell--sidebar-collapsed .sidebar-footer { opacity: 1; pointer-events: auto; transform: none; flex-direction: column; margin-top: auto; }
+.shell--sidebar-collapsed .sidebar-footer { opacity: 1; pointer-events: auto; transform: none; flex-direction: column; flex-wrap: nowrap; margin-top: auto; width: 40px; gap: 14px; }
 .shell--sidebar-collapsed .runtime-disclosure { display: none; }
-.shell--sidebar-collapsed .theme-switch { flex-direction: column; }
+.shell--sidebar-collapsed .theme-switch { flex-direction: column; width: 40px; gap: 2px; }
+.shell--sidebar-collapsed .theme-switch .icon-button { width: 32px; height: 32px; }
 
 /* The content layer is deliberately opaque, including behind the inspector. */
 .main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; background: var(--bg); padding: 0; }
 .app-topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; height: 60px; padding: 0 26px; flex: 0 0 auto; border-bottom: 1px solid var(--line); }
 .app-topbar__title, .app-topbar__actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .mobile-sessions-button { display: none; }
-.app-topbar h1 { margin: 0; font-size: calc(13px * var(--font-scale, 1)); font-weight: 560; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-topbar h1 { margin: 0; font-size: var(--text-ui); font-weight: 560; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-mark { color: var(--faint); }
 .topbar-mark .ui-icon { width: 16px; height: 16px; }
 .topbar-mode { font-size: calc(11px * var(--font-scale, 1)); color: var(--muted); padding-right: 12px; border-right: 1px solid var(--line); }
 .local-indicator { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); }
+/* The native buttons own a stable title-bar inset, independent of rail width.
+   Leave room through x=86 for macOS's screen-sharing indicator as well. */
+.shell--native-titlebar { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: var(--desktop-titlebar-height) minmax(0, 1fr); }
+.shell--native-titlebar > .sidebar, .shell--native-titlebar > .main { height: 100%; min-height: 0; }
+.shell--native-titlebar > .sidebar { padding-top: 12px; }
+.app-topbar.app-topbar--native { grid-column: 1 / -1; gap: 26px; height: var(--desktop-titlebar-height); min-height: var(--desktop-titlebar-height); padding-left: 0; background: var(--sidebar-bg); border-bottom: 0; box-shadow: inset 0 -1px var(--line); }
+.app-topbar--native .app-topbar__title { flex: 1; }
+.app-topbar--native h1 { line-height: 1.2; }
+.window-navigation { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; width: var(--sidebar-width); min-width: 64px; max-width: 50vw; height: 100%; padding: 0 16px; overflow: hidden; transition: width 420ms var(--motion); }
+html[data-desktop="darwin"] .window-navigation { min-width: 132px; padding-left: max(88px, calc(env(titlebar-area-x, 76px) + 12px)); }
+/* Native Windows caption controls own the trailing area. Use the real OS
+   geometry for DPI, maximize/restore and page zoom, with a preview fallback. */
+html[data-desktop="win32"] .app-topbar--native {
+  padding-left: env(titlebar-area-x, 0px);
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)) + 16px);
+  background: var(--bg);
+}
+.window-navigation .sidebar-toggle, .shell--sidebar-collapsed .window-navigation .sidebar-toggle { width: 32px; height: 32px; min-width: 32px; margin: 0; }
+html[data-desktop="darwin"] .window-navigation .sidebar-toggle { width: 24px; height: 24px; min-width: 24px; }
+.window-navigation .brand-name { font-size: var(--text-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .content-shell { flex: 1; min-height: 0; height: auto; padding: 16px; background: var(--bg); }
 .route.active { padding: 0; }
 .view-enter .route.active { animation: surface-enter 380ms var(--motion) both; }
@@ -286,6 +306,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .message-footer { font-size: calc(10px * var(--font-scale, 1)); color: var(--faint); }
 .message.pending { animation: none; }
 .message-content { line-height: 1.75; }
+/* Keep conversation prose on its existing bundled font; controls use the UI stack. */
+.message.user .message-content, .message-markdown {
+  font-family: var(--font-content);
+  font-weight: 400;
+  font-feature-settings: "cv11", "ss01";
+}
+.markdown-code__header { font-family: var(--font-ui); font-size: var(--text-caption); font-feature-settings: normal; }
+.markdown-code__copy { font-size: var(--text-caption); }
 .message-copy-button { border: 0; background: transparent; color: var(--faint); }
 .composer { flex: 0 0 auto; margin: 0 8px 8px; padding: 16px 16px 12px; border: 1px solid var(--glass-rim); border-radius: 26px; background: var(--glass-fill); box-shadow: var(--glass-shadow); overflow: visible; }
 .composer::before { backdrop-filter: url("#liquid-lens") blur(16px) saturate(1.15); -webkit-backdrop-filter: blur(16px) saturate(1.15); }
@@ -308,32 +336,35 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .composer .send-button:hover { transform: translateY(-2px); background: var(--text); }
 .composer .send-button:active { transform: scale(.93); }
 .scroll-bottom-button { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--glass-rim); background: var(--surface-2); color: var(--text); box-shadow: var(--glass-shadow); bottom: 160px; }
-.chat-settings { width: 100%; min-width: 0; height: 100%; border: 1px solid var(--line); background: var(--bg-panel); border-radius: 24px; padding: 20px 16px 0; box-shadow: inset 0 1px 0 var(--highlight); }
+.chat-settings { width: 100%; min-width: 0; height: 100%; border: 1px solid var(--line); background: var(--bg-panel); border-radius: 18px; padding: 20px 16px 0; box-shadow: inset 0 1px 0 var(--highlight), 0 8px 28px rgb(0 0 0 / .08); }
 .chat-settings__header { display: flex; align-items: center; justify-content: flex-end; min-height: 32px; margin: 0; padding: 0 0 16px; gap: 12px; }
 .chat-settings__title { display: grid; flex: 1; align-items: start; justify-content: start; gap: 4px; min-width: 0; }
 .chat-settings__title h3 { font-size: calc(15px * var(--font-scale, 1)); font-weight: 550; line-height: 1.3; margin: 0; white-space: normal; }
 .chat-settings__title .subtle { font-size: calc(10px * var(--font-scale, 1)); line-height: 1.4; }
 .chat-settings .empty { padding: 10px 0; border: 0; border-radius: 0; background: transparent; text-align: left; font-size: calc(11px * var(--font-scale, 1)); }
 .chat-settings .setup-toggle { position: static; display: inline-flex; flex: 0 0 32px; order: 2; width: 32px; height: 32px; min-height: 32px; margin: 0 0 0 auto; padding: 0; border: 1px solid var(--line); border-radius: 10px; }
-.chat-settings__body { gap: 22px; scrollbar-width: none; overflow-anchor: none; }
+.chat-settings__body { gap: 20px; scrollbar-width: none; overflow-anchor: none; }
 .chat-settings__body::-webkit-scrollbar { display: none; }
-.chat-type-bar { padding: 3px; border: 1px solid var(--line); border-radius: 13px; background: var(--highlight); gap: 2px; }
-.chat-type-button { padding: 8px 5px; min-width: 0; border-radius: 10px; border: 1px solid transparent; color: var(--muted); background: transparent; font-size: calc(10px * var(--font-scale, 1)); text-transform: none; }
-.chat-type-button.active { background: var(--control-active); color: var(--text); border-color: var(--line-strong); box-shadow: inset 0 1px 0 var(--highlight); }
+.chat-type-bar { padding: 3px; border: 0; border-radius: 9px; background: var(--control-bg); gap: 3px; }
+.chat-type-button { padding: 7px 5px; min-width: 0; border-radius: 6px; border: 1px solid transparent; color: var(--muted); background: transparent; font-size: var(--text-control); text-transform: none; }
+.chat-type-button:hover { color: var(--text); background: var(--highlight); border-color: transparent; }
+.chat-type-button.active { background: var(--control-active); color: var(--text); border-color: var(--line); box-shadow: 0 1px 3px rgb(0 0 0 / .12), inset 0 1px 0 var(--highlight); }
 .chat-settings__grid, .chat-settings__grid.compact { gap: 12px; }
+.chat-settings__grid > .session-title-field, .code-agent-model-field, .hypothesis-agent-model-field { grid-column: 1 / -1; }
 /* Helper text must not stretch the label and control in the adjacent field. */
 .chat-settings .field { align-content: start; }
-.chat-settings .field label { font-size: calc(10px * var(--font-scale, 1)); color: var(--muted); letter-spacing: 0; text-transform: none; }
-.chat-settings .field input, .chat-settings .field select { min-height: 34px; padding: 7px 9px; font-size: calc(11px * var(--font-scale, 1)); }
+.chat-settings .field label { font-size: var(--text-caption); color: var(--muted); letter-spacing: 0; text-transform: none; }
+.chat-settings .field input, .chat-settings .field select { min-height: 36px; padding: 8px 10px; border-radius: 8px; font-size: calc(12px * var(--font-scale, 1)); }
 .setup-section { padding-top: 18px; margin-top: 0; border-top: 1px solid var(--line); }
-.section-label { font-size: calc(11px * var(--font-scale, 1)); font-weight: 520; text-transform: none; letter-spacing: 0; color: var(--text); margin-bottom: 12px; }
+.section-label { font-size: calc(12px * var(--font-scale, 1)); font-weight: 550; text-transform: none; letter-spacing: 0; color: var(--text); margin-bottom: 10px; }
 .code-agents { gap: 12px; margin-top: 12px; min-width: 0; }
-.code-agent-card, .hypothesis-agent-card { min-width: 0; gap: 12px; align-items: start; padding: 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--highlight); box-shadow: none; }
+.code-agent-card, .hypothesis-agent-card { min-width: 0; gap: 12px; align-items: start; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; box-shadow: none; }
 .code-agent-card .field, .hypothesis-agent-card .field { min-width: 0; gap: 6px; }
 .code-agent-card .code-agent-delete { grid-column: 1 / -1; justify-self: end; }
 .code-agent-delete > label { display: none; }
+.code-agent-delete .ghost-button { min-height: 26px; padding: 3px 8px; border-color: transparent; border-radius: 6px; font-size: calc(11px * var(--font-scale, 1)); }
 .setup-section > .row-between > div { min-width: 0; }
-.setup-section > .row-between > button { flex: 0 0 34px; width: 34px; min-width: 34px; height: 34px; padding: 0; border-radius: 50%; }
+.setup-section > .row-between > button { flex: 0 0 28px; width: 28px; min-width: 28px; min-height: 28px; height: 28px; padding: 0; border-color: transparent; border-radius: 7px; }
 .right-panel-tabs { margin: auto -16px 0; padding: 12px; border-top: 1px solid var(--line); background: transparent; gap: 5px; }
 .right-panel-tab { padding: 7px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; font-size: calc(11px * var(--font-scale, 1)); }
 .right-panel-tab.active { background: var(--control-active); color: var(--text); border-color: var(--line); }
@@ -358,18 +389,18 @@ summary::-webkit-details-marker { display: none; }
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   min-height: 34px; padding: 7px 12px; border-radius: 11px;
   border: 1px solid var(--line); background: var(--control-bg); color: var(--text);
-  font-size: calc(12px * var(--font-scale, 1)); font-weight: 450; line-height: 1.4;
+  font-size: var(--text-control); font-weight: 500; line-height: 1.4;
   flex: 0 0 auto; white-space: nowrap;
   transition: color 180ms, background 180ms, border-color 180ms, transform 300ms var(--motion);
 }
 .action-button .ui-icon, .ghost-button .ui-icon, .primary-button .ui-icon { width: 14px; height: 14px; }
 .ghost-button { color: var(--muted); background: transparent; }
-.primary-button { background: var(--text); color: var(--bg); border-color: transparent; box-shadow: inset 0 1px 0 var(--highlight); font-weight: 550; }
+.primary-button { background: var(--text); color: var(--bg); border-color: transparent; box-shadow: inset 0 1px 0 var(--highlight); font-weight: 500; }
 .primary-button:hover { background: var(--text); color: var(--bg); opacity: .9; border-color: transparent; }
 /* Content controls borrow the original navigation glass material. Scope every
-   state to .main so the sidebar, including New task, retains its own styling.
+   state to .main so the sidebar retains its own styling.
    A static highlight keeps idle controls free of continuous repainting. */
-html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button)) {
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button)) {
   background: radial-gradient(ellipse at 20% 0%, var(--glass-shine), transparent 68%), var(--glass-fill);
   color: var(--text); border: 1px solid var(--glass-rim); border-radius: 999px;
   box-shadow: var(--glass-shadow);
@@ -377,11 +408,11 @@ html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.
 html[data-theme="light"] .main :is(.chat-type-button, .orchestration-tab, .right-panel-tab):not(.active):not(:hover):not(:active) {
   background: transparent; color: var(--muted); border-color: transparent; box-shadow: none;
 }
-html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button)):is(:hover, :active):not(:disabled) {
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button)):is(:hover, :active):not(:disabled) {
   background: radial-gradient(ellipse at 20% 0%, var(--glass-shine), transparent 68%), var(--glass-fill);
   color: var(--text); border-color: var(--glass-rim); opacity: 1;
 }
-html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button)):focus-visible { box-shadow: none; }
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button)):focus-visible { box-shadow: none; }
 html[data-theme="light"] .main button:disabled:not(.workflow-log-row__source) { opacity: .45; }
 html[data-theme="light"] .main :is(.danger-button, .task-delete-button, .fsm-inspector button.danger):hover { color: var(--danger); }
 .ghost-button:hover, .action-button:hover, .chip-button:hover { background: var(--surface-hover); border-color: var(--line-strong); color: var(--text); transform: translateY(-1px); }
@@ -393,7 +424,7 @@ html[data-theme="light"] .main :is(.danger-button, .task-delete-button, .fsm-ins
 .field input, .field select, .field textarea {
   width: 100%; min-height: 36px; padding: 8px 10px;
   border: 1px solid var(--line); border-radius: 10px; background-color: var(--control-bg);
-  color: var(--text); box-shadow: none; font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5;
+  color: var(--text); box-shadow: none; font-size: var(--text-control); line-height: 1.5;
   transition: border-color 180ms, background 180ms;
 }
 .field select { padding-right: 26px; }
@@ -445,7 +476,7 @@ code, pre, .mono { font-family: var(--font-mono); }
 .orchestration-shell { display: flex; flex-direction: column; height: 100%; gap: 20px; }
 .orchestration-tabs { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 0; border: 0; background: transparent; border-radius: 0; box-shadow: none; flex: 0 0 auto; }
 .segmented-control { display: inline-flex; flex: 0 0 auto; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 13px; background: var(--highlight); }
-.orchestration-tab { display: inline-flex; align-items: center; gap: 7px; border: 1px solid transparent; border-radius: 10px; padding: 7px 12px; font-size: calc(11px * var(--font-scale, 1)); font-weight: 480; color: var(--muted); background: transparent; box-shadow: none; }
+.orchestration-tab { display: inline-flex; align-items: center; gap: 7px; border: 1px solid transparent; border-radius: 10px; padding: 7px 12px; font-size: var(--text-control); font-weight: 500; color: var(--muted); background: transparent; box-shadow: none; }
 .orchestration-tab .ui-icon { width: 14px; height: 14px; }
 .orchestration-tab:hover, .orchestration-tab.active { color: var(--text); border-color: var(--line-strong); background: var(--control-active); box-shadow: inset 0 1px 0 var(--highlight); }
 .orchestration-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 0; }
@@ -522,7 +553,7 @@ code, pre, .mono { font-family: var(--font-mono); }
 .workflow-view__header .subtle { display: none; }
 .workflow-side-panel { height: 100%; min-height: 0; padding: 16px; background: var(--bg-panel); border-radius: 20px; }
 .workflow-side-content { gap: var(--layout-gap); padding-top: 0; }
-.workflow-view__header .task-actions > button { min-height: var(--control-height); padding: 7px 12px; }
+.workflow-view__header .task-actions > button { min-height: var(--control-height); padding: 7px 12px; font-size: var(--text-control); }
 .workflow-side-content h2 { font-size: calc(14px * var(--font-scale, 1)); }
 .workflow-side-content .subtle { font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; }
 .workflow-card { padding: 13px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 15px; box-shadow: none; }
@@ -532,13 +563,13 @@ code, pre, .mono { font-family: var(--font-mono); }
 .node-run-card { padding: 12px; font-size: calc(11px * var(--font-scale, 1)); }
 .fsm-editor { gap: 12px; font-family: var(--font-ui); container: workflow-editor / inline-size; }
 .fsm-toolbar { padding: 10px; min-height: 48px; background: var(--surface-1); border: 1px solid var(--line); border-radius: 15px; gap: 10px; flex-wrap: wrap; }
-.fsm-toolbar strong { font-size: calc(11px * var(--font-scale, 1)); font-weight: 550; }
+.fsm-toolbar strong { font-size: var(--text-control); font-weight: 550; }
 .fsm-toolbar span { font-size: calc(10px * var(--font-scale, 1)); }
-.fsm-toolbar button, .fsm-inspector button { padding: 6px 9px; min-height: 29px; border-radius: 9px; font-size: calc(10px * var(--font-scale, 1)); background: var(--highlight); border-color: var(--line); transition: background 180ms, transform 220ms var(--motion); }
+.fsm-toolbar button, .fsm-inspector button { padding: 6px 9px; min-height: 29px; border-radius: 9px; font-size: var(--text-control); background: var(--highlight); border-color: var(--line); transition: background 180ms, transform 220ms var(--motion); }
 .fsm-toolbar button:hover { transform: translateY(-1px); }
 .fsm-toolbar button[aria-pressed="true"] { color: var(--text); background: var(--control-active); }
 .fsm-add-menu { position: relative; }
-.fsm-add-menu > summary { display: flex; align-items: center; gap: 5px; padding: 6px 9px; min-height: 29px; border: 1px solid var(--line-strong); border-radius: 9px; list-style: none; cursor: pointer; font-size: calc(10px * var(--font-scale, 1)); background: var(--control-active); }
+.fsm-add-menu > summary { display: flex; align-items: center; gap: 5px; padding: 6px 9px; min-height: 29px; border: 1px solid var(--line-strong); border-radius: 9px; list-style: none; cursor: pointer; font-size: var(--text-control); background: var(--control-active); }
 .fsm-add-menu svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
 .fsm-add-menu__items { position: absolute; top: calc(100% + 7px); right: 0; width: 170px; display: grid; gap: 3px; padding: 7px; z-index: 20; border: 1px solid var(--glass-rim); border-radius: 14px; background: var(--surface-2); box-shadow: var(--glass-shadow); }
 .fsm-add-menu__items button { text-align: left; padding: 8px 10px; border: 0; background: transparent; }
@@ -551,7 +582,7 @@ html[data-theme="light"] .main .fsm-add-menu__items button:is(:hover, :active):n
   background: var(--surface-hover); border: 0; box-shadow: none; transform: none;
 }
 .fsm-add-menu[open] .fsm-add-menu__items { animation: surface-enter 180ms var(--motion); }
-.fsm-workspace { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 0; border-radius: 22px; border: 1px solid var(--line); background: var(--bg); }
+.fsm-workspace { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 8px var(--inspector-width, 320px); gap: 0; border-radius: 16px; border: 1px solid var(--line); background: var(--bg); }
 .fsm-editor--inspector-hidden .fsm-workspace { grid-template-columns: minmax(0, 1fr); }
 .fsm-canvas .react-flow { background: var(--bg); }
 .fsm-canvas .react-flow__minimap { width: 140px; height: 96px; }
@@ -575,16 +606,34 @@ html[data-theme="light"] .main .fsm-add-menu__items button:is(:hover, :active):n
 .fsm-node__meta { margin-top: 9px; padding: 5px 7px; border-radius: 7px; background: var(--bg); font-family: var(--font-ui); font-size: calc(9px * var(--font-scale, 1)); }
 .fsm-node .react-flow__handle { width: 8px; height: 8px; border: 2px solid var(--bg); background: var(--node-color); }
 .fsm-edge-label { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 3px 6px; color: var(--muted); font-family: var(--font-ui); font-size: calc(9px * var(--font-scale, 1)); }
-.fsm-inspector { padding: 16px; background: var(--bg-panel); }
+.fsm-inspector { padding: 0 18px 18px; background: linear-gradient(145deg, var(--highlight), transparent 38%), var(--bg-panel); scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.fsm-inspector[hidden] { display: none; }
+.fsm-inspector-resize { position: relative; cursor: col-resize; touch-action: none; background: var(--bg-panel); border-left: 1px solid var(--line); outline: none; }
+.fsm-inspector-resize::after { content: ""; position: absolute; width: 2px; height: 34px; left: 2px; top: calc(50% - 17px); border-radius: 2px; background: var(--line-strong); }
+.fsm-inspector-resize:is(:hover, :focus-visible)::after, .fsm-workspace[data-resizing] .fsm-inspector-resize::after { background: var(--accent); }
+.fsm-workspace[data-resizing] { cursor: col-resize; user-select: none; }
+.fsm-workspace[data-resizing] .fsm-canvas { pointer-events: none; }
 @container workflow-editor (max-width: 760px) {
   .fsm-workspace { grid-template-columns: minmax(0, 1fr); }
-  .fsm-inspector { position: absolute; inset: 0 0 0 auto; width: min(280px, 90%); z-index: 8; border-left: 1px solid var(--line-strong); overflow: auto; box-shadow: -12px 0 32px rgba(0, 0, 0, .12); }
+  .fsm-inspector { position: absolute; inset: 0 0 0 auto; width: min(var(--inspector-width, 320px), calc(100% - 24px)); z-index: 8; overflow: auto; box-shadow: -12px 0 32px rgba(0, 0, 0, .2); }
+  .fsm-inspector-resize { position: absolute; inset: 0 auto 0 auto; right: min(var(--inspector-width, 320px), calc(100% - 24px)); width: 8px; z-index: 9; }
 }
-.fsm-inspector__header { padding-bottom: 14px; }
-.fsm-inspector__header strong { font-size: calc(12px * var(--font-scale, 1)); font-weight: 550; }
+.fsm-inspector__header { position: sticky; top: 0; z-index: 2; margin: 0 -18px; padding: 16px 18px; background: var(--bg-panel); border-bottom: 1px solid var(--line); }
+.fsm-inspector__header strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; white-space: normal; overflow-wrap: anywhere; }
+.fsm-inspector__header span { font-size: calc(10px * var(--font-scale, 1)); }
+.fsm-inspector__header .fsm-inspector__actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.fsm-inspector .fsm-inspector__close { display: grid; place-items: center; width: 26px; height: 26px; min-height: 26px; padding: 0; border: 0; background: transparent; border-radius: 6px; color: var(--muted); }
+.fsm-inspector__close svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+.fsm-inspector .fsm-field-list { gap: 14px; padding-top: 18px; }
+.fsm-inspector .fsm-field { gap: 6px; }
+.fsm-inspector .fsm-field > span { font-size: var(--text-caption); }
+.fsm-inspector .fsm-field :is(input, select, textarea) { padding: 8px 10px; font-size: var(--text-control); border-radius: 7px; line-height: 1.5; }
+.fsm-inspector .fsm-field textarea { min-height: 100px; font-family: var(--font-ui); }
+.fsm-inspector .fsm-field textarea[spellcheck=false] { font-family: var(--font-mono); }
+.fsm-inspector .fsm-model-hint { line-height: 1.6; }
 .fsm-field-list { gap: 13px; padding-top: 16px; }
 .fsm-field > span { font-size: calc(10px * var(--font-scale, 1)); text-transform: none; color: var(--muted); }
-.fsm-field input, .fsm-field select, .fsm-field textarea { min-height: 34px; border-radius: 9px; border-color: var(--line); background: var(--control-bg); color: var(--text); font-family: var(--font-ui); font-size: calc(11px * var(--font-scale, 1)); }
+.fsm-field input, .fsm-field select, .fsm-field textarea { min-height: 34px; border-radius: 9px; border-color: var(--line); background: var(--control-bg); color: var(--text); font-family: var(--font-ui); font-size: var(--text-control); }
 .fsm-field textarea { font-family: var(--font-mono); }
 .fsm-output-contract { border-color: var(--line); border-radius: 10px; background: var(--highlight); padding: 10px; }
 .fsm-output-contract span { text-transform: none; }
@@ -677,10 +726,14 @@ html[data-theme="light"] .main .fsm-add-menu__items button:is(:hover, :active):n
 }
 @media (max-width: 980px) {
   .sidebar { width: 180px; }
+  .window-navigation { width: 180px; }
+  .window-navigation .brand-name { display: none; }
+  .shell--sidebar-collapsed .window-navigation { width: var(--sidebar-collapsed-width); }
   .brand-name { font-size: calc(16px * var(--font-scale, 1)); }
   .nav-text { font-size: calc(11px * var(--font-scale, 1)); }
   .content-shell { padding: 12px; }
   .app-topbar { padding: 0 20px; }
+  .app-topbar--native { padding-left: 0; }
   .chat-layout { grid-template-columns: minmax(0, 1fr) 260px; }
   .chat-settings { padding: 16px 12px 0; }
   .chat-settings--collapsed { width: 44px; padding: 6px; }
@@ -696,13 +749,14 @@ html[data-theme="light"] .main .fsm-add-menu__items button:is(:hover, :active):n
     justify-content: center; align-items: center; padding: 6px 10px; gap: 8px;
     border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; z-index: 20;
   }
-  .sidebar-brand, .new-task-button, .sidebar-section, .sidebar-resize-handle, .runtime-disclosure { display: none; }
+  .sidebar-brand, .sidebar-section, .sidebar-resize-handle, .runtime-disclosure { display: none; }
   .nav, .shell--sidebar-collapsed .nav { display: flex; width: auto; gap: 4px; }
-  .nav-button, .shell--sidebar-collapsed .nav-button { padding: 0; min-height: 40px; height: 40px; width: 40px; border-radius: 50%; }
+  .nav-button, .shell--sidebar-collapsed .nav-button { padding: 0; min-height: 40px; height: 40px; width: 40px; border-radius: 11px; }
   .nav-label { justify-content: center; gap: 0; }
   .nav-text { display: none; }
-  .sidebar-footer, .shell--sidebar-collapsed .sidebar-footer { margin: 0 0 0 auto; padding: 0; flex-direction: row; transform: none; opacity: 1; pointer-events: auto; }
-  .theme-switch, .shell--sidebar-collapsed .theme-switch { flex-direction: row; }
+  .sidebar-footer, .shell--sidebar-collapsed .sidebar-footer { margin: 0 0 0 auto; padding: 0; width: auto; gap: 10px; flex-direction: row; transform: none; opacity: 1; pointer-events: auto; }
+  .theme-switch, .shell--sidebar-collapsed .theme-switch { flex-direction: row; width: auto; gap: 0; }
+  .shell--sidebar-collapsed .theme-switch .icon-button { width: 26px; height: 26px; }
   .main { height: calc(100dvh - 62px); }
   .app-topbar { height: 48px; min-height: 48px; padding: 0 16px; }
   .app-topbar h1 { font-size: calc(12px * var(--font-scale, 1)); }

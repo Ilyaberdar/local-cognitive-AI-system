@@ -39,7 +39,7 @@ html[data-theme="light"] [data-project-color="blue"] { --project-color: #4b78af;
 html[data-theme="light"] [data-project-color="purple"] { --project-color: #8664b1; }
 .project-folder .ui-icon { width: 19px; height: 19px; }
 .project-folder[aria-expanded=false] { opacity: .65; }
-.project-title { min-width: 0; flex: 1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 5px 4px; font-size: calc(12px * var(--font-scale, 1)); }
+.project-title { min-width: 0; flex: 1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 5px 4px; font-size: var(--text-ui); }
 .project-actions { display: flex; flex: 0 0 auto; padding-right: 2px; background: transparent; opacity: 0; pointer-events: none; }
 .project-row:hover .project-actions, .project-row:focus-within .project-actions, .project-row:has(.project-menu:popover-open) .project-actions { opacity: 1; pointer-events: auto; }
 .project-actions .icon-button { width: 24px; min-width: 24px; height: 24px; }

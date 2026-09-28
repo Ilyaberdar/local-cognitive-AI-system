@@ -657,13 +657,13 @@ a {
 .message-markdown :not(pre) > code { font-family: "SFMono-Regular", Menlo, monospace; font-size: .9em; background: var(--highlight); padding: 2px 5px; border: 1px solid var(--line); border-radius: 5px; }
 .message-markdown blockquote { margin: 16px 0; padding: 2px 16px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 .message-markdown hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
-.markdown-code { min-width: 0; max-width: 100%; margin: 16px 0; border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; background: var(--bg-panel); }
+.markdown-code { min-width: 0; max-width: 100%; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg-panel); }
 .markdown-code__header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--highlight); color: var(--muted); font-size: 12px; }
 .markdown-code__header > span { min-width: 0; overflow-wrap: anywhere; }
 .markdown-code__copy { flex-shrink: 0; padding: 4px 8px; font-size: 11px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .markdown-code__copy:hover { color: var(--text); background: var(--highlight); }
-.markdown-code pre { min-width: 0; max-width: 100%; overflow: auto; overscroll-behavior-x: contain; margin: 0; padding: 16px; tab-size: 2; white-space: pre; overflow-wrap: normal; word-break: normal; }
-.markdown-code code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; color: var(--text); }
+.markdown-code pre { min-width: 0; max-width: 100%; overflow: auto; overscroll-behavior-x: contain; margin: 0; padding: 16px; tab-size: 2; white-space: pre; overflow-wrap: normal; word-break: normal; font: var(--code-font-size, 12px)/1.65 var(--font-mono, monospace); }
+.markdown-code code { font: inherit; color: var(--text); }
 .markdown-table { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; }
 .markdown-table table { border-collapse: collapse; width: 100%; font-size: .94em; }
 .markdown-table th, .markdown-table td { border-bottom: 1px solid var(--line); padding: 10px 14px; text-align: left; min-width: 130px; vertical-align: top; }
@@ -2223,7 +2223,6 @@ a {
   padding: 6px 8px;
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.25;
-  border-radius: var(--radius-md);
 }
 
 .chat-settings .field select {
@@ -2234,22 +2233,6 @@ a {
 .chat-settings .row-between {
   align-items: center;
   gap: 8px;
-}
-
-.chat-settings .chat-type-button,
-.chat-settings .ghost-button,
-.chat-settings .primary-button,
-.chat-settings .compact-empty {
-  border-radius: var(--radius-md);
-}
-
-.chat-settings .chat-type-button {
-  background: var(--control-bg);
-}
-
-.chat-settings .chat-type-button.active,
-.chat-settings .chat-type-button:hover {
-  background: var(--control-active);
 }
 
 .chat-settings .compact-empty {

@@ -1,7 +1,7 @@
 import { AppSettingsPatch, UiPreferences } from "../types";
 
 export const defaultUiPreferences: UiPreferences = {
-  version: 1, theme: "dark", animations: true, fontScale: 100, language: "auto", outputStyle: "balanced", mode: "auto"
+  version: 1, theme: "dark", animations: true, fontScale: 100, codeFontSize: 12, language: "auto", outputStyle: "balanced", mode: "auto"
 };
 
 export class SettingsValidationError extends Error { readonly statusCode = 400; }
@@ -27,7 +27,7 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
   };
   object(patch, "Settings");
   if (patch.ui !== undefined) check(object(patch.ui, "ui"), "ui", {
-    theme: ["dark", "light", "system"], animations: "boolean", fontScale: [85, 150], language: ["auto", "ru", "en"],
+    theme: ["dark", "light", "system"], animations: "boolean", fontScale: [85, 150], codeFontSize: [10, 20], language: ["auto", "ru", "en"],
     outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"]
   });
   if (patch.localModels !== undefined) check(object(patch.localModels, "localModels"), "localModels", {
