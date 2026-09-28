@@ -1,0 +1,16 @@
+module Calculator version "1" {
+    target { language = JavaScript; }
+
+    description = "Build a compact dark calculator web UI using plain HTML/CSS/JavaScript. calculator.js must define a global function calculate(a, b, operation), taking numeric operands and '+', '-', '*', '/' and returning the numeric answer; division by zero must throw Error. index.html must contain labeled number inputs id=a and id=b, select id=operation with + - * / options, button id=calculate, output id=result, button id=clear. Clicking calculate shows the answer or Error in result; clear resets both inputs and result to empty. Load style.css and a classic calculator.js script at the end of body, after all controls, without async/defer. Wire clicks using addEventListener or onclick. No network, dependencies, inline event attributes, dynamic evaluation or modules. Both calculator.js and inline script blocks at the end of body may wire events. Keep the implementation simple and accessible.";
+
+    artifacts {
+        file "calculator.js";
+        file "index.html";
+        file "style.css";
+    }
+
+    evaluate "calculator-v1" {
+        hard arithmetic = Pass("calculator-arithmetic-v1");
+        hard ui = Pass("calculator-ui-v1");
+    }
+}

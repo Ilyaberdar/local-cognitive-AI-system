@@ -11,9 +11,12 @@ export default defineConfig({
   build: {
     emptyOutDir: false,
     lib: {
-      entry: path.resolve(__dirname, "frontend/workflow/index.tsx"),
+      entry: {
+        "workflow-editor": path.resolve(__dirname, "frontend/workflow/index.tsx"),
+        "synthesis-workspace": path.resolve(__dirname, "frontend/synthesis/index.tsx")
+      },
       formats: ["es"],
-      fileName: () => "workflow-editor.js"
+      fileName: (_format, entryName) => `${entryName}.js`
     },
     outDir: path.resolve(__dirname, "public/assets"),
     cssCodeSplit: false,

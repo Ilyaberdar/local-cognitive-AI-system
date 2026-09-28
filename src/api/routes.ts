@@ -7,6 +7,7 @@ import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { createLocalModelRouter } from "./localModelControllers";
 import { createAttachmentRouter } from "./attachmentControllers";
+import { createSynthesisRouter } from "./synthesisControllers";
 import { createCreateProjectController, createListProjectsController, createRevealProjectController, createUpdateProjectController } from "./projectControllers";
 import {
   createCreateSessionController,
@@ -80,6 +81,7 @@ export const createApiRouter = (
 ): Router => {
   const router = Router();
   router.use(createAttachmentRouter());
+  router.use("/synthesis", createSynthesisRouter(() => runtimeManager.getRuntime().synthesis));
 
   router.get("/health", (_req, res) => {
     res.status(200).json({ ok: true });

@@ -20,6 +20,10 @@ The goal is simple: one personal system you can use every day for research, codi
 - `Settings` page for provider keys, MCP, Telegram, and memory
 - session-based configuration, history, and message persistence
 
+## Synthesis DSL
+
+Author module contracts in `.lcspec` and executable agent loops in `.lcflow`, then run them from the **Synthesis** workspace. See the [LC Spec and LC Flow language guide](docs/lc-language.md) for syntax, model selection, runtime functions, complete examples, and current V1 limitations.
+
 ## Screenshots
 
 ### Chat Workspace

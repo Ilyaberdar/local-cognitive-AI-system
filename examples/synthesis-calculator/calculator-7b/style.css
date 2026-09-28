@@ -1,0 +1,47 @@
+body {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+
+main {
+    padding: 20px;
+    background-color: #222222;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+}
+
+label, input, select, button {
+    margin: 10px 0;
+}
+
+input[type="number"], select {
+    padding: 8px;
+    border: 1px solid #444444;
+    border-radius: 4px;
+}
+
+button {
+    padding: 10px 20px;
+    background-color: #333333;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    color: #ffffff;
+}
+
+button:hover {
+    background-color: #444444;
+}
+
+.result {
+    margin-top: 20px;
+    font-size: 1.2em;
+    color: #ffffff;
+}
