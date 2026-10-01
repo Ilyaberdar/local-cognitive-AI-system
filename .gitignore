@@ -11,6 +11,7 @@ public/assets/markdown-renderer.js
 !.env.example
 !.env.test
 local-cognitive.config.json
+/electron/plugin-oauth-clients.json
 data/memory
 memory/
 !src/memory/

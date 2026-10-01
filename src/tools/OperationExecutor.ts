@@ -9,6 +9,7 @@ import { canonicalPath, isWorkspacePath } from "./AccessPolicy";
 import { parseAgentAction, readTool } from "./AgentTool";
 import { OperationStore, SavedOperation } from "./OperationStore";
 import { WorkspaceFileService } from "./WorkspaceFileService";
+import type { PluginManager } from "../plugins/PluginManager";
 
 export interface OperationInput {
   onProgress?: (event: ProcessProgressEvent) => void;
@@ -17,13 +18,20 @@ export interface OperationInput {
   approval?:{id:string;approved:boolean}; pauseForApproval?:boolean;
   requestApproval?:ApprovalHandler; requireApproval?:boolean; readOnly?:boolean; signal?:AbortSignal;
   captureVersion?: boolean;
+  /** Request-level narrowing only; never grants account/tool access. */
+  pluginIds?: string[];
   resumePrepared?: boolean;
 }
 export class OperationExecutor {
   readonly store: OperationStore;
   private readonly files = new WorkspaceFileService();
-  constructor(baseDir:string) { this.store=new OperationStore(baseDir); }
+  constructor(baseDir:string, readonly plugins?: PluginManager) { this.store=new OperationStore(baseDir); }
   async execute(input:OperationInput):Promise<{result?:ToolExecutionResult;pendingApproval?:PendingApproval}> {
+    if (input.tool.startsWith("plugins.")) {
+      if (!this.plugins) throw new Error("Plugin tools are unavailable.");
+      const action = parseAgentAction({ tool: input.tool, arguments: input.arguments });
+      return this.plugins.execute({ ...input, ...action });
+    }
     return withFileLock(this.store.key(input.id),async()=>{
       input.signal?.throwIfAborted();
       const existing = await this.store.get(input.id);

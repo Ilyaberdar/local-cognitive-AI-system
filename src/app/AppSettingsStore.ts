@@ -36,6 +36,12 @@ export class AppSettingsStore {
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid application settings.");
     const settings = this.normalize(parsed);
+    const migratePlugins = ["file", "notion", "vscode"].some(id => Object.hasOwn(parsed.plugins ?? {}, id));
+    if (migratePlugins) {
+      const archive = path.join(this.appDataDir, "settings.pre-integrations.json");
+      // Recoverable local archive; legacy secrets never enter normal settings or new OAuth records.
+      await fs.writeFile(archive, raw, { mode: 0o600, flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    }
     const requiresMigration = parsed.schemaVersion === undefined || parsed.schemaVersion < 1;
     const migrateLegacyAnthropicOutput = parsed.providers?.anthropic?.maxTokens === 1024 && this.baseConfig.providers.anthropic.maxTokens > 1024;
     if (migrateLegacyAnthropicOutput) settings.providers.anthropic.maxTokens = this.baseConfig.providers.anthropic.maxTokens;
@@ -44,7 +50,7 @@ export class AppSettingsStore {
         if (error.code !== "EEXIST") throw error;
       });
     }
-    if (!parsed.memory?.localProfileId || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput) await this.write(settings);
+    if (!parsed.memory?.localProfileId || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem) await this.write(settings);
     return settings;
   }
 
@@ -84,6 +90,7 @@ export class AppSettingsStore {
     validateSettingsPatch(patch);
     const next: AppSettings = {
       ...current,
+      filesystem: { ...this.fromConfig().filesystem!, ...current.filesystem, ...patch.filesystem },
       ui: { ...defaultUiPreferences, ...current.ui, ...patch.ui, version: 1 },
       localModels: { ...this.localDefaults(), ...current.localModels, ...patch.localModels },
       agentLimits: { ...current.agentLimits, ...patch.agentLimits },
@@ -174,7 +181,8 @@ export class AppSettingsStore {
 
   private fromConfig(): AppSettings {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      filesystem: { outputDir: this.baseConfig.outputDir, ...this.baseConfig.filesystem },
       localModels: this.localDefaults(),
       agentLimits: normalizeAgentLimits(this.baseConfig.agentLimits),
       llm: {
@@ -249,36 +257,7 @@ export class AppSettingsStore {
           timeoutMs: this.baseConfig.providers.gemini.timeoutMs
         }
       },
-      plugins: {
-        file: {
-          enabled: true,
-          values: {
-            outputDir: this.baseConfig.outputDir,
-            accessMode: this.baseConfig.filesystem.accessMode,
-            allowedDirectories: this.baseConfig.filesystem.allowedDirectories.join("\n")
-          }
-        },
-        notion: {
-          enabled: true,
-          values: {
-            apiKey: this.baseConfig.notion.apiKey,
-            parentPageId: this.baseConfig.notion.parentPageId,
-            dataSourceId: this.baseConfig.notion.dataSourceId,
-            titleProperty: this.baseConfig.notion.titleProperty,
-            version: this.baseConfig.notion.version
-          }
-        },
-        vscode: {
-          enabled: false,
-          values: {
-            workspaceRoot: process.cwd(),
-            accessMode: this.baseConfig.filesystem.accessMode,
-            allowedDirectories: this.baseConfig.filesystem.allowedDirectories.join("\n"),
-            bridgeCommand: "",
-            notes: "Reserved for future editor bridge."
-          }
-        }
-      }
+      plugins: {}
     };
   }
 
@@ -288,7 +267,13 @@ export class AppSettingsStore {
       ...input,
       // Keep old stores readable; the UI imports its first-paint theme once.
       ...(input.ui ? { ui: { ...defaultUiPreferences, ...input.ui, version: 1 as const } } : {}),
-      schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 1 ? input.schemaVersion : 1,
+      schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 2 ? input.schemaVersion : 2,
+      filesystem: input.filesystem ?? {
+        outputDir: typeof input.plugins?.file?.values.outputDir === "string" ? input.plugins.file.values.outputDir : defaults.filesystem!.outputDir,
+        accessMode: input.plugins?.file?.values.accessMode === "full" ? "full" : input.plugins?.file?.values.accessMode === "restricted" ? "restricted" : defaults.filesystem!.accessMode,
+        allowedDirectories: typeof input.plugins?.file?.values.allowedDirectories === "string"
+          ? input.plugins.file.values.allowedDirectories.split(/\r?\n|,/).map(value => value.trim()).filter(Boolean).map(value => path.resolve(value)) : defaults.filesystem!.allowedDirectories
+      },
       localModels: this.normalizeLocalModels(input.localModels),
       agentLimits: normalizeAgentLimits(input.agentLimits ?? defaults.agentLimits),
       llm: {
@@ -349,6 +334,7 @@ export class AppSettingsStore {
     settings.providers.llamacpp.timeoutMs = settings.localModels!.generationTimeoutMs;
 
     for (const [pluginName, plugin] of Object.entries(input.plugins ?? {})) {
+      if (["file", "notion", "vscode"].includes(pluginName)) continue;
       const previous = settings.plugins[pluginName] ?? { enabled: true, values: {} };
       settings.plugins[pluginName] = {
         ...previous,

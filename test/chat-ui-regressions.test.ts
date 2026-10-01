@@ -44,10 +44,10 @@ test("chat submit locks before setup save and old cleanup cannot reset a new req
     render: () => {}, startProcessProgressPolling: () => {}, stopProcessProgressPolling: (active: unknown) => stopped.push(active),
     refreshBootstrap: async () => {}, loadActiveSession: async () => {},
     api: { sendChat: async (payload: any) => { sentPayload = payload; calls++; sent.resolve(); return answer.promise; } },
-    preserveStoppedChatRequest: () => {}, pushToast: () => {}
+    preserveStoppedChatRequest: () => {}, pushToast: () => {}, pluginMentionIds: () => []
   };
   const start = source.indexOf('  document.querySelector("#chat-form")?.addEventListener("submit"');
-  vm.runInNewContext(functionSource("function buildChatAttachmentMetadata", "function getTargetModel") + functionSource("async function submitChatMessage", "function bindEvents") + source.slice(start, source.indexOf('  document.querySelector("#chat-form textarea', start)), context);
+  vm.runInNewContext(functionSource("function buildChatAttachmentMetadata", "function getTargetModel") + functionSource("async function submitChatMessage", "function bindEvents") + source.slice(start, source.indexOf('  mentionPicker?.dispose();', start)), context);
   const event = { preventDefault() {}, currentTarget: { querySelector: () => button } };
   const first = handler(event);
   const original = state.activeChatRequest;

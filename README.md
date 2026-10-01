@@ -7,7 +7,7 @@ Local multi-model AI workspace with:
 - built-in local GGUF inference with llama.cpp; optional LM Studio and Ollama during the transition
 - cloud LLMs via OpenAI, Anthropic, Gemini
 - debate mode with support / attack / judge roles
-- plugins for Notion and filesystem actions
+- ten curated service plugins with local OAuth, alongside built-in filesystem tools
 - local long memory
 
 The goal is simple: one personal system you can use every day for research, coding, note-taking, and orchestration.
@@ -16,7 +16,7 @@ The goal is simple: one personal system you can use every day for research, codi
 
 - `Chat Workspace` for normal chat, hypothesis debates, and code mode
 - `Models` panel with a Hugging Face download catalog, installed library, memory controls, and device compatibility warnings
-- `Plugins` page for Notion and filesystem setup
+- `Settings → Plugins` for installing and connecting services; `Connections` for account authorizations
 - `Settings` page for provider keys, MCP, Telegram, and memory
 - session-based configuration, history, and message persistence
 
@@ -38,7 +38,7 @@ Use the access icon beside **Ready / Local models** in the composer. Each chat s
 
 - **Ask for approval** (`ask`): confirm file changes, commands, plugin actions, and access outside the configured workspace. Workspace reads do not require confirmation.
 - **Approve for me** (`default`): allow workspace reads and edits; ask before deletions, external access, commands, and plugin actions. Command approval is conservative; there is no automatic command risk classifier.
-- **Full access** (`full`): execute requested actions without confirmation, including outside the configured workspace, subject to the OS account's permissions.
+- **Full access** (`full`): execute local actions without confirmation, including outside the configured workspace, subject to the OS account's permissions. External plugin writes still require explicit approval.
 
 The approval card shows the proposed paths and contents or command arguments. **Approve** executes that saved proposal once; **Cancel** skips it. Stopping generation or closing the connection cancels pending approvals. Changing access affects subsequent requests. Permission cannot be granted by text in a prompt or attachment.
 
@@ -488,70 +488,68 @@ Available tools:
 - `local_ai_get_session_settings`
 - `local_ai_update_session_settings`
 
-## Notion Setup
+## Plugins and connected accounts
 
-The Notion plugin can create notes from chat output.
+Open **Settings → Plugins**. The release-owned catalog contains **Notion, GitHub,
+Slack, Google Drive, Linear, Jira, Outlook Email, Outlook Calendar, Microsoft
+Teams, and Dropbox**. Install → connect an account in the system browser →
+choose Read only or Read & write → enable. Installation alone grants no access.
+The catalog ships in `src/plugins/catalog.ts`; it is not a third-party package
+marketplace and never downloads executable plugin code.
 
-### 1. Create an internal integration in Notion
+Notion, Linear and Jira use their official remote MCP services and the official
+MCP SDK's OAuth/PKCE client. Other services have small, explicit native REST tool
+adapters. The distributor must register the application once before shipping login:
 
-Grant it at least:
+| Service | Developer application setup |
+| --- | --- |
+| GitHub | OAuth app Client ID with device flow enabled |
+| Slack | Public/native OAuth client with PKCE and the adapter's user scopes |
+| Google Drive | Desktop OAuth client ID and secret from its downloaded JSON; testing users/verification as required by Google |
+| Outlook Email, Calendar, Teams | Entra public/native client ID, delegated scopes and loopback redirect; tenant/admin restrictions may apply |
+| Dropbox | App key with PKCE and the adapter's scoped permissions |
 
-- read content
-- insert content
-- update content
+End users see Install → browser login, never developer registration forms. Supply
+the release's public/native client registrations in the git-ignored
+`electron/plugin-oauth-clients.json`, following its `.example.json`, or use
+`LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE`. This config is application-wide, while account
+tokens remain profile-local. Do not distribute confidential web-client secrets.
+Scopes are defined in `src/plugins/OAuthConnections.ts`; default callback is
+`http://127.0.0.1:17849/oauth/callback` (Slack/Graph use `localhost`).
+Missing registrations are shown as unavailable, not as a request to create a new
+user account. These registrations are **not** replaced by browser login.
+The three official MCP services can dynamically
+register the client, subject to the provider's own policies and account plan.
+Thus a catalog entry is not evidence that an account has been tested or connected.
 
-### 2. Share the target page or database with the integration
+Tokens, refresh tokens and legacy operator overrides stay on the device, encrypted
+using Electron `safeStorage` (macOS Keychain-backed key). They never enter the
+renderer, prompts, tool results or ordinary settings JSON. Connection setup
+fails closed when protected storage is unavailable; headless deployments must
+inject an appropriate `CredentialVault`. There is no Composio/cloud token proxy.
 
-If the integration cannot see the page, Notion returns `404 object_not_found`.
+Installations, connections and saved operation approvals are isolated by owner.
+The current owner is the local profile. `RuntimeManager.switchIntegrationOwner`
+is an internal hook for future authenticated account switching, not a login or
+billing implementation. Switching owners cancels old operations; tokens are not
+synced between machines.
 
-### 3. Configure in `Plugins -> Notion`
+Enabled plugins expose dynamically discovered tools to ordinary/project chats
+and workflow **agent** steps through `plugins.search` and `plugins.call`. Local
+permissions filter available tools; every write requires a saved, account-bound
+approval, including in Full access. Unknown outcomes after a dispatched request
+are not retried automatically. DSL integration is intentionally out of scope.
 
-Add:
+Disable stops local tool access. Uninstall removes the local installation but
+keeps independent account authorizations under **Connected accounts**. Disconnect removes
+local credentials; revoke the grant in the provider's settings if it must be
+withdrawn provider-side too.
 
-- `API key`
-- either `Parent page URL`
-- or `Data source URL`
-
-Use:
-
-- `Parent page URL` for ordinary notes under a page
-- `Data source URL` only if you want to write into a Notion database / data source
-
-### 4. Test
-
-Click `Test`.
-
-Then in chat you can say:
-
-```text
-save this to Notion
-```
-
-## Filesystem Plugin
-
-The filesystem plugin is the local execution layer for file operations.
-
-It supports:
-
-- read file
-- write file
-- append file
-- create directory
-- list directory
-- delete path
-- scaffold simple projects
-
-Configure it in `Plugins -> File`.
-
-Important fields:
-
-- `Output directory`
-- `Access mode`
-  - `restricted`
-  - `full`
-- `Allowed directories`
-
-If `restricted` is enabled, file operations are allowed only inside listed directories.
+The old Files/Notion/VS Code settings and plugin loader are retired. Existing
+settings are backed up to `settings.pre-integrations.json` with private file
+permissions; old Notion keys are not reused or returned by the settings API.
+Filesystem tools remain built in; configure their output directory and allowed
+directories under **Settings → Data & Privacy**.
 
 ## Daily Usage Patterns
 
@@ -641,7 +639,7 @@ flowchart LR
   LLM --> ANT["Anthropic"]
   LLM --> GEM["Gemini"]
 
-  TOOLS --> NOTION["NotionTool"]
+  TOOLS --> PLUGINS["PluginManager → OAuth / MCP / REST"]
   TOOLS --> FILE["FileTool"]
 
   MEM --> JSON["LocalJsonMemoryAdapter"]
@@ -657,7 +655,7 @@ Tasks and schedules select a **Workflow**, **Project**, and **Access** policy. T
 
 Without a project, each task receives a persistent directory at `<APP_DATA_DIR>/workspaces/tasks/<taskId>/workspace`. It is reused for later runs of that task. Deleting the task card preserves its files; `<APP_DATA_DIR>/workspaces/managed.json` records these directories. There is no automatic cleanup. Ordinary chats retain their existing filesystem area and compatibility execution flow.
 
-Project chats and Workflow agents use a structured loop: read/search → observe actual tool output → edit or run a check → observe the result → final answer. Tools include list, search, read, write, replace, append, mkdir, delete, and commands with an explicit working directory. Existing-file edits check the version returned by reading the file. Advisers and debate researchers have read-only tools. Files, attachments, and tool output are treated as source material, not permission grants. Explicit Notion/plugin requests use the existing connector policy and a saved operation journal; file/command intent matching is not executed again after the new loop.
+Project chats, Workflow agents and ordinary chats with enabled plugins use a structured loop: read/search → observe actual tool output → edit or run a check → observe the result → final answer. Tools include list, search, read, write, replace, append, mkdir, delete, and commands with an explicit working directory. Existing-file edits check the version returned by reading the file. Advisers and debate researchers have read-only tools. Files, attachments, and tool output are treated as source material, not permission grants. Plugin operations use the shared owner-scoped manager and a saved approval journal; file/command intent matching is not executed again after the new loop.
 
 Access applies to every agent and Workflow file/command node:
 
@@ -725,9 +723,6 @@ src/
   transports/
   types/
   utils/
-plugins/
-  file/
-  notion/
 public/
 data/
 ```
@@ -770,8 +765,14 @@ PUT    /sessions/:sessionId/settings
 GET    /app/settings
 PUT    /app/settings
 POST   /providers/:providerId/test
-GET    /plugins/status
-POST   /plugins/:pluginName/test
+GET    /integrations
+POST   /integrations/:id/install
+PATCH  /integrations/:id
+DELETE /integrations/:id
+PUT    /integrations/:id/oauth-client
+POST   /integrations/:id/connect
+POST   /integrations/connections/:id/refresh
+DELETE /integrations/connections/:id
 POST   /runtime/reload
 
 POST   /chat
@@ -806,7 +807,7 @@ capture: Playwright can retain the old viewport in its screenshot settings.
 
 ## Current Notes
 
-- `VS Code` plugin is still a placeholder bridge configuration, not a full editor transport.
+- The retired VS Code placeholder is not part of the new ten-service plugin catalog.
 - `world-partition` is the default local long-memory adapter. It writes a per-user Morton-indexed world under `MEMORY_DIR/.world-partition-v1`, while session timelines remain separate.
 - `OpenMemory` remains an optional adapter shape.
 - With `MEMORY_PARTITION_STRATEGY=auto`, exact per-user search is used below `MEMORY_PARTITION_ACTIVATION_THRESHOLD` (default `10000`); the Morton cell search is used above it. The dashboard exposes the same controls.

@@ -7,11 +7,19 @@ const source = fs.readFileSync('public/assets/settings-data.js', 'utf8').replace
 const deferred = () => { let resolve!: (value: unknown) => void; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 
+test('MCP count includes the built-in entry regardless of enabled state, plus manual servers', () => {
+  const context: any = {};
+  vm.runInNewContext(source, context);
+  assert.equal(context.mcpServerCount({}), 1);
+  assert.equal(context.mcpServerCount({ mcp: { server: { enabled: false } } }), 1);
+  assert.equal(context.mcpServerCount({ mcp: { client: { servers: { a: {}, b: {} } } } }), 3);
+});
+
 test('entity patches send only edited fields and preserve explicit empty secrets', () => {
   const context: any = {};
   vm.runInNewContext(source, context);
   assert.deepEqual(plain(context.entityPatch({ 'providers.openai.model': 'chosen' })), { providers: { openai: { model: 'chosen' } } });
-  assert.deepEqual(plain(context.entityPatch({ 'plugins.notion.values.apiKey': '' })), { plugins: { notion: { values: { apiKey: '' } } } });
+  assert.deepEqual(plain(context.entityPatch({ 'providers.openai.apiKey': '' })), { providers: { openai: { apiKey: '' } } });
   assert.throws(() => context.entityPatch({ '__proto__.polluted': true }), /Invalid/);
 });
 

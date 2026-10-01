@@ -190,10 +190,9 @@ test("runtime processes hypothesis requests and triggers notion plugin", async (
   });
 
   assert.equal(result.mode, "hypothesis");
-  assert.equal(result.tools.length, 1);
-  assert.equal(result.tools[0].tool, "notion");
-  assert.match(result.tools[0].output, /Notion/i);
-  assert.ok(runtime.plugins.some((plugin) => plugin.manifest.name === "notion"));
+  assert.equal(result.tools.length, 0, "Mentioning Notion must not invoke a legacy plugin without OAuth and local permission.");
+  assert.equal(runtime.plugins.length, 10);
+  assert.ok(runtime.plugins.some((plugin) => plugin.id === "notion"));
 });
 
 test("memory persists per session and provider selection works", async () => {
@@ -953,7 +952,7 @@ test("chat UI exposes cancellation, phase progress, and an in-panel full file vi
 test("model unload handler resolves the catalog key in its own scope", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.js"), "utf8");
   const handler = source.match(
-    /document\.querySelectorAll\("\[data-action='unload-model'\]"\)[\s\S]*?document\.querySelectorAll\("\[data-action='test-plugin'\]"\)/
+    /document\.querySelectorAll\("\[data-action='unload-model'\]"\)[\s\S]*?document\.querySelectorAll\("\[data-action='test-provider'\]"\)/
   )?.[0];
 
   assert.ok(handler);

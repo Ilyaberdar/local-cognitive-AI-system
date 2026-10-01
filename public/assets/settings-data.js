@@ -1,18 +1,8 @@
-// Presentation consumes this adapter; a future PluginManager can replace it.
-export const legacyIntegrations = [
-  { id: 'file', name: 'Files', description: 'Read and write files using the existing access policy.', fields: [
-    ['outputDir', 'Output directory'], ['accessMode', 'Access mode', 'access'], ['allowedDirectories', 'Allowed directories', 'textarea']
-  ] },
-  { id: 'notion', name: 'Notion', description: 'Use the existing Notion integration with your API key.', fields: [
-    ['apiKey', 'API key', 'secret'], ['parentPageUrl', 'Parent page URL'], ['parentPageId', 'Parent page ID'],
-    ['dataSourceUrl', 'Data source URL'], ['dataSourceId', 'Data source ID'], ['titleProperty', 'Title property'], ['version', 'Notion version']
-  ] },
-  { id: 'vscode', name: 'VS Code', description: 'The editor bridge is not available in this release. Saved configuration is preserved.', unavailable: true, fields: [] }
-];
+// Catalog metadata is fetched from the backend's release-owned integration catalog.
 export function createSettingsData({ request, onSaved }) {
   let queue = Promise.resolve();
   return {
-    integrations: legacyIntegrations,
+    integrations: [],
     save(patch) {
       const next = queue.then(async () => {
         const response = await request('/app/settings', { method: 'PUT', body: JSON.stringify(patch), timeoutMs: patch.localModels?.modelsDir ? 900000 : 60000 });
@@ -24,13 +14,18 @@ export function createSettingsData({ request, onSaved }) {
     },
     testProvider: (id, model, timeoutMs) => request(`/providers/${encodeURIComponent(id)}/test`, {
       method: 'POST', body: JSON.stringify({ model }), timeoutMs: id === 'llamacpp' ? 0 : Math.max(60000, timeoutMs || 0) + 30000
-    }),
-    testPlugin: id => request(`/plugins/${encodeURIComponent(id)}/test`, { method: 'POST' })
+    })
   };
 }
 
 export function localProfileView(settings) {
   return { id: settings?.memory?.localProfileId, name: 'Local profile', kind: 'local', authentication: 'unavailable' };
+}
+
+// Counts the entries actually shown in MCP settings, not connected accounts.
+// The built-in incoming server remains an entry even when disabled/on demand.
+export function mcpServerCount(settings) {
+  return 1 + Object.keys(settings?.mcp?.client?.servers || {}).length;
 }
 
 // Only fields explicitly edited in this entity are sent. A blank secret retains

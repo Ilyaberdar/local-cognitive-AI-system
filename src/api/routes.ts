@@ -8,6 +8,7 @@ import { SessionIndexStore } from "../session/SessionIndexStore";
 import { createLocalModelRouter } from "./localModelControllers";
 import { createAttachmentRouter } from "./attachmentControllers";
 import { createSynthesisRouter } from "./synthesisControllers";
+import { createIntegrationRouter, localApiOriginGuard } from "./integrationControllers";
 import { createCreateProjectController, createListProjectsController, createRevealProjectController, createUpdateProjectController } from "./projectControllers";
 import {
   createCreateSessionController,
@@ -26,8 +27,6 @@ import {
   createLoadModelController,
   createMetadataController,
   createModelsController,
-  createPluginStatusController,
-  createPluginTestController,
   createProcessController,
   createProviderTestController,
   createProcessRunStatusController,
@@ -80,6 +79,10 @@ export const createApiRouter = (
   sessionIndexStore: SessionIndexStore
 ): Router => {
   const router = Router();
+  // Execution, approval and settings must have the same origin boundary as OAuth.
+  // Otherwise DNS rebinding could bypass plugin consent through /process-runs/review.
+  router.use(localApiOriginGuard);
+  router.use("/integrations", createIntegrationRouter(runtimeManager));
   router.use(createAttachmentRouter());
   router.use("/synthesis", createSynthesisRouter(() => runtimeManager.getRuntime().synthesis));
 
@@ -123,8 +126,6 @@ export const createApiRouter = (
   router.get("/app/settings", createGetAppSettingsController(runtimeManager));
   router.put("/app/settings", createUpdateAppSettingsController(runtimeManager));
   router.post("/providers/:providerId/test", createProviderTestController(runtimeManager));
-  router.get("/plugins/status", createPluginStatusController(runtimeManager));
-  router.post("/plugins/:pluginName/test", createPluginTestController(runtimeManager));
   router.post("/runtime/reload", createRuntimeReloadController(runtimeManager));
 
   router.get("/tasks", createListTasksController(runtimeManager));

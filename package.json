@@ -73,8 +73,6 @@
     "files": [
       "electron/**/*",
       "dist/src/**/*",
-      "dist/plugins/**/*",
-      "plugins/**/plugin.json",
       "public/**/*",
       "package.json"
     ],

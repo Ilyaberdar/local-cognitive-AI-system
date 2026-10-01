@@ -1,10 +1,11 @@
 import { CodeAgentTarget } from "../../types";
+import { withoutPluginMentions } from "../../plugins/PluginSelection";
 
 export const hasSubagentTrigger = (input: string): boolean =>
   /spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент/i.test(input);
 
 export const parseMentionedSubagentNames = (input: string): string[] =>
-  Array.from(input.matchAll(/@([\p{L}\p{N}_-]+)/gu)).map((match) => match[1].toLowerCase());
+  Array.from(withoutPluginMentions(input).matchAll(/(?:^|[\s(])@(?:agent:)?([\p{L}\p{N}_-]+)/gu)).map((match) => match[1].toLowerCase());
 
 const rankSubagentCost = (agent: CodeAgentTarget): number => {
   const providerScore =

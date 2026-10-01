@@ -2,7 +2,7 @@ import express, { NextFunction, Request, Response } from "express";
 import { createApiRouter } from "./api/routes";
 import path from "path";
 import { AppSettingsStore } from "./app/AppSettingsStore";
-import { RuntimeManager } from "./app/RuntimeManager";
+import { RuntimeManager, IntegrationRuntimeOptions } from "./app/RuntimeManager";
 import { AppConfig, config as defaultConfig } from "./config/config";
 import { Server } from "node:http";
 import { LocalModelError } from "./local/types";
@@ -22,9 +22,9 @@ export interface BackendHandle {
   dispose(): Promise<void>;
 }
 
-export const startBackend = async (config: AppConfig = defaultConfig): Promise<BackendHandle> => {
+export const startBackend = async (config: AppConfig = defaultConfig, integrations: IntegrationRuntimeOptions = {}): Promise<BackendHandle> => {
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
-  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger);
+  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, integrations);
   const runtime = await runtimeManager.init();
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = runtime.sessionIndexStore;

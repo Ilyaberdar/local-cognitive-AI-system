@@ -44,6 +44,7 @@ function harness(workflows = [graph("A"), graph("B")]) {
     workflowEditorModulePromise: Promise.resolve(module), window: {},
     document: { querySelector: (selector: string) => selector === "#workflow-graph-editor" ? container : null },
     cloneWorkflow: structuredClone, getProviderOptions: () => [], resolveTheme: () => "dark", escapeHtml: String,
+    refreshAvailablePlugins: async () => [],
     api: { getWorkflowRun: async (id: string) => { assert.ok(runs.has(id), `Missing run fixture ${id}`); return runs.get(id); } },
     request: async (url: string, options: any) => { requests.push({ url, body: JSON.parse(options.body) }); return {}; },
     watchWorkflowRun: (options: any) => {

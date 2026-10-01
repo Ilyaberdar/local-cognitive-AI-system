@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { defaultTaskWorkflow } from "./defaultWorkflows";
 import { validateRunOptions } from "./runOptions";
+import { parsePluginSelection } from "../plugins/PluginSelection";
 import {
   WorkflowDefinition,
   WorkflowDefinitionRecord,
@@ -307,6 +308,8 @@ const validateNodeConfig = (node: WorkflowNode): string[] => {
 
   switch (node.type) {
     case "agent":
+      try { parsePluginSelection(node.config.pluginIds); }
+      catch { errors.push(`Workflow node ${node.id} pluginIds must be a list of catalog plugin IDs.`); }
       if (node.config.reasoningBudget !== undefined && (!Number.isInteger(node.config.reasoningBudget) || Number(node.config.reasoningBudget) < 0 || Number(node.config.reasoningBudget) > 32768)) errors.push(`Workflow node ${node.id} thinking budget must be 0–32768 tokens.`);
       if (node.config.promptTemplate !== undefined && typeof node.config.promptTemplate !== "string") errors.push(`Workflow node ${node.id} prompt must be text.`);
       if (node.config.contextTemplate !== undefined && typeof node.config.contextTemplate !== "string") errors.push(`Workflow node ${node.id} context must be text.`);

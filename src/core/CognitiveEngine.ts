@@ -1,4 +1,3 @@
-import { authorizeOperation } from "../tools/AccessPolicy";
 import { MemoryService } from "../memory/MemoryService";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { ToolRegistry } from "../tools/ToolRegistry";
@@ -14,7 +13,10 @@ import { randomUUID } from "crypto";
 import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
 import { CodeAgentCoordinator, WorkspaceOutcome } from "../agents/code/CodeAgentCoordinator";
 import { ExecutionContext } from "../types";
-import { PluginOperationExecutor } from "../tools/PluginOperationExecutor";
+import type { PluginManager } from "../plugins/PluginManager";
+import { mentionedPluginIds, parsePluginSelection, withoutPluginMentions } from "../plugins/PluginSelection";
+import { PluginError } from "../plugins/contracts";
+import { parseMentionedSubagentNames } from "../agents/code/codeAgentRouting";
 
 export class CognitiveEngine {
   constructor(
@@ -29,7 +31,7 @@ export class CognitiveEngine {
     private readonly supportsImages: (target: ProviderTarget) => boolean | undefined = () => undefined,
     private readonly workspaceResolver?: WorkspaceResolver,
     private readonly workspaceAgents?: CodeAgentCoordinator,
-    private readonly pluginOperations?: PluginOperationExecutor
+    private readonly pluginManager?: PluginManager
   ) {}
 
   async process(request: ProcessInput): Promise<ProcessResult> {
@@ -39,8 +41,16 @@ export class CognitiveEngine {
       throw new Error("Input cannot be empty");
     }
 
+    // Workflow selection comes from its frozen node config, never interpolated tool output.
+    const pluginIds = request.execution
+      ? parsePluginSelection(request.execution.pluginIds)
+      : parsePluginSelection(request.metadata?.pluginIds) ?? mentionedPluginIds(normalizedInput);
+    if (pluginIds?.length && !this.pluginManager) throw new PluginError("Plugins are unavailable in this runtime.", 409);
+    await this.pluginManager?.validateSelection(pluginIds);
+
     const sessionId=request.actor?.sessionId ?? "default-session";
-    const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId);
+    const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId) ??
+      (await this.pluginManager?.hasEnabled() ? await this.workspaceResolver?.forPluginChat(sessionId) : undefined);
     if(workspace)await this.workspaceResolver?.validate(workspace);
     const actor = {
       sessionId,
@@ -75,6 +85,7 @@ export class CognitiveEngine {
         : requestedMode;
     const handler = this.router.route(mode);
     const context:ExecutionContext={
+      pluginIds,
       actor,
       memory,
       conversation,
@@ -93,24 +104,6 @@ export class CognitiveEngine {
       if(workspace&&this.workspaceAgents&&!request.metadata?.reviewSelection){workspaceOutcome=await this.workspaceAgents.run(normalizedInput,mode,context,handler);return workspaceOutcome.result;}
       return handler(normalizedInput,context);
     });
-    if(workspaceOutcome && !workspaceOutcome.pendingApproval && !result.error && this.pluginOperations) {
-      // Compatibility plugins are selected only by the user's request. Never re-run
-      // legacy file/command intent matching after the structured agent loop.
-      const plugins=this.toolRegistry.resolveFromInput(normalizedInput).filter(tool=>!["file","command"].includes(tool.name));
-      const pluginRequest=this.toolRequestBuilder.build({rawInput:normalizedInput,mode,result,context});
-      for(const plugin of plugins){
-        const outcome=await this.pluginOperations.execute(plugin,pluginRequest);
-        if(outcome.pendingApproval){workspaceOutcome.pendingApproval=outcome.pendingApproval;break;}
-        if(outcome.result){
-          workspaceOutcome.tools.push(outcome.result);
-          if(!outcome.result.ok||outcome.result.metadata?.unknown||outcome.result.metadata?.permissionRequired){
-            result.error=outcome.result.output;
-            if("response" in result)result.response=outcome.result.output;
-            break;
-          }
-        }
-      }
-    }
     if(workspaceOutcome?.pendingApproval)return {input:normalizedInput,mode,providerId,result,tools:workspaceOutcome.tools,memory,conversationSize:conversation.length,sessionSettings,
       pendingApproval:workspaceOutcome.pendingApproval,agentRunId:workspaceOutcome.agentRunId};
     request.signal?.throwIfAborted();
@@ -241,9 +234,7 @@ export class CognitiveEngine {
       return true;
     }
 
-    const mentions = Array.from(input.matchAll(/@([\p{L}\p{N}_-]+)/gu)).map((match) =>
-      match[1].toLowerCase()
-    );
+    const mentions = parseMentionedSubagentNames(withoutPluginMentions(input));
 
     if (mentions.length === 0) {
       return false;
@@ -258,7 +249,7 @@ export class CognitiveEngine {
     result: ProcessResult["result"],
     context: Parameters<ToolRequestBuilder["build"]>[0]["context"]
   ): Promise<ToolExecutionResult[]> {
-    const resolved = this.toolRegistry.resolveFromInput(input);
+    const resolved = this.toolRegistry.resolveFromInput(input).filter(tool => ["file", "command"].includes(tool.name));
     const tools = resolved.some((tool) => tool.name === "command") ? resolved.filter((tool) => tool.name !== "file") : resolved;
 
     if (tools.length === 0) {
@@ -275,13 +266,6 @@ export class CognitiveEngine {
     const results: ToolExecutionResult[] = [];
     for (const tool of tools) {
       context.signal?.throwIfAborted();
-      if (!["file", "command"].includes(tool.name)) {
-        const permission = await authorizeOperation(context, {
-          tool: tool.name, operation: "plugin", summary: `Run ${tool.name}`,
-          details: `${tool.description}\n\n${executionRequest.content}`
-        }, false);
-        if (permission) { results.push(permission); continue; }
-      }
       results.push(await tool.execute(executionRequest));
     }
     return results;

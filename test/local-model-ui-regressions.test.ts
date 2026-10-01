@@ -141,6 +141,14 @@ test("backend-owned requests have no browser deadline while ordinary deadlines a
   response.resolve({ ok: true, status: 200, json: async () => ({ ready: true }) });
   assert.equal((await pending).ready, true);
   assert.equal(cleared.length, 0);
+  let deletionHeaders: Record<string, string> | undefined;
+  context.fetch = async (_url: string, options: { headers: Record<string, string> }) => {
+    deletionHeaders = options.headers;
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await context.request("/local/models/qwen-small", { method: "DELETE", timeoutMs: 0 });
+  assert.equal(deletionHeaders?.["X-Local-Cognitive"], "1");
+  assert.equal(deletionHeaders?.["Content-Type"], "application/json");
   context.fetch = async () => { throw new TypeError("Connection closed"); };
   await assert.rejects(context.request("/providers/llamacpp/test", { timeoutMs: 0 }), /Connection closed/);
   context.fetch = (_url: string, options: { signal: AbortSignal }) => new Promise((_resolve, reject) => {

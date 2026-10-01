@@ -5,6 +5,7 @@ import { buildAgentInput } from "../template";
 import { withLocalThinkingBudget } from "../../llm/InferenceThinking";
 import { NodeExecutor, NodeExecutionContext } from "./NodeExecutor";
 import { nodeAccess } from "./NodeAccess";
+import { parsePluginSelection } from "../../plugins/PluginSelection";
 
 export class AgentNodeExecutor implements NodeExecutor {
   readonly type = "agent" as const;
@@ -44,6 +45,7 @@ export class AgentNodeExecutor implements NodeExecutor {
       onProgress: context.onProgress,
       ...(workspace ? { execution: {
         contextMode: "explicit",
+        pluginIds: parsePluginSelection(context.node.config.pluginIds),
         localReasoningBudget: typeof context.node.config.reasoningBudget === "number" ? context.node.config.reasoningBudget : undefined,
         workspace,
         accessMode: nodeAccess(context).accessMode,
