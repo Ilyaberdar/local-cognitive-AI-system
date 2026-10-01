@@ -144,6 +144,7 @@ export interface UiPreferences {
 
 export interface AppSettings {
   schemaVersion?: number;
+  filesystem?: { outputDir: string; accessMode: "restricted" | "full"; allowedDirectories: string[] };
   ui?: UiPreferences;
   localModels?: LocalModelSettings;
   agentLimits: AgentLimits;
@@ -180,6 +181,7 @@ export interface AppSettings {
 }
 
 export interface AppSettingsPatch {
+  filesystem?: Partial<NonNullable<AppSettings["filesystem"]>>;
   ui?: Partial<Omit<UiPreferences, "version">>;
   localModels?: Partial<LocalModelSettings>;
   agentLimits?: Partial<AgentLimits>;
@@ -453,6 +455,8 @@ export interface LLMResponse {
 }
 
 export interface ExecutionContext {
+  /** Validated request-level plugin selection; undefined preserves automatic discovery. */
+  pluginIds?: string[];
   actor: ActorContext;
   memory: MemoryReference[];
   conversation: MemoryEntry[];
@@ -469,6 +473,7 @@ export interface ExecutionContext {
 
 /** Server-owned execution parameters. HTTP/MCP metadata must never populate this. */
 export interface InternalExecutionContext {
+  pluginIds?: string[];
   /** Workflow nodes receive selected inputs, without automatic project/chat recall. */
   contextMode?: "explicit";
   localReasoningBudget?: number;

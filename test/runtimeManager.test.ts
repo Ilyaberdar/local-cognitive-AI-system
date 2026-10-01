@@ -154,17 +154,17 @@ test("entity edits preserve all neighboring configuration and explicit secrets r
   const { manager, store } = await fixture(t);
   await manager.updateSettings({
     providers: { openai: { apiKey: "openai-fixture" }, anthropic: { apiKey: "anthropic-fixture", model: "preserve" } },
-    plugins: { notion: { values: { apiKey: "notion-fixture", parentPageId: "keep-page" } } }
+    filesystem: { outputDir: path.join((await store.get()).filesystem!.outputDir, "preserved") }
   });
   const previous = await store.get();
   const edited = await manager.updateSettings({ providers: { openai: { model: "new-model" } } });
   assert.equal(edited.settings.providers.openai.apiKey, "openai-fixture");
   for (const key of ["plugins", "mcp", "memory", "telegram", "localModels"] as const) assert.deepEqual(edited.settings[key], previous[key]);
   assert.deepEqual(edited.settings.providers.anthropic, previous.providers.anthropic);
-  const removed = await manager.updateSettings({ providers: { openai: { apiKey: "" } }, plugins: { notion: { values: { apiKey: "" } } } });
+  const removed = await manager.updateSettings({ providers: { openai: { apiKey: "" } } });
   assert.equal(removed.runtime.config.providers.openai.apiKey, "");
-  assert.equal(removed.runtime.config.notion.apiKey, "");
-  assert.equal(removed.settings.plugins.notion.values.parentPageId, "keep-page");
+  assert.deepEqual(removed.settings.filesystem, previous.filesystem);
+  await assert.rejects(manager.updateSettings({ plugins: { notion: { values: { apiKey: "obsolete" } } } }), /Legacy plugins/);
   assert.equal((await store.get()).providers.openai.apiKey, "");
 });
 

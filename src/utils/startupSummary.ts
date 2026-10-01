@@ -40,7 +40,7 @@ export const formatStartupSummary = ({
   );
   const plugins = runtime.plugins.length
     ? runtime.plugins.map((plugin) =>
-        line("[ok] " + plugin.manifest.name, `${plugin.manifest.version} (${plugin.manifest.capabilities.join(", ") || "no capabilities"})`)
+        line("[catalog] " + plugin.name, `${plugin.version} (connection managed in Settings)`)
       )
     : [line("[--] plugins", "none loaded")];
 

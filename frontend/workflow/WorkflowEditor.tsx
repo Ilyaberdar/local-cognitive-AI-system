@@ -505,6 +505,8 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
               nodes={draft.nodes}
               entryNodeId={draft.entryNodeId}
               providers={props.providers}
+              plugins={props.plugins}
+              pluginsError={props.pluginsError}
               configError={configError}
               onConfigError={setConfigError}
               onRename={renameNode}
@@ -539,12 +541,14 @@ function WorkflowFields({ draft, onUpdate }: {
   );
 }
 
-function NodeFields({ node, nodes, disabled, entryNodeId, providers, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
+function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pluginsError, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
   node: WorkflowNodeDefinition;
   nodes: WorkflowNodeDefinition[];
   disabled: boolean;
   entryNodeId: string;
   providers: WorkflowEditorProps["providers"];
+  plugins: WorkflowEditorProps["plugins"];
+  pluginsError: WorkflowEditorProps["pluginsError"];
   configError: string;
   onConfigError: (value: string) => void;
   onRename: (id: string) => void;
@@ -595,7 +599,7 @@ function NodeFields({ node, nodes, disabled, entryNodeId, providers, configError
         {!["never", "always"].includes(String(node.config.approval)) ? <span className="fsm-model-hint">This saved step keeps its previous access rules until you choose a mode.</span> : null}
       </Field> : null}
       {node.type === "agent" ? <p className="fsm-model-hint">Agents read files, inspect tool results, and continue until done or the execution limit is reached.</p> : null}
-      <NodeConfigFields node={node} nodes={nodes} onUpdate={onConfigUpdate} />
+      <NodeConfigFields node={node} nodes={nodes} plugins={plugins} pluginsError={pluginsError} onUpdate={onConfigUpdate} />
       <details className="fsm-advanced-config"><summary>Advanced JSON</summary>
       <Field label="Config JSON">
         <textarea

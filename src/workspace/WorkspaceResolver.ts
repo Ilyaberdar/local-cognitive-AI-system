@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
+import { createHash } from "node:crypto";
 import { AppConfig } from "../config/config";
 import { ProjectStore } from "../projects/ProjectStore";
 import { ProjectError } from "../projects/types";
@@ -10,7 +11,7 @@ import { WorkspaceSnapshot } from "./types";
 export class WorkspaceResolver {
   readonly managedWorkspaces: ManagedWorkspaceStore;
   constructor(
-    private readonly config: Pick<AppConfig, "appDataDir">,
+    private readonly config: Pick<AppConfig, "appDataDir"> & Partial<Pick<AppConfig, "outputDir" | "filesystem">>,
     private readonly projectStore: ProjectStore,
     private readonly sessionIndexStore: SessionIndexStore
   ) { this.managedWorkspaces = new ManagedWorkspaceStore(config.appDataDir); }
@@ -25,6 +26,17 @@ export class WorkspaceResolver {
     const { rootPath } = await this.managedWorkspaces.ensure(task.id);
     return { version: 1, kind: "task", rootPath, outputDir: rootPath, allowedDirectories: [rootPath],
       taskId: task.id, memoryScope: `task:${task.id}` };
+  }
+
+  /** Ordinary chats keep their built-in output folder when plugins enable the tool loop. */
+  async forPluginChat(sessionId: string): Promise<WorkspaceSnapshot> {
+    const id = `chat-${createHash("sha256").update(sessionId).digest("hex")}`;
+    let rootPath: string;
+    if (this.config.outputDir) {
+      await fs.mkdir(this.config.outputDir, { recursive: true }); rootPath = await fs.realpath(this.config.outputDir);
+    } else rootPath = (await this.managedWorkspaces.ensure(id)).rootPath;
+    return { version: 1, kind: "legacy-chat", rootPath, outputDir: rootPath,
+      allowedDirectories: [...new Set([rootPath, ...(this.config.filesystem?.allowedDirectories ?? [])])], memoryScope: `session:${sessionId}` };
   }
 
   async forWorkflowRun(runId: string, options: { projectId?: string; rootPath?: string }): Promise<WorkspaceSnapshot> {

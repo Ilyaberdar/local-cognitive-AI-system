@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { WorkflowNodeDefinition } from "./types";
+import type { PluginOption, WorkflowNodeDefinition } from "./types";
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="fsm-field"><span>{label}</span>{children}</label>;
@@ -38,8 +38,40 @@ export function BindingField({ label, value, onChange, nodes, multiline = false,
   </div>;
 }
 
-export function NodeConfigFields({ node, nodes, onUpdate }: {
-  node: WorkflowNodeDefinition; nodes: WorkflowNodeDefinition[]; onUpdate: (patch: Record<string, unknown>) => void;
+export function PluginFields({ value, plugins, error, onChange }: {
+  value: unknown; plugins: PluginOption[]; error?: string; onChange: (ids: string[] | undefined) => void;
+}) {
+  const automatic = value === undefined;
+  const ids = Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  const missing = ids.filter(id => !plugins.some(plugin => plugin.id === id));
+  return <fieldset className="fsm-plugin-picker">
+    <legend>Plugins</legend>
+    <Field label="Plugin access"><select aria-label="Plugin access" value={automatic ? "automatic" : "selected"}
+      onChange={event => onChange(event.target.value === "automatic" ? undefined : [])}>
+      <option value="automatic">Automatic · all connected plugins</option>
+      <option value="selected">Only selected plugins</option>
+    </select></Field>
+    <div className="fsm-plugin-list">
+      {plugins.map(plugin => <label key={plugin.id} className="fsm-plugin-option">
+        <img src={plugin.icon} width={24} height={24} alt="" />
+        <span><strong>{plugin.name}</strong><small>{plugin.description}</small></span>
+        <input type="checkbox" aria-label={plugin.name} checked={automatic || ids.includes(plugin.id)} onChange={event => {
+          const current = automatic ? plugins.map(item => item.id) : ids;
+          onChange(event.target.checked ? [...new Set([...current, plugin.id])] : current.filter(id => id !== plugin.id));
+        }} />
+      </label>)}
+      {missing.map(id => <label key={id} className="fsm-plugin-option is-unavailable"><span><strong>{id}</strong><small>Unavailable · reconnect in Settings → Plugins, or uncheck</small></span>
+        <input type="checkbox" checked aria-label={`Remove unavailable ${id}`} onChange={() => onChange(ids.filter(item => item !== id))} />
+      </label>)}
+    </div>
+    {error ? <p className="fsm-plugin-error" role="status">{error}</p> : !plugins.length ? <p className="fsm-model-hint">No connected, enabled plugins. Connect a service in Settings → Plugins.</p> : null}
+    <p className="fsm-model-hint">{automatic ? "The agent can discover any connected, enabled plugin." : ids.length ? "This agent can use only the selected plugins." : "No plugins allowed for this agent."} Plugin permissions still apply; external writes always require approval.</p>
+  </fieldset>;
+}
+
+export function NodeConfigFields({ node, nodes, plugins = [], pluginsError, onUpdate }: {
+  node: WorkflowNodeDefinition; nodes: WorkflowNodeDefinition[]; plugins?: PluginOption[]; pluginsError?: string;
+  onUpdate: (patch: Record<string, unknown>) => void;
 }) {
   const config = node.config;
   const text = (key: string, fallback = "") => typeof config[key] === "string" ? String(config[key]) : fallback;
@@ -50,6 +82,7 @@ export function NodeConfigFields({ node, nodes, onUpdate }: {
     case "agent": return <>
       <Field label="Prompt"><textarea rows={6} value={text("promptTemplate", "{{input.title}}\n\n{{input.description}}")}
         onChange={event => onUpdate({ promptTemplate: event.target.value })} placeholder="What should this agent do?" /></Field>
+      <PluginFields value={config.pluginIds} plugins={plugins} error={pluginsError} onChange={pluginIds => onUpdate({ pluginIds })} />
       {binding("contextTemplate", "Input context", true)}
       <p className="fsm-model-hint">Choose the results this agent should receive. Previous agents’ conversations are not added automatically.</p>
       <BindingField label="Files for agent to read" value={Array.isArray(config.inputFiles) ? config.inputFiles.join("\n") : ""}

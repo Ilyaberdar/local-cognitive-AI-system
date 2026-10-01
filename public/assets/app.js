@@ -9,6 +9,7 @@ import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
 import { watchWorkflowRun } from "./workflow-live.js";
 import { renderMarkdown, renderCodeBlock, renderCodeLines, bindMarkdownActions } from "./markdown-renderer.js";
+import { bindMentionPicker, pluginMentionIds, mentionedAgentNames, renderMentionText } from "./mentions.js";
 
 const app = document.querySelector("#app");
 bindMarkdownActions(app);
@@ -17,6 +18,9 @@ let systemMetricsPollTimer = null;
 let sessionLoadSequence = 0;
 let workflowPollInFlight = false;
 let workflowEditorHandle = null;
+let mentionPicker = null;
+let availablePluginsRequest = null;
+let availablePluginsFetchedAt = 0;
 let workflowEditorModulePromise = null;
 let workflowEditorMountGeneration = 0;
 let synthesisWorkspaceHandle = null;
@@ -78,6 +82,8 @@ const state = {
   error: "",
   toasts: [],
   bootstrap: null,
+  availablePlugins: [],
+  pluginsError: '',
   activeSessionId: null,
   activeProjectId: null,
   taskWorkspaces: {},
@@ -89,7 +95,6 @@ const state = {
   attachmentImports: {},
   pendingRequest: null,
   modelActions: {},
-  pluginTestResults: {},
   providerTestResults: {},
   localModelTest: null,
   savedButtons: {},
@@ -121,6 +126,7 @@ const state = {
 };
 
 const api = {
+  getAvailablePlugins: () => request('/integrations/available'),
   getBootstrap: () => request("/dashboard/bootstrap"),
   createProject: payload => request("/projects", { method: "POST", body: JSON.stringify(payload) }),
   updateProject: (id, payload) => request(`/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
@@ -178,10 +184,6 @@ const api = {
       method: "PUT",
       timeoutMs: payload.localModels?.modelsDir ? 900000 : 60000,
       body: JSON.stringify(payload)
-    }),
-  testPlugin: (pluginName) =>
-    request(`/plugins/${pluginName}/test`, {
-      method: "POST"
     }),
   testProvider: (providerId, model) =>
     request(`/providers/${providerId}/test`, {
@@ -430,6 +432,7 @@ const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
   onReturn: () => {
     if (appRenderDeferred && !workflowEditorHandle) render();
     appRenderDeferred = false;
+    void refreshAvailablePlugins(true).then(() => mentionPicker?.update());
   }
 });
 systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") applyTheme("system", false); });
@@ -474,7 +477,23 @@ function syncRouteFromHash() {
 }
 
 async function refreshBootstrap() {
-  state.bootstrap = await api.getBootstrap();
+  const [bootstrap] = await Promise.all([api.getBootstrap(), refreshAvailablePlugins(true)]);
+  state.bootstrap = bootstrap;
+}
+
+async function refreshAvailablePlugins(force = false) {
+  if (availablePluginsRequest) return availablePluginsRequest;
+  if (!force && Date.now() - availablePluginsFetchedAt < 5000) return state.availablePlugins;
+  availablePluginsRequest = api.getAvailablePlugins().then(plugins => {
+    state.availablePlugins = plugins; state.pluginsError = ''; availablePluginsFetchedAt = Date.now();
+    workflowEditorHandle?.setPlugins?.(plugins, '');
+    return plugins;
+  }).catch(() => {
+    state.availablePlugins = []; state.pluginsError = 'Could not load connected plugins. Reopen this view to retry.';
+    workflowEditorHandle?.setPlugins?.([], state.pluginsError);
+    return [];
+  }).finally(() => { availablePluginsRequest = null; });
+  return availablePluginsRequest;
 }
 
 async function ensureSession() {
@@ -553,18 +572,24 @@ async function loadActiveSession() {
 
 async function request(url, options = {}) {
   const controller = options.controller ?? new AbortController();
-  const { controller: _providedController, timeoutMs: _timeoutMs, ...fetchOptions } = options;
+  const { controller: _providedController, timeoutMs: _timeoutMs, headers: requestHeaders = {}, ...fetchOptions } = options;
   const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 30000;
   const timeoutId = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  const method = String(fetchOptions.method ?? "GET").toUpperCase();
+  const isReadRequest = ["GET", "HEAD", "OPTIONS"].includes(method);
 
   try {
     const response = await fetch(url, {
+      ...fetchOptions,
       headers: {
         "Content-Type": "application/json",
-        ...(options.headers ?? {})
+        ...requestHeaders,
+        // This non-simple header makes a browser-originated mutation require a
+        // CORS preflight. The local API uses it as the positive app signal; a
+        // DELETE has no JSON body, so Content-Type alone is not reliable.
+        ...(isReadRequest ? {} : { "X-Local-Cognitive": "1" })
       },
-      signal: controller.signal,
-      ...fetchOptions
+      signal: controller.signal
     });
 
     if (!response.ok) {
@@ -618,6 +643,7 @@ function render(options = {}) {
   if (!app) {
     return;
   }
+  mentionPicker?.dispose(); mentionPicker = null;
 
   reviewPanel.capture();
   const setupViewport = sessionSetupMotion.capture();
@@ -769,7 +795,7 @@ function renderSidebar(nativeTitlebar = false) {
       ${projectsUi.sidebar()}
 
       <div class="sidebar-footer">
-        <details class="runtime-disclosure" data-ui-disclosure="runtime"><summary><span class="status-dot"></span><span>Local runtime</span></summary><div>${providerCount} providers · ${pluginCount} plugins · ${(state.bootstrap?.loadedModels ?? []).length} loaded local models</div></details>
+        <details class="runtime-disclosure" data-ui-disclosure="runtime"><summary><span class="status-dot"></span><span>Local runtime</span></summary><div>${providerCount} providers · ${pluginCount} catalog plugins · ${(state.bootstrap?.loadedModels ?? []).length} loaded local models</div></details>
         <div class="theme-switch" role="group" aria-label="Appearance">
           ${["light", "dark"].map((theme) => `<button class="icon-button ${state.ui.theme === theme ? "active" : ""}" type="button" data-action="set-theme" data-theme="${theme}" aria-label="${capitalize(theme)} Liquid Glass" aria-pressed="${state.ui.theme === theme}" title="${capitalize(theme)} Liquid Glass">${icon(theme === "light" ? "sun" : "moon")}</button>`).join("")}
         </div>
@@ -933,6 +959,7 @@ function renderChatRoute() {
           }
           <div class="attachment-guidance ${attachmentGuidance.blocked ? "is-blocked" : ""}" data-attachment-guidance role="status" ${!preparingAttachments && !attachmentGuidance.message ? "hidden" : ""}>${escapeHtml(preparingAttachments ? "Preparing attachments…" : attachmentGuidance.message)}</div>
           <textarea name="input" aria-label="Message" placeholder="Ask anything…">${escapeHtml(getActiveDraft())}</textarea>
+          <div class="composer-mentions" data-composer-mentions hidden aria-label="Selected plugins and subagents"></div>
           ${voiceInput.renderStrip()}
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
@@ -953,7 +980,8 @@ function renderChatRoute() {
 }
 
 function isSubagentRequest(input) {
-  return /spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент|@[\p{L}\p{N}_-]+/iu.test(input);
+  return /spawn\s+sub-?agent|sub-?agent|заспавн.*с[ау]б.?агент|с[ау]б.?агент/iu.test(input)
+    || mentionedAgentNames(input, state.bootstrap?.plugins ?? [], state.sessionSettings?.codeAgents ?? []).length > 0;
 }
 
 function renderChatActivityBar(settings) {
@@ -1213,11 +1241,8 @@ function stableMessageIndex(value, modulo) {
 
 function resolvePendingSubagentNames(input) {
   const agents = state.sessionSettings?.codeAgents ?? [];
-  const mentions = Array.from(input.matchAll(/@([\p{L}\p{N}_-]+)/gu)).map((match) => match[1].toLowerCase());
-
-  if (mentions.length > 0) {
-    return agents.filter((agent) => mentions.includes(agent.name.toLowerCase())).map((agent) => agent.name);
-  }
+  const mentions = mentionedAgentNames(input, state.bootstrap?.plugins ?? [], agents);
+  if (mentions.length > 0) return mentions;
 
   if (agents.length === 0) {
     return ["Default"];
@@ -2043,9 +2068,10 @@ async function mountActiveWorkflowEditor() {
     workflowEditorModulePromise ??= import("/assets/workflow-editor.js");
     const matchingRuns = (state.bootstrap?.workflowRuns ?? []).filter(run => run.workflowId === workflow.id && run.workflowVersion === workflow.version);
     const selectedRunId = workspace.runId ?? matchingRuns.find(run => workflowGraphSignature(run.workflowSnapshot) === workflowGraphSignature(workflow))?.id;
-    const [module, fetchedDetail] = await Promise.all([
+    const [module, fetchedDetail, plugins] = await Promise.all([
       workflowEditorModulePromise,
-      selectedRunId ? api.getWorkflowRun(selectedRunId) : workspace.detail ?? null
+      selectedRunId ? api.getWorkflowRun(selectedRunId) : workspace.detail ?? null,
+      refreshAvailablePlugins(true)
     ]);
     if (!isCurrent()) return;
     const detail = workspace.detail && workspace.runId !== fetchedDetail?.run.id ? workspace.detail : fetchedDetail;
@@ -2067,6 +2093,7 @@ async function mountActiveWorkflowEditor() {
     workflowEditorHandle = module.mountWorkflowEditor(container, {
       settingsContainer: document.querySelector("#workflow-settings-control"),
       workflow: cloneWorkflow(workflow), providers, projects: state.bootstrap?.projects ?? [],
+      plugins, pluginsError: state.pluginsError,
       initialViewState: workspace.ui, starting: Boolean(workspace.pendingStart),
       onChooseFolder: window.desktopProjects ? () => window.desktopProjects.selectDirectory() : undefined,
       onRun: async draft => {
@@ -2874,32 +2901,7 @@ function normalizeFallbackResponseLine(line) {
 }
 
 function renderInlineMessageText(value) {
-  const knownAgents = getKnownAgentMentionNames();
-
-  return String(value ?? "")
-    .split(/(@[\p{L}\p{N}_-]+)/gu)
-    .map((part) => {
-      const mention = part.match(/^@([\p{L}\p{N}_-]+)$/u);
-      if (!mention) {
-        return escapeHtml(part);
-      }
-
-      if (!knownAgents.has(mention[1].toLowerCase())) {
-        return escapeHtml(part);
-      }
-
-      const hue = stableMentionHue(mention[1]);
-      return `<span class="agent-mention" style="--mention-hue: ${hue}">${escapeHtml(part)}</span>`;
-    })
-    .join("");
-}
-
-function getKnownAgentMentionNames() {
-  return new Set((state.sessionSettings?.codeAgents ?? []).map((agent) => agent.name.toLowerCase()));
-}
-
-function stableMentionHue(name) {
-  return 205;
+  return renderMentionText(value, state.bootstrap?.plugins ?? [], state.sessionSettings?.codeAgents ?? []);
 }
 
 function renderRuntimeMetaLine(label, value) {
@@ -3265,11 +3267,13 @@ async function submitChatMessage(input, attachments, options = {}) {
     }
     startProcessProgressPolling(activeRequest);
 
+    const selectedPluginIds = pluginMentionIds(input, state.bootstrap?.plugins ?? []);
+    const attachmentMetadata = buildChatAttachmentMetadata(attachments, options.reviewSelection);
     const response = await api.sendChat({
       requestId,
       input,
       sessionId,
-      metadata: buildChatAttachmentMetadata(attachments, options.reviewSelection)
+      metadata: selectedPluginIds.length ? { ...attachmentMetadata, pluginIds: selectedPluginIds } : attachmentMetadata
     }, controller);
     if (activeRequest.cancelled) {
       return;
@@ -4074,17 +4078,13 @@ function bindEvents() {
     await submitChatMessage(input, getActiveDraftAttachments());
   });
 
-  document.querySelector("#chat-form textarea[name='input']")?.addEventListener("input", (event) => {
-    if (!state.activeSessionId) {
-      return;
-    }
-
-    state.drafts[state.activeSessionId] = event.currentTarget.value;
-    updateMentionMenu(event.currentTarget);
-  });
-
-  document.querySelector("#chat-form textarea[name='input']")?.addEventListener("focus", (event) => {
-    updateMentionMenu(event.currentTarget);
+  mentionPicker?.dispose();
+  mentionPicker = bindMentionPicker({
+    textarea: document.querySelector("#chat-form textarea[name='input']"), menu: document.querySelector('[data-mention-menu]'),
+    selected: document.querySelector('[data-composer-mentions]'), getPlugins: () => state.availablePlugins,
+    getCatalog: () => state.bootstrap?.plugins ?? [], getAgents: () => state.sessionSettings?.codeAgents ?? [],
+    refresh: () => refreshAvailablePlugins(true), getError: () => state.pluginsError,
+    onChange: value => { if (state.activeSessionId) state.drafts[state.activeSessionId] = value; }
   });
 
   document.querySelector("[data-action='attach-files']")?.addEventListener("click", () => {
@@ -4250,17 +4250,6 @@ function bindEvents() {
     });
   });
 
-  document.querySelectorAll("[data-action='test-plugin']").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const pluginName = button.dataset.pluginName;
-      await runAction(async () => {
-        const result = await api.testPlugin(pluginName);
-        state.pluginTestResults[pluginName] = result;
-        state.notice = "";
-      });
-    });
-  });
-
   document.querySelectorAll("[data-action='test-provider']").forEach((button) => {
     button.addEventListener("click", async () => {
       const providerId = button.dataset.providerId;
@@ -4285,7 +4274,7 @@ function bindEvents() {
 
       const settingsForm = document.querySelector("#app-settings-form");
       const settingsPayload = settingsForm
-        ? buildAppSettingsPayload(new FormData(settingsForm), false)
+        ? buildAppSettingsPayload(new FormData(settingsForm))
         : null;
 
       await runAction(async () => {
@@ -4562,54 +4551,6 @@ function createUiEntityId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function updateMentionMenu(textarea) {
-  const menu = document.querySelector("[data-mention-menu]");
-  const agents = state.sessionSettings?.codeAgents ?? [];
-
-  if (!menu || agents.length === 0) {
-    return;
-  }
-
-  const beforeCursor = textarea.value.slice(0, textarea.selectionStart ?? textarea.value.length);
-  const match = beforeCursor.match(/@([\p{L}\p{N}_-]*)$/u);
-
-  if (!match) {
-    menu.hidden = true;
-    menu.innerHTML = "";
-    return;
-  }
-
-  const query = match[1].toLowerCase();
-  const candidates = agents
-    .filter((agent) => agent.name.toLowerCase().includes(query))
-    .slice(0, 4);
-
-  if (candidates.length === 0) {
-    menu.hidden = true;
-    menu.innerHTML = "";
-    return;
-  }
-
-  menu.hidden = false;
-  menu.innerHTML = candidates
-    .map((agent) => `<button type="button" class="mention-item" data-mention-agent="${escapeAttr(agent.name)}">@${escapeHtml(agent.name)}</button>`)
-    .join("");
-  menu.querySelectorAll("[data-mention-agent]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const insert = `@${button.dataset.mentionAgent} `;
-      const cursor = textarea.selectionStart ?? textarea.value.length;
-      const start = beforeCursor.length - match[0].length;
-      textarea.value = `${textarea.value.slice(0, start)}${insert}${textarea.value.slice(cursor)}`;
-      textarea.focus();
-      textarea.selectionStart = textarea.selectionEnd = start + insert.length;
-      if (state.activeSessionId) {
-        state.drafts[state.activeSessionId] = textarea.value;
-      }
-      menu.hidden = true;
-    });
-  });
-}
-
 async function refreshModelCollections() {
   await runAction(async () => {
     const [managed, systemMetrics] = await Promise.all([api.refreshManagedModels(), api.getSystemMetrics()]);
@@ -4764,17 +4705,15 @@ function syncSystemMetricsPolling() {
   }, state.route === "orchestration" ? 1000 : 5000);
 }
 
-function buildAppSettingsPayload(form, pluginsOnly) {
+function buildAppSettingsPayload(form) {
   const payload = {};
   // Legacy callers also preserve absent fields; Settings pages use entityPatch.
   const numeric = new Set(["timeoutMs", "maxTokens", "topK", "contextSize", "gpuLayers", "memoryLimitPercent", "loadTimeoutMs", "generationTimeoutMs", "activationThreshold", "chunkCapacity", "initialRadius", "maxRadius"]);
   for (const [name, raw] of form.entries()) {
     let keys = name.split(".");
-    if (!["provider", "plugin", "llm", "localModels", "memory", "mcp"].includes(keys[0])) continue;
-    if (pluginsOnly && keys[0] !== "plugin") continue;
+    if (!["provider", "llm", "localModels", "memory", "mcp"].includes(keys[0])) continue;
     if (keys.some(key => ["__proto__", "constructor", "prototype"].includes(key))) continue;
     if (keys[0] === "provider") keys[0] = "providers";
-    if (keys[0] === "plugin") { keys[0] = "plugins"; if (keys[2] !== "enabled") keys.splice(2, 0, "values"); }
     const key = keys.at(-1);
     if (key === "apiKey" && !String(raw).trim()) continue;
     let target = payload;
@@ -5303,18 +5242,6 @@ function renderChipGroup(label, chips) {
 
 function renderDatalistOptions(values) {
   return values.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("");
-}
-
-function pluginFieldPlaceholder(pluginName, key) {
-  if (pluginName === "notion" && key === "parentPageUrl") {
-    return "https://www.notion.so/... paste page URL";
-  }
-
-  if (pluginName === "notion" && key === "dataSourceUrl") {
-    return "https://www.notion.so/... paste data source URL";
-  }
-
-  return "";
 }
 
 function formatProviderTestResult(result) {

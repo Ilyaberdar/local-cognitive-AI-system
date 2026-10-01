@@ -39,8 +39,9 @@ import { MemoryService } from "../memory/MemoryService";
 import { OpenMemoryAdapter } from "../memory/OpenMemoryAdapter";
 import { VectorStore } from "../memory/VectorStore";
 import { WorldPartitionMemoryAdapter } from "../memory/WorldPartitionMemoryAdapter";
-import { PluginLoader } from "../plugins/PluginLoader";
-import { LoadedPlugin } from "../plugins/types";
+import { PluginManager } from "../plugins/PluginManager";
+import { pluginCatalog } from "../plugins/catalog";
+import { CatalogPlugin } from "../plugins/contracts";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { FileTool } from "../tools/FileTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
@@ -99,7 +100,6 @@ import { SessionIndexStore } from "../session/SessionIndexStore";
 import { OperationExecutor } from "../tools/OperationExecutor";
 import { AgentLoopRunner } from "../agents/runtime/AgentLoopRunner";
 import { CodeAgentCoordinator } from "../agents/code/CodeAgentCoordinator";
-import { PluginOperationExecutor } from "../tools/PluginOperationExecutor";
 import { SynthesisService } from "../synthesis/SynthesisService";
 
 export interface AppRuntime {
@@ -114,7 +114,8 @@ export interface AppRuntime {
   engine: CognitiveEngine;
   providerDescriptors: ProviderDescriptor[];
   tools: ToolDescriptor[];
-  plugins: LoadedPlugin[];
+  plugins: readonly CatalogPlugin[];
+  pluginManager: PluginManager;
   formatter: ResponseFormatter;
   sessionSettingsStore: SessionSettingsStore;
   modelCatalog: ModelCatalogService;
@@ -487,7 +488,8 @@ export const buildRuntime = async (
   config: AppConfig,
   logger: Logger,
   sharedLocalModelService?: LocalModelService,
-  sharedMcpClients?: McpClientService
+  sharedMcpClients?: McpClientService,
+  sharedPlugins?: PluginManager
 ): Promise<AppRuntime> => {
   await fs.mkdir(config.memory.baseDir, { recursive: true });
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
@@ -498,7 +500,8 @@ export const buildRuntime = async (
   const projectStore = new ProjectStore(config.appDataDir);
   const sessionIndexStore = new SessionIndexStore(config.appDataDir);
   const workspaceResolver = new WorkspaceResolver(config,projectStore,sessionIndexStore);
-  const operationExecutor = new OperationExecutor(config.appDataDir);
+  const pluginManager = sharedPlugins ?? new PluginManager(config.appDataDir, `local:${config.appDataDir}`);
+  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager);
 
   const providerRegistry = new LLMRegistry();
   // RuntimeManager supplies the long-lived owner. Direct test/headless builders remain supported.
@@ -671,16 +674,7 @@ export const buildRuntime = async (
     })
   );
 
-  const pluginLoader = new PluginLoader(
-    config.plugins.dir,
-    {
-      config,
-      logger,
-      toolRegistry
-    },
-    logger
-  );
-  const plugins = await pluginLoader.loadAll();
+  const plugins = pluginCatalog;
 
   const agentLoopRunner = new AgentLoopRunner(llmService,operationExecutor,config.appDataDir,config.agentLimits);
   const engine = new CognitiveEngine(
@@ -697,7 +691,7 @@ export const buildRuntime = async (
       : undefined,
     workspaceResolver,
     new CodeAgentCoordinator(agentLoopRunner),
-    new PluginOperationExecutor(config.appDataDir)
+    pluginManager
   );
   const workflowRunner = new WorkflowRunner(
     taskStore,
@@ -761,6 +755,7 @@ export const buildRuntime = async (
     providerDescriptors: providerRegistry.list(),
     tools: toolRegistry.list(),
     plugins,
+    pluginManager,
     formatter: new ResponseFormatter(),
     sessionSettingsStore,
     modelCatalog,

@@ -26,6 +26,10 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     }
   };
   object(patch, "Settings");
+  if (patch.filesystem !== undefined) {
+    check(object(patch.filesystem, "filesystem"), "filesystem", { outputDir: "string", accessMode: ["restricted", "full"] });
+    if (patch.filesystem.allowedDirectories !== undefined && (!Array.isArray(patch.filesystem.allowedDirectories) || patch.filesystem.allowedDirectories.some(value => typeof value !== "string"))) throw new SettingsValidationError("Invalid filesystem.allowedDirectories.");
+  }
   if (patch.ui !== undefined) check(object(patch.ui, "ui"), "ui", {
     theme: ["dark", "light", "system"], animations: "boolean", fontScale: [85, 150], codeFontSize: [10, 20], language: ["auto", "ru", "en"],
     outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"]
@@ -46,6 +50,7 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     });
   }
   if (patch.plugins !== undefined) for (const [id, plugin] of Object.entries(object(patch.plugins, "plugins"))) {
+    if (["file", "notion", "vscode"].includes(id)) throw new SettingsValidationError("Legacy plugins were retired. Use Integrations or built-in filesystem settings.");
     const value = object(plugin, `plugins.${id}`);
     check(value, `plugins.${id}`, { enabled: "boolean" });
     if (value.values !== undefined) for (const field of Object.values(object(value.values, `plugins.${id}.values`))) {

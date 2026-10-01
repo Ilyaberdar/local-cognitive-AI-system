@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme, systemPreferences, shell, powerMonitor } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
 const net = require("net");
 const path = require("path");
 const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
@@ -70,9 +70,18 @@ const configureRuntimeEnvironment = async () => {
   };
 };
 
-const startBackend = (appRoot) => {
+const startBackend = async (appRoot) => {
   const entry = path.join(appRoot, "dist", "src", "index.js");
-  return require(entry).startBackend();
+  const { EncryptedCredentialVault } = require(path.join(appRoot, "dist", "src", "plugins", "EncryptedCredentialVault.js"));
+  const vault = new EncryptedCredentialVault(path.join(process.env.APP_DATA_DIR, "integrations", "vault"), {
+    available: () => safeStorage.isEncryptionAvailable() && (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
+    encrypt: value => safeStorage.encryptString(value), decrypt: value => safeStorage.decryptString(value)
+  });
+  const { loadOAuthClientRegistrations } = require(path.join(appRoot, "dist", "src", "plugins", "OAuthConnections.js"));
+  let oauthClients = {};
+  try { oauthClients = await loadOAuthClientRegistrations(process.env.LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE || path.join(appRoot, "electron", "plugin-oauth-clients.json")); }
+  catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
+  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) });
 };
 
 const createWindow = async (url) => {

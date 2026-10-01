@@ -1,0 +1,10 @@
+{
+  "google-drive": {
+    "clientId": "YOUR_DESKTOP_CLIENT_ID.apps.googleusercontent.com",
+    "clientSecret": "YOUR_DOWNLOADED_DESKTOP_CLIENT_SECRET",
+    "callbackPort": 17849
+  },
+  "github": {
+    "clientId": "YOUR_OAUTH_APP_CLIENT_ID_WITH_DEVICE_FLOW_ENABLED"
+  }
+}

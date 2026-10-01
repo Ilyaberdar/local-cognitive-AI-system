@@ -1,10 +1,11 @@
 import { icon, bindGlassLighting } from './ui-primitives.js';
-import { entityPatch, localProfileView } from './settings-data.js';
+import { entityPatch, localProfileView, mcpServerCount } from './settings-data.js';
+import { mountIntegrationPage } from './plugins-ui.js';
 
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
   ['AI System', [['providers', 'Models & Providers', 'models'], ['runtime', 'Local Runtime', 'models'], ['agents', 'Agents', 'workflow'], ['memory', 'Memory', 'folder']]],
-  ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connections', 'externalLink']]],
+  ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connected accounts', 'externalLink']]],
   ['System', [['data', 'Data & Privacy', 'shield'], ['about', 'About', 'info']]]
 ];
 const providerNames = { llamacpp: 'Local models · llama.cpp', ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
@@ -26,7 +27,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   document.body.append(menu);
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo;
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations;
   const context = () => getContext() || {};
   const settings = () => context().appSettings || {};
   const fieldsFor = route => {
@@ -36,6 +37,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       select('ui.outputStyle', 'Response style', ['compact', 'balanced', 'detailed', 'exhaustive'], 'Default for new chats.'),
       select('ui.mode', 'Default chat mode', ['auto', 'general', 'code', 'hypothesis'], 'Existing chats keep their own settings.')
     ];
+    if (name === 'data') return [field('filesystem.outputDir', 'Chat output folder', 'text', { description: 'Built-in file tools use this folder for ordinary chats. Project and workflow folders keep their own boundaries.' }),
+      select('filesystem.accessMode', 'Built-in filesystem access', ['restricted', 'full']),
+      field('filesystem.allowedDirectories', 'Allowed folders', 'textarea', { description: 'One absolute folder path per line. Session approval rules still apply.' })];
     if (name === 'voice') return [field('voice.microphone', 'Microphone', 'text', { description: 'Input device, headset, input level and permissions' }), field('voice.language', 'Language'), field('voice.recognition', 'Recognition model')];
     if (name === 'appearance') return [
       select('ui.theme', 'Theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], 'Uses the same theme as the main sidebar.'),
@@ -73,11 +77,6 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     ];
     if (name === 'memory') return [select('memory.adapter', 'Adapter', ['local-json', 'world-partition', 'openmemory']), number('memory.topK', 'Retrieval Top K', 1, 1000), field('memory.baseDir', 'Memory directory'), bool('memory.worldPartition.crossSessionRecall', 'Cross-session recall')];
     if (name === 'mcp' && id === 'local-cognitive') return [bool('mcp.server.enabled', 'Enabled'), field('mcp.server.defaultSessionId', 'Default session')];
-    if (name === 'plugins' && id) {
-      const integration = data.integrations.find(item => item.id === id);
-      return !integration || integration.unavailable ? [] : [bool(`plugins.${id}.enabled`, 'Enabled'), ...integration.fields.map(([key, label, type]) => type === 'access'
-        ? select(`plugins.${id}.values.${key}`, label, ['restricted', 'full']) : field(`plugins.${id}.values.${key}`, label, type || 'text'))];
-    }
     return [];
   };
   function titleFor(route) {
@@ -86,7 +85,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     return groups.flatMap(([, items]) => items).find(([key]) => key === name)?.[1] || 'Page not found';
   }
   const dirty = route => { if (!drafts.has(route)) drafts.set(route, {}); return drafts.get(route); };
-  function valueOf(spec) { return Object.hasOwn(dirty(page), spec.name) ? dirty(page)[spec.name] : get(settings(), spec.name); }
+  function valueOf(spec) { const value = Object.hasOwn(dirty(page), spec.name) ? dirty(page)[spec.name] : get(settings(), spec.name); return Array.isArray(value) ? value.join('\n') : value; }
   function renderField(spec) {
     const value = valueOf(spec), id = `setting-${spec.name.replaceAll('.', '-')}`;
     let control;
@@ -127,23 +126,24 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'account') return profile() + note('Cloud account unavailable', 'Sign-in, cloud synchronization and billing are not available in this release. Local features work without an account.');
     if (name === 'usage') return note('Usage statistics are not available yet', 'This version does not maintain a complete usage ledger across chats, agents, workflows and providers. Token totals, subscription limits and lifetime activity cannot be reported reliably.');
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. Configurable desktop notifications are not available in this release.');
-    if (name === 'connections') return note('Account connections unavailable', 'External account authorization and OAuth connection management will arrive in a later stage. Configure the current integrations in Plugins.') + link('plugins', 'Plugins');
+    if (name === 'connections') return '<div data-integrations-page></div>';
     if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
     if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
     if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata']].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>`;
-    if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them.</p><button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>`;
-    if (name === 'plugins' && !id) return `<p class="settings-description">Existing integrations use the local backend. Saved configuration does not confirm a connection.</p><div class="settings-list">${data.integrations.map(integration => link(`plugins/${integration.id}`, integration.name, integration.unavailable ? 'Unavailable · saved configuration preserved' : `${settings().plugins?.[integration.id]?.enabled ? 'Enabled' : 'Disabled'} · ${integration.description}`)).join('')}</div>`;
-    if (name === 'plugins' && id) {
-      const integration = data.integrations.find(item => item.id === id);
-      if (!integration) return note('Integration not found', 'Return to Plugins to choose an existing integration.');
-      if (integration.unavailable) return note('Editor bridge unavailable', integration.description);
-      return `<p class="settings-description">${escape(integration.description)} ${id === 'file' ? 'Test writes a small check file in the configured output directory.' : 'Test checks the saved credentials; it does not run an OAuth flow.'}</p>` + form(specs) + `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="plugin" ${statuses.get(page)?.busy ? 'disabled' : ''}>Save & test integration</button></div>` + testResult;
-    }
+    if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p><button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
+    if (name === 'plugins') return '<div data-integrations-page></div>';
     if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerNames[key] || key, provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
     if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}</p>` + form(specs) + `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(page)?.busy ? 'disabled' : ''}>Save & test provider</button></div>` + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
     if (name === 'runtime') return `<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape(context().localModels?.runtime?.status || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(specs);
     if (name === 'memory') return form(specs) + (!id ? link('memory/advanced', 'Advanced memory', 'Partition, chunk and adapter parameters') : '');
-    if (name === 'mcp' && !id) return `<p class="settings-description">The Local Cognitive server exposes this application to other MCP clients. Outgoing clients are managed separately by the existing MCP Client Manager.</p>` + link('mcp/local-cognitive', 'Local Cognitive MCP server', 'Incoming · stdio') + note('Outgoing MCP clients', 'The existing MCP Client Manager and its stored configuration are preserved. Connection-management controls are not part of this UI stage.');
+    if (name === 'mcp' && !id) {
+      const servers = Object.values(settings().mcp?.client?.servers || {});
+      return `<p class="settings-description">MCP (Model Context Protocol) connects AI applications to tools and data. This page lists ${mcpServerCount(settings())} configured server${mcpServerCount(settings()) === 1 ? '' : 's'}: the built-in Local Cognitive server and any separately added external servers. This is not a count of connected accounts.</p>
+        <h2>This app as an MCP server</h2><p class="settings-footnote">Lets another AI application use Local Cognitive tools. It does not connect Google Drive or other plugin accounts.</p>`
+        + link('mcp/local-cognitive', 'Local Cognitive MCP server', `Incoming · stdio · ${settings().mcp?.server?.enabled ? 'Enabled, starts on demand' : 'Disabled'}`)
+        + `<h2>External MCP servers · ${servers.length}</h2><p class="settings-footnote">Additional servers used by this app. Services managed by plugins, such as Notion, remain under Plugins.</p>`
+        + (servers.length ? servers.map(server => `<div class="settings-list-row"><span><strong>${escape(server.name || server.id)}</strong><small>${escape(server.transport)} · ${server.enabled ? 'Configured' : 'Disabled'} · connection status not checked here</small></span></div>`).join('') : '<p class="settings-footnote">No external MCP servers have been added.</p>');
+    }
     if (name === 'mcp' && id === 'local-cognitive') return `<p class="settings-description">Incoming MCP server for Local Cognitive. Other applications connect to this runtime over stdio; these controls do not manage outgoing connections.</p>` + form(specs, '<div class="settings-row"><span>Transport</span><span>stdio</span></div>') + `<p class="settings-footnote">Changes apply when the stdio server is next started.</p><pre class="config-snippet">npm run --silent mcp:stdio</pre>`;
     if (specs.length) return form(specs);
     return note('Page not found', 'Choose a page from the Settings navigation.');
@@ -178,12 +178,14 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   function render() {
     disposeVoice?.(); disposeVoice = undefined;
+    disposeIntegrations?.(); disposeIntegrations = undefined;
     const [name, id] = page.split('/');
-    const parent = ['account', 'usage'].includes(name) ? 'profile' : id ? name : null;
+    const parent = ['account', 'usage'].includes(name) ? 'profile' : id ? name : ['connections', 'mcp'].includes(name) ? 'plugins' : null;
     root.innerHTML = `<div class="settings-shell"><aside class="settings-sidebar liquid-glass"><a class="settings-back" href="${escape(previousRoute)}">${icon('chevronLeft')}<span>Back to app</span></a><div class="settings-search">${icon('search')}<input id="settings-search" type="search" placeholder="Search settings" aria-label="Search settings" value="${escape(search)}" /></div><div class="settings-search-results" hidden></div><nav class="settings-groups" aria-label="Settings navigation">${groups.map(([group, items]) => `<div class="settings-group"><h2>${group}</h2>${items.map(([route, label, symbol]) => `<a href="#/settings/${route}" class="settings-nav-row ${route === name ? 'active' : ''}" ${route === name ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span></a>`).join('')}</div>`).join('')}</nav></aside><main class="settings-content"><div class="settings-content-inner">${parent ? `<a class="settings-parent" href="#/settings/${parent}" aria-label="Back to ${escape(titleFor(parent))}">${icon('chevronLeft')}<span>${escape(titleFor(parent))}</span></a>` : ''}<h1 tabindex="-1">${escape(titleFor(page))}</h1>${content()}</div></main></div>`;
     root.querySelector('#settings-search').addEventListener('input', event => { search = event.target.value; renderSearch(); });
     renderSearch(); bindForm(); bindGlassLighting(root);
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
+    if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(settings()) });
     root.querySelector('[data-open-data]')?.addEventListener('click', openDataFolder);
     if (page === 'about' && !appInfo) void (window.desktopApp?.getInfo?.() || fetch('/app/info').then(response => response.json())).then(info => { appInfo = info; if (active && page === 'about') render(); }).catch(() => { appInfo = { version: 'Unavailable' }; if (active && page === 'about') render(); });
   }
@@ -214,7 +216,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const preference = specs.length && specs.every(spec => spec.name.startsWith('ui.'));
     element?.addEventListener('input', event => {
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
-      const value = spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
+      const value = spec.name === 'filesystem.allowedDirectories' ? event.target.value.split('\n').map(value => value.trim()).filter(Boolean) : spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
       if (spec.type === 'secret' && value === '') delete dirty(current)[spec.name]; else dirty(current)[spec.name] = value;
       results.delete(current);
       root.querySelector('.settings-test-result')?.remove();
@@ -254,7 +256,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       if (Object.keys(dirty(current)).length) { setStatus(current, { text: 'Apply the newer changes before testing.' }); return; }
       setStatus(current, { text: 'Testing…', busy: true });
       let result;
-      try { result = kind === 'provider' ? await data.testProvider(id, settings().providers[id].model, settings().providers[id].timeoutMs) : await data.testPlugin(id); }
+      try { result = await data.testProvider(id, settings().providers[id].model, settings().providers[id].timeoutMs); }
       catch (error) { result = { ok: false, message: error.message }; }
       if (!Object.keys(dirty(current)).length) results.set(current, result);
       const hasNewerEdits = Object.keys(dirty(current)).length > 0;
@@ -327,6 +329,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       }
       if (active) {
         disposeVoice?.(); disposeVoice = undefined;
+        disposeIntegrations?.(); disposeIntegrations = undefined;
         active = false; root.hidden = true; app.inert = false; app.style.visibility = '';
         onReturn();
         if (hash === previousRoute) restoreScroll(appScroll);

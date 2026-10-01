@@ -6,6 +6,8 @@ const filePath = z.string().min(1).max(4096).refine(value => !value.includes("\0
 const text = z.string().max(1_000_000);
 const version = z.string().min(1).max(128);
 export const agentToolSchemas = {
+  "plugins.search": z.object({ query: z.string().max(1000) }).strict(),
+  "plugins.call": z.object({ toolId: z.string().min(1).max(1000), argumentsJson: z.string().min(2).max(200_000) }).strict(),
   "file.list": z.object({ path: filePath.default("."), limit: z.number().int().min(1).max(300).default(100) }).strict(),
   "file.search": z.object({ path: filePath.default("."), query: z.string().max(1000), limit: z.number().int().min(1).max(200).default(40), maxResults: z.number().int().min(1).max(200).optional(), maxFiles: z.number().int().min(1).max(5000).default(500), include:z.array(z.string().max(200)).max(50).optional(),exclude:z.array(z.string().max(200)).max(50).optional(),maxFileBytes:z.number().int().min(1024).max(5_000_000).default(524288) }).strict(),
   "file.read": z.object({ path: filePath, startLine: z.number().int().min(1).default(1), endLine: z.number().int().min(1).optional() }).strict(),
@@ -29,21 +31,25 @@ export function parseAgentAction(value: unknown): AgentAction {
   for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) if (args[key] === null && field.isOptional()) delete args[key];
   return { tool, arguments: agentToolSchemas[tool].parse(args) };
 }
-export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search"].includes(tool);
+// plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.
+export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call"].includes(tool);
+export interface AgentToolOptions { plugins?: boolean; pluginOnly?: boolean; }
 
-export function agentFunctionTools(readOnly = false): LLMFunctionTool[] {
-  return Object.entries(agentToolSchemas).filter(([name]) => !readOnly || readTool(name)).map(([action, schema]) => {
+export function agentFunctionTools(readOnly = false, options: AgentToolOptions = {}): LLMFunctionTool[] {
+  return Object.entries(agentToolSchemas).filter(([name]) => (name.startsWith("plugins.") ? options.plugins : !options.pluginOnly) && (!readOnly || readTool(name))).map(([action, schema]) => {
     const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
     const required = (json.required ?? []) as string[];
     return { name: action.replaceAll(".", "_"), action,
-      description: `Execute ${action} in the workspace. ${action.startsWith("file.") && !readTool(action) ? 'Read existing files first and pass their returned expectedVersion; use "missing" only for a new file.' : "Use the actual result as evidence before answering."}${action === "file.search" || action === "file.read" ? " Pass a search result's absolutePath directly to file.read; its path is relative to the search root, not necessarily the workspace." : ""}`,
+      description: action === "plugins.search" ? "Find tools from enabled connected plugins by service name or task keywords. Returns exact tool IDs, account names, schemas and read/write status. Search first; never invent IDs or arguments."
+        : action === "plugins.call" ? "Call a tool found by plugins.search. toolId must match exactly; argumentsJson must be a JSON object serialized as a string matching the returned schema. External writes require approval. Never repeat a denied or unknown operation."
+        : `Execute ${action} in the workspace. ${action.startsWith("file.") && !readTool(action) ? 'Read existing files first and pass their returned expectedVersion; use "missing" only for a new file.' : "Use the actual result as evidence before answering."}${action === "file.search" || action === "file.read" ? " Pass a search result's absolutePath directly to file.read; its path is relative to the search root, not necessarily the workspace." : ""}`,
       parameters: strictJsonSchema(json), optionalArguments: Object.keys(schema.shape).filter(key => !required.includes(key)) };
   });
 }
 
 /** The wrapper keeps a valid object root even on APIs that disallow a root union. */
-export function agentActionFormat(readOnly = false, finalOnly = false): LLMResponseFormat {
-  const alternatives: Record<string, unknown>[] = (finalOnly ? [] : agentFunctionTools(readOnly)).map(tool => ({
+export function agentActionFormat(readOnly = false, finalOnly = false, options: AgentToolOptions = {}): LLMResponseFormat {
+  const alternatives: Record<string, unknown>[] = (finalOnly ? [] : agentFunctionTools(readOnly, options)).map(tool => ({
     type: "object", properties: { type: { const: "tool_call", type: "string" }, tool: { const: tool.action, type: "string" }, arguments: tool.parameters },
     required: ["type", "tool", "arguments"], additionalProperties: false
   }));

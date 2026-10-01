@@ -21,9 +21,7 @@ import { VectorStore } from "../src/memory/VectorStore";
 import { ProjectStore } from "../src/projects/ProjectStore";
 import { SessionIndexStore } from "../src/session/SessionIndexStore";
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
-import { NotionTool } from "../src/tools/NotionTool";
 import { OperationExecutor } from "../src/tools/OperationExecutor";
-import { PluginOperationExecutor } from "../src/tools/PluginOperationExecutor";
 import { Tool } from "../src/tools/Tool.interface";
 import { ToolRegistry } from "../src/tools/ToolRegistry";
 import { ActorContext, ExecutionContext, LLMRequest, ProcessInput, ToolExecutionRequest } from "../src/types";
@@ -97,11 +95,10 @@ async function fixture(t: TestContext) {
   };
   tools.register(plugin);
   const makeEngine = () => {
-    const plugins = new PluginOperationExecutor(appDataDir);
     const runner = new AgentLoopRunner(llm, new OperationExecutor(appDataDir), appDataDir);
     const engine = new CognitiveEngine(new ModeDetector(), router, memory, settings, tools, new ToolRequestBuilder(), logger,
-      "scripted", () => false, resolver, new CodeAgentCoordinator(runner), plugins);
-    return { engine, plugins, runner };
+      "scripted", () => false, resolver, new CodeAgentCoordinator(runner));
+    return { engine, runner };
   };
   const actor = (id: string): ActorContext => ({ sessionId: id, userId: "owner", channel: "http" });
   const seed = (session: { id: string; projectId?: string }, input: string) => memory.save({
@@ -220,134 +217,6 @@ test("client actor and metadata cannot rebind a project or replace its stored As
   assert.deepEqual(f.legacyToolCalls, []);
 });
 
-test("engine plugin approval survives restart with the original payload and no second model or connector execution", async t => {
-  const f = await fixture(t);
-  const workspace = (await f.resolver.forSession(f.a1.id))!;
-  const request: ProcessInput = { input: "Publish note for the project", actor: f.actor(f.a1.id), metadata: { label: "original" },
-    execution: { workspace, accessMode: "ask", agentRunId: "plugin-restart", pauseForApproval: true } };
-  f.setScript(() => final("ORIGINAL-APPROVED-CONTENT"));
-  const waiting = await f.engine.process(request);
-  assert.ok(waiting.pendingApproval);
-  assert.equal(f.pluginCalls.length, 0);
-  assert.equal(f.calls.length, 1);
-  assert.equal((await f.memory.recent({ actor: { ...f.actor(f.a1.id), memoryScope: workspace.memoryScope } })).length, 0,
-    "Waiting for approval cannot persist a completed chat response.");
-  const proposal = (await f.plugins.store.get(waiting.pendingApproval.id))!;
-  assert.equal(proposal.request.metadata?.noteContent, "ORIGINAL-APPROVED-CONTENT");
-  request.metadata!.label = "changed after approval was requested";
-  await f.seed(f.a1, "Later conversation content must not replace the proposed note");
-  request.execution!.approval = { id: waiting.pendingApproval.id, approved: true };
-  f.setScript(() => { throw new Error("Resuming a plugin must not ask the model to regenerate the proposal"); });
-  const resumed = await f.makeEngine().engine.process(request);
-  assert.equal(resumed.result.error, undefined);
-  assert.equal(resumed.pendingApproval, undefined);
-  assert.equal(resumed.tools.at(-1)?.ok, true);
-  assert.equal(f.pluginCalls.length, 1);
-  assert.equal(f.pluginCalls[0].metadata?.noteContent, "ORIGINAL-APPROVED-CONTENT");
-  assert.equal(f.pluginCalls[0].context.requestMetadata?.label, "original");
-  assert.deepEqual(f.pluginCalls[0].context.conversation, []);
-  assert.equal(f.pluginCalls[0].content, proposal.request.content);
-  const replay = await f.makeEngine().engine.process(request);
-  assert.deepEqual(replay.tools, resumed.tools);
-  assert.equal(f.pluginCalls.length, 1);
-  assert.equal(f.calls.length, 1);
-});
-
-test("changed plugin destinations are blocked both after a restart and while a live approval is waiting", async t => {
-  for (const scenario of ["restart", "live approval"] as const) await t.test(scenario, async child => {
-    const f = await fixture(child);
-    const workspace = (await f.resolver.forSession(f.a1.id))!;
-    f.setScript(() => final("Proposed note content"));
-    const request: ProcessInput = { input: "Publish note for the project", actor: f.actor(f.a1.id),
-      execution: { workspace, accessMode: "ask", agentRunId: `plugin-config-${scenario}`, pauseForApproval: scenario === "restart" } };
-    let result;
-    if (scenario === "restart") {
-      const waiting = await f.engine.process(request);
-      assert.ok(waiting.pendingApproval);
-      f.pluginConfiguration.destination = "different-page";
-      request.execution!.approval = { id: waiting.pendingApproval.id, approved: true };
-      result = await f.makeEngine().engine.process(request);
-    } else {
-      request.requestApproval = async proposal => {
-        assert.equal(proposal.operation, "plugin");
-        assert.match(proposal.details, /Proposed note content/);
-        f.pluginConfiguration.destination = "different-page";
-        return true;
-      };
-      result = await f.engine.process(request);
-    }
-    assert.equal(result.tools.at(-1)?.metadata?.permissionRequired, true);
-    assert.match(result.result.error!, /configuration changed/);
-    assert.ok("response" in result.result);
-    assert.match(result.result.response, /configuration changed/);
-    assert.equal(f.pluginCalls.length, 0);
-    assert.equal(f.calls.length, 1);
-  });
-});
-
-test("uncertain plugin effects stop the engine before any later plugin and remain stopped after restart", async t => {
-  const f = await fixture(t);
-  const workspace = (await f.resolver.forSession(f.a1.id))!;
-  let effects = 0;
-  let laterEffects = 0;
-  f.plugin.execute = async () => { effects++; throw new Error("Connection closed after a possible remote effect"); };
-  f.tools.register({ name: "later", description: "Another explicitly requested plugin", matchesIntent: () => true,
-    execute: async () => { laterEffects++; return { tool: "later", ok: true, output: "Executed" }; },
-    toDescriptor: () => ({ name: "later", description: "Another explicitly requested plugin" }) });
-  f.setScript(() => final("Proposed note content"));
-  const request: ProcessInput = { input: "Publish note for the project", actor: f.actor(f.a1.id),
-    execution: { workspace, accessMode: "full", agentRunId: "plugin-unknown" } };
-  const first = await f.engine.process(request);
-  assert.equal(first.tools.at(-1)?.metadata?.unknown, true);
-  assert.match(first.result.error!, /unknown/);
-  const replay = await f.makeEngine().engine.process(request);
-  assert.equal(replay.tools.at(-1)?.metadata?.unknown, true);
-  assert.equal(effects, 1);
-  assert.equal(laterEffects, 0);
-  assert.equal(f.calls.length, 1);
-});
-
-test("declining a plugin approval replaces the model's success claim and returns failure to its workflow caller", async t => {
-  const f = await fixture(t);
-  const workspace = (await f.resolver.forSession(f.a1.id))!;
-  f.setScript(() => final("The note was saved successfully."));
-  let laterEffects = 0;
-  f.tools.register({ name: "later", description: "Another requested plugin", matchesIntent: () => true,
-    execute: async () => { laterEffects++; return { tool: "later", ok: true, output: "Executed" }; },
-    toDescriptor: () => ({ name: "later", description: "Another requested plugin" }) });
-  const request: ProcessInput = { input: "Publish note for the project", actor: f.actor(f.a1.id),
-    execution: { workspace, accessMode: "ask", agentRunId: "plugin-declined", pauseForApproval: true } };
-  const waiting = await f.engine.process(request);
-  assert.ok(waiting.pendingApproval);
-  request.execution!.approval = { id: waiting.pendingApproval.id, approved: false };
-  const declined = await f.makeEngine().engine.process(request);
-  assert.equal(declined.pendingApproval, undefined, "A rejected plugin ends this invocation before asking to run another plugin.");
-  assert.equal(declined.tools.at(-1)?.metadata?.cancelled, true);
-  assert.match(declined.result.error!, /Cancelled/);
-  assert.ok("response" in declined.result);
-  assert.match(declined.result.response, /Cancelled/);
-  assert.doesNotMatch(declined.result.response, /saved successfully/);
-  assert.equal(f.pluginCalls.length, 0);
-  assert.equal(laterEffects, 0);
-  request.execution!.approval.approved = true;
-  const replay = await f.makeEngine().engine.process(request);
-  assert.equal(replay.result.error, declined.result.error);
-  assert.equal(f.pluginCalls.length, 0);
-  assert.equal(f.calls.length, 1);
-});
-
-test("Notion approval identity changes with its actual destination and credential configuration without exposing their values", () => {
-  const options = { apiKey: "fixture-secret-token", parentPageId: "original-page", titleProperty: "Name", version: "2026-03-11" };
-  const tool = new NotionTool(options);
-  const original = tool.approvalFingerprint();
-  assert.match(original, /^[a-f0-9]{64}$/);
-  assert.equal(new NotionTool({ ...options }).approvalFingerprint(), original);
-  for (const changed of [{ parentPageId: "new-page" }, { apiKey: "new-secret" }, { titleProperty: "Title" }, { dataSourceId: "data-source" }]) {
-    assert.notEqual(new NotionTool({ ...options, ...changed }).approvalFingerprint(), original);
-  }
-  options.parentPageId = "new-page";
-  assert.notEqual(tool.approvalFingerprint(), original);
-});
 
 test("workflow agent trace includes a waiting adviser before the main agent starts and excludes another run's records", async t => {
   const f = await fixture(t);
@@ -381,9 +250,10 @@ test("workflow agent trace includes a waiting adviser before the main agent star
   const read = (runId: string, agentId: string) => new Promise<{ status: number; body: unknown }>((resolve, reject) => {
     let status = 200;
     const url = `/workflow-runs/${runId}/agent-runs/${encodeURIComponent(agentId)}`;
-    const request = { method: "GET", url, originalUrl: url, headers: {} } as Request;
-    const response = { status(code: number) { status = code; return this; }, json(body: unknown) { resolve({ status, body }); return this; } };
-    api(request, response as Response, error => error ? reject(error) : resolve({ status: 404, body: undefined }));
+    const request = { method: "GET", url, originalUrl: url, headers: { host: "127.0.0.1:3000" },
+      socket: { remoteAddress: "127.0.0.1", localPort: 3000 } } as Request;
+    const response = { setHeader() {}, status(code: number) { status = code; return this; }, json(body: unknown) { resolve({ status, body }); return this; } };
+    api(request, response as unknown as Response, error => error ? reject(error) : resolve({ status: 404, body: undefined }));
   });
   const response = await read("owned", baseId);
   assert.equal(response.status, 200);

@@ -38,6 +38,22 @@ async function fixture(t:test.TestContext){
 }
 const action=(tool:string,args:Record<string,unknown>)=>({type:"tool_call",tool,arguments:args});
 
+test("empty initial schema reply gets one validated-text retry, with no tool replay or reasoning promotion", async t => {
+  for (const recovers of [true, false]) {
+    const f = await fixture(t); let calls = 0;
+    const llm = { supportsStructuredOutputs: () => true, generateObject: async (request: LLMRequest) => {
+      calls++;
+      if (calls === 1) assert.equal(request.responseFormat?.type, 'json_schema');
+      else { assert.equal(request.responseFormat, null); assert.match(request.prompt, /No tool was executed/); }
+      return { data: null, response: { provider: 'fixture', model: 'test', text: calls === 2 && recovers ? '{"type":"final","text":"Recovered."}' : '',
+        error: calls === 2 && recovers ? undefined : 'The model returned no final answer (its response may contain only reasoning).' } };
+    } } as unknown as LLMService;
+    const result = await new AgentLoopRunner(llm, f.operations, f.root).run({ id: 'schema-empty', input: 'Say hello', instructions: '', context: f.context, target: f.context.activeTarget });
+    assert.equal(calls, 2); assert.equal(result.tools.length, 0);
+    if (recovers) assert.equal(result.text, 'Recovered.'); else assert.match(result.error!, /no final answer/);
+  }
+});
+
 test("workspace agent forwards model loading phases and live tool output with operation identity", async t => {
   const f = await fixture(t);
   const events: ProcessProgressEvent[] = [];

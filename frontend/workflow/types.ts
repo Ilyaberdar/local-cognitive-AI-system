@@ -65,6 +65,13 @@ export interface ProviderOption {
   modelLabels?: Record<string, string>;
 }
 
+export interface PluginOption {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+}
+
 export interface WorkflowNodeProgress {
   id?: string;
   transitionId?: string;
@@ -116,6 +123,8 @@ export interface WorkflowEditorViewState {
 }
 
 export interface WorkflowEditorProps {
+  plugins?: PluginOption[];
+  pluginsError?: string;
   settingsContainer?: HTMLElement | null;
   onReview?: (runId: string, decision: { approved: boolean; approvalId?: string; waitingNodeRunId?: string }) => Promise<void>;
   projects?: Array<{ id: string; name: string; rootPath: string; archivedAt?: string }>;

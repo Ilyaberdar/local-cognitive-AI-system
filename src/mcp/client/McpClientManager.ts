@@ -70,7 +70,30 @@ export class McpClientManager implements McpClientService {
     return () => { this.listeners.delete(listener); };
   }
 
+  private readonly configurationScopes = new Map<string, McpClientConfiguration>();
+
   async reconcile(configuration: McpClientConfiguration): Promise<void> {
+    return this.reconcileScope("manual", configuration);
+  }
+
+  /** Internal owners share the transport pool without deleting each other's bindings. */
+  async reconcileScope(scope: string, configuration: McpClientConfiguration): Promise<void> {
+    const parsed = parseMcpConfiguration(configuration);
+    if (scope === "manual" && (Object.keys(parsed.servers).some(id => id.startsWith("plugin-")) ||
+      Object.values(parsed.bindings).some(binding => binding.id.startsWith("plugin-") || binding.credentialRef?.startsWith("plugin:")))) throw new McpClientError("invalid_configuration");
+    const scopes = new Map(this.configurationScopes); scopes.set(scope, parsed);
+    const merged: McpClientConfiguration = { servers: {}, bindings: {} };
+    for (const value of scopes.values()) {
+      for (const key of ["servers", "bindings"] as const) {
+        if (Object.keys(value[key]).some(id => Object.hasOwn(merged[key], id))) throw new McpClientError("invalid_configuration");
+        Object.assign(merged[key], value[key]);
+      }
+    }
+    this.configurationScopes.set(scope, parsed);
+    return this.reconcileAll(merged);
+  }
+
+  private async reconcileAll(configuration: McpClientConfiguration): Promise<void> {
     this.assertAlive();
     const next = parseMcpConfiguration(configuration);
     const work: Promise<unknown>[] = [];

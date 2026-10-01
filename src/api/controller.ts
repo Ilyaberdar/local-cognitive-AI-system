@@ -18,7 +18,6 @@ import {
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { processRuntimeInput } from "../transports/shared/runtimeActions";
-import { extractNotionId } from "../utils/notion";
 import { readAttachments } from "../utils/attachments";
 import { processRunRegistry } from "./ProcessRunRegistry";
 import { getSystemMemory } from "../utils/systemMemory";
@@ -191,15 +190,11 @@ export const createDashboardBootstrapController =
         runtime.projectStore?.list() ?? Promise.resolve([])
       ]);
 
-      const loadedNames = new Set(runtime.plugins.map((plugin) => plugin.manifest.name));
-
       res.status(200).json({
         providers: runtime.providerDescriptors,
         tools: runtime.tools,
         plugins: runtime.plugins,
-        pluginStatuses: [...new Set([...Object.keys(appSettings.plugins), ...runtime.plugins.map((plugin) => plugin.manifest.name)])]
-          .sort()
-          .map((name) => buildPluginStatus(name, appSettings, loadedNames)),
+        pluginStatuses: [],
         appSettings,
         sessions,
         tasks,
@@ -698,133 +693,6 @@ export const createProviderTestController =
     }
   };
 
-export const createPluginStatusController =
-  (runtimeManager: RuntimeManager) =>
-  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const runtime = runtimeManager.getRuntime();
-      const settings = await runtimeManager.getSettings();
-      const loadedNames = new Set(runtime.plugins.map((plugin) => plugin.manifest.name));
-      const pluginNames = new Set([
-        ...Object.keys(settings.plugins),
-        ...runtime.plugins.map((plugin) => plugin.manifest.name)
-      ]);
-
-      res.status(200).json(
-        [...pluginNames].sort().map((name) => buildPluginStatus(name, settings, loadedNames))
-      );
-    } catch (error) {
-      next(error);
-    }
-  };
-
-export const createPluginTestController =
-  (runtimeManager: RuntimeManager) =>
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const pluginName = String(req.params.pluginName);
-      const runtime = runtimeManager.getRuntime();
-      const settings = await runtimeManager.getSettings();
-
-      switch (pluginName) {
-        case "file": {
-          const outputDir =
-            readPluginValue(settings, "file", "outputDir") ?? runtime.config.outputDir;
-          const accessMode = readPluginValue(settings, "file", "accessMode") ?? "restricted";
-          const allowedDirectories = readPluginValue(settings, "file", "allowedDirectories") ?? "";
-          await fs.mkdir(outputDir, { recursive: true });
-          const filePath = path.join(outputDir, `plugin-check-${Date.now()}.md`);
-          await fs.writeFile(filePath, "# File plugin check\n\nThe file plugin is configured.\n", "utf8");
-
-          res.status(200).json({
-            ok: true,
-            plugin: pluginName,
-            status: "configured",
-            message: `Test file written to ${filePath}`,
-            metadata: {
-              filePath,
-              accessMode,
-              allowedDirectories
-            }
-          });
-          return;
-        }
-        case "notion": {
-          const apiKey = readPluginValue(settings, "notion", "apiKey");
-          const parentPageId =
-            extractNotionId(readPluginValue(settings, "notion", "parentPageUrl")) ??
-            readPluginValue(settings, "notion", "parentPageId");
-          const dataSourceId =
-            extractNotionId(readPluginValue(settings, "notion", "dataSourceUrl")) ??
-            readPluginValue(settings, "notion", "dataSourceId");
-          const version = readPluginValue(settings, "notion", "version") ?? runtime.config.notion.version;
-
-          if (!apiKey || (!parentPageId && !dataSourceId)) {
-            res.status(200).json({
-              ok: false,
-              plugin: pluginName,
-              status: "incomplete",
-              message: "Notion plugin requires API key and parent page or data source id."
-            });
-            return;
-          }
-
-          const response = await fetch("https://api.notion.com/v1/users/me", {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Notion-Version": version
-            }
-          });
-
-          if (!response.ok) {
-            const text = await response.text();
-            res.status(200).json({
-              ok: false,
-              plugin: pluginName,
-              status: "error",
-              message: `Notion auth failed: ${response.status}`,
-              metadata: {
-                details: text
-              }
-            });
-            return;
-          }
-
-          const payload = (await response.json()) as { name?: string; object?: string };
-          res.status(200).json({
-            ok: true,
-            plugin: pluginName,
-            status: "configured",
-            message: "Notion API credentials are valid.",
-            metadata: payload
-          });
-          return;
-        }
-        case "vscode": {
-          const accessMode = readPluginValue(settings, "vscode", "accessMode") ?? "restricted";
-          const allowedDirectories = readPluginValue(settings, "vscode", "allowedDirectories") ?? "";
-          res.status(200).json({
-            ok: false,
-            plugin: pluginName,
-            status: "not_implemented",
-            message: "VS Code bridge is not implemented yet. This panel stores future config and access boundaries only.",
-            metadata: {
-              accessMode,
-              allowedDirectories
-            }
-          });
-          return;
-        }
-        default:
-          res.status(404).json({
-            error: "Plugin not found."
-          });
-      }
-    } catch (error) {
-      next(error);
-    }
-  };
 
 const isObject = (
   value: unknown
@@ -1015,59 +883,4 @@ const getSystemMetricsSnapshot = (): SystemMetrics => {
     cpuCores,
     loadAverage1m
   };
-};
-
-const buildPluginStatus = (
-  name: string,
-  settings: Awaited<ReturnType<RuntimeManager["getSettings"]>>,
-  loadedNames: Set<string>
-) => {
-  const plugin = settings.plugins[name];
-  const enabled = plugin?.enabled ?? false;
-  const loaded = loadedNames.has(name);
-  let configured = false;
-  let summary = "No plugin metadata found.";
-
-  if (name === "file") {
-    configured = Boolean(readPluginValue(settings, "file", "outputDir"));
-    const accessMode = readPluginValue(settings, "file", "accessMode") ?? "restricted";
-    summary = configured
-      ? `Output dir: ${readPluginValue(settings, "file", "outputDir")} · access: ${accessMode}`
-      : "Output directory is missing.";
-  } else if (name === "notion") {
-    const hasKey = Boolean(readPluginValue(settings, "notion", "apiKey"));
-    const hasParent = Boolean(
-      extractNotionId(readPluginValue(settings, "notion", "parentPageUrl")) ??
-        readPluginValue(settings, "notion", "parentPageId")
-    );
-    const hasSource = Boolean(
-      extractNotionId(readPluginValue(settings, "notion", "dataSourceUrl")) ??
-        readPluginValue(settings, "notion", "dataSourceId")
-    );
-    configured = hasKey && (hasParent || hasSource);
-    summary = configured
-      ? "API key and Notion target are configured."
-      : "Need API key and parent page URL or data source URL.";
-  } else if (name === "vscode") {
-    configured = Boolean(readPluginValue(settings, "vscode", "workspaceRoot"));
-    const accessMode = readPluginValue(settings, "vscode", "accessMode") ?? "restricted";
-    summary = `Placeholder bridge config. Workspace root stored · access: ${accessMode}.`;
-  }
-
-  return {
-    name,
-    enabled,
-    loaded,
-    configured,
-    summary
-  };
-};
-
-const readPluginValue = (
-  settings: Awaited<ReturnType<RuntimeManager["getSettings"]>>,
-  pluginName: string,
-  key: string
-): string | undefined => {
-  const value = settings.plugins[pluginName]?.values?.[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 };
