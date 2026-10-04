@@ -80,8 +80,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
+      const localSampling = this.id === "llamacpp" ? request.sampling : undefined;
+      const localTemperature = request.temperature ?? localSampling?.temperature;
       if (localBudget !== undefined && (!Number.isInteger(localBudget) || localBudget < 0 || localBudget > 32768)) throw new Error("Local thinking budget must be 0–32768 tokens.");
       const useChat = (images.length > 0 && this.id !== "openai") || localBudget !== undefined ||
+        Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
         (this.id !== "openai" && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
       const nativeTools = this.id === "openai" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
       const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`, {
@@ -103,8 +106,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
               ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
             ] : request.prompt }
           ],
-          max_tokens: request.maxTokens,
-          temperature: request.temperature,
+          ...(typeof request.maxTokens === "number" ? { max_tokens: request.maxTokens } : {}),
+          ...(typeof localTemperature === "number" ? { temperature: localTemperature } : {}),
+          ...(localSampling?.topP !== undefined ? { top_p: localSampling.topP } : {}),
+          ...(localSampling?.topK !== undefined ? { top_k: localSampling.topK } : {}),
+          ...(localSampling?.minP !== undefined ? { min_p: localSampling.minP } : {}),
+          ...(localSampling?.repeatPenalty !== undefined ? { repeat_penalty: localSampling.repeatPenalty } : {}),
+          ...(localSampling?.seed !== undefined ? { seed: localSampling.seed } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"

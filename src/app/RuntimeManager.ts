@@ -68,8 +68,18 @@ export class RuntimeManager {
   async updateSettings(patch: AppSettingsPatch): Promise<{ runtime: AppRuntime; settings: AppSettings }> {
     validateSettingsPatch(patch);
     return this.enqueue(async () => {
-      if (patch && Object.keys(patch).every(key => key === "ui")) {
+      if (patch && Object.keys(patch).every(key => key === "ui" || key === "profile")) {
         return { runtime: this.getRuntime(), settings: await this.settingsStore.update(patch) };
+      }
+      // Sampler settings are sent with each request. Persist them and update the
+      // service in place rather than rebuilding the runtime/unloading a model.
+      const localKeys = patch.localModels ? Object.keys(patch.localModels) : [];
+      const generationOnly = Boolean(patch.localModels) && localKeys.every(key => key === "generation") &&
+        Object.keys(patch).every(key => key === "ui" || key === "profile" || key === "localModels");
+      if (generationOnly && this.localModelService) {
+        const settings = await this.settingsStore.update(patch);
+        await this.localModelService.setGenerationSettings(settings.localModels!.generation);
+        return { runtime: this.getRuntime(), settings };
       }
       try {
         const { value: runtime, settings } = await this.settingsStore.transaction(patch, settings => this.build(settings));
@@ -143,7 +153,7 @@ export class RuntimeManager {
       localModels: { ...baseLocalModels, ...(local ? {
         modelsDir: local.modelsDir, contextSize: local.contextSize, gpuLayers: local.gpuLayers,
         loadTimeoutMs: local.loadTimeoutMs, generationTimeoutMs: local.generationTimeoutMs,
-        memoryLimitPercent: local.memoryLimitPercent
+        memoryLimitPercent: local.memoryLimitPercent, generation: local.generation
       } : {}) },
       agentLimits: settings.agentLimits,
       llm: {

@@ -32,13 +32,23 @@ const workflowWorkspaces = new Map();
 let workflowWorkspaceKey = null;
 let workflowMountedKey = null;
 let workflowSelectionSequence = 0;
-const UI_THEMES = ["dark", "light", "system"];
+const UI_THEMES = ["dark", "light", "system", "midnight"];
+const APPEARANCE_COLOR_PROPERTIES = {
+  accentColor: "--appearance-accent",
+  backgroundColor: "--appearance-background",
+  foregroundColor: "--appearance-foreground"
+};
+const isHexColor = value => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const resolveTheme = theme => theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
 const initialTheme = UI_THEMES.includes(localStorage.getItem("lcai.theme"))
   ? localStorage.getItem("lcai.theme")
   : "dark";
 document.documentElement.dataset.theme = resolveTheme(initialTheme);
+for (const [key, property] of Object.entries(APPEARANCE_COLOR_PROPERTIES)) {
+  const value = localStorage.getItem(`lcai.${key}`);
+  if (isHexColor(value)) document.documentElement.style.setProperty(property, value);
+}
 applyFontScale(Number(localStorage.getItem("lcai.fontScale")) || 100);
 applyCodeFontSize(Number(localStorage.getItem("lcai.codeFontSize")) || 12);
 if (window.desktopAppearance) {
@@ -68,6 +78,13 @@ const ACCESS_MODES = [
   { id: "ask", label: "Ask for approval", icon: "hand", description: "Always ask before changing files, running commands or using the internet" },
   { id: "default", label: "Approve for me", icon: "shield", description: "Allow workspace edits; ask before commands, external access or deletions" },
   { id: "full", label: "Full access", icon: "shieldAlert", description: "Run actions without asking, with access to files and the internet" }
+];
+const EFFORT_LEVELS = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Balanced" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra high" },
+  { id: "max", label: "Max" }
 ];
 
 const ATTACHMENT_ACCEPT = "image/png,image/jpeg,image/webp,.txt,.md,.markdown,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.xml,.toml,.sh,.log,.pdf,.docx";
@@ -346,6 +363,12 @@ const voiceInput = createVoiceInput({
   notify: message => { pushToast(message, "info"); render(); }
 });
 
+async function saveLocalModelSettings(localModels) {
+  const response = await api.updateAppSettings({ localModels });
+  state.bootstrap.appSettings = response.settings;
+  for (const key of ["providers", "availableModels"]) if (response[key] !== undefined) state.bootstrap[key] = response[key];
+}
+
 const modelManager = createModelManager({
   request,
   getContext: () => ({
@@ -374,11 +397,8 @@ const modelManager = createModelManager({
     updateAttachmentGuidance();
     updateLoadedModelIndicators();
   },
-  onContextChange: async (contextSize) => {
-    const response = await api.updateAppSettings({ localModels: { contextSize } });
-    state.bootstrap.appSettings = response.settings;
-    for (const key of ["providers", "availableModels"]) if (response[key] !== undefined) state.bootstrap[key] = response[key];
-  },
+  onContextChange: (contextSize) => saveLocalModelSettings({ contextSize }),
+  onLocalSettingsChange: saveLocalModelSettings,
   onUse: async (model) => {
     if (!state.activeSessionId || !state.sessionSettings) await createChatInProject(state.activeProjectId);
     const sessionId = state.activeSessionId;
@@ -411,9 +431,23 @@ const settingsData = createSettingsData({ request, onSaved: (response, patch) =>
 } });
 function applyUiPreferences(preferences) {
   if (preferences.theme) applyTheme(preferences.theme, false);
+  applyAppearanceColors(preferences);
   if (typeof preferences.animations === "boolean") setAnimations(preferences.animations);
   if (typeof preferences.fontScale === "number") applyFontScale(preferences.fontScale);
   if (typeof preferences.codeFontSize === "number") applyCodeFontSize(preferences.codeFontSize);
+}
+function applyAppearanceColors(preferences = {}) {
+  for (const [key, property] of Object.entries(APPEARANCE_COLOR_PROPERTIES)) {
+    if (!Object.hasOwn(preferences, key)) continue;
+    const value = preferences[key];
+    if (isHexColor(value)) {
+      document.documentElement.style.setProperty(property, value);
+      localStorage.setItem(`lcai.${key}`, value);
+    } else {
+      document.documentElement.style.removeProperty(property);
+      localStorage.removeItem(`lcai.${key}`);
+    }
+  }
 }
 function applyFontScale(value) {
   const scale = Number.isFinite(value) && value >= 85 && value <= 150 ? value : 100;
@@ -633,8 +667,6 @@ function applyTheme(theme, persist = true) {
     button.classList.toggle("active", button.dataset.theme === nextTheme);
     button.setAttribute("aria-pressed", String(button.dataset.theme === nextTheme));
   });
-  const select = document.querySelector("#appearance-theme");
-  if (select) select.value = nextTheme;
   if (persist) void settingsData.save({ ui: { theme: nextTheme } }).catch(error => { pushToast(`Theme not saved: ${error.message}`, "danger"); render(); });
 }
 
@@ -796,9 +828,6 @@ function renderSidebar(nativeTitlebar = false) {
 
       <div class="sidebar-footer">
         <details class="runtime-disclosure" data-ui-disclosure="runtime"><summary><span class="status-dot"></span><span>Local runtime</span></summary><div>${providerCount} providers · ${pluginCount} catalog plugins · ${(state.bootstrap?.loadedModels ?? []).length} loaded local models</div></details>
-        <div class="theme-switch" role="group" aria-label="Appearance">
-          ${["light", "dark"].map((theme) => `<button class="icon-button ${state.ui.theme === theme ? "active" : ""}" type="button" data-action="set-theme" data-theme="${theme}" aria-label="${capitalize(theme)} Liquid Glass" aria-pressed="${state.ui.theme === theme}" title="${capitalize(theme)} Liquid Glass">${icon(theme === "light" ? "sun" : "moon")}</button>`).join("")}
-        </div>
         ${settingsShell.profileButton()}
       </div>
     </aside>
@@ -886,7 +915,7 @@ function renderNavButton(route, label, note) {
   const accessibleLabel = note ? `${label} (${note})` : label;
 
   return `
-    <button class="nav-button liquid-glass ${state.route === route ? "active" : ""}" data-action="route" data-route="${route}" aria-current="${state.route === route ? "page" : "false"}" aria-label="${escapeAttr(label)}" title="${escapeAttr(accessibleLabel)}">
+    <button class="nav-button liquid-glass ${state.route === route ? "active" : ""} ${state.ui.navFlashRoute === route ? "is-activated" : ""}" data-action="route" data-route="${route}" aria-current="${state.route === route ? "page" : "false"}" aria-label="${escapeAttr(label)}" title="${escapeAttr(accessibleLabel)}">
       <span class="nav-label"><span class="nav-icon" aria-hidden="true">${renderNavIcon(route)}</span><span class="nav-text">${escapeHtml(label)}</span></span>
     </button>
   `;
@@ -966,6 +995,7 @@ function renderChatRoute() {
             <button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files" ${preparingAttachments ? "disabled" : ""}>${icon("plus")}</button>
             ${renderChatActivityBar(settings)}
             <div class="composer-actions">
+              ${renderEffortControl(settings)}
               ${voiceInput.renderButton()}
               ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
               <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked ? "disabled" : ""}>${icon("arrowUp")}</button>
@@ -977,6 +1007,76 @@ function renderChatRoute() {
       ${renderChatRightPanel(settings, currentSession, providerOptions)}
     </div>
   `;
+}
+
+function effortOption(value) {
+  return EFFORT_LEVELS.find((item) => item.id === value) || EFFORT_LEVELS[1];
+}
+
+function renderEffortControl(settings) {
+  const selected = effortOption(settings?.reasoningEffort);
+  const index = EFFORT_LEVELS.findIndex((item) => item.id === selected.id);
+  return `<button id="chat-effort-trigger" class="composer-effort-trigger" type="button" popovertarget="chat-effort-menu" aria-label="Effort: ${escapeAttr(selected.label)}" title="Effort: ${escapeAttr(selected.label)}">Effort</button>
+    <section id="chat-effort-menu" class="effort-menu" popover="auto" role="dialog" aria-label="Reasoning effort">
+      <header class="effort-menu__header"><strong data-effort-value>${escapeHtml(selected.label)}</strong></header>
+      <div class="effort-menu__slider"><input data-effort-slider type="range" min="0" max="${EFFORT_LEVELS.length - 1}" step="1" value="${index}" style="--effort-progress:${index / (EFFORT_LEVELS.length - 1) * 100}%" aria-label="Effort level" aria-valuetext="${escapeAttr(selected.label)}" /><span class="effort-menu__stops" aria-hidden="true">${EFFORT_LEVELS.map((item, stop) => `<i class="${stop === index ? "is-selected" : ""}"></i>`).join("")}</span></div>
+    </section>`;
+}
+
+function effortFromSlider(value) {
+  const index = Math.max(0, Math.min(EFFORT_LEVELS.length - 1, Number.parseInt(value, 10) || 0));
+  return EFFORT_LEVELS[index];
+}
+
+function updateEffortMenuPreview(value) {
+  const selected = effortFromSlider(value);
+  const menu = document.querySelector("#chat-effort-menu");
+  menu?.querySelector("[data-effort-value]")?.replaceChildren(selected.label);
+  menu?.querySelectorAll(".effort-menu__stops i").forEach((stop, index) => stop.classList.toggle("is-selected", index === EFFORT_LEVELS.indexOf(selected)));
+  const slider = menu?.querySelector("[data-effort-slider]");
+  if (slider) { slider.setAttribute("aria-valuetext", selected.label); slider.style.setProperty("--effort-progress", `${EFFORT_LEVELS.indexOf(selected) / (EFFORT_LEVELS.length - 1) * 100}%`); }
+  return selected;
+}
+
+async function saveSessionEffort(value) {
+  if (!state.activeSessionId || !state.sessionSettings) return;
+  const effort = effortOption(value).id;
+  const sessionId = state.activeSessionId;
+  state.sessionSettings = { ...state.sessionSettings, reasoningEffort: effort };
+  window.clearTimeout(state.ui.autosaveTimer);
+  state.ui.autosaveSeq++;
+  setAutosaveStatus("saving");
+  const write = state.ui.autosavePromise.catch(() => undefined).then(async () => {
+    const saved = await api.updateSessionSettings(sessionId, { reasoningEffort: effort });
+    if (state.activeSessionId === sessionId) state.sessionSettings = saved;
+  });
+  state.ui.autosavePromise = write;
+  try {
+    await write;
+    if (state.activeSessionId === sessionId) setAutosaveStatus("saved");
+  } catch (error) {
+    if (state.activeSessionId === sessionId) {
+      pushToast(error instanceof Error ? error.message : "Could not save effort", "danger");
+      setAutosaveStatus("error");
+    }
+  }
+}
+
+function bindEffortControl() {
+  const trigger = document.querySelector("#chat-effort-trigger");
+  const menu = document.querySelector("#chat-effort-menu");
+  const slider = menu?.querySelector("[data-effort-slider]");
+  if (!trigger || !menu || !slider) return;
+  const position = () => {
+    const rect = trigger.getBoundingClientRect();
+    const width = menu.getBoundingClientRect().width || 204;
+    const height = menu.getBoundingClientRect().height || 84;
+    menu.style.left = `${Math.max(10, Math.min(rect.right - width, innerWidth - width - 10))}px`;
+    menu.style.top = `${Math.max(10, rect.top - height - 10)}px`;
+  };
+  menu.addEventListener("toggle", event => { if (event.newState === "open") requestAnimationFrame(position); });
+  slider.addEventListener("input", event => { updateEffortMenuPreview(event.target.value); });
+  slider.addEventListener("change", event => { void saveSessionEffort(updateEffortMenuPreview(event.target.value).id); });
 }
 
 function isSubagentRequest(input) {
@@ -1003,8 +1103,8 @@ function renderChatActivityBar(settings) {
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
       <span class="activity-scan status-dot" aria-hidden="true"><span></span></span>
       <span class="activity-label">${escapeHtml(label)}</span>
-      <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
       ${renderAccessControl(settings)}
+      <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
       <span class="activity-hint">${running ? "esc to stop" : ""}</span>
     </div>
   `;
@@ -1298,7 +1398,7 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
           `).join("")}
         </div>
 
-        <div class="chat-settings__grid compact">
+        <div class="chat-settings__grid compact session-metadata-grid">
           <div class="field session-title-field">
             <label>Title</label>
             <input name="sessionTitle" value="${escapeAttr(currentSession?.title ?? "")}" />
@@ -1306,10 +1406,6 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
           <div class="field">
             <label>Language</label>
             <select name="language">${["auto", "ru", "en"].map((value) => option(value, settings.language)).join("")}</select>
-          </div>
-          <div class="field">
-            <label>Output</label>
-            <select name="outputStyle">${["compact", "balanced", "detailed", "exhaustive"].map((value) => option(value, settings.outputStyle)).join("")}</select>
           </div>
           <input type="hidden" name="mode" value="${escapeAttr(setupMode === "general" ? "general" : setupMode)}" />
           <input type="hidden" name="debateEnabled" value="${setupMode === "hypothesis" ? "on" : "off"}" />
@@ -3411,10 +3507,28 @@ function bindEvents() {
   filterTasks();
   document.querySelectorAll("[data-action='route']").forEach((button) => {
     button.addEventListener("click", () => {
+      const route = button.dataset.route;
+      if (!route) return;
       if (state.route === "chat") {
         rememberMessageStreamScroll();
       }
-      window.location.hash = `/${button.dataset.route}`;
+      if (motionEnabled()) {
+        state.ui.navFlashRoute = route;
+        // Hash navigation re-renders a newly selected item. When the user
+        // clicks the item that is already selected, restart its single sweep
+        // directly so the four primary destinations behave consistently.
+        if (state.route === route) {
+          button.classList.remove("is-activated");
+          void button.offsetWidth;
+          button.classList.add("is-activated");
+        }
+        window.setTimeout(() => {
+          if (state.ui.navFlashRoute !== route) return;
+          state.ui.navFlashRoute = null;
+          document.querySelector(`[data-action='route'][data-route='${CSS.escape(route)}']`)?.classList.remove("is-activated");
+        }, 900);
+      }
+      window.location.hash = `/${route}`;
     });
   });
 
@@ -4077,6 +4191,8 @@ function bindEvents() {
     const input = String(form.get("input") || "").trim();
     await submitChatMessage(input, getActiveDraftAttachments());
   });
+
+  if (typeof bindEffortControl === "function") bindEffortControl();
 
   mentionPicker?.dispose();
   mentionPicker = bindMentionPicker({
@@ -5612,6 +5728,7 @@ function readSessionSetupSnapshot() {
       language: String(formData.get("language") || fallbackSettings.language),
       outputStyle:
         String(formData.get("outputStyle") || fallbackSettings.outputStyle || "balanced"),
+	    reasoningEffort: fallbackSettings.reasoningEffort || "medium",
 	      defaultTarget: {
 	        providerId: String(formData.get("defaultProvider") || fallbackSettings.defaultTarget.providerId).trim() || fallbackSettings.defaultTarget.providerId,
 	        model: resolveModelValue("defaultProvider", "defaultModel", fallbackSettings.defaultTarget.model, fallbackSettings.defaultTarget.providerId)
@@ -5935,6 +6052,7 @@ function sessionSettingsToPatch(settings) {
     mode: settings.mode,
     language: settings.language,
 	    outputStyle: settings.outputStyle,
+    reasoningEffort: settings.reasoningEffort || "medium",
 	    defaultTarget: { ...settings.defaultTarget },
 	    defaultAccessMode: settings.defaultAccessMode ?? "default",
 	    codeAgents: (settings.codeAgents ?? []).map((agent) => ({ ...agent })),

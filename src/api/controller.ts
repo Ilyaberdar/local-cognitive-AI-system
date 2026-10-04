@@ -23,6 +23,7 @@ import { processRunRegistry } from "./ProcessRunRegistry";
 import { getSystemMemory } from "../utils/systemMemory";
 import { resolveReviewPath, revealWorkspacePath } from "./workspaceReview";
 import { ProjectError } from "../projects/types";
+import { isReasoningEffort } from "../llm/ReasoningEffort";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -388,6 +389,7 @@ export const createUpdateSessionSettingsController =
         mode: isSessionMode(body.mode) ? body.mode : undefined,
         language: isLanguagePreference(body.language) ? body.language : undefined,
         outputStyle: isOutputStyle(body.outputStyle) ? body.outputStyle : undefined,
+        reasoningEffort: isReasoningEffort(body.reasoningEffort) ? body.reasoningEffort : undefined,
 	        defaultTarget: isObject(body.defaultTarget)
 	          ? {
               providerId:
@@ -762,6 +764,7 @@ const buildStoredMessageContent = (
         mode: "auto",
         language: "auto",
         outputStyle: "balanced",
+	      reasoningEffort: "medium",
 	        defaultTarget: {
 	          providerId: "unknown"
 	        },

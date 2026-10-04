@@ -28,6 +28,7 @@ import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LMStudioManager } from "../llm/LMStudioManager";
 import { LanguageEnforcer } from "../llm/LanguageEnforcer";
 import { LLMService } from "../llm/LLMService";
+import { localThinkingBudgetForEffort } from "../llm/ReasoningEffort";
 import { objectFormat } from "../llm/StructuredOutput";
 import { OllamaModelManager } from "../llm/OllamaModelManager";
 import { OllamaProvider } from "../llm/OllamaProvider";
@@ -636,6 +637,8 @@ export const buildRuntime = async (
             context.sessionSettings.outputStyle,
             renderAttachmentContext(readAttachments(context.requestMetadata))
           ),
+          reasoningEffort: context.sessionSettings.reasoningEffort,
+          localReasoningBudget: localThinkingBudgetForEffort(context.sessionSettings.reasoningEffort),
           signal: context.signal
         },
         context.providerId

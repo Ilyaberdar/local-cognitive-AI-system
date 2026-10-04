@@ -72,6 +72,50 @@ test("local context save preserves a failed draft and reports actual runtime con
   assert.equal(refreshes, 1);
 });
 
+test("model settings tabs expose one runtime field each and save independently", async () => {
+  const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8")
+    .replace(/^import .*\n/, "").replace("export function", "function")
+    .replace("return { render, bind, start, refresh, repaint, updateLiveView, dispose()", "return { test: { state, renderAdvancedSettings, saveAdvancedSettings }, render, bind, start, refresh, repaint, updateLiveView, dispose()");
+  const settings = { localModels: { contextSize: 32768, gpuLayers: 99, memoryLimitPercent: 75, loadTimeoutMs: 300000, generationTimeoutMs: 600000 } };
+  const writes: any[] = [];
+  const context: any = {
+    icon: () => "", window: { setTimeout: () => 1, clearTimeout() {} }, setTimeout,
+    getContext: () => ({ settings }), onContextChange: async () => {}, onLibraryChange() {}, notify() {}, isVisible: () => false,
+    onLocalSettingsChange: async (patch: Record<string, number>) => { writes.push(patch); Object.assign(settings.localModels, patch); }
+  };
+  vm.runInNewContext(managerSource, context);
+  const manager = context.createModelManager({ request: async () => ({ models: [], downloads: [], runtime: {} }), ...context });
+  const state = manager.test.state;
+  state.advancedDrafts = { gpuLayers: "64" };
+  assert.match(manager.test.renderAdvancedSettings("gpuLayers"), /GPU layers/);
+  assert.doesNotMatch(manager.test.renderAdvancedSettings("gpuLayers"), /Memory warning threshold/);
+  assert.match(manager.test.renderAdvancedSettings("memoryLimitPercent"), /Memory warning threshold/);
+  assert.match(manager.test.renderAdvancedSettings("loadTimeoutMs"), /Load timeout/);
+  assert.match(manager.test.renderAdvancedSettings("generationTimeoutMs"), /Generation timeout/);
+  await manager.test.saveAdvancedSettings("gpuLayers");
+  assert.deepEqual(JSON.parse(JSON.stringify(writes)), [{ gpuLayers: 64 }]);
+  assert.equal(settings.localModels.gpuLayers, 64);
+  assert.equal(state.advancedSaved, true);
+  state.advancedDrafts = { loadTimeoutMs: "invalid" };
+  await manager.test.saveAdvancedSettings("loadTimeoutMs");
+  assert.match(state.advancedError, /Load timeout/);
+  assert.equal(writes.length, 1);
+});
+
+test("local generation controls use neutral copy and keep the storage action beside its path", () => {
+  const settingsShell = fs.readFileSync("public/assets/settings-shell.js", "utf8");
+  const manager = fs.readFileSync("public/assets/model-manager.js", "utf8");
+  const styles = fs.readFileSync("public/assets/settings-shell.css", "utf8");
+  assert.match(settingsShell, /class="local-generation-card"/);
+  assert.match(settingsShell, /class="settings-directory-control"/);
+  assert.match(styles, /\.settings-directory-control \{ display: grid; grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(styles, /#settings-root :is\(a, button, input, select, textarea, summary\):focus-visible \{ outline: none !important;/);
+  assert.match(styles, /html\[data-theme="light"\] #settings-root \.primary-button,/);
+  assert.match(styles, /background: #fff !important;/);
+  assert.doesNotMatch(settingsShell, /llama\.cpp/i);
+  assert.doesNotMatch(manager, /llama\.cpp/i);
+});
+
 test("memory warnings cannot disguise an architecture or disk failure in model cards", () => {
   const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8");
   const body = managerSource.slice(managerSource.indexOf("  function compatibility("), managerSource.indexOf("  function renderCompatibility("));

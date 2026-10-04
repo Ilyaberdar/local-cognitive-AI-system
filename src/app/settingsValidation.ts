@@ -6,6 +6,10 @@ export const defaultUiPreferences: UiPreferences = {
 
 export class SettingsValidationError extends Error { readonly statusCode = 400; }
 
+const hexColor = /^#[0-9a-f]{6}$/i;
+const avatarDataUrl = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i;
+const MAX_AVATAR_DATA_URL_LENGTH = 1_500_000;
+
 /** Validate supplied fields only. Missing fields and forward-compatible stored data stay untouched. */
 export function validateSettingsPatch(patch: AppSettingsPatch): void {
   const object = (value: unknown, name: string): Record<string, unknown> => {
@@ -30,14 +34,58 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     check(object(patch.filesystem, "filesystem"), "filesystem", { outputDir: "string", accessMode: ["restricted", "full"] });
     if (patch.filesystem.allowedDirectories !== undefined && (!Array.isArray(patch.filesystem.allowedDirectories) || patch.filesystem.allowedDirectories.some(value => typeof value !== "string"))) throw new SettingsValidationError("Invalid filesystem.allowedDirectories.");
   }
-  if (patch.ui !== undefined) check(object(patch.ui, "ui"), "ui", {
-    theme: ["dark", "light", "system"], animations: "boolean", fontScale: [85, 150], codeFontSize: [10, 20], language: ["auto", "ru", "en"],
+  if (patch.ui !== undefined) {
+    const ui = object(patch.ui, "ui");
+    check(ui, "ui", {
+    theme: ["dark", "light", "system", "midnight"], animations: "boolean", fontScale: [85, 150], codeFontSize: [10, 20], language: ["auto", "ru", "en"],
     outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"]
-  });
-  if (patch.localModels !== undefined) check(object(patch.localModels, "localModels"), "localModels", {
-    modelsDir: "string", contextSize: [512, 131072], gpuLayers: [0, 999], memoryLimitPercent: [10, 90],
-    loadTimeoutMs: [10000, 1800000], generationTimeoutMs: [10000, 3600000]
-  });
+    });
+    for (const key of ["accentColor", "backgroundColor", "foregroundColor"] as const) {
+      const value = ui[key];
+      if (value !== undefined && (typeof value !== "string" || (value !== "" && !hexColor.test(value)))) throw new SettingsValidationError(`Invalid ui.${key}.`);
+    }
+  }
+  if (patch.profile !== undefined) {
+    const profile = object(patch.profile, "profile");
+    check(profile, "profile", { displayName: "string", avatarDataUrl: "string" });
+    if (profile.displayName !== undefined && (typeof profile.displayName !== "string" || !profile.displayName.trim() || profile.displayName.trim().length > 80 || /[\u0000-\u001f\u007f]/.test(profile.displayName))) {
+      throw new SettingsValidationError("Invalid profile.displayName.");
+    }
+    if (profile.avatarDataUrl !== undefined && (typeof profile.avatarDataUrl !== "string" || (profile.avatarDataUrl !== "" && (!avatarDataUrl.test(profile.avatarDataUrl) || profile.avatarDataUrl.length > MAX_AVATAR_DATA_URL_LENGTH)))) {
+      throw new SettingsValidationError("Invalid profile.avatarDataUrl.");
+    }
+  }
+  if (patch.localModels !== undefined) {
+    const localModels = object(patch.localModels, "localModels");
+    check(localModels, "localModels", {
+      modelsDir: "string", contextSize: [512, 131072], gpuLayers: [0, 999], memoryLimitPercent: [10, 90],
+      loadTimeoutMs: [10000, 1800000], generationTimeoutMs: [10000, 3600000]
+    });
+    if (localModels.generation !== undefined) {
+      const generation = object(localModels.generation, "localModels.generation");
+      if (generation.preset !== undefined && !["server", "precise", "balanced", "creative", "custom"].includes(generation.preset as string)) {
+        throw new SettingsValidationError("Invalid localModels.generation.preset.");
+      }
+      const decimalRanges: Record<string, readonly [number, number]> = {
+        temperature: [0, 2], topP: [0, 1], minP: [0, 1], repeatPenalty: [0, 2]
+      };
+      for (const [key, range] of Object.entries(decimalRanges)) {
+        const value = generation[key];
+        if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < range[0] || value > range[1])) {
+          throw new SettingsValidationError(`Invalid localModels.generation.${key}.`);
+        }
+      }
+      const integerRanges: Record<string, readonly [number, number]> = {
+        topK: [0, 200], maxTokens: [1, 32768], seed: [-1, 2147483647]
+      };
+      for (const [key, range] of Object.entries(integerRanges)) {
+        const value = generation[key];
+        if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < range[0] || value > range[1])) {
+          throw new SettingsValidationError(`Invalid localModels.generation.${key}.`);
+        }
+      }
+    }
+  }
   if (patch.agentLimits !== undefined) check(object(patch.agentLimits, "agentLimits"), "agentLimits", {
     maxSteps: [0, Number.MAX_SAFE_INTEGER], advisorMaxSteps: [0, Number.MAX_SAFE_INTEGER], maxTotalSteps: [0, Number.MAX_SAFE_INTEGER],
     maxActiveMs: [0, Number.MAX_SAFE_INTEGER], maxRepairs: [1, 10], contextChars: [4096, 200000]

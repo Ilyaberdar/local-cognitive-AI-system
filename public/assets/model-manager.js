@@ -4,6 +4,25 @@ const PROVIDER = "llamacpp";
 const ACTIVE_DOWNLOADS = new Set(["queued", "downloading", "paused", "verifying"]);
 const DOWNLOAD_LABELS = { queued: "Queued", downloading: "Downloading", paused: "Paused", verifying: "Verifying files", completed: "Installed", failed: "Download failed", cancelled: "Cancelled" };
 const MODEL_LABELS = { unloaded: "On device", loading: "Loading into memory", ready: "Loaded", unloading: "Unloading", error: "Runtime error" };
+const MODEL_SETTINGS_TABS = [
+  { id: "context", label: "Context" },
+  { id: "gpuLayers", label: "GPU layers" },
+  { id: "memoryLimitPercent", label: "Memory" },
+  { id: "loadTimeoutMs", label: "Load timeout" },
+  { id: "generationTimeoutMs", label: "Response timeout" },
+  { id: "generation", label: "Generation" }
+];
+const MODEL_SETTINGS_FIELDS = {
+  gpuLayers: { key: "gpuLayers", label: "GPU layers", min: 0, max: 999, description: "Layers offloaded to the GPU. 99 is the usual Metal setting on Apple silicon." },
+  memoryLimitPercent: { key: "memoryLimitPercent", label: "Memory warning threshold (%)", min: 10, max: 90, description: "Warn when a model estimate reaches this percentage of available memory." },
+  loadTimeoutMs: { key: "loadTimeoutMs", label: "Load timeout (ms)", min: 10000, max: 1800000, description: "Maximum time allowed while loading a local model." },
+  generationTimeoutMs: { key: "generationTimeoutMs", label: "Generation timeout (ms)", min: 10000, max: 3600000, description: "Maximum time allowed for one local model response." }
+};
+const GENERATION_PRESETS = {
+  precise: { temperature: 0.2, topP: 0.9, topK: 40, minP: 0.05, repeatPenalty: 1.05, maxTokens: 1024 },
+  balanced: { temperature: 0.7, topP: 0.95, topK: 40, minP: 0.05, repeatPenalty: 1.05, maxTokens: 2048 },
+  creative: { temperature: 1, topP: 0.98, topK: 80, minP: 0.02, repeatPenalty: 1.02, maxTokens: 3072 }
+};
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const bytes = (value) => {
   const number = Number(value);
@@ -21,13 +40,16 @@ const downloadedOf = (item) => Number(item?.downloadedBytes ?? item?.receivedByt
 const modelState = (model) => model?.runtimeState || model?.runtimeStatus || model?.state || (model?.loaded || model?.loadedInstanceIds?.length ? "ready" : "unloaded");
 
 // Catalog traffic and download progress stay isolated from the conversation DOM.
-export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, onContextChange, notify, isVisible }) {
+export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, onContextChange, onLocalSettingsChange, notify, isVisible }) {
   const state = {
     tab: "catalog", source: "recommended", query: "", cursor: null, catalog: [], catalogLoading: false,
     catalogLoaded: false, catalogError: "", catalogWarning: "", runtime: null, downloads: [], connected: false, connectionError: "",
     detail: null, detailRepoId: "", detailLoading: false, detailError: "", variantId: "", projectorPath: "",
     actions: new Set(), deleteId: "", started: false, eventSequence: 0,
-    contextDraft: null, contextSaving: false, contextError: "", contextSaved: false, storage: null, storageOpen: false, settingsOpen: false
+    contextDraft: null, contextSaving: false, contextError: "", contextSaved: false,
+    settingsTab: "context", advancedDrafts: {}, advancedSaving: false, advancedError: "", advancedSaved: false,
+    generationDraft: null, generationSaving: false, generationError: "", generationSaved: false,
+    storage: null, storageOpen: false, settingsOpen: false
   };
   let root = null;
   let events = null;
@@ -98,10 +120,51 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
 
   function renderContextControl() {
     const configured = getContext().settings?.localModels?.contextSize ?? 4096;
-    return `<form class="mm-context-control" id="mm-context-form">
-      <div><label for="mm-context-size">Context size</label><p class="subtle">Tokens shared by the conversation, tools and answer. Larger context uses more memory.</p><p class="subtle">Saved: ${Number(configured).toLocaleString()} tokens · Applied when the model loads.</p></div>
-      <div class="mm-context-input"><input id="mm-context-size" name="contextSize" type="number" min="512" max="131072" step="1" required value="${escape(state.contextDraft ?? configured)}" aria-label="Local model context size in tokens" ${state.contextSaving ? "disabled" : ""} /><button id="mm-context-save" class="ghost-button" type="submit" ${state.contextSaving ? "disabled" : ""}>${state.contextSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save context"}</button></div>
-      ${state.contextError ? `<div class="mm-inline-error" role="alert">${escape(state.contextError)}</div>` : state.contextSaved ? '<div class="subtle mm-context-feedback" role="status">Context saved. The new size applies when the model loads.</div>' : ""}
+    return `<form class="mm-settings-form" id="mm-context-form">
+      <div class="mm-settings-copy"><h3>Context size</h3><p class="subtle">Tokens shared by the conversation, tools and answer. Larger context uses more memory.</p><p class="subtle">Saving reconfigures the local runtime. Load the model again to use the new value.</p></div>
+      <label class="mm-settings-field" for="mm-context-size"><span>Context size (tokens)</span><span class="mm-settings-input-row"><input id="mm-context-size" name="contextSize" type="number" min="512" max="131072" step="1" required value="${escape(state.contextDraft ?? configured)}" aria-label="Local model context size in tokens" ${state.contextSaving ? "disabled" : ""} /><button id="mm-context-save" class="ghost-button mm-settings-save" type="submit" ${state.contextSaving ? "disabled" : ""}>${state.contextSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>
+      ${state.contextError ? `<div class="mm-inline-error" role="alert">${escape(state.contextError)}</div>` : state.contextSaved ? '<div class="subtle mm-context-feedback" role="status">Context saved. The local runtime was reconfigured; load the model again to use it.</div>' : ""}
+    </form>`;
+  }
+
+  function settingValue(key) {
+    return state.advancedDrafts[key] ?? getContext().settings?.localModels?.[key] ?? "";
+  }
+
+  function renderAdvancedField(field) {
+    return `<label class="mm-settings-field" for="mm-${field.key}"><span>${escape(field.label)}</span><span class="mm-settings-input-row"><input id="mm-${field.key}" name="${field.key}" data-mm-local-setting="${field.key}" type="number" min="${field.min}" max="${field.max}" step="1" required value="${escape(settingValue(field.key))}" aria-label="${escape(field.label)}" ${state.advancedSaving ? "disabled" : ""} /><button id="mm-${field.key}-save" class="ghost-button mm-settings-save" type="submit" ${state.advancedSaving ? "disabled" : ""}>${state.advancedSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>`;
+  }
+
+  function renderAdvancedSettings(tab) {
+    const field = MODEL_SETTINGS_FIELDS[tab];
+    if (!field) return "";
+    const formId = `mm-${tab}-form`;
+    return `<form class="mm-settings-form" id="${formId}" data-mm-settings-form="${tab}">
+      <div class="mm-settings-copy"><h3>${escape(field.label)}</h3><p class="subtle">${escape(field.description)}</p><p class="subtle">Saving reconfigures the local runtime. Load the model again to use the new value.</p></div>
+      ${renderAdvancedField(field)}
+      ${state.advancedError ? `<div class="mm-inline-error" role="alert">${escape(state.advancedError)}</div>` : state.advancedSaved ? '<div class="subtle mm-context-feedback" role="status">Settings saved. The local runtime was reconfigured.</div>' : ""}
+    </form>`;
+  }
+
+  function generationSettings() {
+    const configured = getContext().settings?.localModels?.generation || { preset: "server" };
+    return state.generationDraft || configured;
+  }
+
+  function generationValues(settings) {
+    return settings.preset === "custom" ? settings : GENERATION_PRESETS[settings.preset] || {};
+  }
+
+  function renderGenerationSettings() {
+    const generation = generationSettings();
+    const values = generationValues(generation);
+    return `<form class="mm-settings-form" id="mm-generation-form">
+      <div class="mm-settings-copy"><h3>Generation profile</h3><p class="subtle">Controls the next local response. Changing these values keeps a loaded model in memory.</p></div>
+      <label class="mm-settings-field" for="mm-generation-preset"><span>Profile</span><select id="mm-generation-preset" data-mm-generation-preset aria-label="Generation profile">${[["server", "Default"], ["precise", "Precise"], ["balanced", "Balanced"], ["creative", "Creative"], ["custom", "Custom"]].map(([id, label]) => `<option value="${id}" ${generation.preset === id ? "selected" : ""}>${label}</option>`).join("")}</select><small>${generation.preset === "server" ? "Uses built-in values until you choose a profile or edit a value." : "Open Local Runtime for Top P, Top K, Min P, repeat penalty and seed."}</small></label>
+      <label class="mm-settings-field" for="mm-generation-temperature"><span>Temperature</span><span class="mm-settings-input-row"><input id="mm-generation-temperature" data-mm-generation-value="temperature" type="number" min="0" max="2" step="0.01" value="${escape(values.temperature ?? "")}" placeholder="Use default" aria-label="Temperature" ${state.generationSaving ? "disabled" : ""} /><button class="ghost-button mm-settings-save" type="submit" ${state.generationSaving ? "disabled" : ""}>${state.generationSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>
+      <label class="mm-settings-field" for="mm-generation-max-tokens"><span>Max response tokens</span><input id="mm-generation-max-tokens" data-mm-generation-value="maxTokens" type="number" min="1" max="32768" step="1" value="${escape(values.maxTokens ?? "")}" placeholder="Runtime default" aria-label="Max response tokens" ${state.generationSaving ? "disabled" : ""} /></label>
+      <a class="mm-generation-link" href="#/settings/runtime">Open full local generation settings ${icon("chevronRight")}</a>
+      ${state.generationError ? `<div class="mm-inline-error" role="alert">${escape(state.generationError)}</div>` : state.generationSaved ? '<div class="subtle mm-context-feedback" role="status">Generation settings saved. The loaded model stays ready.</div>' : ""}
     </form>`;
   }
 
@@ -117,10 +180,12 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   }
 
   function renderSettings() {
+    const activeTab = MODEL_SETTINGS_TABS.some((tab) => tab.id === state.settingsTab) ? state.settingsTab : "context";
+    const activePanel = activeTab === "context" ? renderContextControl() : activeTab === "generation" ? renderGenerationSettings() : renderAdvancedSettings(activeTab);
     return `<section id="mm-settings" class="mm-settings" popover="auto" role="dialog" tabindex="-1" aria-labelledby="mm-settings-title">
       <header class="mm-settings-header"><div><h2 id="mm-settings-title">Model settings</h2><p class="subtle">Configure local inference</p></div><button type="button" class="mm-settings-close" popovertarget="mm-settings" popovertargetaction="hide" aria-label="Close model settings">${icon("close")}</button></header>
-      <div class="mm-settings-body"><div class="mm-settings-tabs" role="tablist" aria-label="Model settings"><button type="button" role="tab" id="mm-context-tab" aria-selected="true" aria-controls="mm-context-panel">Context</button></div>
-      <div id="mm-context-panel" role="tabpanel" aria-labelledby="mm-context-tab">${renderContextControl()}</div>${renderStorage()}</div>
+      <div class="mm-settings-body"><div class="mm-settings-tabs" role="tablist" aria-label="Model settings">${MODEL_SETTINGS_TABS.map((tab) => `<button type="button" role="tab" id="mm-${tab.id}-tab" data-mm-settings-tab="${tab.id}" aria-selected="${tab.id === activeTab}" aria-controls="mm-${tab.id}-panel" tabindex="${tab.id === activeTab ? "0" : "-1"}">${tab.label}</button>`).join("")}</div>
+      <div id="mm-${activeTab}-panel" class="mm-settings-panel" role="tabpanel" aria-labelledby="mm-${activeTab}-tab">${activePanel}</div>${renderStorage()}</div>
     </section>`;
   }
 
@@ -138,6 +203,44 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       await refresh();
     } catch (error) { state.contextError = error.message || "Unable to save the context size."; }
     finally { state.contextSaving = false; repaint(); }
+  }
+
+  async function saveAdvancedSettings(tab) {
+    if (state.advancedSaving) return;
+    const field = MODEL_SETTINGS_FIELDS[tab];
+    if (!field) return;
+    const value = Number(settingValue(field.key));
+    if (!Number.isInteger(value) || value < field.min || value > field.max) {
+      state.advancedError = `Enter a whole number between ${field.min.toLocaleString()} and ${field.max.toLocaleString()} for ${field.label}.`;
+      state.advancedSaved = false; repaint(); return;
+    }
+    state.advancedSaving = true; state.advancedError = ""; state.advancedSaved = false; repaint();
+    try {
+      if (typeof onLocalSettingsChange !== "function") throw new Error("Local model settings cannot be saved in this build.");
+      await onLocalSettingsChange({ [field.key]: value });
+      delete state.advancedDrafts[field.key];
+      state.advancedSaved = true;
+      await refresh();
+    } catch (error) { state.advancedError = error.message || "Unable to save the local model settings."; }
+    finally { state.advancedSaving = false; repaint(); }
+  }
+
+  async function saveGenerationSettings() {
+    if (state.generationSaving) return;
+    const generation = generationSettings();
+    const values = generationValues(generation);
+    if (generation.preset === "custom" && (!Number.isFinite(Number(values.temperature)) || Number(values.temperature) < 0 || Number(values.temperature) > 2 || !Number.isInteger(Number(values.maxTokens)) || Number(values.maxTokens) < 1 || Number(values.maxTokens) > 32768)) {
+      state.generationError = "Enter a temperature between 0 and 2 and a whole response limit between 1 and 32768.";
+      state.generationSaved = false; repaint(); return;
+    }
+    state.generationSaving = true; state.generationError = ""; state.generationSaved = false; repaint();
+    try {
+      if (typeof onLocalSettingsChange !== "function") throw new Error("Local generation settings cannot be saved in this build.");
+      await onLocalSettingsChange({ generation });
+      state.generationDraft = null; state.generationSaved = true;
+      await refresh();
+    } catch (error) { state.generationError = error.message || "Unable to save generation settings."; }
+    finally { state.generationSaving = false; repaint(); }
   }
 
   function renderDownload(job) {
@@ -476,8 +579,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       if (!panel?.isConnected || !trigger) return;
       const rect = trigger.getBoundingClientRect();
       const top = Math.max(12, Math.min(rect.bottom + 10, innerHeight - 100));
+      const width = panel.getBoundingClientRect().width || Math.min(540, innerWidth - 24);
       panel.style.top = `${top}px`;
-      panel.style.right = `${Math.min(Math.max(12, innerWidth - rect.right), Math.max(12, innerWidth - 440 - 12))}px`;
+      panel.style.right = `${Math.min(Math.max(12, innerWidth - rect.right), Math.max(12, innerWidth - width - 12))}px`;
       panel.style.maxHeight = `${innerHeight - top - 12}px`;
     };
     panel?.addEventListener("beforetoggle", event => {
@@ -497,8 +601,46 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       void perform(button.dataset.mmAction, button.dataset.mmId || "");
     });
     root.querySelector("#mm-search-input")?.addEventListener("input", (event) => { state.query = event.target.value; });
-    root.querySelector("#mm-context-size")?.addEventListener("input", (event) => { state.contextDraft = event.target.value; state.contextSaved = false; });
+    root.querySelector("#mm-context-size")?.addEventListener("input", (event) => { state.contextDraft = event.target.value; state.contextError = ""; state.contextSaved = false; });
     root.querySelector("#mm-context-form")?.addEventListener("submit", (event) => { event.preventDefault(); void saveContext(); });
+    const settingsTabs = [...root.querySelectorAll("[data-mm-settings-tab]")];
+    settingsTabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => {
+        state.settingsTab = tab.dataset.mmSettingsTab || "context";
+        state.advancedError = ""; state.advancedSaved = false; repaint();
+      });
+      tab.addEventListener("keydown", (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? settingsTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + settingsTabs.length) % settingsTabs.length;
+        state.settingsTab = settingsTabs[next].dataset.mmSettingsTab || "context";
+        state.advancedError = ""; state.advancedSaved = false; repaint();
+      });
+    });
+    root.querySelectorAll("[data-mm-local-setting]").forEach((input) => input.addEventListener("input", (event) => {
+      state.advancedDrafts[event.target.dataset.mmLocalSetting] = event.target.value;
+      state.advancedError = ""; state.advancedSaved = false;
+    }));
+    root.querySelectorAll("[data-mm-generation-value]").forEach((input) => input.addEventListener("input", (event) => {
+      const key = event.target.dataset.mmGenerationValue;
+      const current = generationSettings();
+      const base = current.preset === "custom" ? { ...current } : { ...(GENERATION_PRESETS[current.preset] || GENERATION_PRESETS.balanced), preset: "custom" };
+      if (event.target.value === "") delete base[key]; else base[key] = Number(event.target.value);
+      state.generationDraft = base; state.generationError = ""; state.generationSaved = false;
+    }));
+    root.querySelector("[data-mm-generation-preset]")?.addEventListener("change", (event) => {
+      const preset = event.target.value;
+      if (!["server", "precise", "balanced", "creative", "custom"].includes(preset)) return;
+      const current = generationSettings();
+      state.generationDraft = preset === "custom"
+        ? { ...(current.preset === "custom" ? current : GENERATION_PRESETS[current.preset] || GENERATION_PRESETS.balanced), preset: "custom" }
+        : { preset };
+      state.generationError = ""; state.generationSaved = false; repaint();
+    });
+    root.querySelector("#mm-generation-form")?.addEventListener("submit", (event) => { event.preventDefault(); void saveGenerationSettings(); });
+    MODEL_SETTINGS_TABS.filter((tab) => tab.id !== "context" && tab.id !== "generation").forEach((tab) => {
+      root.querySelector(`#mm-${tab.id}-form`)?.addEventListener("submit", (event) => { event.preventDefault(); void saveAdvancedSettings(tab.id); });
+    });
     root.querySelector("#mm-storage")?.addEventListener("toggle", (event) => { state.storageOpen = event.target.open; });
     root.querySelector("#mm-search-form")?.addEventListener("submit", (event) => { event.preventDefault(); state.source = "search"; void loadCatalog(); });
     root.querySelector("#mm-variant")?.addEventListener("change", (event) => { state.variantId = event.target.value; repaint(); });

@@ -5,6 +5,7 @@ import type { LocalModelOptions } from "../local/types";
 import type { McpClientConfiguration } from "../mcp/client/types";
 import { parseMcpConfiguration } from "../mcp/client/configuration";
 import { AgentLimits, readAgentLimits } from "../agents/runtime/AgentLimits";
+import { defaultLocalGenerationSettings } from "../local/GenerationSettings";
 
 dotenv.config();
 
@@ -183,7 +184,8 @@ export const config: AppConfig = {
     gpuLayers: nonNegativeNumber(localValue("gpuLayers", "LLAMA_GPU_LAYERS"), process.platform === "darwin" ? 99 : 0),
     loadTimeoutMs: positiveNumber(localValue("loadTimeoutMs", "LLAMA_LOAD_TIMEOUT_MS"), 300000),
     generationTimeoutMs: positiveNumber(localValue("generationTimeoutMs", "LLAMA_GENERATION_TIMEOUT_MS"), 600000),
-    memoryLimitPercent: Math.min(90, positiveNumber(localValue("memoryLimitPercent", "LLAMA_MEMORY_LIMIT_PERCENT"), 75, 10))
+    memoryLimitPercent: Math.min(90, positiveNumber(localValue("memoryLimitPercent", "LLAMA_MEMORY_LIMIT_PERCENT"), 75, 10)),
+    generation: defaultLocalGenerationSettings()
   },
   server: {
     enabled: toBoolean(process.env.HTTP_ENABLED, true),
@@ -313,5 +315,6 @@ export const localModelOptions = (source: AppConfig): LocalModelOptions => ({
   loadTimeoutMs: 300000,
   generationTimeoutMs: 600000,
   memoryLimitPercent: 75,
+  generation: defaultLocalGenerationSettings(),
   ...source.localModels
 });

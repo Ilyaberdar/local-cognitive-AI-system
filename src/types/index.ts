@@ -117,6 +117,36 @@ export interface ProviderRuntimeSettings {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** A named, local-only sampling profile. `server` leaves llama.cpp defaults intact. */
+export type LocalGenerationPreset = "server" | "precise" | "balanced" | "creative" | "custom";
+
+/**
+ * Request-level controls supported by llama.cpp's OpenAI-compatible server.
+ * They are deliberately separate from loading/runtime knobs: changing these
+ * never needs to unload the resident model.
+ */
+export interface LocalGenerationSettings {
+  preset: LocalGenerationPreset;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  minP?: number;
+  repeatPenalty?: number;
+  maxTokens?: number;
+  seed?: number;
+}
+
+export interface SamplingSettings {
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  minP?: number;
+  repeatPenalty?: number;
+  seed?: number;
+}
+
 export interface LocalModelSettings {
   modelsDir: string;
   contextSize: number;
@@ -124,6 +154,7 @@ export interface LocalModelSettings {
   loadTimeoutMs: number;
   generationTimeoutMs: number;
   memoryLimitPercent: number;
+  generation: LocalGenerationSettings;
 }
 
 export interface PluginRuntimeSettings {
@@ -133,7 +164,11 @@ export interface PluginRuntimeSettings {
 
 export interface UiPreferences {
   version: 1;
-  theme: "dark" | "light" | "system";
+  theme: "dark" | "light" | "system" | "midnight";
+  /** Optional, user-selected color overrides for the active visual style. */
+  accentColor?: string;
+  backgroundColor?: string;
+  foregroundColor?: string;
   animations: boolean;
   fontScale: number;
   codeFontSize: number;
@@ -142,10 +177,17 @@ export interface UiPreferences {
   mode: SessionMode;
 }
 
+export interface LocalProfilePreferences {
+  displayName: string;
+  /** Small PNG/JPEG/WebP data URL stored only in this device's settings file. */
+  avatarDataUrl?: string;
+}
+
 export interface AppSettings {
   schemaVersion?: number;
   filesystem?: { outputDir: string; accessMode: "restricted" | "full"; allowedDirectories: string[] };
   ui?: UiPreferences;
+  profile?: LocalProfilePreferences;
   localModels?: LocalModelSettings;
   agentLimits: AgentLimits;
   llm: {
@@ -183,6 +225,7 @@ export interface AppSettings {
 export interface AppSettingsPatch {
   filesystem?: Partial<NonNullable<AppSettings["filesystem"]>>;
   ui?: Partial<Omit<UiPreferences, "version">>;
+  profile?: Partial<LocalProfilePreferences>;
   localModels?: Partial<LocalModelSettings>;
   agentLimits?: Partial<AgentLimits>;
   llm?: {
@@ -226,6 +269,8 @@ export interface SessionSettings {
   mode: SessionMode;
   language: LanguagePreference;
   outputStyle: OutputStyle;
+  /** Optional for settings saved by pre-effort desktop builds. */
+  reasoningEffort?: ReasoningEffort;
   defaultTarget: ProviderTarget;
   defaultAccessMode: SubagentAccessMode;
   codeAgents: CodeAgentTarget[];
@@ -237,6 +282,7 @@ export interface SessionSettingsPatch {
   mode?: SessionMode;
   language?: LanguagePreference;
   outputStyle?: OutputStyle;
+  reasoningEffort?: ReasoningEffort;
   defaultTarget?: Partial<ProviderTarget>;
   defaultAccessMode?: SubagentAccessMode;
   codeAgents?: CodeAgentTarget[];
@@ -427,6 +473,8 @@ export interface LLMRequest {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /** Local sampler overrides. Ignored by providers that do not expose them. */
+  sampling?: SamplingSettings;
   timeoutMs?: number;
   signal?: AbortSignal;
   onProgress?: (event: { phase: "queued" | "loading" | "generating"; model: string; queuePosition?: number }) => void;
