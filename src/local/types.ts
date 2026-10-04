@@ -1,4 +1,4 @@
-import { ManagedModel } from "../types";
+import { LocalGenerationSettings, ManagedModel } from "../types";
 
 export interface LocalModelOptions {
   enabled: boolean;
@@ -11,6 +11,8 @@ export interface LocalModelOptions {
   loadTimeoutMs: number;
   generationTimeoutMs: number;
   memoryLimitPercent: number;
+  /** Undefined keeps llama.cpp's own defaults (legacy/test compatible). */
+  generation?: LocalGenerationSettings;
 }
 
 export interface ModelArtifact {

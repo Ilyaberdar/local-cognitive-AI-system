@@ -5,6 +5,7 @@ import { ProjectStore } from "../projects/ProjectStore";
 import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LLMService } from "../llm/LLMService";
 import { ManagedModel } from "../types";
+import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { compileProgram, SourceSpan } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
@@ -24,6 +25,8 @@ const activeStatus = (status: RunStatus) => status === "running" || status === "
 const stamp = () => new Date().toISOString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const runId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new SynthesisError("Invalid run identifier."); return id; };
+// Synthesis turns produce structured source/JSON and should not inherit a creative chat profile.
+const synthesisSampling = resolveLocalGenerationSettings(preciseLocalGenerationSettings()).sampling;
 function publicRun(record: RunRecord): SynthesisRun {
   const {files, baseline, specSource, flowSource, rootPath, specHash, spec, flow, version, outputPath, ...run} = record;
   return run;
@@ -267,7 +270,7 @@ export class SynthesisService {
         case "role.propose": case "role.reconsider": case "role.inspect": case "role.propose_tests": {
           if (!receiver || typeof receiver !== "object" || !roles.has(receiver)) throw new SynthesisError("Expected a loaded model role.");
           const model = (receiver as {model: ManagedModel}).model;
-          const response = await this.services.llm.generateText({model: model.id, signal, maxTokens: 1000, localReasoningBudget: 0,
+          const response = await this.services.llm.generateText({model: model.id, signal, maxTokens: 1000, localReasoningBudget: 0, sampling: synthesisSampling,
             systemPrompt: "You are a software synthesis advisor. Suggestions are advisory, never acceptance evidence. Be concise.",
             prompt: `${name}\nContract: ${record.spec.description}\nContext: ${JSON.stringify(args).slice(0, 6000)}\nCandidate artifact excerpts (bounded; do not assume omitted text was reviewed):\n${JSON.stringify(Object.fromEntries(Object.entries(record.files).map(([file, content]) => [file, content.slice(0, 4000)]))).slice(0, 14000)}`}, model.providerId);
           this.usage(record, response.usage); if (response.error) throw new SynthesisError(response.error);
@@ -373,7 +376,7 @@ export class SynthesisService {
       ].join("\n\n");
       const request = {
         model: model.id, signal, prompt, systemPrompt: `You implement only ${file}, one small file of a software module. Follow the exact public interface in the contract. The contract describes the whole module; implement only this file's responsibility. ${format === "json" ? "Output only JSON with a content string." : "Output only source code, not JSON or explanations."}`,
-        temperature: 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1, maxTokens: 2600, localReasoningBudget: 0
+        temperature: 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1, maxTokens: 2600, localReasoningBudget: 0, sampling: synthesisSampling
       };
       let content: string | undefined;
       let response;

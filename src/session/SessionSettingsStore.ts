@@ -8,6 +8,7 @@ import {
   SessionSettings,
   SessionSettingsPatch
 } from "../types";
+import { isReasoningEffort } from "../llm/ReasoningEffort";
 
 interface SessionSettingsStoreOptions {
   baseDir: string;
@@ -82,6 +83,7 @@ export class SessionSettingsStore {
       mode: settings.mode ?? fallback.mode,
       language: settings.language ?? fallback.language,
 	      outputStyle: settings.outputStyle ?? fallback.outputStyle,
+      reasoningEffort: isReasoningEffort(settings.reasoningEffort) ? settings.reasoningEffort : fallback.reasoningEffort,
 	      defaultTarget: this.normalizeTarget(settings.defaultTarget, fallback.defaultTarget),
 	      defaultAccessMode: settings.defaultAccessMode === "ask" ? "ask" : settings.defaultAccessMode === "full" ? "full" : "default",
 	      codeAgents: this.normalizeCodeAgents(settings.codeAgents, fallback.codeAgents),
@@ -108,6 +110,7 @@ export class SessionSettingsStore {
       mode: "auto",
       language: "auto",
       outputStyle: "balanced",
+	      reasoningEffort: "medium",
 	      defaultTarget: {
 	        ...this.defaultTarget
 	      },

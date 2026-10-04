@@ -8,7 +8,7 @@ import { AppSettingsStore } from "../src/app/AppSettingsStore";
 import { RuntimeManager } from "../src/app/RuntimeManager";
 import { Logger } from "../src/utils/Logger";
 import { LocalModelOptions } from "../src/local/types";
-import { LLMRequest, ProcessProgressEvent } from "../src/types";
+import { LLMRequest, LocalGenerationSettings, ProcessProgressEvent } from "../src/types";
 
 const deferred = () => {
   let resolve!: () => void;
@@ -132,22 +132,42 @@ test("missing delegation markers receive one structured repair from the main mod
   assert.ok("subagents" in result.result && result.result.subagents?.[0].status === "ok");
 });
 
-test("UI preference saves keep the same runtime and do not reconfigure local inference", async t => {
+test("appearance and local profile saves keep the same runtime and do not reconfigure local inference", async t => {
   const { manager, service } = await fixture(t);
   const previous = manager.getRuntime();
   let rebuilds = 0;
   t.mock.method(service, "reconfigure", async () => { rebuilds++; });
-  const saved = await manager.updateSettings({ ui: { theme: "system", animations: false, fontScale: 130, codeFontSize: 11 } });
+  const saved = await manager.updateSettings({
+    ui: { theme: "midnight", animations: false, fontScale: 130, codeFontSize: 11, accentColor: "#1F6FEB", backgroundColor: "#0C1117", foregroundColor: "#E8EEF8" },
+    profile: { displayName: "Mira", avatarDataUrl: "data:image/png;base64,AA==" }
+  });
   assert.equal(saved.runtime, previous);
   assert.equal(rebuilds, 0);
   assert.equal(saved.settings.ui?.animations, false);
-  assert.equal(saved.settings.ui?.theme, "system");
+  assert.equal(saved.settings.ui?.theme, "midnight");
   assert.equal(saved.settings.ui?.fontScale, 130);
   assert.equal(saved.settings.ui?.codeFontSize, 11);
+  assert.equal(saved.settings.ui?.accentColor, "#1F6FEB");
+  assert.equal(saved.settings.profile?.displayName, "Mira");
+  assert.equal(saved.settings.profile?.avatarDataUrl, "data:image/png;base64,AA==");
   const themeOnly = await manager.updateSettings({ ui: { theme: "light" } });
   assert.equal(themeOnly.settings.ui?.fontScale, 130);
   assert.equal(themeOnly.settings.ui?.codeFontSize, 11);
   assert.equal(themeOnly.runtime, previous);
+});
+
+test("local generation profiles persist and update a loaded service without a runtime rebuild", async t => {
+  const { manager, service } = await fixture(t);
+  const previous = manager.getRuntime();
+  let rebuilds = 0;
+  let applied: unknown;
+  t.mock.method(service, "reconfigure", async () => { rebuilds++; });
+  t.mock.method(service, "setGenerationSettings", async (settings: LocalGenerationSettings) => { applied = settings; });
+  const result = await manager.updateSettings({ localModels: { generation: { preset: "creative" } } });
+  assert.equal(result.runtime, previous);
+  assert.equal(rebuilds, 0);
+  assert.deepEqual(applied, { preset: "creative" });
+  assert.equal(result.settings.localModels?.generation.preset, "creative");
 });
 
 test("entity edits preserve all neighboring configuration and explicit secrets remain cleared", async t => {
@@ -174,6 +194,9 @@ test("invalid entity fields reject without publishing settings; serialized prefe
   await assert.rejects(manager.updateSettings({ providers: { openai: { timeoutMs: -1 } } }), /Invalid providers.openai.timeoutMs/);
   await assert.rejects(manager.updateSettings({ ui: { animations: "yes" as never } }), /Invalid ui.animations/);
   await assert.rejects(manager.updateSettings({ ui: { fontScale: 200 } }), /Invalid ui.fontScale/);
+  await assert.rejects(manager.updateSettings({ ui: { accentColor: "blue" } }), /Invalid ui.accentColor/);
+  await assert.rejects(manager.updateSettings({ profile: { displayName: " ", avatarDataUrl: "data:image/svg+xml;base64,PHN2Zy8+" } }), /Invalid profile.displayName/);
+  await assert.rejects(manager.updateSettings({ profile: { avatarDataUrl: "data:image/svg+xml;base64,PHN2Zy8+" } }), /Invalid profile.avatarDataUrl/);
   for (const codeFontSize of [9, 21, 12.5, "12"]) {
     await assert.rejects(manager.updateSettings({ ui: { codeFontSize: codeFontSize as number } }), /Invalid ui.codeFontSize/);
   }

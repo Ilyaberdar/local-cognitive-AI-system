@@ -19,7 +19,13 @@ export function createSettingsData({ request, onSaved }) {
 }
 
 export function localProfileView(settings) {
-  return { id: settings?.memory?.localProfileId, name: 'Local profile', kind: 'local', authentication: 'unavailable' };
+  const candidateName = settings?.profile?.displayName;
+  const name = typeof candidateName === 'string' && candidateName.trim() ? candidateName.trim().slice(0, 80) : 'Local profile';
+  const candidateAvatar = settings?.profile?.avatarDataUrl;
+  const avatarDataUrl = typeof candidateAvatar === 'string' && candidateAvatar.length <= 1_500_000 && /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i.test(candidateAvatar)
+    ? candidateAvatar
+    : undefined;
+  return { id: settings?.memory?.localProfileId, name, avatarDataUrl, kind: 'local', authentication: 'unavailable' };
 }
 
 // Counts the entries actually shown in MCP settings, not connected accounts.

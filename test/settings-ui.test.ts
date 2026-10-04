@@ -23,6 +23,16 @@ test('entity patches send only edited fields and preserve explicit empty secrets
   assert.throws(() => context.entityPatch({ '__proto__.polluted': true }), /Invalid/);
 });
 
+test('local profile presentation keeps a safe custom name and local raster avatar only', () => {
+  const context: any = {};
+  vm.runInNewContext(source, context);
+  const avatar = 'data:image/png;base64,AA==';
+  assert.deepEqual(plain(context.localProfileView({ memory: { localProfileId: 'local-1' }, profile: { displayName: '  Mira  ', avatarDataUrl: avatar } })), {
+    id: 'local-1', name: 'Mira', avatarDataUrl: avatar, kind: 'local', authentication: 'unavailable'
+  });
+  assert.equal(context.localProfileView({ profile: { displayName: 'Mira', avatarDataUrl: 'data:image/svg+xml;base64,PHN2Zy8+' } }).avatarDataUrl, undefined);
+});
+
 test('settings saves serialize responses and recover after failure without a false saved callback', async () => {
   const first = deferred(); const writes: any[] = [], saved: any[] = [];
   let count = 0;

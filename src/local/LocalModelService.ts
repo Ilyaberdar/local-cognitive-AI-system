@@ -2,7 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
-import { LLMRequest, LLMResponse } from "../types";
+import { LLMRequest, LLMResponse, LocalGenerationSettings } from "../types";
 import { Logger } from "../utils/Logger";
 import { LocalModelManager } from "../llm/LocalModelManager";
 import { HuggingFaceCatalog, groupVariants } from "./HuggingFaceCatalog";
@@ -14,6 +14,7 @@ import { LlamaCppRuntime } from "./LlamaCppRuntime";
 import { inspectModelStorage } from "./ModelStorageInventory";
 import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
 import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact } from "./types";
+import { normalizeLocalGenerationSettings, preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "./GenerationSettings";
 
 export class LocalModelService implements LocalModelManager {
   readonly providerId = "llamacpp";
@@ -83,6 +84,13 @@ export class LocalModelService implements LocalModelManager {
       else { await this.runtime.reconfigure(options); this.options = options; }
       this.emit();
     }, this.lifetime.signal);
+  }
+
+  /** Sampling is evaluated per request, so changing it must not restart loaded weights. */
+  async setGenerationSettings(generation: LocalGenerationSettings): Promise<void> {
+    await this.init();
+    this.options = { ...this.options, generation: normalizeLocalGenerationSettings(generation) };
+    this.emit();
   }
 
   snapshot(): LocalModelSnapshot {
@@ -167,7 +175,19 @@ export class LocalModelService implements LocalModelManager {
         if (this.runtime.currentModelId !== modelId || this.runtime.status !== "ready") request.onProgress?.({ phase: "loading", model: modelId });
         await this.ensureLoaded(modelId, signal);
         signal.throwIfAborted(); request.onProgress?.({ phase: "generating", model: modelId });
-        return await this.runtime.generateText({ ...request, model: modelId, signal });
+        const profile = request.outputPurpose === "agent-action"
+          ? preciseLocalGenerationSettings()
+          : this.options.generation;
+        const resolved = resolveLocalGenerationSettings(profile);
+        const sampling = { ...resolved.sampling, ...request.sampling };
+        return await this.runtime.generateText({
+          ...request,
+          model: modelId,
+          signal,
+          maxTokens: request.maxTokens ?? resolved.maxTokens,
+          temperature: request.temperature ?? sampling.temperature,
+          sampling
+        });
       } finally {
         // The runtime settles cancelled decoding before releasing the queue slot.
         // Only application shutdown should discard an otherwise healthy model.

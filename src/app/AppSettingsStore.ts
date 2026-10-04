@@ -8,6 +8,7 @@ import { constants } from "node:fs";
 import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
 import { validateSettingsPatch, defaultUiPreferences } from "./settingsValidation";
 import { normalizeAgentLimits } from "../agents/runtime/AgentLimits";
+import { defaultLocalGenerationSettings, normalizeLocalGenerationSettings } from "../local/GenerationSettings";
 
 export class AppSettingsStore {
   private readonly filePath: string;
@@ -42,7 +43,7 @@ export class AppSettingsStore {
       // Recoverable local archive; legacy secrets never enter normal settings or new OAuth records.
       await fs.writeFile(archive, raw, { mode: 0o600, flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
     }
-    const requiresMigration = parsed.schemaVersion === undefined || parsed.schemaVersion < 1;
+    const requiresMigration = parsed.schemaVersion === undefined || parsed.schemaVersion < 4;
     const migrateLegacyAnthropicOutput = parsed.providers?.anthropic?.maxTokens === 1024 && this.baseConfig.providers.anthropic.maxTokens > 1024;
     if (migrateLegacyAnthropicOutput) settings.providers.anthropic.maxTokens = this.baseConfig.providers.anthropic.maxTokens;
     if (requiresMigration) {
@@ -50,7 +51,7 @@ export class AppSettingsStore {
         if (error.code !== "EEXIST") throw error;
       });
     }
-    if (!parsed.memory?.localProfileId || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem) await this.write(settings);
+    if (!parsed.memory?.localProfileId || !parsed.profile || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem) await this.write(settings);
     return settings;
   }
 
@@ -92,7 +93,16 @@ export class AppSettingsStore {
       ...current,
       filesystem: { ...this.fromConfig().filesystem!, ...current.filesystem, ...patch.filesystem },
       ui: { ...defaultUiPreferences, ...current.ui, ...patch.ui, version: 1 },
-      localModels: { ...this.localDefaults(), ...current.localModels, ...patch.localModels },
+      profile: { ...this.defaultProfile(), ...current.profile, ...patch.profile },
+      localModels: {
+        ...this.localDefaults(),
+        ...current.localModels,
+        ...patch.localModels,
+        generation: {
+          ...(current.localModels?.generation ?? this.localDefaults().generation),
+          ...(patch.localModels?.generation ?? {})
+        }
+      },
       agentLimits: { ...current.agentLimits, ...patch.agentLimits },
       llm: {
         ...current.llm,
@@ -181,8 +191,9 @@ export class AppSettingsStore {
 
   private fromConfig(): AppSettings {
     return {
-      schemaVersion: 2,
+      schemaVersion: 4,
       filesystem: { outputDir: this.baseConfig.outputDir, ...this.baseConfig.filesystem },
+      profile: this.defaultProfile(),
       localModels: this.localDefaults(),
       agentLimits: normalizeAgentLimits(this.baseConfig.agentLimits),
       llm: {
@@ -266,8 +277,9 @@ export class AppSettingsStore {
     const settings: AppSettings = {
       ...input,
       // Keep old stores readable; the UI imports its first-paint theme once.
-      ...(input.ui ? { ui: { ...defaultUiPreferences, ...input.ui, version: 1 as const } } : {}),
-      schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 2 ? input.schemaVersion : 2,
+      ...(input.ui ? { ui: this.normalizeUi(input.ui) } : {}),
+      profile: this.normalizeProfile(input.profile),
+      schemaVersion: Number.isInteger(input.schemaVersion) && input.schemaVersion! >= 3 ? input.schemaVersion : 3,
       filesystem: input.filesystem ?? {
         outputDir: typeof input.plugins?.file?.values.outputDir === "string" ? input.plugins.file.values.outputDir : defaults.filesystem!.outputDir,
         accessMode: input.plugins?.file?.values.accessMode === "full" ? "full" : input.plugins?.file?.values.accessMode === "restricted" ? "restricted" : defaults.filesystem!.accessMode,
@@ -362,9 +374,33 @@ export class AppSettingsStore {
     };
   }
 
+  private defaultProfile(): NonNullable<AppSettings["profile"]> {
+    return { displayName: "Local profile" };
+  }
+
+  private normalizeUi(input: AppSettings["ui"]): NonNullable<AppSettings["ui"]> {
+    const preferences = { ...defaultUiPreferences, ...input, version: 1 as const };
+    preferences.theme = ["dark", "light", "system", "midnight"].includes(preferences.theme) ? preferences.theme : defaultUiPreferences.theme;
+    for (const key of ["accentColor", "backgroundColor", "foregroundColor"] as const) {
+      if (typeof preferences[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(preferences[key])) delete preferences[key];
+    }
+    return preferences;
+  }
+
+  private normalizeProfile(input: AppSettings["profile"]): NonNullable<AppSettings["profile"]> {
+    const displayName = typeof input?.displayName === "string" && input.displayName.trim() && input.displayName.trim().length <= 80 && !/[\u0000-\u001f\u007f]/.test(input.displayName)
+      ? input.displayName.trim()
+      : this.defaultProfile().displayName;
+    const avatar = input?.avatarDataUrl;
+    const avatarDataUrl = typeof avatar === "string" && avatar.length <= 1_500_000 && /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i.test(avatar)
+      ? avatar
+      : undefined;
+    return { displayName, ...(avatarDataUrl ? { avatarDataUrl } : {}) };
+  }
+
   private localDefaults(): NonNullable<AppSettings["localModels"]> {
-    const { modelsDir, contextSize, gpuLayers, loadTimeoutMs, generationTimeoutMs, memoryLimitPercent } = localModelOptions(this.baseConfig);
-    return { modelsDir, contextSize, gpuLayers, loadTimeoutMs, generationTimeoutMs, memoryLimitPercent };
+    const { modelsDir, contextSize, gpuLayers, loadTimeoutMs, generationTimeoutMs, memoryLimitPercent, generation } = localModelOptions(this.baseConfig);
+    return { modelsDir, contextSize, gpuLayers, loadTimeoutMs, generationTimeoutMs, memoryLimitPercent, generation: normalizeLocalGenerationSettings(generation ?? defaultLocalGenerationSettings()) };
   }
 
   private normalizeLocalModels(input: AppSettings["localModels"]): NonNullable<AppSettings["localModels"]> {
@@ -376,7 +412,8 @@ export class AppSettingsStore {
       gpuLayers: typeof input?.gpuLayers === "number" && Number.isFinite(input.gpuLayers) ? Math.max(0, Math.min(999, Math.floor(input.gpuLayers))) : defaults.gpuLayers,
       loadTimeoutMs: Math.min(1800000, this.positiveInteger(input?.loadTimeoutMs, defaults.loadTimeoutMs, 10000)),
       generationTimeoutMs: Math.min(3600000, this.positiveInteger(input?.generationTimeoutMs, defaults.generationTimeoutMs, 10000)),
-      memoryLimitPercent: Math.min(90, this.positiveInteger(input?.memoryLimitPercent, defaults.memoryLimitPercent, 10))
+      memoryLimitPercent: Math.min(90, this.positiveInteger(input?.memoryLimitPercent, defaults.memoryLimitPercent, 10)),
+      generation: normalizeLocalGenerationSettings(input?.generation)
     };
   }
 

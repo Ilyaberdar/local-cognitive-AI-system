@@ -1,4 +1,3 @@
-import { motionEnabled } from "./motion.js";
 // Shared presentation primitives. No runtime, provider, or task behavior lives here.
 const paths = {
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
@@ -38,6 +37,7 @@ const paths = {
   calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 11h18M7 15h3m4 0h3m-10 3h3"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
   refresh: '<path d="M20 4v6h-6M4 20v-6h6"/><path d="M5.6 8a7 7 0 0 1 11.6-3L20 8M4 16l2.8 3a7 7 0 0 0 11.6-3"/>',
+  bolt: '<path d="m13 2-9 12h7l-1 8 10-13h-7l0-7Z"/>',
   play: '<path d="m9 5 10 7-10 7V5Z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor" stroke="none"/>',
   copy: '<rect x="8" y="8" width="12" height="13" rx="3"/><path d="M15 8V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v7a3 3 0 0 0 3 3h2"/>',
@@ -55,13 +55,7 @@ export function glassFilters() {
   return `<svg class="glass-filter-defs" aria-hidden="true"><defs><filter id="liquid-lens" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feImage href="data:image/svg+xml,${encodeURIComponent(map)}" x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="rim"/><feDisplacementMap in="SourceGraphic" in2="rim" scale="8" xChannelSelector="R" yChannelSelector="G"/></filter></defs></svg>`;
 }
 
-export function bindGlassLighting(root) {
-  root.querySelectorAll(".liquid-glass").forEach((surface) => {
-    surface.addEventListener("pointermove", (event) => {
-      if (!motionEnabled()) return;
-      const rect = surface.getBoundingClientRect();
-      surface.style.setProperty("--light-x", `${((event.clientX - rect.left) / rect.width) * 100}%`);
-      surface.style.setProperty("--light-y", `${((event.clientY - rect.top) / rect.height) * 100}%`);
-    }, { passive: true });
-  });
+export function bindGlassLighting() {
+  // Deliberately no pointer tracking: moving across the navigation and composer
+  // must not create a glare effect. Route clicks own the one remaining animation.
 }

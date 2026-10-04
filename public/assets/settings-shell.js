@@ -8,7 +8,7 @@ const groups = [
   ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connected accounts', 'externalLink']]],
   ['System', [['data', 'Data & Privacy', 'shield'], ['about', 'About', 'info']]]
 ];
-const providerNames = { llamacpp: 'Local models · llama.cpp', ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
+const providerNames = { llamacpp: 'Local models', ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const get = (object, key) => key.split('.').reduce((value, part) => value?.[part], object);
 const field = (name, label, type = 'text', extra = {}) => ({ name, label, type, ...extra });
@@ -17,6 +17,27 @@ const select = (name, label, choices, description = '') => field(name, label, 's
 const number = (name, label, min, max, description = '') => field(name, label, 'number', { min, max, description });
 const link = (path, title, description = '', symbol = 'chevronRight') => `<a class="settings-list-row" href="#/settings/${escape(path)}"><span><strong>${escape(title)}</strong>${description ? `<small>${escape(description)}</small>` : ''}</span>${icon(symbol)}</a>`;
 const note = (title, description) => `<div class="settings-empty"><span class="settings-empty-icon">${icon('info')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
+const isHexColor = value => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+const appearancePresets = {
+  dark: { label: 'Dark', description: 'Quiet graphite for focused work', accent: '#B4C9EB', background: '#111214', foreground: '#ECEDEF' },
+  light: { label: 'Light', description: 'A softer, low-glare light surface', accent: '#466896', background: '#E9EDF2', foreground: '#273140' },
+  midnight: { label: 'Midnight blue', description: 'Deep blue black, based on the Plugins view', accent: '#65A8FF', background: '#0C1117', foreground: '#E8EEF8' },
+  system: { label: 'System', description: 'Follows your device appearance', accent: '#B4C9EB', background: '#111214', foreground: '#ECEDEF' }
+};
+const appearanceColorKey = { 'ui.accentColor': 'accent', 'ui.backgroundColor': 'background', 'ui.foregroundColor': 'foreground' };
+const generationPresets = {
+  precise: { temperature: 0.2, topP: 0.9, topK: 40, minP: 0.05, repeatPenalty: 1.05, maxTokens: 1024 },
+  balanced: { temperature: 0.7, topP: 0.95, topK: 40, minP: 0.05, repeatPenalty: 1.05, maxTokens: 2048 },
+  creative: { temperature: 1, topP: 0.98, topK: 80, minP: 0.02, repeatPenalty: 1.02, maxTokens: 3072 }
+};
+const generationFields = [
+  ['temperature', 'Temperature', '0.0–2.0', '0', '2', '0.01'],
+  ['topP', 'Top P', '0.0–1.0', '0', '1', '0.01'],
+  ['topK', 'Top K', '0–200', '0', '200', '1'],
+  ['minP', 'Min P', '0.0–1.0', '0', '1', '0.01'],
+  ['repeatPenalty', 'Repeat penalty', '0.0–2.0', '0', '2', '0.01'],
+  ['maxTokens', 'Max response tokens', '1–32,768', '1', '32768', '1']
+];
 
 export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, captureScroll, restoreScroll, voiceInput }) {
   const root = document.createElement('section');
@@ -42,10 +63,13 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       field('filesystem.allowedDirectories', 'Allowed folders', 'textarea', { description: 'One absolute folder path per line. Session approval rules still apply.' })];
     if (name === 'voice') return [field('voice.microphone', 'Microphone', 'text', { description: 'Input device, headset, input level and permissions' }), field('voice.language', 'Language'), field('voice.recognition', 'Recognition model')];
     if (name === 'appearance') return [
-      select('ui.theme', 'Theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], 'Uses the same theme as the main sidebar.'),
+      field('ui.theme', 'Theme', 'theme-cards', { description: 'One visual style is applied to Chat, Workflow, Synthesis, Models and Plugins.' }),
+      field('ui.accentColor', 'Accent', 'color', { colorKey: 'accent' }),
+      field('ui.backgroundColor', 'Background', 'color', { colorKey: 'background' }),
+      field('ui.foregroundColor', 'Foreground', 'color', { colorKey: 'foreground' }),
       field('ui.fontScale', 'Text size', 'font-scale', { description: 'Scale interface text and messages across the app. Code has its own size. Default: 100%.' }),
       field('ui.codeFontSize', 'Code text size', 'code-font-size', { description: 'Code blocks in chat, workflow responses and Review. Independent of text size. Default: 12 px.' }),
-      bool('ui.animations', 'Animations', 'Motion is reduced automatically when your system requests it.')
+      bool('ui.animations', 'Animations', 'Shows the one-pass sweep when Chat, Workflow, Synthesis or Models is clicked. Motion is reduced automatically when your system requests it.')
     ];
     if (name === 'providers' && id && settings().providers?.[id]) {
       return [bool(`providers.${id}.enabled`, 'Enabled'), ...(id === 'llamacpp' ? [] : [
@@ -59,7 +83,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       field('localModels.modelsDir', 'Model storage folder', 'directory', { description: 'Changing storage copies and verifies models before switching. Previous files remain as a backup. Pause downloads first.' }),
       number('localModels.contextSize', 'Context size (tokens)', 512, 131072), number('localModels.gpuLayers', 'GPU layers', 0, 999),
       number('localModels.memoryLimitPercent', 'Memory warning threshold (%)', 10, 90),
-      number('localModels.loadTimeoutMs', 'Load timeout (ms)', 10000, 1800000), number('localModels.generationTimeoutMs', 'Generation timeout (ms)', 10000, 3600000)
+      number('localModels.loadTimeoutMs', 'Load timeout (ms)', 10000, 1800000), number('localModels.generationTimeoutMs', 'Generation timeout (ms)', 10000, 3600000),
+      field('localModels.generation', 'Generation profile', 'local-generation', { description: 'Sampling controls apply to the next local response without unloading the model. Structured tool actions use a precise profile for safety.' })
     ];
     if (name === 'agents') return [
       number('agentLimits.maxSteps', 'Main agent turns', 0, undefined, 'One turn is one model decision: request a tool or return the final answer.'),
@@ -86,11 +111,59 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   const dirty = route => { if (!drafts.has(route)) drafts.set(route, {}); return drafts.get(route); };
   function valueOf(spec) { const value = Object.hasOwn(dirty(page), spec.name) ? dirty(page)[spec.name] : get(settings(), spec.name); return Array.isArray(value) ? value.join('\n') : value; }
+  function activeAppearanceTheme() {
+    const candidate = valueOf({ name: 'ui.theme' });
+    return Object.hasOwn(appearancePresets, candidate) ? candidate : 'dark';
+  }
+  function appearanceColor(spec) {
+    const value = valueOf(spec);
+    return isHexColor(value) ? value.toUpperCase() : appearancePresets[activeAppearanceTheme()][spec.colorKey];
+  }
+  function generationValue() {
+    const stored = valueOf({ name: 'localModels.generation' }) || {};
+    const preset = ['server', 'precise', 'balanced', 'creative', 'custom'].includes(stored.preset) ? stored.preset : 'server';
+    return { ...stored, preset };
+  }
+  function generationInputValues(generation) {
+    if (generation.preset === 'custom') return generation;
+    return generationPresets[generation.preset] || {};
+  }
+  function renderGenerationControl() {
+    const generation = generationValue();
+    const values = generationInputValues(generation);
+    const placeholder = generation.preset === 'server' ? 'Use default' : '';
+    const profileNote = generation.preset === 'server'
+      ? 'Uses the model’s built-in values until you choose a profile or enter a value.'
+      : generation.preset === 'custom'
+        ? 'Custom values apply to the next local response.'
+        : 'This profile fills in the controls below. Editing a value creates a custom profile.';
+    return `<section class="local-generation-card" aria-labelledby="local-generation-heading">
+      <header class="local-generation-card-header"><div><h2 id="local-generation-heading">Generation profile</h2><p>Choose how a local model balances consistency and variety. Changes apply to the next response without unloading the model.</p></div>
+        <label class="local-generation-profile" for="local-generation-preset"><span>Profile</span><select id="local-generation-preset" data-generation-preset aria-label="Generation profile">
+          ${[['server', 'Default'], ['precise', 'Precise'], ['balanced', 'Balanced'], ['creative', 'Creative'], ['custom', 'Custom']].map(([value, label]) => `<option value="${value}" ${generation.preset === value ? 'selected' : ''}>${label}</option>`).join('')}
+        </select></label></header>
+      <p class="local-generation-profile-note">${profileNote}</p>
+      <div class="local-generation-grid">${generationFields.map(([key, label, hint, min, max, step]) => `<label><span>${label}</span><input type="number" inputmode="decimal" data-generation-field="${key}" min="${min}" max="${max}" step="${step}" value="${values[key] ?? ''}" placeholder="${placeholder}" aria-label="${label}" /><small>${hint}</small></label>`).join('')}</div>
+      <details class="local-generation-advanced"><summary>Advanced</summary><label><span>Seed</span><input type="number" inputmode="numeric" data-generation-field="seed" min="-1" max="2147483647" step="1" value="${generation.preset === 'custom' && generation.seed !== undefined ? generation.seed : ''}" placeholder="Random" aria-label="Seed" /><small>Leave blank for random sampling. Set a fixed integer to reproduce a run.</small></label></details>
+    </section>`;
+  }
+  function avatar(user, extraClass = '') {
+    const image = user.avatarDataUrl ? `<img src="${escape(user.avatarDataUrl)}" alt="" />` : icon('profile');
+    return `<span class="local-avatar ${extraClass}">${image}</span>`;
+  }
   function renderField(spec) {
     const value = valueOf(spec), id = `setting-${spec.name.replaceAll('.', '-')}`;
     let control;
     const common = `id="${id}" name="${escape(spec.name)}"`;
     if (spec.type === 'boolean') control = `<input ${common} type="checkbox" role="switch" ${value ? 'checked' : ''} />`;
+    else if (spec.type === 'local-generation') control = renderGenerationControl();
+    else if (spec.type === 'theme-cards') {
+      const selected = activeAppearanceTheme();
+      control = `<div class="appearance-theme-picker" role="group" aria-label="Visual style">${Object.entries(appearancePresets).map(([theme, preset]) => `<button type="button" class="appearance-theme-card ${theme === selected ? 'is-selected' : ''}" data-appearance-theme="${theme}" aria-pressed="${theme === selected}"><span class="appearance-theme-preview appearance-theme-preview--${theme}" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>${escape(preset.label)}</strong><small>${escape(preset.description)}</small></span></button>`).join('')}</div>`;
+    } else if (spec.type === 'color') {
+      const color = appearanceColor(spec);
+      control = `<div class="appearance-color-control"><input id="${id}-picker" data-appearance-picker="${escape(spec.name)}" type="color" value="${escape(color)}" aria-label="Choose ${escape(spec.label).toLowerCase()} color" /><input ${common} data-appearance-color type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="7" pattern="^#[0-9A-Fa-f]{6}$" value="${escape(color)}" aria-label="${escape(spec.label)} hex color" /></div>`;
+    }
     else if (spec.type === 'font-scale') control = `<div class="settings-font-scale"><input ${common} type="range" min="85" max="150" step="5" value="${value ?? 100}" aria-valuetext="${value ?? 100}%" /><output for="${id}">${value ?? 100}%</output></div>`;
     else if (spec.type === 'code-font-size') control = `<div class="settings-font-scale"><input ${common} type="range" min="10" max="20" step="1" value="${value ?? 12}" aria-valuetext="${value ?? 12} px" /><output for="${id}">${value ?? 12} px</output></div><pre class="settings-code-preview" aria-label="Code size preview"><code><span class="hljs-keyword">const</span> message = <span class="hljs-string">"Hello, world"</span>;</code></pre>`;
     else if (spec.type === 'select') control = `<select ${common}>${spec.choices.map(choice => { const [key, label] = Array.isArray(choice) ? choice : [choice, choice]; return `<option value="${escape(key)}" ${String(value) === key ? 'selected' : ''}>${escape(label)}</option>`; }).join('')}</select>`;
@@ -102,19 +175,26 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     } else if (spec.type === 'textarea') control = `<textarea ${common} rows="3">${escape(value)}</textarea>`;
     else {
       const numberAttributes = spec.type === 'number' ? `${Number.isFinite(spec.min) ? `min="${spec.min}"` : ''} ${Number.isFinite(spec.max) ? `max="${spec.max}"` : ''} step="1" required` : '';
-      control = `<input ${common} type="${['number', 'url'].includes(spec.type) ? spec.type : 'text'}" value="${escape(value)}" ${numberAttributes} />${spec.type === 'directory' && window.desktopModels?.selectDirectory ? '<button type="button" class="ghost-button" data-directory>Choose folder</button>' : ''}`;
+      const input = `<input ${common} type="${['number', 'url'].includes(spec.type) ? spec.type : 'text'}" value="${escape(value)}" ${numberAttributes} />`;
+      control = spec.type === 'directory'
+        ? `<div class="settings-directory-control">${input}${window.desktopModels?.selectDirectory ? '<button type="button" class="ghost-button" data-directory>Choose folder</button>' : ''}</div>`
+        : input;
     }
     return `<div class="settings-row" data-setting="${escape(spec.name)}"><div><label for="${id}">${escape(spec.label)}</label>${spec.description ? `<p>${escape(spec.description)}</p>` : ''}</div><div class="settings-control">${control}</div></div>`;
   }
-  function form(specs, leadingRows = '') {
+  function form(specs, leadingRows = '', beforeRows = '') {
     if (!specs.length) return '';
     const preference = specs.every(item => item.name.startsWith('ui.'));
     const status = statuses.get(page);
-    return `<form id="settings-entity-form" data-entity="${escape(page)}" class="settings-form"><div class="settings-rows">${leadingRows}${specs.map(renderField).join('')}</div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${status?.error ? 'is-error' : status?.success ? 'is-success' : ''}">${escape(status?.text || (preference ? 'Changes save automatically.' : 'Apply changes to this page only.'))}</span>${preference ? '<button type="submit" class="ghost-button" data-retry hidden>Retry save</button>' : `<button type="submit" class="primary-button" ${status?.busy ? 'disabled' : ''}>Save / Apply</button>`}</div></form>`;
+    return `<form id="settings-entity-form" data-entity="${escape(page)}" class="settings-form">${beforeRows}<div class="settings-rows">${leadingRows}${specs.map(renderField).join('')}</div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${status?.error ? 'is-error' : status?.success ? 'is-success' : ''}">${escape(status?.text || (preference ? 'Changes save automatically.' : 'Apply changes to this page only.'))}</span>${preference ? '<button type="submit" class="ghost-button" data-retry hidden>Retry save</button>' : `<button type="submit" class="primary-button" ${status?.busy ? 'disabled' : ''}>Save / Apply</button>`}</div></form>`;
   }
   function profile() {
     const user = localProfileView(settings());
-    return `<div class="local-profile-view"><div class="local-avatar">${icon('profile')}</div><h2>${escape(user.name)}</h2><p>Stored on this device</p></div>`;
+    return `<div class="local-profile-view">${avatar(user)}<h2>${escape(user.name)}</h2><p>Stored only on this device</p></div>`;
+  }
+  function profileEditor() {
+    const user = localProfileView(settings());
+    return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', 'Authentication availability') + link('usage', 'Usage', 'Activity reporting availability');
   }
   function content() {
     const [name, id] = page.split('/');
@@ -122,7 +202,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const result = results.get(page);
     const testResult = result ? `<div class="settings-test-result ${result.ok ? 'is-success' : 'is-error'}" role="status"><div class="settings-test-heading">${icon(result.ok ? 'check' : 'shieldAlert')}<strong>${result.ok ? 'Test succeeded' : 'Test failed'}</strong></div>${result.ok && name === 'providers' ? '<div class="settings-connection-status">Provider connected <small>Verified by the last test</small></div>' : ''}<p>${escape(result.message)}</p>${result.model ? `<small>Model: ${escape(result.model)}</small>` : ''}</div>` : '';
     if (name === 'voice') return '<div data-voice-settings-page></div>';
-    if (name === 'profile') return profile() + `<p class="settings-description">Your chats and settings belong to this local profile. Cloud sign-in and profile editing are unavailable.</p>` + link('account', 'Account', 'Authentication availability') + link('usage', 'Usage', 'Activity reporting availability');
+    if (name === 'profile') return profileEditor();
     if (name === 'account') return profile() + note('Cloud account unavailable', 'Sign-in, cloud synchronization and billing are not available in this release. Local features work without an account.');
     if (name === 'usage') return note('Usage statistics are not available yet', 'This version does not maintain a complete usage ledger across chats, agents, workflows and providers. Token totals, subscription limits and lifetime activity cannot be reported reliably.');
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. Configurable desktop notifications are not available in this release.');
@@ -134,7 +214,11 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'plugins') return '<div data-integrations-page></div>';
     if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerNames[key] || key, provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
     if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}</p>` + form(specs) + `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(page)?.busy ? 'disabled' : ''}>Save & test provider</button></div>` + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
-    if (name === 'runtime') return `<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape(context().localModels?.runtime?.status || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(specs);
+    if (name === 'runtime') {
+      const generation = specs.find(spec => spec.type === 'local-generation');
+      const runtimeSpecs = specs.filter(spec => spec !== generation);
+      return `<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape(context().localModels?.runtime?.status || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(runtimeSpecs, '', generation ? renderGenerationControl() : '');
+    }
     if (name === 'memory') return form(specs) + (!id ? link('memory/advanced', 'Advanced memory', 'Partition, chunk and adapter parameters') : '');
     if (name === 'mcp' && !id) {
       const servers = Object.values(settings().mcp?.client?.servers || {});
@@ -145,6 +229,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         + (servers.length ? servers.map(server => `<div class="settings-list-row"><span><strong>${escape(server.name || server.id)}</strong><small>${escape(server.transport)} · ${server.enabled ? 'Configured' : 'Disabled'} · connection status not checked here</small></span></div>`).join('') : '<p class="settings-footnote">No external MCP servers have been added.</p>');
     }
     if (name === 'mcp' && id === 'local-cognitive') return `<p class="settings-description">Incoming MCP server for Local Cognitive. Other applications connect to this runtime over stdio; these controls do not manage outgoing connections.</p>` + form(specs, '<div class="settings-row"><span>Transport</span><span>stdio</span></div>') + `<p class="settings-footnote">Changes apply when the stdio server is next started.</p><pre class="config-snippet">npm run --silent mcp:stdio</pre>`;
+    if (name === 'appearance') return `<section class="appearance-section"><div class="appearance-section-heading"><div><h2>Visual style</h2><p>Set a consistent app theme, then refine its colors if you want a personal palette.</p></div><button type="button" class="ghost-button" data-reset-appearance>Reset colors</button></div>${form(specs)}</section>`;
     if (specs.length) return form(specs);
     return note('Page not found', 'Choose a page from the Settings navigation.');
   }
@@ -184,6 +269,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     root.innerHTML = `<div class="settings-shell"><aside class="settings-sidebar liquid-glass"><a class="settings-back" href="${escape(previousRoute)}">${icon('chevronLeft')}<span>Back to app</span></a><div class="settings-search">${icon('search')}<input id="settings-search" type="search" placeholder="Search settings" aria-label="Search settings" value="${escape(search)}" /></div><div class="settings-search-results" hidden></div><nav class="settings-groups" aria-label="Settings navigation">${groups.map(([group, items]) => `<div class="settings-group"><h2>${group}</h2>${items.map(([route, label, symbol]) => `<a href="#/settings/${route}" class="settings-nav-row ${route === name ? 'active' : ''}" ${route === name ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span></a>`).join('')}</div>`).join('')}</nav></aside><main class="settings-content"><div class="settings-content-inner">${parent ? `<a class="settings-parent" href="#/settings/${parent}" aria-label="Back to ${escape(titleFor(parent))}">${icon('chevronLeft')}<span>${escape(titleFor(parent))}</span></a>` : ''}<h1 tabindex="-1">${escape(titleFor(page))}</h1>${content()}</div></main></div>`;
     root.querySelector('#settings-search').addEventListener('input', event => { search = event.target.value; renderSearch(); });
     renderSearch(); bindForm(); bindGlassLighting(root);
+    if (name === 'profile') bindProfileForm();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
     if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(settings()) });
     root.querySelector('[data-open-data]')?.addEventListener('click', openDataFolder);
@@ -215,6 +301,21 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const current = page, specs = fieldsFor(page), element = root.querySelector('#settings-entity-form');
     const preference = specs.length && specs.every(spec => spec.name.startsWith('ui.'));
     element?.addEventListener('input', event => {
+      const generationField = event.target?.dataset?.generationField;
+      if (generationField) {
+        const previous = generationValue();
+        const base = previous.preset === 'custom'
+          ? previous
+          : { ...(generationPresets[previous.preset] || generationPresets.balanced) };
+        const raw = event.target.value;
+        const next = { ...base, preset: 'custom' };
+        if (raw === '') delete next[generationField];
+        else next[generationField] = Number(raw);
+        dirty(current)['localModels.generation'] = next;
+        results.delete(current);
+        if (!statuses.get(current)?.busy) setStatus(current, { text: 'Unsaved changes' });
+        return;
+      }
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
       const value = spec.name === 'filesystem.allowedDirectories' ? event.target.value.split('\n').map(value => value.trim()).filter(Boolean) : spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
       if (spec.type === 'secret' && value === '') delete dirty(current)[spec.name]; else dirty(current)[spec.name] = value;
@@ -222,6 +323,13 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       root.querySelector('.settings-test-result')?.remove();
       if (!statuses.get(current)?.busy) setStatus(current, { text: 'Unsaved changes' });
       if (spec.type === 'secret') root.querySelector(`[data-secret-state="${spec.name}"]`).textContent = value ? 'Replacement key entered.' : 'Blank input keeps the existing key.';
+      if (spec.type === 'color') {
+        const picker = root.querySelector(`[data-appearance-picker="${spec.name}"]`);
+        if (isHexColor(value)) {
+          if (picker) picker.value = value;
+          applyPreferences(entityPatch({ [spec.name]: value }).ui);
+        }
+      }
       if (['font-scale', 'code-font-size'].includes(spec.type)) {
         const label = spec.type === 'font-scale' ? `${value}%` : `${value} px`;
         event.target.setAttribute('aria-valuetext', label);
@@ -229,12 +337,61 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         applyPreferences(entityPatch({ [spec.name]: value }).ui);
       }
     });
+    root.querySelector('[data-generation-preset]')?.addEventListener('change', event => {
+      const preset = event.target.value;
+      if (!['server', 'precise', 'balanced', 'creative', 'custom'].includes(preset)) return;
+      const previous = generationValue();
+      const next = preset === 'custom'
+        ? { ...(previous.preset === 'custom' ? previous : generationPresets[previous.preset] || generationPresets.balanced), preset: 'custom' }
+        : { preset };
+      dirty(current)['localModels.generation'] = next;
+      results.delete(current);
+      setStatus(current, { text: 'Unsaved changes' });
+      const scroll = root.querySelector('.settings-content')?.scrollTop || 0;
+      render();
+      root.querySelector('.settings-content').scrollTop = scroll;
+    });
     element?.addEventListener('change', event => {
       if (!preference) return;
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
+      if (spec.type === 'color' && (!event.target.reportValidity() || !isHexColor(event.target.value))) return;
       dirty(current)[spec.name] = spec.type === 'boolean' ? event.target.checked : ['font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
       applyPreferences(entityPatch(dirty(current)).ui || {});
       void save(current);
+    });
+    root.querySelectorAll('[data-appearance-picker]').forEach(picker => picker.addEventListener('input', () => {
+      const input = element?.elements.namedItem(picker.dataset.appearancePicker);
+      if (!input) return;
+      input.value = picker.value.toUpperCase();
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }));
+    root.querySelectorAll('[data-appearance-theme]').forEach(button => button.addEventListener('click', () => {
+      const theme = button.dataset.appearanceTheme;
+      if (!Object.hasOwn(appearancePresets, theme) || statuses.get(current)?.busy) return;
+      dirty(current)['ui.theme'] = theme;
+      root.querySelectorAll('[data-appearance-theme]').forEach(choice => {
+        const selected = choice.dataset.appearanceTheme === theme;
+        choice.classList.toggle('is-selected', selected);
+        choice.setAttribute('aria-pressed', String(selected));
+      });
+      for (const [fieldName, presetKey] of Object.entries(appearanceColorKey)) {
+        const currentColor = Object.hasOwn(dirty(current), fieldName) ? dirty(current)[fieldName] : get(settings(), fieldName);
+        if (isHexColor(currentColor)) continue;
+        const color = appearancePresets[theme][presetKey];
+        const input = element?.elements.namedItem(fieldName);
+        const picker = root.querySelector(`[data-appearance-picker="${fieldName}"]`);
+        if (input) input.value = color;
+        if (picker) picker.value = color;
+      }
+      applyPreferences({ theme });
+      void save(current);
+    }));
+    root.querySelector('[data-reset-appearance]')?.addEventListener('click', () => {
+      const reset = Object.fromEntries(Object.keys(appearanceColorKey).map(key => [key, '']));
+      Object.assign(dirty(current), reset);
+      applyPreferences(entityPatch(reset).ui);
+      void save(current).then(saved => { if (saved && active && page === current) render(); });
     });
     element?.addEventListener('submit', event => { event.preventDefault(); if (element.reportValidity()) void save(current); });
     root.querySelectorAll('[data-clear]').forEach(button => button.addEventListener('click', () => {
@@ -268,6 +425,48 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     try { await window.desktopApp.openDataFolder(); }
     catch (error) { if (!active) { location.hash = '#/settings/data'; } setTimeout(() => { const slot = root.querySelector('[data-folder-status]'); if (slot) slot.textContent = error.message; }, 0); }
   }
+  function bindProfileForm() {
+    const form = root.querySelector('#settings-profile-form');
+    const status = root.querySelector('[data-profile-status]');
+    const setProfileStatus = (text, error = false) => {
+      if (!status) return;
+      status.textContent = text;
+      status.classList.toggle('is-error', error);
+    };
+    const saveProfile = async (patch, success) => {
+      setProfileStatus('Saving…');
+      try {
+        await data.save({ profile: patch });
+        if (active && page === 'profile') render();
+        return true;
+      } catch (error) {
+        setProfileStatus(`Not saved. ${error.message}`, true);
+        return false;
+      }
+    };
+    form?.addEventListener('submit', event => {
+      event.preventDefault();
+      const input = form.elements.namedItem('displayName');
+      if (!form.reportValidity() || !input?.value?.trim()) return;
+      void saveProfile({ displayName: input.value.trim() }, 'Profile saved.');
+    });
+    root.querySelector('[data-profile-avatar]')?.addEventListener('change', async event => {
+      const input = event.currentTarget, file = input.files?.[0];
+      input.value = '';
+      if (!file) return;
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 900 * 1024) {
+        setProfileStatus('Choose a PNG, JPEG or WebP image smaller than 900 KB.', true);
+        return;
+      }
+      try {
+        const reader = new FileReader();
+        const image = await new Promise((resolve, reject) => { reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error || new Error('Could not read image.')); reader.readAsDataURL(file); });
+        if (typeof image !== 'string' || !/^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i.test(image)) throw new Error('Choose a valid PNG, JPEG or WebP image.');
+        await saveProfile({ avatarDataUrl: image }, 'Avatar saved.');
+      } catch (error) { setProfileStatus(error.message || 'Could not save image.', true); }
+    });
+    root.querySelector('[data-remove-profile-avatar]')?.addEventListener('click', () => { void saveProfile({ avatarDataUrl: '' }, 'Avatar removed.'); });
+  }
   function closeMenu(restore = true) {
     if (!menu.matches(':popover-open')) return false;
     suppressMenuFocus = !restore; menu.hidePopover();
@@ -281,7 +480,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   });
   function openMenu() {
     if (menu.matches(':popover-open')) { closeMenu(); return; }
-    menu.innerHTML = `<div class="profile-menu-header"><span class="local-avatar">${icon('profile')}</span><span>Local profile<small>On this device</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
+    const user = localProfileView(settings());
+    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>On this device</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
     menu.querySelectorAll('[data-profile-route]').forEach(button => button.addEventListener('click', () => {
       closeMenu(false);
       if (button.dataset.profileRoute === 'data-folder') { void openDataFolder(); document.getElementById('local-profile-button')?.focus(); }
@@ -311,7 +511,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   window.addEventListener('resize', () => closeMenu(false));
   return {
     isOpen: () => active,
-    profileButton: () => `<button id="local-profile-button" class="local-profile-button" type="button" aria-label="Local profile" aria-haspopup="menu" aria-controls="profile-menu" aria-expanded="false"><span class="local-avatar">${icon('profile')}</span><span class="local-profile-label">Local profile</span>${icon('chevronDown')}</button>`,
+    profileButton: () => { const user = localProfileView(settings()); return `<button id="local-profile-button" class="local-profile-button" type="button" aria-label="${escape(user.name)} profile" aria-haspopup="menu" aria-controls="profile-menu" aria-expanded="false">${avatar(user)}<span class="local-profile-label">${escape(user.name)}</span>${icon('chevronDown')}</button>`; },
     bindProfile: () => document.getElementById('local-profile-button')?.addEventListener('click', openMenu),
     route(hash) {
       let route = hash.replace(/^#\/?/, '');
