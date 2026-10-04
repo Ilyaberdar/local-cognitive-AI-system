@@ -12,6 +12,7 @@ export interface WorkflowEvent {
   level: "info" | "warning" | "error";
   message: string;
   detail?: string;
+  note?: string;
   nodeId?: string;
   nodeRunId?: string;
   agentRunId?: string;
@@ -39,7 +40,7 @@ export class WorkflowEventStore {
     return withFileLock(file, async () => {
       const { events, bytes, partial } = await this.read(file);
       const event: WorkflowEvent = {
-        ...input, message: input.message.slice(0, 1000), detail: input.detail?.slice(0, 8192),
+        ...input, message: input.message.slice(0, 1000), detail: input.detail?.slice(0, 8192), note: input.note?.slice(-6000),
         sequence: (events.at(-1)?.sequence ?? 0) + 1, at: input.at ?? new Date().toISOString()
       };
       const line = JSON.stringify(event) + "\n";

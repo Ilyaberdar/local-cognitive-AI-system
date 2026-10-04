@@ -86,6 +86,7 @@ export interface WorkflowNodeProgress {
 export interface WorkflowLogEvent {
   sequence: number; at: string; type: string; level: string; message: string;
   phase?: string; detail?: string; nodeId?: string; nodeRunId?: string; stream?: string; transitionId?: string;
+  note?: string; agentRunId?: string; operationId?: string;
 }
 
 export interface WorkflowExecution {

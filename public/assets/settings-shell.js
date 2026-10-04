@@ -46,7 +46,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   const menu = document.createElement('div');
   menu.id = 'profile-menu'; menu.className = 'profile-menu liquid-glass'; menu.setAttribute('popover', 'auto'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Local profile');
   document.body.append(menu);
-  let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo;
+  let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest;
   const drafts = new Map(), statuses = new Map(), results = new Map();
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations;
   const context = () => getContext() || {};
@@ -106,7 +106,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   };
   function titleFor(route) {
     const [name, id] = route.split('/');
-    if (id) return name === 'providers' ? providerNames[id] || id : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? 'Local Cognitive MCP server' : id;
+    if (id) return name === 'providers' ? providerNames[id] || id : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : externalMcpServers()[id]?.name || id : id;
     return groups.flatMap(([, items]) => items).find(([key]) => key === name)?.[1] || 'Page not found';
   }
   const dirty = route => { if (!drafts.has(route)) drafts.set(route, {}); return drafts.get(route); };
@@ -196,6 +196,64 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const user = localProfileView(settings());
     return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', 'Authentication availability') + link('usage', 'Usage', 'Activity reporting availability');
   }
+  function externalMcpServers() { return settings().mcp?.client?.servers || {}; }
+  function externalMcpBindings(serverId) {
+    return Object.values(settings().mcp?.client?.bindings || {}).filter(binding => binding.serverId === serverId);
+  }
+  function externalMcpStatus(serverId) {
+    const bindingIds = new Set(externalMcpBindings(serverId).map(binding => binding.id));
+    return (mcpSnapshot?.connections || []).filter(connection => bindingIds.has(connection.bindingId));
+  }
+  function externalMcpState(server) {
+    if (!server.enabled) return 'Disabled';
+    const statuses = externalMcpStatus(server.id);
+    if (!statuses.length) return mcpSnapshot?.error ? 'Status unavailable' : 'Configured';
+    const status = statuses.find(item => item.state === 'connected') || statuses[0];
+    const count = (mcpSnapshot.tools || []).filter(tool => tool.bindingId === status.bindingId).length;
+    const label = { connected: 'Connected', connecting: 'Connecting', disconnected: 'Disconnected', 'authentication-required': 'Authentication required', error: 'Connection failed' }[status.state] || 'Configured';
+    return status.state === 'connected' ? `${label} · ${count} tool${count === 1 ? '' : 's'}` : label;
+  }
+  function externalMcpList() {
+    const servers = Object.values(externalMcpServers());
+    return `<section class="mcp-card" aria-labelledby="mcp-external-title"><div class="mcp-card-heading"><div><h2 id="mcp-external-title">External MCP servers <span class="mcp-count" aria-label="${servers.length} servers">${servers.length}</span></h2><p>Tools connected to this app</p></div><a class="primary-button mcp-add-button" href="#/settings/mcp/new">${icon('plus')}<span>Add MCP server</span></a></div>`
+      + (servers.length ? `<div class="mcp-server-list">${servers.map(server => link(`mcp/${server.id}`, server.name || server.id,
+        `${server.transport === 'streamable-http' ? 'Streamable HTTP' : 'stdio'} · ${externalMcpState(server)}`)).join('')}</div>`
+        : `<div class="mcp-empty-state"><span class="mcp-empty-icon">${icon('plugins')}</span><div><strong>No external servers yet</strong><p>Add your first server to discover its tools.</p></div></div>`) + '</section>';
+  }
+  function newMcpId(name) {
+    const stem = String(name || 'external-mcp').toLowerCase().trim().replace(/[^a-z0-9._-]+/g, '-').replace(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, '').slice(0, 116) || 'external-mcp';
+    const reserved = new Set(['local-cognitive', 'new']);
+    const existing = new Set([...Object.keys(externalMcpServers()), ...Object.keys(settings().mcp?.client?.bindings || {})]);
+    let id = stem, suffix = 2;
+    while (reserved.has(id) || existing.has(id)) id = `${stem.slice(0, 120)}-${suffix++}`;
+    return id;
+  }
+  function mcpEditor(id) {
+    const isNew = id === 'new';
+    const server = isNew ? undefined : externalMcpServers()[id];
+    if (!isNew && !server) return note('MCP server not found', 'It may have been removed in another settings window.');
+    const binding = server && externalMcpBindings(server.id)[0];
+    const transport = server?.transport || 'streamable-http';
+    const http = transport === 'streamable-http';
+    const endpoint = server?.transport === 'streamable-http' ? server.endpoint : '';
+    const command = server?.transport === 'stdio' ? server.command : '';
+    const args = server?.transport === 'stdio' && server.args?.length ? JSON.stringify(server.args) : '';
+    const env = server?.transport === 'stdio' && server.env && Object.keys(server.env).length ? JSON.stringify(server.env) : '';
+    const connection = externalMcpStatus(server?.id)[0];
+    const state = server ? externalMcpState(server) : '';
+    return `<p class="settings-description">${isNew ? 'Add a server configuration. Saving an enabled server connects it and discovers its tools.' : 'Edit this server or reconnect it. Tools become available to agents only after the connection is successful.'}</p>
+      ${!isNew ? `<div class="settings-connection-status ${connection?.state === 'connected' ? 'is-connected' : ''}"><strong>${escape(state)}</strong><small>${connection?.error?.message ? escape(connection.error.message) : 'External calls always require confirmation.'}</small></div>` : ''}
+      <form id="external-mcp-form" class="settings-form" data-mcp-server-id="${escape(id)}"><div class="settings-rows">
+        <div class="settings-row"><div><label for="external-mcp-name">Name</label><p>Shown in Settings and in approval prompts.</p></div><div class="settings-control"><input id="external-mcp-name" data-mcp-field="name" maxlength="256" required value="${escape(server?.name || '')}" placeholder="e.g. My tools server" /></div></div>
+        <div class="settings-row"><div><label for="external-mcp-transport">Transport</label><p>Match the server's MCP transport.</p></div><div class="settings-control"><select id="external-mcp-transport" data-mcp-field="transport"><option value="streamable-http" ${http ? 'selected' : ''}>Streamable HTTP</option><option value="stdio" ${http ? '' : 'selected'}>stdio command</option></select></div></div>
+        <div class="settings-row" data-mcp-http ${http ? '' : 'hidden'}><div><label for="external-mcp-endpoint">MCP endpoint</label><p>Enter the MCP URL provided by your server or integration.</p></div><div class="settings-control"><input id="external-mcp-endpoint" data-mcp-field="endpoint" type="url" required ${http ? '' : 'disabled'} value="${escape(endpoint)}" placeholder="http://localhost:8000/mcp" /></div></div>
+        <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-command">Command</label><p>Executable used to start the local MCP server.</p></div><div class="settings-control"><input id="external-mcp-command" data-mcp-field="command" required ${http ? 'disabled' : ''} value="${escape(command)}" placeholder="npx" /></div></div>
+        <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-args">Arguments (JSON array)</label><p>For example: ["-y", "your-mcp-server"]. Do not put credentials here.</p></div><div class="settings-control"><textarea id="external-mcp-args" data-mcp-field="args" rows="3" ${http ? 'disabled' : ''} placeholder='["-y", "your-mcp-server"]'>${escape(args)}</textarea></div></div>
+        <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-cwd">Working directory</label><p>Optional absolute path used only when starting the command.</p></div><div class="settings-control"><input id="external-mcp-cwd" data-mcp-field="cwd" ${http ? 'disabled' : ''} value="${escape(server?.transport === 'stdio' ? server.cwd || '' : '')}" /></div></div>
+        <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-env">Environment (JSON object)</label><p>Optional non-secret variables. Keys and values containing credentials are rejected.</p></div><div class="settings-control"><textarea id="external-mcp-env" data-mcp-field="env" rows="3" ${http ? 'disabled' : ''} placeholder='{"LOG_LEVEL":"info"}'>${escape(env)}</textarea></div></div>
+        <div class="settings-row"><div><label for="external-mcp-enabled">Enabled</label><p>When on, the app connects and discovers tools. Turning it off stops all bindings for this server.</p></div><div class="settings-control"><input id="external-mcp-enabled" data-mcp-field="enabled" type="checkbox" role="switch" ${server?.enabled !== false ? 'checked' : ''} /></div></div>
+      </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>`;
+  }
   function content() {
     const [name, id] = page.split('/');
     const specs = fieldsFor(page);
@@ -221,14 +279,15 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     }
     if (name === 'memory') return form(specs) + (!id ? link('memory/advanced', 'Advanced memory', 'Partition, chunk and adapter parameters') : '');
     if (name === 'mcp' && !id) {
-      const servers = Object.values(settings().mcp?.client?.servers || {});
-      return `<p class="settings-description">MCP (Model Context Protocol) connects AI applications to tools and data. This page lists ${mcpServerCount(settings())} configured server${mcpServerCount(settings()) === 1 ? '' : 's'}: the built-in Local Cognitive server and any separately added external servers. This is not a count of connected accounts.</p>
-        <h2>This app as an MCP server</h2><p class="settings-footnote">Lets another AI application use Local Cognitive tools. It does not connect Google Drive or other plugin accounts.</p>`
-        + link('mcp/local-cognitive', 'Local Cognitive MCP server', `Incoming · stdio · ${settings().mcp?.server?.enabled ? 'Enabled, starts on demand' : 'Disabled'}`)
-        + `<h2>External MCP servers · ${servers.length}</h2><p class="settings-footnote">Additional servers used by this app. Services managed by plugins, such as Notion, remain under Plugins.</p>`
-        + (servers.length ? servers.map(server => `<div class="settings-list-row"><span><strong>${escape(server.name || server.id)}</strong><small>${escape(server.transport)} · ${server.enabled ? 'Configured' : 'Disabled'} · connection status not checked here</small></span></div>`).join('') : '<p class="settings-footnote">No external MCP servers have been added.</p>');
+      return `<div class="mcp-overview"><div class="mcp-overview-meta"><span>Model Context Protocol</span><span>${mcpServerCount(settings())} configured server${mcpServerCount(settings()) === 1 ? '' : 's'}</span></div>
+        <aside class="mcp-info" aria-labelledby="mcp-info-title"><span class="mcp-info-icon">${icon('workflow')}</span><div><h2 id="mcp-info-title">Tools for your agents</h2><p>Connect local or remote MCP servers to make their tools available in chats and workflows.</p><small>You'll approve each tool call before it runs.</small></div></aside>`
+        + externalMcpList()
+        + `<section class="mcp-card" aria-labelledby="mcp-builtin-title"><div class="mcp-card-heading"><div><h2 id="mcp-builtin-title">Built-in server</h2><p>Share Local Cognitive tools with other AI apps.</p></div><span class="mcp-badge">Included</span></div><div class="mcp-server-list">`
+        + link('mcp/local-cognitive', 'Local Cognitive MCP server', `stdio · ${settings().mcp?.server?.enabled ? 'Enabled · Starts on demand' : 'Disabled'}`)
+        + '</div></section></div>';
     }
     if (name === 'mcp' && id === 'local-cognitive') return `<p class="settings-description">Incoming MCP server for Local Cognitive. Other applications connect to this runtime over stdio; these controls do not manage outgoing connections.</p>` + form(specs, '<div class="settings-row"><span>Transport</span><span>stdio</span></div>') + `<p class="settings-footnote">Changes apply when the stdio server is next started.</p><pre class="config-snippet">npm run --silent mcp:stdio</pre>`;
+    if (name === 'mcp' && id) return mcpEditor(id);
     if (name === 'appearance') return `<section class="appearance-section"><div class="appearance-section-heading"><div><h2>Visual style</h2><p>Set a consistent app theme, then refine its colors if you want a personal palette.</p></div><button type="button" class="ghost-button" data-reset-appearance>Reset colors</button></div>${form(specs)}</section>`;
     if (specs.length) return form(specs);
     return note('Page not found', 'Choose a page from the Settings navigation.');
@@ -270,9 +329,11 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     root.querySelector('#settings-search').addEventListener('input', event => { search = event.target.value; renderSearch(); });
     renderSearch(); bindForm(); bindGlassLighting(root);
     if (name === 'profile') bindProfileForm();
+    if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
     if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(settings()) });
     root.querySelector('[data-open-data]')?.addEventListener('click', openDataFolder);
+    if (name === 'mcp') loadMcpSnapshot();
     if (page === 'about' && !appInfo) void (window.desktopApp?.getInfo?.() || fetch('/app/info').then(response => response.json())).then(info => { appInfo = info; if (active && page === 'about') render(); }).catch(() => { appInfo = { version: 'Unavailable' }; if (active && page === 'about') render(); });
   }
   function setStatus(route, value) {
@@ -296,6 +357,101 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       setStatus(route, { text: `Not saved. ${error.message}`, error: true });
       return false;
     }
+  }
+  function setMcpFormStatus(form, text, error = false) {
+    const slot = form?.querySelector('[data-mcp-status]');
+    if (!slot) return;
+    slot.textContent = text;
+    slot.classList.toggle('is-error', error);
+    slot.classList.toggle('is-success', !error && /connected|saved|removed/i.test(text));
+  }
+  function toggleMcpTransport(form) {
+    const http = form.querySelector('[data-mcp-field="transport"]').value === 'streamable-http';
+    form.querySelectorAll('[data-mcp-http]').forEach(row => { row.hidden = !http; row.querySelectorAll('input,textarea').forEach(input => { input.disabled = !http; }); });
+    form.querySelectorAll('[data-mcp-stdio]').forEach(row => { row.hidden = http; row.querySelectorAll('input,textarea').forEach(input => { input.disabled = http; }); });
+  }
+  function uniqueMcpBindingId(serverId) {
+    const bindings = settings().mcp?.client?.bindings || {};
+    let id = serverId, suffix = 2;
+    while (Object.hasOwn(bindings, id)) id = `${serverId.slice(0, 120)}-${suffix++}`;
+    return id;
+  }
+  async function saveMcpServer(form) {
+    const sourceId = form.dataset.mcpServerId, isNew = sourceId === 'new';
+    const previous = isNew ? undefined : externalMcpServers()[sourceId];
+    const name = form.querySelector('[data-mcp-field="name"]').value.trim();
+    const transport = form.querySelector('[data-mcp-field="transport"]').value;
+    const enabled = form.querySelector('[data-mcp-field="enabled"]').checked;
+    if (!name) throw new Error('Enter a name for this MCP server.');
+    const id = previous?.id || newMcpId(name);
+    const server = { ...(previous || {}), id, name, enabled, transport };
+    if (transport === 'streamable-http') {
+      const endpoint = form.querySelector('[data-mcp-field="endpoint"]').value.trim();
+      if (!endpoint) throw new Error('Enter an MCP endpoint.');
+      Object.assign(server, { endpoint });
+      delete server.command; delete server.args; delete server.cwd; delete server.env;
+    } else {
+      const command = form.querySelector('[data-mcp-field="command"]').value.trim();
+      if (!command) throw new Error('Enter the command used to start the MCP server.');
+      const parseJson = (field, fallback, description) => {
+        const raw = form.querySelector(`[data-mcp-field="${field}"]`).value.trim();
+        if (!raw) return fallback;
+        try { return JSON.parse(raw); } catch { throw new Error(`${description} must be valid JSON.`); }
+      };
+      const args = parseJson('args', undefined, 'Arguments');
+      const env = parseJson('env', undefined, 'Environment');
+      if (args !== undefined && (!Array.isArray(args) || args.some(value => typeof value !== 'string'))) throw new Error('Arguments must be a JSON array of strings.');
+      if (env !== undefined && (!env || Array.isArray(env) || Object.values(env).some(value => typeof value !== 'string'))) throw new Error('Environment must be a JSON object with string values.');
+      Object.assign(server, { command });
+      if (args === undefined) delete server.args; else server.args = args;
+      if (env === undefined) delete server.env; else server.env = env;
+      const cwd = form.querySelector('[data-mcp-field="cwd"]').value.trim();
+      if (cwd) server.cwd = cwd; else delete server.cwd;
+      delete server.endpoint;
+    }
+    const related = previous ? externalMcpBindings(previous.id) : [];
+    const bindings = related.length
+      ? Object.fromEntries(related.map(binding => [binding.id, { enabled }]))
+      : { [uniqueMcpBindingId(id)]: { id: uniqueMcpBindingId(id), serverId: id, enabled } };
+    setMcpFormStatus(form, 'Saving and connecting…');
+    await data.save({ mcp: { client: { servers: { [id]: server }, bindings } } });
+    mcpSnapshot = undefined; mcpRequest = undefined;
+    setMcpFormStatus(form, enabled ? 'Saved. Connecting…' : 'Saved. Server is disabled.');
+    if (isNew) location.hash = `#/settings/mcp/${id}`;
+    else render();
+  }
+  function bindMcpEditor() {
+    const form = root.querySelector('#external-mcp-form');
+    if (!form) return;
+    form.querySelector('[data-mcp-field="transport"]')?.addEventListener('change', () => toggleMcpTransport(form));
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      void saveMcpServer(form).catch(error => setMcpFormStatus(form, error.message || 'Could not save MCP server.', true));
+    });
+    form.querySelector('[data-mcp-action="delete"]')?.addEventListener('click', () => {
+      const id = form.dataset.mcpServerId;
+      if (!id || !window.confirm(`Remove ${externalMcpServers()[id]?.name || id}? Its saved connections will also be removed.`)) return;
+      setMcpFormStatus(form, 'Removing…');
+      void data.save({ mcp: { client: { servers: { [id]: null } } } }).then(() => {
+        mcpSnapshot = undefined; mcpRequest = undefined; location.hash = '#/settings/mcp';
+      }).catch(error => setMcpFormStatus(form, error.message || 'Could not remove MCP server.', true));
+    });
+    form.querySelector('[data-mcp-action="connect"], [data-mcp-action="disconnect"]')?.addEventListener('click', event => {
+      const button = event.currentTarget, bindingId = button.dataset.mcpBinding;
+      if (!bindingId) return;
+      button.disabled = true; setMcpFormStatus(form, button.dataset.mcpAction === 'connect' ? 'Connecting…' : 'Disconnecting…');
+      const request = button.dataset.mcpAction === 'connect' ? data.connectMcp(bindingId) : data.disconnectMcp(bindingId);
+      void request.then(() => {
+        mcpSnapshot = undefined; mcpRequest = undefined; render();
+      }).catch(error => { button.disabled = false; setMcpFormStatus(form, error.message || 'MCP connection failed.', true); });
+    });
+  }
+  function loadMcpSnapshot() {
+    if (!data.loadMcp || mcpSnapshot || mcpRequest) return;
+    mcpRequest = data.loadMcp().then(snapshot => { mcpSnapshot = snapshot; }).catch(error => {
+      mcpSnapshot = { connections: [], tools: [], error: error.message || 'Could not check MCP connections.' };
+    }).finally(() => { mcpRequest = undefined; if (active && page.startsWith('mcp')) render(); });
   }
   function bindForm() {
     const current = page, specs = fieldsFor(page), element = root.querySelector('#settings-entity-form');

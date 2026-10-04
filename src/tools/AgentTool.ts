@@ -6,6 +6,8 @@ const filePath = z.string().min(1).max(4096).refine(value => !value.includes("\0
 const text = z.string().max(1_000_000);
 const version = z.string().min(1).max(128);
 export const agentToolSchemas = {
+  "mcp.search": z.object({ query: z.string().max(1000) }).strict(),
+  "mcp.call": z.object({ toolId: z.string().min(1).max(1000), argumentsJson: z.string().min(2).max(200_000) }).strict(),
   "plugins.search": z.object({ query: z.string().max(1000) }).strict(),
   "plugins.call": z.object({ toolId: z.string().min(1).max(1000), argumentsJson: z.string().min(2).max(200_000) }).strict(),
   "file.list": z.object({ path: filePath.default("."), limit: z.number().int().min(1).max(300).default(100) }).strict(),
@@ -32,15 +34,18 @@ export function parseAgentAction(value: unknown): AgentAction {
   return { tool, arguments: agentToolSchemas[tool].parse(args) };
 }
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.
-export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call"].includes(tool);
-export interface AgentToolOptions { plugins?: boolean; pluginOnly?: boolean; }
+export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call", "mcp.search"].includes(tool);
+export interface AgentToolOptions { plugins?: boolean; mcp?: boolean; pluginOnly?: boolean; }
 
 export function agentFunctionTools(readOnly = false, options: AgentToolOptions = {}): LLMFunctionTool[] {
-  return Object.entries(agentToolSchemas).filter(([name]) => (name.startsWith("plugins.") ? options.plugins : !options.pluginOnly) && (!readOnly || readTool(name))).map(([action, schema]) => {
+  return Object.entries(agentToolSchemas).filter(([name]) =>
+    (name.startsWith("plugins.") ? options.plugins : name.startsWith("mcp.") ? options.mcp : !options.pluginOnly) && (!readOnly || readTool(name))).map(([action, schema]) => {
     const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
     const required = (json.required ?? []) as string[];
     return { name: action.replaceAll(".", "_"), action,
-      description: action === "plugins.search" ? "Find tools from enabled connected plugins by service name or task keywords. Returns exact tool IDs, account names, schemas and read/write status. Search first; never invent IDs or arguments."
+      description: action === "mcp.search" ? "Find tools from connected external MCP servers such as Unreal Engine or Blender. Returns exact tool IDs and schemas. Search first; never invent IDs or arguments."
+        : action === "mcp.call" ? "Call a tool found by mcp.search. toolId must match exactly; argumentsJson must be a JSON object serialized as a string matching the returned schema. Every external MCP invocation requires approval and is never retried automatically."
+        : action === "plugins.search" ? "Find tools from enabled connected plugins by service name or task keywords. Returns exact tool IDs, account names, schemas and read/write status. Search first; never invent IDs or arguments."
         : action === "plugins.call" ? "Call a tool found by plugins.search. toolId must match exactly; argumentsJson must be a JSON object serialized as a string matching the returned schema. External writes require approval. Never repeat a denied or unknown operation."
         : `Execute ${action} in the workspace. ${action.startsWith("file.") && !readTool(action) ? 'Read existing files first and pass their returned expectedVersion; use "missing" only for a new file.' : "Use the actual result as evidence before answering."}${action === "file.search" || action === "file.read" ? " Pass a search result's absolutePath directly to file.read; its path is relative to the search root, not necessarily the workspace." : ""}`,
       parameters: strictJsonSchema(json), optionalArguments: Object.keys(schema.shape).filter(key => !required.includes(key)) };

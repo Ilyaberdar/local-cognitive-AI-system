@@ -14,7 +14,10 @@ export function createSettingsData({ request, onSaved }) {
     },
     testProvider: (id, model, timeoutMs) => request(`/providers/${encodeURIComponent(id)}/test`, {
       method: 'POST', body: JSON.stringify({ model }), timeoutMs: id === 'llamacpp' ? 0 : Math.max(60000, timeoutMs || 0) + 30000
-    })
+    }),
+    loadMcp: () => request('/mcp/clients'),
+    connectMcp: id => request(`/mcp/clients/${encodeURIComponent(id)}/connect`, { method: 'POST', timeoutMs: 30000 }),
+    disconnectMcp: id => request(`/mcp/clients/${encodeURIComponent(id)}/disconnect`, { method: 'POST', timeoutMs: 30000 })
   };
 }
 

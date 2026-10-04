@@ -9,6 +9,7 @@ import { createLocalModelRouter } from "./localModelControllers";
 import { createAttachmentRouter } from "./attachmentControllers";
 import { createSynthesisRouter } from "./synthesisControllers";
 import { createIntegrationRouter, localApiOriginGuard } from "./integrationControllers";
+import { createMcpRouter } from "./mcpControllers";
 import { createCreateProjectController, createListProjectsController, createRevealProjectController, createUpdateProjectController } from "./projectControllers";
 import {
   createCreateSessionController,
@@ -83,6 +84,7 @@ export const createApiRouter = (
   // Otherwise DNS rebinding could bypass plugin consent through /process-runs/review.
   router.use(localApiOriginGuard);
   router.use("/integrations", createIntegrationRouter(runtimeManager));
+  router.use("/mcp/clients", createMcpRouter(runtimeManager));
   router.use(createAttachmentRouter());
   router.use("/synthesis", createSynthesisRouter(() => runtimeManager.getRuntime().synthesis));
 

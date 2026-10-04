@@ -502,7 +502,9 @@ export const buildRuntime = async (
   const sessionIndexStore = new SessionIndexStore(config.appDataDir);
   const workspaceResolver = new WorkspaceResolver(config,projectStore,sessionIndexStore);
   const pluginManager = sharedPlugins ?? new PluginManager(config.appDataDir, `local:${config.appDataDir}`);
-  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager);
+  const mcpClients = sharedMcpClients ?? new McpClientManager();
+  if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
+  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager, mcpClients);
 
   const providerRegistry = new LLMRegistry();
   // RuntimeManager supplies the long-lived owner. Direct test/headless builders remain supported.
@@ -574,7 +576,7 @@ export const buildRuntime = async (
     openai: config.providers.openai.model,
     anthropic: config.providers.anthropic.model,
     gemini: config.providers.gemini.model
-  });
+  }, id => localModelService.resolveModelId(id));
   const modeDetector = new ModeDetector();
   const judge = new Judge(llmService, languageEnforcer);
   const supportAgent = new SupportAgent(llmService, languageEnforcer);
@@ -617,13 +619,13 @@ export const buildRuntime = async (
   });
 
   router.register("general", async (input, context) => {
-    context.onProgress?.({ phase: "generating", label: "Generating", detail: "Main model is preparing a response", at: new Date().toISOString() });
+    context.onProgress?.({ phase: "preparing", label: "Preparing request", at: new Date().toISOString() });
     const progress = new AgentProgressReporter([{
       id: "main-model", name: "Main model", role: "main", provider: context.providerId,
       model: context.activeTarget.model, status: "queued", phase: "Waiting"
     }], context.onProgress);
-    progress.update("main-model", "running", "Generating");
     return withInferenceProgress(progress.inference("main-model"), async () => {
+      let answer = "";
       const response = await llmService.generateText(
         {
           model: context.activeTarget.model,
@@ -639,6 +641,10 @@ export const buildRuntime = async (
           ),
           reasoningEffort: context.sessionSettings.reasoningEffort,
           localReasoningBudget: localThinkingBudgetForEffort(context.sessionSettings.reasoningEffort),
+          onTextDelta: context.providerId === "llamacpp" ? delta => {
+            answer += delta;
+            context.onProgress?.({ phase: "answer", label: "Writing response", answer, agentRunId: "main-model", model: context.activeTarget.model, at: new Date().toISOString() });
+          } : undefined,
           signal: context.signal
         },
         context.providerId
@@ -694,7 +700,8 @@ export const buildRuntime = async (
       : undefined,
     workspaceResolver,
     new CodeAgentCoordinator(agentLoopRunner),
-    pluginManager
+    pluginManager,
+    () => operationExecutor.hasExternalMcp()
   );
   const workflowRunner = new WorkflowRunner(
     taskStore,
@@ -740,9 +747,6 @@ export const buildRuntime = async (
   await workflowRunner.recoverInterruptedRuns();
   const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner,workspaceResolver);
   const scheduleService = new ScheduleService(scheduleStore, taskService,workspaceResolver);
-  const mcpClients = sharedMcpClients ?? new McpClientManager();
-  if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
-
   const synthesis = new SynthesisService(config.appDataDir, {
     projects: projectStore, models: localModelManager, llm: llmService,
     loadModel: (model, signal) => localModelService.loadModel(model.id, signal)

@@ -3,6 +3,8 @@ import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 
+const { JSDOM } = require("jsdom");
+
 const source = fs.readFileSync("public/assets/app.js", "utf8");
 const fragment = (start: string, end: string) => {
   const offset = source.indexOf(start);
@@ -19,6 +21,43 @@ const deferred = <T>() => {
 const modelUseCallback = fragment("  onUse: async (model) => {", "  onDefault:").trim().replace(/^onUse:\s*/, "").replace(/,$/, "");
 const modelLabelHelpers = fragment("function getModelDisplayName", "function getLoadedModelOptions");
 
+test("deleted local selections are replaced instead of reappearing as unavailable options", () => {
+  const context: any = {state:{bootstrap:{allManagedModels:[{id:"gguf-new",providerId:"llamacpp",displayName:"Installed model"}]}},
+    isLocalProvider:()=>true,getProviderConfiguredModel:()=>"gguf-removed",sessionModelLabel:()=>"Model",escapeHtml:String,escapeAttr:String,
+    option:(id:string,selected:string,label:string)=>`<option value="${id}" ${id===selected?"selected":""}>${label}</option>`};
+  vm.runInNewContext(modelLabelHelpers + fragment("function renderSessionModelControl", "function renderCodeAgentCard"),context);
+  const html=context.renderSessionModelControl("main","llamacpp","gguf-removed",["gguf-new"],"models");
+  assert.doesNotMatch(html,/gguf-removed|Saved model is unavailable/); assert.match(html,/gguf-new.*selected/);
+});
+
+test("missing files and stale suggested IDs never become local options, while unloaded installed models remain selectable", () => {
+  const context: any = { state: { bootstrap: { allManagedModels: [
+    { id: "missing", providerId: "llamacpp", filesAvailable: false },
+    { id: "installed", providerId: "llamacpp", loaded: false, displayName: "Installed" }
+  ] } }, isLocalProvider: () => true, getProviderConfiguredModel: () => "missing", sessionModelLabel: () => "Model", escapeHtml: String, escapeAttr: String,
+    option: (id: string, current: string, label: string) => `<option value="${id}" ${id === current ? "selected" : ""}>${label}</option>` };
+  vm.runInNewContext(modelLabelHelpers + fragment("function renderSessionModelControl", "function renderCodeAgentCard"), context);
+  const html = context.renderSessionModelControl("defaultModel", "llamacpp", "missing", ["missing", "installed", "deleted"], "models");
+  assert.doesNotMatch(html, /missing|deleted|unavailable/); assert.match(html, /value="installed" selected/);
+  context.state.bootstrap.allManagedModels = [];
+  const empty = context.renderSessionModelControl("defaultModel", "llamacpp", "missing", [], "models");
+  assert.doesNotMatch(empty, /missing|unavailable/); assert.match(empty, /Download a model/);
+});
+
+test("model errors render a concise escaped summary and copy the complete diagnostic", async () => {
+  const manager = fs.readFileSync("public/assets/model-manager.js","utf8");
+  const helpers=manager.slice(manager.indexOf("  function errorSummary("),manager.indexOf("  function renderContext",manager.indexOf("  function errorSummary(")));
+  let copied="";
+  const context: any={escape:(value:string)=>value.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;"),
+    navigator:{clipboard:{writeText:async(text:string)=>{copied=text;}}},notify:()=>{}};
+  vm.runInNewContext(helpers+manager.slice(manager.indexOf("  async function perform("),manager.indexOf("  function bind(")),context);
+  const error='Local runtime exited (1).\ntensor "output_norm.weight" has offset 1, expected 2\n'+"diagnostic\n".repeat(500);
+  const html=context.renderModelError(error);
+  assert.match(html,/Copy full error/); assert.match(html,/Model format is incompatible/);
+  const visible=html.replace(/data-mm-id="[^"]*"/,""); assert.ok(visible.length<500);
+  await context.perform("copy-error",error); assert.equal(copied,error);
+});
+
 test("local selectors show loaded models first without changing the configured selection", () => {
   const context: any = { state: { bootstrap: { allManagedModels: [
     { id: "gguf-small", providerId: "llamacpp", displayName: "Small", state: "unloaded" },
@@ -33,13 +72,75 @@ test("local selectors show loaded models first without changing the configured s
   let html = render("gguf-small");
   assert.ok(html.indexOf('value="gguf-qwen"') < html.indexOf('value="gguf-small"'));
   assert.match(html, /value="gguf-small" selected/);
-  assert.match(html, /Qwen 27B · Loaded/);
+  assert.match(html, /Qwen 27B · Loaded<\/option>/);
+  assert.match(html, /<select name="codeAgentModel:0"/);
+  assert.doesNotMatch(html, /<details|<summary|role="listbox"|data-picker-model|<select hidden/);
   assert.match(html, /data-model-loaded hidden/);
   html = render("gguf-qwen");
   assert.match(html, /data-model-loaded >Loaded/);
   context.state.bootstrap.allManagedModels[1].loaded = false;
   context.state.bootstrap.allManagedModels[1].state = "unloaded";
-  assert.doesNotMatch(render("gguf-qwen"), /Qwen 27B · Loaded/);
+  html = render("gguf-qwen");
+  assert.match(html, /data-model-loaded hidden/);
+  assert.doesNotMatch(html, /Qwen 27B · Loaded/);
+});
+
+test("all session model providers keep native selects, with plain green loaded status for local runtimes", () => {
+  const context: any = { state: { bootstrap: { allManagedModels: [
+    { id: "gguf-ready", providerId: "llamacpp", displayName: "Installed model", loaded: true },
+    { id: "studio", providerId: "lmstudio", loaded: true },
+    { id: "ollama-model", providerId: "ollama", loaded: true }
+  ] } }, isLocalProvider: (id: string) => ["llamacpp", "lmstudio", "ollama"].includes(id),
+    getProviderConfiguredModel: () => "", sessionModelLabel: () => "Model", escapeHtml: String, escapeAttr: String,
+    option: (id: string, selected: string, label: string) => `<option value="${id}" ${id === selected ? "selected" : ""}>${label}</option>` };
+  vm.runInNewContext(modelLabelHelpers + fragment("function renderSessionModelControl", "function renderCodeAgentCard"), context);
+  const dom = new JSDOM("<form></form>");
+  const form = dom.window.document.querySelector("form");
+  for (const [provider, id] of [["llamacpp", "gguf-ready"], ["lmstudio", "studio"], ["ollama", "ollama-model"], ["openai", "gpt-model"], ["anthropic", "claude"], ["gemini", "gemini-model"]]) {
+    form.innerHTML = context.renderSessionModelControl("defaultModel", provider, id, [id], "models");
+    const select = form.querySelector("select");
+    assert.ok(select, `${provider} must use the original native select`);
+    assert.equal(select.hidden, false);
+    assert.equal(select.value, id);
+    assert.equal(form.querySelector("details, summary, [role=listbox]"), null);
+    assert.equal(new dom.window.FormData(form).get("defaultModel"), id);
+    if (context.isLocalProvider(provider)) {
+      const badge = form.querySelector("[data-model-loaded]");
+      assert.equal(badge.hidden, false);
+      assert.equal(badge.className, "model-loaded-badge");
+    }
+  }
+  const css = fs.readFileSync("public/assets/model-manager.css", "utf8");
+  assert.match(css, /\.model-loaded-badge \{[^}]*color: var\(--success[^}]*border: 0; background: none;/);
+  assert.doesNotMatch(css, /\.local-model-picker|\.local-model-options/);
+  dom.window.close();
+});
+
+test("native loaded indicators update without replacing the select, and remove deleted options", () => {
+  const context: any = { state: { bootstrap: { allManagedModels: [
+    { id: "gguf-one", providerId: "llamacpp", displayName: "One", loaded: true },
+    { id: "gguf-two", providerId: "llamacpp", displayName: "Two", loaded: false }
+  ] } }, isLocalProvider: () => true, getProviderConfiguredModel: () => "", sessionModelLabel: () => "Model", escapeHtml: String, escapeAttr: String,
+    option: (id: string, selected: string, label: string) => `<option value="${id}" ${id === selected ? "selected" : ""}>${label}</option>` };
+  vm.runInNewContext(fragment("function getModelOptions", "function getLoadedModelOptions") + fragment("function renderSessionModelControl", "function renderCodeAgentCard"), context);
+  const dom = new JSDOM(`<form>${context.renderSessionModelControl("defaultModel", "llamacpp", "gguf-one", ["gguf-one", "gguf-two"], "models")}</form>`);
+  context.document = dom.window.document;
+  const select = context.document.querySelector("select");
+  context.state.bootstrap.allManagedModels[0].loaded = false;
+  context.updateLoadedModelIndicators();
+  assert.equal(context.document.querySelector("select"), select);
+  assert.equal(context.document.querySelector("[data-model-loaded]").hidden, true);
+  assert.doesNotMatch(select.textContent, /Loaded/);
+  context.state.bootstrap.allManagedModels[1].loaded = true;
+  select.value = "gguf-two";
+  context.updateLoadedModelIndicators();
+  assert.equal(context.document.querySelector("[data-model-loaded]").hidden, false);
+  assert.match(select.selectedOptions[0].textContent, /Two · Loaded/);
+  context.state.bootstrap.allManagedModels.pop();
+  context.updateLoadedModelIndicators();
+  assert.equal(context.document.querySelector("select").value, "gguf-one");
+  assert.doesNotMatch(context.document.body.innerHTML, /gguf-two|unavailable/);
+  dom.window.close();
 });
 
 test("local context save preserves a failed draft and reports actual runtime context separately", async () => {
@@ -329,5 +430,5 @@ test("local runtime phases and technical model references render readable instal
   assert.match(context.renderRuntimeMetaLine("Model", "gguf-123abc"), /Qwen2\.5 1\.5B Instruct · Q4_K_M/);
   assert.equal(context.formatLocalModelReferences("Loading gguf-123abc…"), "Loading Qwen2.5 1.5B Instruct · Q4_K_M…");
   assert.equal(context.getModelDisplayName("openai", "remote-model"), "remote-model");
-  assert.equal(context.getModelDisplayName("llamacpp", "gguf-removed"), "gguf-removed");
+  assert.equal(context.getModelDisplayName("llamacpp", "gguf-removed"), "Select model");
 });

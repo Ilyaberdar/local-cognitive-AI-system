@@ -50,7 +50,7 @@ const snapshotHarness = (mode: string) => {
     querySelectorAll: (selector: string) => selector === ".code-agent-card" ? [] : cards
   };
   const context: any = {
-    state: { sessionSettings: initial }, cloneSessionSettings: structuredClone,
+    state: { sessionSettings: initial }, cloneSessionSettings: structuredClone, reconcileLocalModelTargets() {},
     getCurrentSessionSummary: () => ({ title: "Test" }),
     document: { querySelector: () => form },
     FormData: class { get(key: string) {

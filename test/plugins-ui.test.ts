@@ -124,3 +124,31 @@ test("Accounts and MCP settings have parent arrows and count exactly the configu
   assert.match(content.querySelector('.plugin-tabs').textContent, /MCP servers 2/);
   shell.route('#/chat');
 });
+
+test("MCP settings add a Streamable HTTP server with a binding and show discovered-tool status", async t => {
+  const ui = harness(true); t.after(ui.close);
+  await until(() => !!ui.root.querySelector('[data-plugin-search]'));
+  ui.dom.window.eval(`${shellBundle}\nwindow.SettingsShell = SettingsShell;`);
+  const appSettings: any = { mcp: { server: { enabled: true }, client: { servers: {}, bindings: {} } } };
+  const saved: any[] = [];
+  const data: any = {
+    integrations: [],
+    loadMcp: async () => ({ connections: [{ bindingId: 'unreal', serverId: 'unreal', enabled: true, state: 'connected', reconnectAttempt: 0 }],
+      tools: [{ id: 'mcp:unreal:spawn_actor', bindingId: 'unreal', serverId: 'unreal', name: 'spawn_actor' }] }),
+    save: async (patch: any) => { saved.push(patch); return appSettings; }, connectMcp: async () => ({}), disconnectMcp: async () => ({})
+  };
+  const shell = ui.dom.window.SettingsShell.createSettingsShell({ app: ui.root, getContext: () => ({ appSettings }), data, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
+  shell.route('#/settings/mcp');
+  let content = ui.dom.window.document.querySelector('#settings-root');
+  await until(() => content.textContent.includes('Add MCP server'));
+  assert.match(content.querySelector('#mcp-external-title').textContent, /External MCP servers 0/);
+  shell.route('#/settings/mcp/new');
+  content = ui.dom.window.document.querySelector('#settings-root');
+  const name = content.querySelector('[data-mcp-field="name"]'); name.value = 'Unreal Engine';
+  content.querySelector('[data-mcp-field="endpoint"]').value = 'http://127.0.0.1:8000/mcp';
+  content.querySelector('#external-mcp-form').dispatchEvent(new ui.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => saved.length === 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved[0])), { mcp: { client: { servers: {
+    'unreal-engine': { id: 'unreal-engine', name: 'Unreal Engine', enabled: true, transport: 'streamable-http', endpoint: 'http://127.0.0.1:8000/mcp' }
+  }, bindings: { 'unreal-engine': { id: 'unreal-engine', serverId: 'unreal-engine', enabled: true } } } } });
+});

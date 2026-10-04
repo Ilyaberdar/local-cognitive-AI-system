@@ -10,6 +10,8 @@ import { parseAgentAction, readTool } from "./AgentTool";
 import { OperationStore, SavedOperation } from "./OperationStore";
 import { WorkspaceFileService } from "./WorkspaceFileService";
 import type { PluginManager } from "../plugins/PluginManager";
+import type { McpClientService } from "../mcp/client/types";
+import { ExternalMcpExecutor } from "../mcp/client/ExternalMcpExecutor";
 
 export interface OperationInput {
   onProgress?: (event: ProcessProgressEvent) => void;
@@ -25,8 +27,18 @@ export interface OperationInput {
 export class OperationExecutor {
   readonly store: OperationStore;
   private readonly files = new WorkspaceFileService();
-  constructor(baseDir:string, readonly plugins?: PluginManager) { this.store=new OperationStore(baseDir); }
+  readonly mcp?: ExternalMcpExecutor;
+  constructor(baseDir:string, readonly plugins?: PluginManager, mcpClients?: McpClientService) {
+    this.store=new OperationStore(baseDir);
+    this.mcp = mcpClients ? new ExternalMcpExecutor(baseDir, mcpClients) : undefined;
+  }
+  async hasExternalMcp(): Promise<boolean> { return this.mcp?.hasAvailable() ?? false; }
   async execute(input:OperationInput):Promise<{result?:ToolExecutionResult;pendingApproval?:PendingApproval}> {
+    if (input.tool.startsWith("mcp.")) {
+      if (!this.mcp) throw new Error("External MCP tools are unavailable.");
+      const action = parseAgentAction({ tool: input.tool, arguments: input.arguments });
+      return this.mcp.execute({ ...input, ...action });
+    }
     if (input.tool.startsWith("plugins.")) {
       if (!this.plugins) throw new Error("Plugin tools are unavailable.");
       const action = parseAgentAction({ tool: input.tool, arguments: input.arguments });

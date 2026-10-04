@@ -18,7 +18,7 @@ test("local inference serializes callers, cancels only the queued caller, and re
   const first = scheduler.run("alpha", async () => { order.push("alpha:start"); await new Promise<void>((resolve) => { release = resolve; }); order.push("alpha:end"); return "first"; });
   await delay(0);
   const cancelled = new AbortController();
-  const second = scheduler.run("beta", async () => { order.push("beta:unexpected"); }, cancelled.signal);
+  const second = scheduler.run("alpha", async () => { order.push("alpha:unexpected"); }, cancelled.signal);
   const rejected = assert.rejects(second, /cancelled/i);
   const third = scheduler.run("alpha", async () => { order.push("third"); throw new Error("inference failed"); });
   const thirdRejected = assert.rejects(third, /inference failed/);
@@ -35,7 +35,7 @@ test("scheduler shutdown rejects waiting work without executing it", async () =>
   const scheduler = new LocalInferenceScheduler(); let release!: () => void;
   const running = scheduler.run("alpha", () => new Promise<void>((resolve) => { release = resolve; }));
   await delay(0);
-  const waiting = scheduler.run("beta", async () => assert.fail("queued request ran during shutdown"));
+  const waiting = scheduler.run("alpha", async () => assert.fail("queued request ran during shutdown"));
   const rejected = assert.rejects(waiting, /shutting down/); const shutdown = scheduler.dispose();
   await rejected; release(); await running; await shutdown;
   await assert.rejects(scheduler.run("gamma", async () => {}), /shutting down/);

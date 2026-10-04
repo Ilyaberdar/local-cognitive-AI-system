@@ -1,4 +1,5 @@
 import { createProjectsUi, projectOptions } from "./projects-ui.js";
+import { activityLabel, renderChatActivity, patchChatActivity } from "./activity-ui.js";
 import { createSettingsShell } from "./settings-shell.js";
 import { createSettingsData } from "./settings-data.js";
 import { motionEnabled, setAnimations } from "./motion.js";
@@ -92,9 +93,11 @@ const ATTACHMENT_ACCEPT = "image/png,image/jpeg,image/webp,.txt,.md,.markdown,.j
 const state = {
   route: "chat",
   loading: false,
-  chatSubmitting: false,
+  chatRequests: new Map(),
+  get chatSubmitting() { return Boolean(this.activeChatRequest); },
   accessSaving: false,
-  activeChatRequest: null,
+  get activeChatRequest() { return this.chatRequests.get(this.activeSessionId) || null; },
+  set activeChatRequest(value) { if (value) this.chatRequests.set(value.sessionId, value); else this.chatRequests.delete(this.activeSessionId); },
   notice: "",
   error: "",
   toasts: [],
@@ -110,7 +113,8 @@ const state = {
   draftAttachments: {},
   taskDraftAttachments: [],
   attachmentImports: {},
-  pendingRequest: null,
+  get pendingRequest() { return this.activeChatRequest?.pending || null; },
+  set pendingRequest(value) { if (this.activeChatRequest) this.activeChatRequest.pending = value; },
   modelActions: {},
   providerTestResults: {},
   localModelTest: null,
@@ -393,6 +397,7 @@ const modelManager = createModelManager({
     state.bootstrap.loadedModels = state.bootstrap.allManagedModels.filter((model) => model.loaded || model.loadedInstanceIds?.length || model.state === "ready");
     state.bootstrap.availableModels = [...(state.bootstrap.availableModels ?? []).filter((model) => model.providerId !== "llamacpp"), ...localModels];
     if (runtime) state.bootstrap.localModels = { ...state.bootstrap.localModels, models: localModels, runtime };
+    if (state.sessionSettings) reconcileLocalModelTargets(state.sessionSettings);
     updateLocalModelTestProgress();
     updateAttachmentGuidance();
     updateLoadedModelIndicators();
@@ -494,6 +499,7 @@ async function init() {
   syncRouteFromHash();
   await refreshBootstrap();
   await ensureSession();
+  modelManager.start();
   const preferences = state.bootstrap.appSettings.ui;
   if (preferences) applyUiPreferences(preferences);
   else {
@@ -591,6 +597,7 @@ async function loadActiveSession() {
   if (state.activeSessionId !== sessionId || sequence !== sessionLoadSequence) return;
   state.messages = messages;
   state.sessionSettings = settings;
+  reconcileLocalModelTargets(state.sessionSettings);
 
   if (
     state.pendingRequest?.sessionId === sessionId &&
@@ -948,7 +955,8 @@ function renderChatRoute() {
           id: "pending:assistant", role: "assistant",
           content: renderPendingAssistantText(state.pendingRequest),
           createdAt: state.pendingRequest.startedAt, pending: true, pendingKind: "subagent",
-          agents: state.pendingRequest.progress?.agents ?? []
+          agents: state.pendingRequest.progress?.agents ?? [],
+          activity: state.pendingRequest.progress?.activity ?? [], progress: state.pendingRequest.progress
         }
       ]
     : [];
@@ -1092,12 +1100,12 @@ function renderChatActivityBar(settings) {
   const modelInfo = getTargetModel(target);
   const capability = modelInfo?.vision === true ? "Images" : modelInfo?.vision === false ? "Text only" : "";
   const progress = state.pendingRequest?.progress;
-  const label = progress?.label || (running
+  const label = progress ? activityLabel(progress) : (running
     ? state.pendingRequest && isSubagentRequest(state.pendingRequest.input)
       ? "Agents"
-      : "Build"
+      : "Preparing request"
     : "Ready");
-  const activityDetail = formatLocalModelReferences(progress?.detail) || `${provider} ${model}${capability ? ` · ${capability}` : ""}`;
+  const activityDetail = `${provider} ${model}${capability ? ` · ${capability}` : ""}`;
 
   return `
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
@@ -1105,7 +1113,6 @@ function renderChatActivityBar(settings) {
       <span class="activity-label">${escapeHtml(label)}</span>
       ${renderAccessControl(settings)}
       <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
-      <span class="activity-hint">${running ? "esc to stop" : ""}</span>
     </div>
   `;
 }
@@ -1213,14 +1220,7 @@ function getProviderDisplayName(providerId) {
 }
 
 function renderPendingAssistantText(pendingRequest) {
-  if (pendingRequest.progress) return pendingRequest.progress.detail || pendingRequest.progress.label;
-  const input = typeof pendingRequest === "string" ? pendingRequest : pendingRequest.input;
-
-  if (isSubagentRequest(input)) {
-    return pendingRequest.pendingText || chooseSubagentPendingText(input, pendingRequest.startedAt);
-  }
-
-  return "";
+  return pendingRequest.progress?.answer || "";
 }
 
 function handleGlobalKeydown(event) {
@@ -1249,11 +1249,9 @@ async function cancelActiveChatRequest() {
     // The local abort still stops the UI even if the cancellation endpoint already completed.
   } finally {
     active.controller.abort();
-    if (state.activeChatRequest?.requestId === active.requestId) {
+    if (state.chatRequests.get(active.sessionId) === active) {
       preserveStoppedChatRequest(active, "Generation interrupted.", "cancelled");
-      state.activeChatRequest = null;
-      state.pendingRequest = null;
-      state.chatSubmitting = false;
+      state.chatRequests.delete(active.sessionId);
       pushToast("Generation interrupted.", "info");
       render();
     }
@@ -1262,7 +1260,7 @@ async function cancelActiveChatRequest() {
 
 function startProcessProgressPolling(active) {
   active.progressTimer = window.setInterval(async () => {
-    if (state.activeChatRequest?.requestId !== active.requestId || active.cancelled) {
+    if (state.chatRequests.get(active.sessionId) !== active || active.cancelled) {
       stopProcessProgressPolling(active);
       return;
     }
@@ -1271,11 +1269,13 @@ function startProcessProgressPolling(active) {
     active.pollInFlight = true;
     try {
       const run = await api.getProcessRun(active.requestId);
-      if (state.activeChatRequest?.requestId !== active.requestId || active.cancelled) return;
-      updateChatApproval(run?.approval);
-      if (run?.progress && state.pendingRequest && state.pendingRequest.sessionId === state.activeSessionId) {
-        state.pendingRequest.progress = run.progress;
-        updateChatActivityProgress(run.progress);
+      if (state.chatRequests.get(active.sessionId) !== active || active.cancelled) return;
+      if (active.pending) {
+        active.pending.progress = run?.progress || active.pending.progress;
+        if (state.activeSessionId === active.sessionId) {
+          updateChatApproval(run?.approval);
+          if (run?.progress) updateChatActivityProgress(run.progress);
+        } else active.pending.approval = run?.approval;
       }
       if (run?.status && run.status !== "running") {
         stopProcessProgressPolling(active);
@@ -1297,17 +1297,14 @@ function stopProcessProgressPolling(active) {
 
 function updateChatActivityProgress(progress) {
   const pendingLine = document.querySelector(".message.pending .subagent-pending-line");
-  if (pendingLine) pendingLine.textContent = formatLocalModelReferences(progress.detail) || progress.label || "Working";
-  const agentPanel = document.querySelector(".message.pending [data-agent-progress]");
-  if (agentPanel) {
-    const snapshot = JSON.stringify(progress.agents ?? []);
-    if (agentPanel.dataset.snapshot !== snapshot) {
-      const openAgents = new Set([...agentPanel.querySelectorAll("details[open]")].map((item) => item.dataset.agentId));
-      agentPanel.innerHTML = renderAgentProgress(progress.agents ?? []);
-      agentPanel.querySelectorAll("details").forEach((item) => { item.open = openAgents.has(item.dataset.agentId); });
-      agentPanel.dataset.snapshot = snapshot;
-    }
+  if (pendingLine) {
+    pendingLine.textContent = progress.answer || "";
+    pendingLine.classList.toggle("is-streaming-answer", Boolean(progress.answer));
   }
+  patchChatActivity(document.querySelector(".message.pending [data-chat-activity]"), renderChatActivity({
+    activity: progress.activity, progress, pending: true, createdAt: state.pendingRequest?.startedAt,
+    agents: progress.agents?.length > 1 ? renderAgentProgress(progress.agents) : "", format: formatLocalModelReferences
+  }));
   const bar = document.querySelector(".chat-activity-bar");
   if (!bar) {
     return;
@@ -1316,10 +1313,10 @@ function updateChatActivityProgress(progress) {
   const label = bar.querySelector(".activity-label");
   const detail = bar.querySelector(".activity-model");
   if (label) {
-    label.textContent = progress.label || "Working";
+    label.textContent = activityLabel(progress);
   }
   if (detail) {
-    detail.textContent = formatLocalModelReferences(progress.detail) || "Processing";
+    detail.textContent = progress.model ? formatLocalModelReferences(progress.model) : "";
   }
 }
 
@@ -2312,6 +2309,7 @@ function getNodeEditableConfig(node) {
 
 function renderWorkflowModelControl(index, providerId, model, fallbackTarget) {
   const effectiveProviderId = providerId || fallbackTarget.providerId;
+  if (effectiveProviderId === "llamacpp") model = resolveInstalledLocalModel(model);
   const defaultModel = getProviderConfiguredModel(effectiveProviderId) || fallbackTarget.model || "";
   const options = getSelectableSessionModels(effectiveProviderId, model, defaultModel);
   const placeholder = defaultModel ? `Provider default: ${getModelDisplayName(effectiveProviderId, defaultModel)}` : "Use provider default";
@@ -2893,7 +2891,7 @@ function renderMessage(message) {
         <span>${escapeHtml(message.role)}</span>
         <span>${escapeHtml(message.role === "assistant" ? formatDate(message.createdAt) : "")}</span>
       </div>
-      <div class="message-content">${toolCards}${subagentCards}${message.role === "assistant" && (message.pending || message.agents?.length) ? `<div data-agent-progress>${renderAgentProgress(message.agents ?? [])}</div>` : ""}${content}</div>
+      <div class="message-content">${message.role === "assistant" ? `<div data-chat-activity>${renderChatActivity({ ...message, agents: message.agents?.length > 1 ? renderAgentProgress(message.agents) : "", format: formatLocalModelReferences })}</div>` : ""}${toolCards}${subagentCards}${content}</div>
       ${attachments}
       ${footer}
     </article>
@@ -2902,7 +2900,7 @@ function renderMessage(message) {
 
 function renderPendingMessageContent(message) {
   if (message.pendingKind === "subagent") {
-    return `<div class="subagent-pending-line">${renderInlineMessageText(message.content || "Thinking")}</div>`;
+    return `<div class="subagent-pending-line ${message.content ? "is-streaming-answer" : ""}">${renderInlineMessageText(message.content || "")}</div>`;
   }
 
   return `<div class="thinking-indicator">${renderInlineMessageText(message.content || "Thinking")}</div>`;
@@ -3044,6 +3042,7 @@ function preserveStoppedChatRequest(active, message, status) {
   state.messages.push(
     { id: `${active.requestId}:user`, role: "user", content: pending.input, createdAt: pending.startedAt },
     { id: `${active.requestId}:stopped`, role: "assistant", content: message, createdAt: new Date().toISOString(),
+      activity: (pending.progress?.activity ?? []).map(entry => ({ ...entry, status: entry.status === "active" ? "error" : entry.status })),
       agents: (pending.progress?.agents ?? []).map((agent) => ["queued", "running"].includes(agent.status)
         ? { ...agent, status, phase: status === "cancelled" ? "Interrupted" : "Failed" } : agent) }
   );
@@ -3333,7 +3332,6 @@ async function submitChatMessage(input, attachments, options = {}) {
   const sessionId = state.activeSessionId;
   activeRequest.sessionId = sessionId;
   state.activeChatRequest = activeRequest;
-  state.chatSubmitting = true;
   const submitButton = document.querySelector("#chat-form button[type='submit']");
   if (submitButton) submitButton.disabled = true;
   let completed = false;
@@ -3341,18 +3339,18 @@ async function submitChatMessage(input, attachments, options = {}) {
     window.clearTimeout(state.ui.autosaveTimer);
     await state.ui.autosavePromise.catch(() => undefined);
     await persistActiveSessionSetup({ refreshBootstrap: false, sessionId, snapshot: setupSnapshot });
-    if (activeRequest.cancelled || state.activeChatRequest?.requestId !== requestId) return;
-    state.route = "chat";
-    window.location.hash = "/chat";
-    state.pendingRequest = {
+    if (activeRequest.cancelled || state.chatRequests.get(sessionId) !== activeRequest) return;
+    if (state.activeSessionId === sessionId) {
+      state.route = "chat";
+      window.location.hash = "/chat";
+    }
+    activeRequest.pending = {
       requestId,
       sessionId,
       input,
       startedAt: new Date().toISOString(),
       pendingText: isSubagentRequest(input) ? chooseSubagentPendingText(input) : undefined
     };
-    state.activeChatRequest = activeRequest;
-    state.chatSubmitting = true;
     if (!options.fromReview) {
       state.drafts[sessionId] = "";
     }
@@ -3376,23 +3374,22 @@ async function submitChatMessage(input, attachments, options = {}) {
     }
     if (!options.fromReview) state.draftAttachments[sessionId] = [];
     completed = true;
-    await refreshBootstrap();
+    // Provider discovery can be slow; it must not hold a finished chat response.
+    void refreshBootstrap().then(() => render()).catch(() => undefined);
     if (state.activeSessionId === sessionId) {
       await loadActiveSession();
       if (reviewPanel.isOpen()) await reviewPanel.refresh();
     }
   } catch (error) {
-    if (state.activeChatRequest?.requestId === requestId && !activeRequest.cancelled) {
+    if (state.chatRequests.get(sessionId) === activeRequest && !activeRequest.cancelled) {
       const message = error instanceof Error ? error.message : "Action failed";
       preserveStoppedChatRequest(activeRequest, message, "degraded");
       pushToast(message, "danger");
     }
   } finally {
     stopProcessProgressPolling(activeRequest);
-    if (state.activeChatRequest?.requestId === requestId) {
-      state.activeChatRequest = null;
-      state.pendingRequest = null;
-      state.chatSubmitting = false;
+    if (state.chatRequests.get(sessionId) === activeRequest) {
+      state.chatRequests.delete(sessionId);
       render();
       if (state.ui.messageStreamPinnedToBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
     }
@@ -4914,14 +4911,26 @@ function getModelOptions(providerId) {
     .filter((model) => matchesProvider(model) && model.providerId !== "llamacpp")
     .map((model) => model.id);
   const fromManaged = (state.bootstrap?.allManagedModels ?? [])
-    .filter(model => matchesProvider(model) && (model.providerId !== "llamacpp" || model.compatibility?.canLoad !== false))
+    .filter(model => matchesProvider(model) && (model.providerId !== "llamacpp" || model.filesAvailable !== false && model.compatibility?.canLoad !== false))
     .map((model) => model.id);
   return [...new Set([...fromCatalog, ...fromManaged])].sort();
 }
 
 function getModelDisplayName(providerId, modelId) {
   const model = (state.bootstrap?.allManagedModels ?? []).find((item) => item.providerId === providerId && (item.id === modelId || item.libraryId === modelId));
-  return providerId === "llamacpp" && model ? `${model.displayName || model.id}${model.quantization && !(model.displayName || "").includes(model.quantization) ? ` · ${model.quantization}` : ""}` : modelId;
+  return providerId === "llamacpp" ? model ? `${model.displayName || model.id}${model.quantization && !(model.displayName || "").includes(model.quantization) ? ` · ${model.quantization}` : ""}` : "Select model" : modelId;
+}
+
+function resolveInstalledLocalModel(value, options) {
+  const models = (state.bootstrap?.allManagedModels ?? []).filter(model => model.providerId === "llamacpp" && model.filesAvailable !== false && model.compatibility?.canLoad !== false);
+  const ids = models.map(model => model.id).filter(id => !options || options.includes(id));
+  const configured = state.bootstrap?.appSettings?.providers?.llamacpp?.model;
+  return ids.includes(value) ? value : ids.includes(configured) ? configured : models.find(model => ids.includes(model.id) && (model.loaded || model.state === "ready"))?.id || ids[0] || "";
+}
+
+function reconcileLocalModelTargets(settings) {
+  const targets = [settings.defaultTarget, ...(settings.codeAgents || []), ...(settings.hypothesisAgents || []), ...Object.values(settings.debate || {})];
+  for (const target of targets) if (target && typeof target === "object" && target.providerId === "llamacpp") target.model = resolveInstalledLocalModel(target.model);
 }
 
 function formatLocalModelReferences(value) {
@@ -4938,6 +4947,16 @@ function isModelLoaded(providerId, modelId) {
 function updateLoadedModelIndicators() {
   document.querySelectorAll("select[data-local-model-provider]").forEach((select) => {
     const providerId = select.dataset.localModelProvider;
+    const control = select.closest("[data-local-model-control]");
+    if (control && providerId === "llamacpp") {
+      const options = getModelOptions(providerId);
+      const selected = resolveInstalledLocalModel(select.value, options);
+      const existing = [...select.options].map(item => item.value).filter(Boolean);
+      if (selected !== select.value || options.length !== existing.length || options.some(id => !existing.includes(id))) {
+        control.outerHTML = renderSessionModelControl(select.name, providerId, selected, options, "local-models");
+        return;
+      }
+    }
     for (const item of select.options) {
       if (item.value && !item.disabled) item.textContent = `${getModelDisplayName(providerId, item.value)}${isModelLoaded(providerId, item.value) ? " · Loaded" : ""}`;
     }
@@ -5308,7 +5327,7 @@ function getProviderSettingsModelOptions(providerId, currentValue = "") {
 
 function renderProviderSettingsModelControl(providerId, value) {
   const options = getProviderSettingsModelOptions(providerId, value || getProviderConfiguredModel(providerId));
-  const selectedValue = value || getProviderConfiguredModel(providerId) || "";
+  const selectedValue = providerId === "llamacpp" ? resolveInstalledLocalModel(value) : value || getProviderConfiguredModel(providerId) || "";
 
   if (["openai", "anthropic", "gemini"].includes(providerId)) {
     const unavailable = selectedValue && !options.includes(selectedValue);
@@ -5653,6 +5672,7 @@ function readSessionSetupSnapshot() {
   }
 
   const fallbackSettings = cloneSessionSettings(state.sessionSettings);
+  reconcileLocalModelTargets(fallbackSettings);
   const fallbackTitle = getCurrentSessionSummary()?.title ?? "New task";
   const form = document.querySelector("#session-settings-form");
 
@@ -5674,6 +5694,7 @@ function readSessionSetupSnapshot() {
     const value = String(formData.get(modelFieldName) || "").trim();
     const providerMatchesFallback = !fallbackProviderId || providerId === fallbackProviderId;
 
+    if (providerId === "llamacpp") return resolveInstalledLocalModel(value || (providerMatchesFallback ? fallbackModel : undefined)) || undefined;
     return value || (providerMatchesFallback ? fallbackModel : undefined) || getDefaultModelForProvider(providerId) || undefined;
   };
   const codeAgentCards = [...form.querySelectorAll(".code-agent-card")];
@@ -5867,19 +5888,22 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
     return `<input name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}" value="" placeholder="local judge" disabled />`;
   }
 
-  const resolvedValue = value || getProviderConfiguredModel(providerId) || "";
+  const resolvedValue = providerId === "llamacpp" ? resolveInstalledLocalModel(value, options) : value || getProviderConfiguredModel(providerId) || "";
 
   if (isLocalProvider(providerId)) {
+    if (providerId === "llamacpp") options = options.filter(id => resolveInstalledLocalModel(id, options) === id);
     const unavailable = resolvedValue && !options.includes(resolvedValue);
     const orderedOptions = [...options].sort((a, b) => Number(isModelLoaded(providerId, b)) - Number(isModelLoaded(providerId, a)));
     return `
+      <div class="local-model-control" data-local-model-control>
       <select name="${escapeAttr(name)}" data-local-model-provider="${escapeAttr(providerId)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
         <option value="">${providerId === "llamacpp" && !options.length ? "Download a model in Models" : "Select model"}</option>
         ${unavailable ? `<option value="${escapeAttr(resolvedValue)}" selected disabled>${escapeHtml(resolvedValue)} · unavailable</option>` : ""}
         ${orderedOptions.map((modelId) => option(modelId, resolvedValue, `${getModelDisplayName(providerId, modelId)}${isModelLoaded(providerId, modelId) ? " · Loaded" : ""}`)).join("")}
       </select>
-      <span class="badge success model-loaded-badge" data-model-loaded ${isModelLoaded(providerId, resolvedValue) ? "" : "hidden"}>Loaded</span>
+      <span class="model-loaded-badge" data-model-loaded ${isModelLoaded(providerId, resolvedValue) ? "" : "hidden"}>Loaded</span>
       ${unavailable ? '<div class="mm-unavailable-target">This saved model is unavailable. Select a model from the library.</div>' : ""}
+      </div>
     `;
   }
 

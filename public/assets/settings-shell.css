@@ -191,10 +191,37 @@ html[data-theme="light"] .plugin-app-icon--github img, html[data-theme="light"] 
 .settings-test-result > small { color: var(--muted); }
 .settings-connection-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: 8px; color: var(--success); }
 .settings-connection-status small { color: var(--muted); }
-.settings-section-actions { display: flex; justify-content: flex-end; margin: -44px 0 20px; }
 .settings-form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .settings-connection-status:not(.is-connected) { color: var(--muted); }
-@media(max-width: 640px) { .settings-section-actions { justify-content: flex-start; margin: 0 0 16px; } .settings-form-actions { justify-content: flex-start; } }
+.mcp-overview { display: grid; gap: 24px; }
+.mcp-overview-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-top: -18px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); }
+.mcp-info { display: flex; align-items: flex-start; gap: 14px; padding: 20px; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+.mcp-info-icon { display: inline-flex; flex-shrink: 0; padding: 9px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
+.mcp-info-icon .ui-icon { width: 20px; height: 20px; }
+.mcp-info h2, .mcp-card-heading h2 { margin: 0; color: var(--text); font-size: calc(14px * var(--font-scale, 1)); font-weight: 550; line-height: 1.5; }
+.mcp-info p, .mcp-card-heading p, .mcp-empty-state p { margin: 5px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.65; }
+.mcp-info small { display: block; margin-top: 8px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); line-height: 1.6; }
+.mcp-card { min-width: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); overflow: hidden; }
+.mcp-card-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 20px; }
+.mcp-card-heading > div { min-width: 0; }
+.mcp-card-heading h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mcp-count, .mcp-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--control-bg); color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); font-weight: 450; line-height: 1.5; }
+.mcp-add-button, .mcp-add-button:hover, .mcp-add-button:focus-visible { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex-shrink: 0; min-height: 36px; text-decoration: none; }
+.mcp-add-button .ui-icon { width: 15px; height: 15px; }
+.mcp-server-list, .mcp-empty-state { border-top: 1px solid var(--line); }
+.mcp-server-list .settings-list-row { padding: 18px 20px; margin: 0; border-radius: 0; }
+.mcp-server-list .settings-list-row:last-child { border-bottom: 0; }
+.mcp-server-list .settings-list-row > span { min-width: 0; overflow-wrap: anywhere; }
+.mcp-empty-state { display: flex; align-items: center; gap: 14px; padding: 26px 20px; }
+.mcp-empty-icon { display: inline-flex; color: var(--muted); }
+.mcp-empty-icon .ui-icon { width: 22px; height: 22px; }
+.mcp-empty-state strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 450; }
+@media(max-width: 640px) {
+  .settings-form-actions { justify-content: flex-start; }
+  .mcp-info { gap: 10px; padding: 16px; }
+  .mcp-info-icon { padding: 6px; }
+  .mcp-card-heading, .mcp-empty-state, .mcp-server-list .settings-list-row { padding: 16px; }
+}
 .settings-search-results > p { margin: 4px 10px 12px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 .settings-search-result { display: block; width: 100%; padding: 10px; border-radius: 9px; text-align: left; color: var(--text); background: transparent; border: 0; }
 .settings-search-result:hover { background: var(--highlight); }

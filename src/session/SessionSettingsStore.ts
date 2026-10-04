@@ -21,7 +21,8 @@ export class SessionSettingsStore {
   constructor(
     private readonly options: SessionSettingsStoreOptions,
     private readonly defaultTarget: ProviderTarget,
-    private readonly providerDefaults: Record<string, string | undefined>
+    private readonly providerDefaults: Record<string, string | undefined>,
+    private readonly resolveLocalModel?: (id?: string) => string | undefined
   ) {}
 
   async get(sessionId: string): Promise<SessionSettings> {
@@ -32,7 +33,7 @@ export class SessionSettingsStore {
       const parsed = JSON.parse(raw) as Partial<SessionSettings>;
       return this.normalize(parsed);
     } catch {
-      return this.buildDefaultSettings();
+      return this.normalize(this.buildDefaultSettings());
     }
   }
 
@@ -58,7 +59,7 @@ export class SessionSettingsStore {
   }
 
   async reset(sessionId: string): Promise<SessionSettings> {
-    const settings = this.buildDefaultSettings();
+    const settings = this.normalize(this.buildDefaultSettings());
     await this.save(sessionId, settings);
     return settings;
   }
@@ -102,7 +103,9 @@ export class SessionSettingsStore {
     target: Partial<ProviderTarget> | undefined,
     fallback: ProviderTarget
   ): ProviderTarget {
-    return resolveProviderTarget(target, fallback, this.providerDefaults);
+    const resolved = resolveProviderTarget(target, fallback, this.providerDefaults);
+    return resolved.providerId === "llamacpp" && this.resolveLocalModel
+      ? { ...resolved, model: this.resolveLocalModel(resolved.model) } : resolved;
   }
 
   private buildDefaultSettings(): SessionSettings {

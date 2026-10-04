@@ -96,6 +96,7 @@ export interface GGUFMetadata {
 }
 
 export interface LibraryModel extends ManagedModel {
+  filesAvailable?: boolean;
   providerId: "llamacpp";
   libraryId: string;
   repoId?: string;
@@ -146,6 +147,8 @@ export interface LocalRuntimeSnapshot {
   platform: string;
   architecture: string;
   modelId?: string;
+  loadedModelIds?: string[];
+  instances?: LocalRuntimeSnapshot[];
   error?: string;
   queueLength: number;
   busy: boolean;

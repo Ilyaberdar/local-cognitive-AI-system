@@ -2,6 +2,7 @@ import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../t
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { validateImages } from "./InferenceImages";
+import { readLocalChatStream } from "./LocalChatStream";
 import { readNativeAgentResponse, responseMessages } from "./ResponseItems";
 import {
   buildFallbackResponse,
@@ -82,8 +83,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
       const localSampling = this.id === "llamacpp" ? request.sampling : undefined;
       const localTemperature = request.temperature ?? localSampling?.temperature;
+      const stream = this.id === "llamacpp" && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
       if (localBudget !== undefined && (!Number.isInteger(localBudget) || localBudget < 0 || localBudget > 32768)) throw new Error("Local thinking budget must be 0–32768 tokens.");
-      const useChat = (images.length > 0 && this.id !== "openai") || localBudget !== undefined ||
+      const useChat = stream || (images.length > 0 && this.id !== "openai") || localBudget !== undefined ||
         Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
         (this.id !== "openai" && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
       const nativeTools = this.id === "openai" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
@@ -99,6 +101,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         },
         body: JSON.stringify(useChat ? {
           model,
+          ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
           messages: [
             ...(request.systemPrompt ? [{ role: "system", content: request.systemPrompt }] : []),
             { role: "user", content: images.length ? [
@@ -158,12 +161,28 @@ export class OpenAICompatibleProvider implements LLMProvider {
         throw new Error(`${this.id} request failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);
       }
 
-      const payload = (await response.json()) as Record<string, unknown>;
+      let note = ""; let lastNoteAt = 0; let streamPhase = "";
+      const emitNote = () => { if (note) request.onProgress?.({ phase: "thinking", model, note }); };
+      const payload = stream && response.headers.get("content-type")?.includes("text/event-stream")
+        ? await readLocalChatStream(response, delta => {
+          if (streamPhase !== "responding") { emitNote(); streamPhase = "responding"; request.onProgress?.({ phase: "responding", model }); }
+          // A partial JSON action is never a user-facing answer or an executable tool call.
+          if (!request.responseFormat && request.outputPurpose !== "agent-action") request.onTextDelta?.(delta);
+        }, delta => {
+          note = (note + delta).slice(-6000);
+          if (streamPhase !== "thinking" || Date.now() - lastNoteAt >= 400) { streamPhase = "thinking"; lastNoteAt = Date.now(); emitNote(); }
+        })
+        : (await response.json()) as Record<string, unknown>;
+      if (streamPhase === "thinking") emitNote();
       const text = readResponseText(payload);
       const action = nativeTools ? readNativeAgentResponse(payload, nativeTools) : undefined;
       const ambiguousJson = !nativeTools && request.responseFormat && responseMessages(payload).length > 1
         ? "The provider returned multiple final messages for one JSON response; they were not concatenated." : undefined;
-      const error = readResponseError(payload) || (!text && !action ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
+      // A bounded prose answer is usable; truncated JSON/tool actions must still fail closed.
+      const choices = payload.choices as Array<Record<string, unknown>> | undefined;
+      const boundedProse = this.id === "llamacpp" && text && !request.responseFormat && request.outputPurpose !== "agent-action" && choices?.[0]?.finish_reason === "length";
+      const errorPayload = boundedProse ? { ...payload, choices: [{ ...choices![0], finish_reason: "stop" }] } : payload;
+      const error = readResponseError(errorPayload) || (!text && !action ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
 
       return {
         provider: this.id,

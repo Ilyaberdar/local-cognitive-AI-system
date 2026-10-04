@@ -16,8 +16,8 @@ export class LLMService {
     private readonly sanitizer: OutputSanitizer
   ) {}
 
-  getContextWindow(providerId: string): number | undefined {
-    return this.registry.get(providerId).getContextWindow?.();
+  getContextWindow(providerId: string, modelId?: string): number | undefined {
+    return this.registry.get(providerId).getContextWindow?.(modelId);
   }
 
   supportsNativeTools(providerId: string): boolean {
@@ -36,7 +36,9 @@ export class LLMService {
       return { provider: provider.id, model: request.model ?? provider.defaultModel, text: "", error: `Provider ${provider.name} is disabled or not configured.` };
     }
     const images = validateImages(request.images ?? currentInferenceImages());
-    const response = await provider.generateText({ ...request, images, onProgress: request.onProgress ?? currentInferenceProgress(),
+    const onProgress = request.onProgress ?? currentInferenceProgress();
+    if (targetProviderId !== "llamacpp") onProgress?.({ phase: "waiting", model: request.model ?? provider.defaultModel });
+    const response = await provider.generateText({ ...request, images, onProgress,
       localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() });
     request.signal?.throwIfAborted();
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.

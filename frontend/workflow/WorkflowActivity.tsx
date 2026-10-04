@@ -1,22 +1,12 @@
 import { FollowOutputButton } from "./FollowOutputButton";
 import { renderMarkdown } from "../markdown/index.js";
 import { useMemo } from "react";
+import { activityLabel } from "../../public/assets/activity-ui.js";
 import type { RefObject } from "react";
 import type { ProviderOption, WorkflowDefinition, WorkflowExecution, WorkflowLogEvent } from "./types";
 
-const toolLabels: Record<string, string> = {
-  "file.read": "Reading file", "file.write": "Writing file", "file.replace": "Editing file",
-  "file.list": "Listing files", "file.search": "Searching files", "command.run": "Running command",
-  "web.fetch": "Reading webpage", "web.search": "Searching the web"
-};
 function actionLabel(event: WorkflowLogEvent) {
-  if (event.phase === "generating" || event.message === "Generating" || event.message === "Working in project") return "Generating response";
-  const result = /^(\S+) (completed|failed)$/.exec(event.message);
-  if (result && toolLabels[result[1]]) {
-    const names: Record<string, string> = { "file.read": "File read", "file.write": "File saved", "file.replace": "File edited", "file.list": "Files listed", "file.search": "Search complete", "command.run": "Command completed" };
-    return result[2] === "failed" ? `${toolLabels[result[1]]} failed` : names[result[1]] ?? event.message;
-  }
-  return toolLabels[event.message] ?? event.message;
+  return activityLabel(event);
 }
 function ActivityIcon({ event }: { event: WorkflowLogEvent }) {
   const text = event.message.toLowerCase();
@@ -40,17 +30,22 @@ export function WorkflowActivity({ execution, workflow, providers, events, recor
   scroller: RefObject<HTMLDivElement | null>; follow: boolean; onFollow: (follow: boolean) => void;
 }) {
   const nodes = useMemo(() => new Map(workflow.nodes.map(node => [node.id, node])), [workflow]);
-  const history = useMemo(() => events.filter(event => !event.stream && event.type !== "node.output" && event.type !== "transition" &&
+  const history = useMemo(() => events.filter(event => !event.stream && event.type !== "node.output" && event.type !== "transition" && event.message !== "Working" &&
     (event.type !== "run.status" || /failed|cancelled|interrupted/i.test(event.message)) &&
-    (!nodeFilter || event.nodeId === nodeFilter)).filter((event, index, items) => {
-      const next = items[index + 1];
-      return !(actionLabel(event) === "Generating response" && next && actionLabel(next) === "Generating response" && event.nodeRunId === next.nodeRunId && event.nodeId === next.nodeId);
-    }), [events, nodeFilter]);
+    (!nodeFilter || event.nodeId === nodeFilter)).reduce<WorkflowLogEvent[]>((items, event) => {
+      const previous = items.at(-1);
+      if (previous && event.type === "node.progress" && previous.type === event.type && actionLabel(previous) === actionLabel(event) &&
+        previous.nodeRunId === event.nodeRunId && previous.agentRunId === event.agentRunId && previous.operationId === event.operationId) {
+        items[items.length - 1] = { ...event, sequence: previous.sequence, at: previous.at, note: event.note || previous.note };
+      } else items.push(event);
+      return items;
+    }, []), [events, nodeFilter]);
   const currentNode = execution?.run.currentNodeId;
   const current = [...recordedEvents].reverse().find(event => event.nodeId === currentNode && !event.stream && event.type !== "transition");
   const running = execution?.run.status === "running";
   const currentLabel = running ? current ? actionLabel(current) : "Starting step" : execution ? `Workflow ${execution.run.status}` : "Ready to run";
-  const elapsed = current ? Math.max(0, Math.floor((now - Date.parse(current.at)) / 1000)) : 0;
+  const currentStart = current && [...recordedEvents].reverse().find(event => event.nodeId === current.nodeId && event.nodeRunId === current.nodeRunId && event.type === "node.started");
+  const elapsed = current ? Math.max(0, Math.floor((now - Date.parse(currentStart?.at || current.at)) / 1000)) : 0;
   const modelLabel = (id?: string) => {
     const node = id ? nodes.get(id) : undefined;
     if (node?.type !== "agent") return undefined;
@@ -83,7 +78,8 @@ export function WorkflowActivity({ execution, workflow, providers, events, recor
           {modelLabel(event.nodeId) ? <small>{modelLabel(event.nodeId)}</small> : null}
         </div> : null}
         <div className="workflow-activity__action"><ActivityIcon event={event} /><div><strong>{actionLabel(event)}</strong>
-          {agentResponse(event) ? <details className="workflow-agent-response"><summary>Response</summary><div dangerouslySetInnerHTML={{ __html: renderMarkdown(agentResponse(event)) }} /></details> : <Detail text={event.detail} />}</div>
+          {agentResponse(event) ? <details className="workflow-agent-response"><summary>Response</summary><div dangerouslySetInnerHTML={{ __html: renderMarkdown(agentResponse(event)) }} /></details> : <Detail text={event.detail?.replace(/ · Step \d+$/, "")} />}
+          {event.note ? <details className="workflow-activity__notes"><summary>Model notes</summary><pre>{event.note}</pre></details> : null}</div>
           <time title={event.at}>{new Date(event.at).toLocaleTimeString([], { hour12: false })}</time></div>
       </article>) : <div className="workflow-console__empty">{!execution ? "Actions and results will appear here when you run the workflow." : "No activity in this view yet."}</div>}
     </div>
