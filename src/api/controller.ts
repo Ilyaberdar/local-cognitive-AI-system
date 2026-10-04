@@ -585,6 +585,7 @@ export const createGetSessionMessagesController =
               content: formatted,
               createdAt: entry.createdAt,
               metrics: readStoredMetrics(entry.output, entry.metadata),
+              activity: Array.isArray(entry.metadata?.activity) ? entry.metadata.activity as ChatMessage["activity"] : undefined,
               tools: readStoredTools(entry.metadata),
               subagents: readStoredSubagents(entry.output)
             }

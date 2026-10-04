@@ -72,7 +72,8 @@ export class ProcessRunRegistry {
       return;
     }
 
-    run.progress = { ...progress, agents: progress.agents ?? run.progress?.agents };
+    run.progress = { ...progress, agents: progress.agents ?? run.progress?.agents,
+      activity: progress.activity ?? run.progress?.activity, answer: progress.answer ?? run.progress?.answer };
     run.updatedAt = progress.at;
   }
 

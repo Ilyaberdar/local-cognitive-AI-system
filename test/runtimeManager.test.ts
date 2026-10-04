@@ -104,12 +104,13 @@ test("a translation following general chat reports its own local queue and load 
   const result = await runtime.engine.process({ actor: { sessionId: "translation", channel: "http" }, input: "Ответь кратко.", onProgress: event => progress.push(event) });
   assert.equal(calls, 2);
   assert.ok("response" in result.result && result.result.response.includes("переведено"));
-  assert.ok(progress.some(event => event.label === "Waiting · 2 in queue"), "Translation must retain the main model observer");
+  assert.ok(progress.some(event => event.label === "Queued · 2 in queue"), "Translation must retain the main model observer");
   assert.equal(progress.filter(event => event.label === "Loading model").length, 2);
 });
 
 test("missing delegation markers receive one structured repair from the main model before agents run", async (t) => {
   const { manager, service } = await fixture(t);
+  t.mock.method(service, "resolveModelId", (id?: string) => id);
   t.mock.getter(service, "available", () => true);
   await manager.updateSettings({ providers: { llamacpp: { enabled: true, model: "main-model" } } });
   const requests: LLMRequest[] = [];

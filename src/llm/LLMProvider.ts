@@ -7,6 +7,6 @@ export interface LLMProvider {
   isConfigured(): boolean;
   getDescriptor(): ProviderDescriptor;
   listModels?(): Promise<ProviderModel[]>;
-  getContextWindow?(): number;
+  getContextWindow?(modelId?: string): number;
   generateText(request: LLMRequest): Promise<LLMResponse>;
 }

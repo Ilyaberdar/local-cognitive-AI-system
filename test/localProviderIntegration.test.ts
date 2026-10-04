@@ -91,6 +91,6 @@ test("concurrent agents retain their own inference progress observer", async () 
   } satisfies LLMProvider);
   const llm = new LLMService(registry, "llamacpp", new Logger(), new OutputSanitizer());
   const seen: string[] = [];
-  await Promise.all(["a", "b"].map(id => withInferenceProgress(event => { seen.push(`${id}:${event.model}`); }, () => llm.generateText({ model: id, prompt: "hello" }))));
-  assert.deepEqual(seen.sort(), ["a:a", "b:b"]);
+  await Promise.all(["a", "b"].map(id => withInferenceProgress(event => { seen.push(`${id}:${event.model}:${event.phase}`); }, () => llm.generateText({ model: id, prompt: "hello" }))));
+  assert.deepEqual(seen.sort(), ["a:a:queued", "b:b:queued"]);
 });

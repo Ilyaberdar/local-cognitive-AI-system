@@ -114,8 +114,21 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     return `<div class="mm-runtime-strip" data-mm-runtime>
       <div class="mm-runtime-status"><span class="mm-status-dot ${missing ? "is-warning" : "is-success"}"></span><span>${escape(label)}</span>${runtime?.backend ? `<span class="mm-runtime-backend">${escape(runtime.backend)}</span>` : ""}${runtime?.queueLength ? `<span>${runtime.queueLength} waiting</span>` : ""}</div>
       <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
-      ${missing && (runtime?.message || runtime?.error) ? `<div class="mm-runtime-message">${escape(runtime.message || runtime.error)}</div>` : ""}
+      ${missing && (runtime?.message || runtime?.error) ? renderModelError(runtime.message || runtime.error) : ""}
     </div>`;
+  }
+
+  function errorSummary(error) {
+    const text = String(typeof error === "string" ? error : error?.message || "Model operation failed.");
+    if (/has offset .*expected|failed to read tensor data/i.test(text)) return "Model format is incompatible with this runtime, or the file is damaged.";
+    if (/out of memory|failed to allocate|not enough memory/i.test(text)) return "Not enough memory to load this model.";
+    if (/Local runtime exited|failed to load model/i.test(text)) return "The local runtime could not load this model.";
+    return text.split(/\r?\n/)[0].slice(0, 160) + (text.split(/\r?\n/)[0].length > 160 ? "…" : "");
+  }
+
+  function renderModelError(error) {
+    const detail = typeof error === "string" ? error : error?.message || "Model operation failed.";
+    return `<div class="mm-inline-error mm-model-error" role="status"><span>${escape(errorSummary(detail))}</span><button type="button" class="ghost-button" data-mm-action="copy-error" data-mm-id="${escape(detail)}" aria-label="Copy full error">Copy</button></div>`;
   }
 
   function renderContextControl() {
@@ -123,7 +136,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     return `<form class="mm-settings-form" id="mm-context-form">
       <div class="mm-settings-copy"><h3>Context size</h3><p class="subtle">Tokens shared by the conversation, tools and answer. Larger context uses more memory.</p><p class="subtle">Saving reconfigures the local runtime. Load the model again to use the new value.</p></div>
       <label class="mm-settings-field" for="mm-context-size"><span>Context size (tokens)</span><span class="mm-settings-input-row"><input id="mm-context-size" name="contextSize" type="number" min="512" max="131072" step="1" required value="${escape(state.contextDraft ?? configured)}" aria-label="Local model context size in tokens" ${state.contextSaving ? "disabled" : ""} /><button id="mm-context-save" class="ghost-button mm-settings-save" type="submit" ${state.contextSaving ? "disabled" : ""}>${state.contextSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>
-      ${state.contextError ? `<div class="mm-inline-error" role="alert">${escape(state.contextError)}</div>` : state.contextSaved ? '<div class="subtle mm-context-feedback" role="status">Context saved. The local runtime was reconfigured; load the model again to use it.</div>' : ""}
+      ${state.contextError ? renderModelError(state.contextError) : state.contextSaved ? '<div class="subtle mm-context-feedback" role="status">Context saved. The local runtime was reconfigured; load the models again to use it.</div>' : ""}
     </form>`;
   }
 
@@ -142,7 +155,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     return `<form class="mm-settings-form" id="${formId}" data-mm-settings-form="${tab}">
       <div class="mm-settings-copy"><h3>${escape(field.label)}</h3><p class="subtle">${escape(field.description)}</p><p class="subtle">Saving reconfigures the local runtime. Load the model again to use the new value.</p></div>
       ${renderAdvancedField(field)}
-      ${state.advancedError ? `<div class="mm-inline-error" role="alert">${escape(state.advancedError)}</div>` : state.advancedSaved ? '<div class="subtle mm-context-feedback" role="status">Settings saved. The local runtime was reconfigured.</div>' : ""}
+      ${state.advancedError ? renderModelError(state.advancedError) : state.advancedSaved ? '<div class="subtle mm-context-feedback" role="status">Settings saved. The local runtime was reconfigured.</div>' : ""}
     </form>`;
   }
 
@@ -164,7 +177,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       <label class="mm-settings-field" for="mm-generation-temperature"><span>Temperature</span><span class="mm-settings-input-row"><input id="mm-generation-temperature" data-mm-generation-value="temperature" type="number" min="0" max="2" step="0.01" value="${escape(values.temperature ?? "")}" placeholder="Use default" aria-label="Temperature" ${state.generationSaving ? "disabled" : ""} /><button class="ghost-button mm-settings-save" type="submit" ${state.generationSaving ? "disabled" : ""}>${state.generationSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>
       <label class="mm-settings-field" for="mm-generation-max-tokens"><span>Max response tokens</span><input id="mm-generation-max-tokens" data-mm-generation-value="maxTokens" type="number" min="1" max="32768" step="1" value="${escape(values.maxTokens ?? "")}" placeholder="Runtime default" aria-label="Max response tokens" ${state.generationSaving ? "disabled" : ""} /></label>
       <a class="mm-generation-link" href="#/settings/runtime">Open full local generation settings ${icon("chevronRight")}</a>
-      ${state.generationError ? `<div class="mm-inline-error" role="alert">${escape(state.generationError)}</div>` : state.generationSaved ? '<div class="subtle mm-context-feedback" role="status">Generation settings saved. The loaded model stays ready.</div>' : ""}
+      ${state.generationError ? renderModelError(state.generationError) : state.generationSaved ? '<div class="subtle mm-context-feedback" role="status">Generation settings saved. The loaded models stay ready.</div>' : ""}
     </form>`;
   }
 
@@ -257,7 +270,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
         ${["queued", "downloading"].includes(status) ? actionButton("pause", id, "Pause") : ""}
         ${["paused", "failed"].includes(status) ? actionButton("resume", id, status === "failed" ? "Retry" : "Resume") : ""}
         ${ACTIVE_DOWNLOADS.has(status) || status === "failed" ? actionButton("cancel", id, "Cancel", { disabled: status === "verifying" }) : ""}
-      </div></div>${job.error ? `<div class="mm-inline-error" role="status">${escape(typeof job.error === "string" ? job.error : job.error.message)}</div>` : ""}
+      </div></div>${job.error ? renderModelError(job.error) : ""}
     </article>`;
   }
 
@@ -308,7 +321,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       ${fit.messages.length ? `<details class="mm-memory-details"><summary>Compatibility details</summary>${renderCompatibility(model, true)}</details>` : ""}
       ${model.projector ? `<div class="subtle mm-projector-note">Vision adapter: ${escape(model.projector.path)} · ${bytes(model.projector.sizeBytes)}</div>` : ""}
       ${loaded && window.desktopModels?.importProjector ? '<div class="subtle mm-projector-note">Changing the vision adapter unloads this model. It loads again with the next request.</div>' : ""}
-      ${model.error ? `<div class="mm-inline-error">${escape(typeof model.error === "string" ? model.error : model.error.message)}</div>` : ""}</div>
+      ${model.error ? renderModelError(model.error) : ""}</div>
       <div class="mm-library-actions">${actionButton(loaded ? "unload" : "load", id, status === "loading" || state.actions.has(`load:${id}`) ? "Loading…" : status === "unloading" ? "Unloading…" : loaded ? "Unload" : "Load model", { spinning: busy, primary: !loaded, disabled: busy || used || (!loaded && fit.loadBlocked), symbol: loaded ? "stop" : "play", title: loaded ? "Free memory and keep the downloaded files" : fit.loadBlocked ? fit.messages.join(" ") : "Load this model into memory" })}${actionButton("use", id, isCurrent(model) ? "Open chat" : "Use in chat", { disabled: busy || (!loaded && fit.loadBlocked), symbol: "chat" })}</div>
       <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? "Ready for chat, agents and workflows" : fit.loadBlocked ? "Downloaded · Cannot run on this device" : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${window.desktopModels?.importProjector ? actionButton("projector", id, model.projector ? "Change vision adapter" : "Add vision adapter", { disabled: busy || used, title: "Choose the matching mmproj GGUF file for this model" }) : ""}${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: "Delete from device" })}</div></div>
       ${state.deleteId === id ? `<div class="mm-delete-confirm" role="alert"><p>Delete <strong>${escape(nameOf(model))}</strong> and free ${bytes(totalOf(model))}? You can download it again. Saved chats and workflows keep their model reference.</p><div class="mm-inline-actions">${actionButton("delete", id, "Delete from device")}${actionButton("delete-dismiss", id, "Keep model")}</div></div>` : ""}</div>
@@ -352,7 +365,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const installed = models();
     return `<div class="model-manager" id="local-model-manager"><section class="mm-main-panel" aria-labelledby="mm-title"><div class="mm-heading"><div><div class="mm-eyebrow">Private inference, on your computer</div><h2 id="mm-title">Local models</h2><p class="subtle">Download a model once. Use it in chats, agents and workflows.</p></div><div class="mm-heading-actions"><div class="mm-library-summary"><strong>${installed.length}</strong><span>on device</span><span class="mm-summary-divider"></span><strong>${installed.filter((model) => modelState(model) === "ready").length}</strong><span>loaded</span></div><button type="button" id="mm-settings-toggle" class="mm-settings-toggle" popovertarget="mm-settings" aria-haspopup="dialog" aria-controls="mm-settings" aria-expanded="${state.settingsOpen}" aria-label="Model settings" title="Model settings">${icon("settings")}</button></div></div>
       ${renderSettings()}${renderRuntime()}<div class="mm-tabs" role="tablist" aria-label="Local model library"><button type="button" id="mm-tab-catalog" role="tab" aria-selected="${state.tab === "catalog"}" aria-controls="mm-catalog" data-mm-action="tab" data-mm-id="catalog">${icon("search")}Catalog</button><button type="button" id="mm-tab-device" role="tab" aria-selected="${state.tab === "device"}" aria-controls="mm-device" data-mm-action="tab" data-mm-id="device">${icon("models")}On device<span class="mm-count">${installed.length}</span></button><span class="mm-live-status" title="${state.connected ? "Live model and download updates" : "Reconnecting; snapshots are refreshed automatically"}"><span class="mm-status-dot ${state.connected ? "is-success" : ""}"></span>${state.connected ? "Live" : "Connecting"}</span></div>
-      ${state.connectionError ? `<div class="mm-inline-error" role="status">${escape(state.connectionError)}</div>` : ""}
+      ${state.connectionError ? renderModelError(state.connectionError) : ""}
       ${renderDownloads()}${state.tab === "catalog" ? renderCatalog() : renderLibrary()}
     </section>${renderDetail()}</div>`;
   }
@@ -467,7 +480,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (refreshInFlight) return refreshInFlight;
     refreshInFlight = (async () => {
       const startedAtSequence = state.eventSequence;
-      const results = await Promise.allSettled([request("/local/runtime"), request("/local/downloads"), request("/local/models/all")]);
+      // The runtime snapshot already includes the complete built-in library.
+      // Do not make local actions wait for discovery in unrelated model providers.
+      const results = await Promise.allSettled([request("/local/runtime"), request("/local/downloads")]);
       if (results[0].status === "fulfilled") {
         const snapshot = results[0].value;
         state.connectionError = "";
@@ -480,7 +495,6 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       }
       else state.connectionError = results[0].reason?.message || "Local model status is unavailable. Retrying automatically.";
       if (state.eventSequence === startedAtSequence && results[1].status === "fulfilled") state.downloads = asArray(results[1].value?.downloads || results[1].value?.jobs || results[1].value);
-      if (state.eventSequence === startedAtSequence && results[2].status === "fulfilled") onLibraryChange(asArray(results[2].value), state.runtime);
       scheduleRepaint();
     })().finally(() => { refreshInFlight = null; });
     return refreshInFlight;
@@ -525,6 +539,11 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   }
 
   async function perform(action, id) {
+    if (action === "copy-error") {
+      try { await navigator.clipboard.writeText(id); notify("Full error copied.", "info"); }
+      catch { notify("Could not copy the error. Check clipboard permissions.", "danger"); }
+      return;
+    }
     if (action === "tab") { state.tab = id; state.deleteId = ""; repaint(); if (id === "catalog" && !state.catalogLoaded && !state.catalogLoading) void loadCatalog(); return; }
     if (action === "recommended" || action === "browse") { state.source = action === "recommended" ? "recommended" : "search"; state.query = ""; await loadCatalog(); return; }
     if (action === "retry-catalog" || action === "more") { await loadCatalog(action === "more"); return; }
@@ -560,7 +579,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
         else { await onDefault(model); notify(`${nameOf(model)} is the app default for new chats.`, "info"); }
       }
     } catch (error) {
-      notify(error.message || "Unable to complete this model action.", "danger");
+      notify(errorSummary(error.message || "Unable to complete this model action."), "danger");
       if (action === "download") state.detailError = error.message;
       if (action === "load" || action === "unload") await refresh();
     } finally {

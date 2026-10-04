@@ -10,6 +10,7 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const functionSource = (name: string, next: string) => source.slice(source.indexOf(name), source.indexOf(next, source.indexOf(name)));
+const chatState = (initial: object): any => Object.assign(vm.runInNewContext(`({${functionSource('  chatRequests:', '  modelActions:')}})`), initial);
 
 test("chat requests have no browser deadline while an explicit Stop remains available", async () => {
   const calls: Array<{ url: string; options: { timeoutMs?: number; controller?: AbortController } }> = [];
@@ -32,8 +33,8 @@ test("chat requests have no browser deadline while an explicit Stop remains avai
 
 test("chat submit locks before setup save and old cleanup cannot reset a new request", async () => {
   const setup = deferred<void>(); const answer = deferred<{ sessionId: string }>(); const sent = deferred<void>();
-  const state: any = { activeSessionId: "a", activeChatRequest: null, chatSubmitting: false,
-    drafts: { a: "prompt", b: "keep this draft" }, draftAttachments: {}, ui: { autosavePromise: Promise.resolve() } };
+  const state = chatState({ activeSessionId: "a",
+    drafts: { a: "prompt", b: "keep this draft" }, draftAttachments: {}, ui: { autosavePromise: Promise.resolve() } });
   let handler!: (event: any) => Promise<void>; let calls = 0; let sentPayload: any;
   const stopped: unknown[] = [];
   const button = { disabled: false };
@@ -61,7 +62,7 @@ test("chat submit locks before setup save and old cleanup cannot reset a new req
   assert.equal(sentPayload.metadata, undefined);
   assert.equal(state.drafts.b, "keep this draft");
   original.cancelled = true;
-  const newer = { requestId: "request-b" };
+  const newer = { requestId: "request-b", sessionId: "b" };
   state.activeChatRequest = newer;
   answer.resolve({ sessionId: "a" }); await first;
   assert.equal(state.activeChatRequest, newer);
@@ -71,14 +72,14 @@ test("chat submit locks before setup save and old cleanup cannot reset a new req
 
 test("late progress from an old request cannot overwrite the current request", async () => {
   const response = deferred<unknown>(); let tick!: () => Promise<void>;
-  const active = { requestId: "a" };
-  const state: any = { activeChatRequest: active, pendingRequest: { progress: { label: "A" } } };
+  const active = { requestId: "a", sessionId: "a" };
+  const state = chatState({ activeSessionId: "a", activeChatRequest: active, pendingRequest: { progress: { label: "A" } } });
   let updates = 0;
   const context = { state, window: { setInterval: (callback: typeof tick) => { tick = callback; return 1; } },
     api: { getProcessRun: () => response.promise }, stopProcessProgressPolling() {}, updateChatActivityProgress() { updates++; }, active };
   vm.runInNewContext(functionSource("function startProcessProgressPolling", "function stopProcessProgressPolling") + "startProcessProgressPolling(active);", context);
   const polling = tick();
-  state.activeChatRequest = { requestId: "b" };
+  state.activeChatRequest = { requestId: "b", sessionId: "a" };
   state.pendingRequest = { progress: { label: "B" } };
   response.resolve({ progress: { label: "Old A" } }); await polling;
   assert.equal(state.pendingRequest.progress.label, "B");
@@ -89,7 +90,7 @@ test("late session reads do not replace the selected conversation or clear anoth
   const aMessages = deferred<unknown>(); const aSettings = deferred<unknown>();
   const pending = { sessionId: "a", startedAt: new Date(0).toISOString() };
   const state: any = { activeSessionId: "a", pendingRequest: pending };
-  const context: any = { state, sessionLoadSequence: 0, api: {
+  const context: any = { state, reconcileLocalModelTargets() {}, sessionLoadSequence: 0, api: {
     getSessionMessages: (id: string) => id === "a" ? aMessages.promise : Promise.resolve([{ role: "assistant", content: "B", createdAt: new Date().toISOString() }]),
     getSessionSettings: (id: string) => id === "a" ? aSettings.promise : Promise.resolve({ name: "B" })
   } };

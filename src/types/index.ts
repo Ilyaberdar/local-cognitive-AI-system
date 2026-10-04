@@ -435,6 +435,7 @@ export interface SessionSummary {
 }
 
 export interface ChatMessage {
+  activity?: ActivityEntry[];
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
@@ -477,7 +478,8 @@ export interface LLMRequest {
   sampling?: SamplingSettings;
   timeoutMs?: number;
   signal?: AbortSignal;
-  onProgress?: (event: { phase: "queued" | "loading" | "generating"; model: string; queuePosition?: number }) => void;
+  onProgress?: (event: { phase: "queued" | "loading" | "waiting" | "thinking" | "generating" | "responding"; model: string; queuePosition?: number; note?: string }) => void;
+  onTextDelta?: (delta: string) => void;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   previousResponseId?: string;
   responseFormat?: LLMResponseFormat | null;
@@ -535,6 +537,11 @@ export interface InternalExecutionContext {
 }
 
 export interface ProcessProgressEvent {
+  /** Public, provider-supplied model commentary; never synthesized from step numbers. */
+  note?: string;
+  model?: string;
+  activity?: ActivityEntry[];
+  answer?: string;
   output?: { stream: "stdout" | "stderr"; text: string };
   agentRunId?: string;
   operationId?: string;
@@ -545,6 +552,20 @@ export interface ProcessProgressEvent {
   total?: number;
   at: string;
   agents?: ProcessAgentProgress[];
+}
+
+export interface ActivityEntry {
+  id: string;
+  phase: string;
+  label: string;
+  detail?: string;
+  note?: string;
+  model?: string;
+  agentRunId?: string;
+  operationId?: string;
+  at: string;
+  updatedAt: string;
+  status: "active" | "complete" | "error";
 }
 
 export interface ProcessAgentProgress {

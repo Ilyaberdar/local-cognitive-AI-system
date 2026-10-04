@@ -44,7 +44,7 @@ test("local inference honours abort before headers and while receiving a body", 
       res.on("close", close);
       if (sendHeaders) { res.writeHead(200); res.write('{"output":'); }
     });
-    await assert.rejects(fetchLocalInference(url, { signal: AbortSignal.timeout(60) }), /abort/i);
+    await assert.rejects(fetchLocalInference(url, { signal: AbortSignal.timeout(60) }).then(response => response.text()), /abort/i);
     await closed;
   }
 });
@@ -57,8 +57,21 @@ test("local inference propagates HTTP errors and rejects a disconnected response
   const response = await fetchLocalInference(`${url}/error`);
   assert.equal(response.status, 503);
   assert.equal(await response.text(), "model unavailable");
-  await assert.rejects(fetchLocalInference(`${url}/disconnect`), /abort|socket/i);
+  await assert.rejects(fetchLocalInference(`${url}/disconnect`).then(response => response.text()), /abort|socket/i);
   await assert.rejects(fetchLocalInference("https://example.com"), /loopback/);
+});
+
+test("local transport delivers the first chunk before generation completes", async t => {
+  let finish!: () => void;
+  const url = await server(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" }); res.write("first");
+    finish = () => res.end("last");
+  });
+  const response = await fetchLocalInference(url, { signal: AbortSignal.timeout(2000) });
+  const reader = response.body!.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), "first");
+  finish(); assert.equal(new TextDecoder().decode((await reader.read()).value), "last");
+  assert.equal((await reader.read()).done, true);
 });
 
 test("local thinking budgets use the supported chat endpoint and never alter other providers", async () => {

@@ -70,7 +70,7 @@ export class LlamaCppRuntime {
       const event = message as { type?: string; pid?: number };
       if (event?.type === "native-started" && Number.isSafeInteger(event.pid) && event.pid! > 0) nativePid = event.pid;
     });
-    const append = (chunk: Buffer) => { this.logTail = (this.logTail + chunk.toString("utf8")).slice(-4000); };
+    const append = (chunk: Buffer) => { this.logTail = (this.logTail + chunk.toString("utf8")).slice(-65536); };
     child.stderr?.on("data", append); child.stdout?.on("data", append);
     child.once("error", (error) => { if (this.child === child) this.setState("error", `Local runtime failed to start: ${error.message}`); });
     child.once("exit", (code) => {
@@ -79,7 +79,7 @@ export class LlamaCppRuntime {
       if (this.child !== child) return;
       this.child = undefined; this.endpoint = undefined; this.effectiveContextSize = undefined;
       if (this.state !== "stopping") {
-        this.setState("error", `Local runtime exited (${code ?? "signal"}). ${this.logTail.slice(-1600)}`);
+        this.setState("error", `Local runtime exited (${code ?? "signal"}).\n${this.logTail}`);
         this.logger.warn("Local inference runtime exited", { code, modelId });
       }
     });
@@ -108,7 +108,10 @@ export class LlamaCppRuntime {
     if (!this.endpoint || !this.child || this.state !== "ready" || request.model !== this.modelId) throw new LocalModelError("The selected local model is not ready.", 503);
     if (request.images?.length && !this.projectorPath) throw new LocalModelError("This local model has no vision adapter. Attach its matching mmproj GGUF before sending images.", 400, "vision_unavailable");
     let cancelled = false;
+    const transportSignals = new Set<AbortSignal>();
+    const markCancelled = () => { cancelled = true; };
     const transport: typeof fetch = async (input, init) => {
+      if (init?.signal) { transportSignals.add(init.signal); init.signal.addEventListener("abort", markCancelled, { once: true }); }
       try { return await fetchLocalInference(input, init); }
       catch (error) { cancelled ||= Boolean(init?.signal?.aborted); throw error; }
     };
@@ -122,6 +125,7 @@ export class LlamaCppRuntime {
       // llama.cpp does not persist Responses IDs between calls. Conversation is composed by the app.
       return { ...result, responseId: undefined };
     } finally {
+      for (const signal of transportSignals) signal.removeEventListener("abort", markCancelled);
       // Closing the HTTP request cancels decoding. Keep the scheduler slot until
       // the native server confirms it is idle, without discarding loaded weights.
       if (cancelled || signal.aborted) await this.settleCancelledGeneration();

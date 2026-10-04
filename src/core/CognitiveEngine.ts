@@ -17,6 +17,7 @@ import type { PluginManager } from "../plugins/PluginManager";
 import { mentionedPluginIds, parsePluginSelection, withoutPluginMentions } from "../plugins/PluginSelection";
 import { PluginError } from "../plugins/contracts";
 import { parseMentionedSubagentNames } from "../agents/code/codeAgentRouting";
+import { ActivityTrace } from "./ActivityTrace";
 
 export class CognitiveEngine {
   constructor(
@@ -31,10 +32,22 @@ export class CognitiveEngine {
     private readonly supportsImages: (target: ProviderTarget) => boolean | undefined = () => undefined,
     private readonly workspaceResolver?: WorkspaceResolver,
     private readonly workspaceAgents?: CodeAgentCoordinator,
-    private readonly pluginManager?: PluginManager
+    private readonly pluginManager?: PluginManager,
+    private readonly externalMcpAvailable?: () => Promise<boolean>
   ) {}
 
   async process(request: ProcessInput): Promise<ProcessResult> {
+    const trace = new ActivityTrace();
+    const observer = request.onProgress;
+    // Record even when there is no live observer so saved replies retain their activity.
+    request = { ...request, onProgress: event => { const activity = trace.record(event); observer?.({ ...event, activity }); } };
+    const approve = request.requestApproval;
+    if (approve) request.requestApproval = async operation => {
+      request.onProgress?.({ phase: "approval", label: "Waiting for approval", detail: operation.summary, at: new Date().toISOString() });
+      const approved = await approve(operation);
+      request.onProgress?.({ phase: "tools", label: approved ? "Action approved" : "Action declined", at: new Date().toISOString() });
+      return approved;
+    };
     const normalizedInput = request.input.trim();
 
     if (!normalizedInput) {
@@ -49,8 +62,9 @@ export class CognitiveEngine {
     await this.pluginManager?.validateSelection(pluginIds);
 
     const sessionId=request.actor?.sessionId ?? "default-session";
+    const needsToolWorkspace = Boolean(await this.pluginManager?.hasEnabled()) || Boolean(await this.externalMcpAvailable?.());
     const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId) ??
-      (await this.pluginManager?.hasEnabled() ? await this.workspaceResolver?.forPluginChat(sessionId) : undefined);
+      (needsToolWorkspace ? await this.workspaceResolver?.forPluginChat(sessionId) : undefined);
     if(workspace)await this.workspaceResolver?.validate(workspace);
     const actor = {
       sessionId,
@@ -107,12 +121,6 @@ export class CognitiveEngine {
     if(workspaceOutcome?.pendingApproval)return {input:normalizedInput,mode,providerId,result,tools:workspaceOutcome.tools,memory,conversationSize:conversation.length,sessionSettings,
       pendingApproval:workspaceOutcome.pendingApproval,agentRunId:workspaceOutcome.agentRunId};
     request.signal?.throwIfAborted();
-    request.onProgress?.({
-      phase: "tools",
-      label: "Applying tools",
-      detail: "Executing requested file and plugin actions",
-      at: new Date().toISOString()
-    });
     const tools = workspaceOutcome?.tools ?? (result.error ? [] : await this.executeTools(normalizedInput, mode, result, {
       actor,
       memory,
@@ -122,6 +130,7 @@ export class CognitiveEngine {
       sessionSettings,
       signal: request.signal,
       requestMetadata: request.metadata,
+      onProgress: request.onProgress,
       requestApproval: request.requestApproval,
       workspace
     }));
@@ -177,6 +186,7 @@ export class CognitiveEngine {
       metadata: {
         toolCount: tools.length,
         tools,
+        activity: trace.snapshot(),
         providerId,
         model: activeTarget.model,
         metrics: "metrics" in finalizedResult ? finalizedResult.metrics : undefined,
@@ -266,7 +276,11 @@ export class CognitiveEngine {
     const results: ToolExecutionResult[] = [];
     for (const tool of tools) {
       context.signal?.throwIfAborted();
-      results.push(await tool.execute(executionRequest));
+      const operationId = randomUUID();
+      context.onProgress?.({ phase: "tools", label: tool.name === "command" ? "Running command" : "Applying file operation", operationId, at: new Date().toISOString() });
+      const result = await tool.execute(executionRequest);
+      results.push(result);
+      context.onProgress?.({ phase: result.ok ? "tool_result" : "tool_error", label: result.ok ? "Action completed" : "Action failed", operationId, at: new Date().toISOString() });
     }
     return results;
   }

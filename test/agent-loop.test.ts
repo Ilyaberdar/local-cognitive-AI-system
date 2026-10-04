@@ -67,8 +67,8 @@ test("workspace agent forwards model loading phases and live tool output with op
   } } as unknown as LLMService;
   const result = await new AgentLoopRunner(llm, f.operations, f.root).run({ id: "live-agent", input: "Run a command", instructions: "", context: f.context, target: f.context.activeTarget });
   assert.equal(result.error, undefined);
-  assert.deepEqual(events.filter(event => event.agentRunId === "live-agent" && ["Waiting for model", "Loading model", "Generating"].includes(event.label)).map(event => event.phase), ["queued", "loading", "generating", "queued", "loading", "generating"]);
-  assert.match(events.find(event => event.phase === "queued")!.detail!, /queue position 2/);
+  assert.deepEqual(events.filter(event => event.agentRunId === "live-agent" && ["Queued", "Waiting for model", "Loading model"].includes(event.label)).map(event => event.phase), ["queued", "loading", "generating", "queued", "loading", "generating"]);
+  assert.match(events.find(event => event.phase === "queued")!.detail!, /queue position 2/i);
   const output = events.find(event => event.output?.text.includes("live agent output"));
   assert.equal(output?.output?.stream, "stdout"); assert.equal(output?.agentRunId, "live-agent"); assert.ok(output?.operationId);
   const completed = events.find(event => event.phase === "tool_result");

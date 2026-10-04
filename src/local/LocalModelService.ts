@@ -10,7 +10,7 @@ import { ModelDownloadService, sha256File } from "./ModelDownloadService";
 import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
-import { LlamaCppRuntime } from "./LlamaCppRuntime";
+import { LocalRuntimePool } from "./LocalRuntimePool";
 import { inspectModelStorage } from "./ModelStorageInventory";
 import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
 import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact } from "./types";
@@ -23,7 +23,7 @@ export class LocalModelService implements LocalModelManager {
   private store: ModelLibraryStore;
   private readonly catalog: HuggingFaceCatalog;
   private downloads: ModelDownloadService;
-  private readonly runtime: LlamaCppRuntime;
+  private readonly runtime: LocalRuntimePool;
   private readonly scheduler: LocalInferenceScheduler;
   private readonly lifetime = new AbortController();
   private sequence = 0;
@@ -41,12 +41,20 @@ export class LocalModelService implements LocalModelManager {
     this.store = new ModelLibraryStore(options.dataDir, options.modelsDir);
     this.catalog = new HuggingFaceCatalog(options.dataDir);
     this.downloads = new ModelDownloadService(this.store, () => { this.storageCheckedAt = 0; this.emit(); });
-    this.runtime = new LlamaCppRuntime(options, logger, () => this.emit());
+    this.runtime = new LocalRuntimePool(options, logger, () => this.emit());
     this.scheduler = new LocalInferenceScheduler(() => this.emit());
     this.events.setMaxListeners(30);
   }
   get enabled(): boolean { return this.options.enabled; }
   get available(): boolean { return this.options.enabled && !this.initializationError && this.runtime.status !== "unavailable"; }
+
+  resolveModelId(id?: string): string | undefined {
+    if (this.initializationError) return id; // An unreadable library is not an empty library.
+    const installed = this.snapshot().models.filter(model => model.filesAvailable !== false && model.compatibility?.canLoad !== false);
+    if (installed.some(model => model.id === id)) return id;
+    const models = installed.filter(model => model.compatibility?.canLoad !== false);
+    return models.find(model => model.loaded)?.id ?? models[0]?.id;
+  }
 
   init(): Promise<void> {
     this.initPromise ??= (async () => {
@@ -79,7 +87,7 @@ export class LocalModelService implements LocalModelManager {
     await this.init();
     if (path.resolve(options.dataDir) !== path.resolve(this.options.dataDir)) throw new LocalModelError("The metadata directory is managed by the application and cannot be changed while it is running.", 409);
     if (JSON.stringify(options) === JSON.stringify(this.options)) return;
-    await this.scheduler.run("__settings", async () => {
+    await this.scheduler.runExclusive(async () => {
       if (path.resolve(options.modelsDir) !== path.resolve(this.options.modelsDir)) await this.moveStorage(options);
       else { await this.runtime.reconfigure(options); this.options = options; }
       this.emit();
@@ -98,15 +106,15 @@ export class LocalModelService implements LocalModelManager {
     runtime.queueLength = this.scheduler.queueLength; runtime.busy = this.scheduler.busy;
     if (this.initializationError) { runtime.status = "unavailable"; runtime.error = this.initializationError; }
     const models = this.store.listModels().map((model): LibraryModel => {
-      const current = runtime.modelId === model.id;
-      const state = current ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[runtime.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : this.fileErrors.has(model.id) ? "error" : "unloaded";
-      return { ...model, sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
+      const current = this.runtime.forModel(model.id);
+      const state = current?.modelId ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[current.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : this.fileErrors.has(model.id) ? "error" : "unloaded";
+      return { ...model, filesAvailable: !this.fileErrors.has(model.id), sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
         busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, undefined, model.files.map(file => file.path)),
-        error: state === "error" ? (current ? runtime.error : this.fileErrors.get(model.id)) : undefined };
+        error: state === "error" ? (current?.error ?? this.fileErrors.get(model.id)) : undefined };
     });
     return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence, storage: this.storage ? structuredClone(this.storage) : undefined };
   }
-  getContextWindow(): number { return this.runtime.snapshot().effectiveContextSize ?? this.options.contextSize; }
+  getContextWindow(modelId?: string): number { return (modelId ? this.runtime.forModel(modelId)?.effectiveContextSize : undefined) ?? this.options.contextSize; }
   async refreshSnapshot(): Promise<LocalModelSnapshot> {
     await this.init();
     if (!this.initializationError && !this.switchingStorage && Date.now() - this.storageCheckedAt > 5000) await this.inspectStorage();
@@ -151,14 +159,13 @@ export class LocalModelService implements LocalModelManager {
     await this.init(); this.assertLibrary(); this.store.getModel(identifier);
     const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
     if (this.scheduler.isModelBusy(identifier)) throw new LocalModelError("This model is in use or waiting in the inference queue. Interrupt its requests before unloading it.", 409, "model_busy");
-    await this.scheduler.run("__unload", async () => { if (this.runtime.currentModelId === identifier) await this.runtime.stop(); }, signal);
+    await this.scheduler.run(identifier, () => this.runtime.stop(identifier), signal);
   }
   async deleteModel(id: string): Promise<void> {
     await this.init(); this.assertLibrary();
     if (this.scheduler.isModelBusy(id)) throw new LocalModelError("This model is in use or queued. Interrupt its requests before deleting it.", 409, "model_busy");
-    await this.scheduler.run("__delete", async () => {
-      if (this.scheduler.isModelBusy(id)) throw new LocalModelError("The model was queued for inference. Wait before deleting it.", 409, "model_busy");
-      if (this.runtime.currentModelId === id) await this.runtime.stop();
+    await this.scheduler.run(id, async () => {
+      await this.runtime.stop(id);
       await this.store.removeModel(id); this.fileErrors.delete(id); this.storageCheckedAt = 0; this.emit();
     }, this.lifetime.signal);
   }
@@ -172,7 +179,7 @@ export class LocalModelService implements LocalModelManager {
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
     return this.scheduler.run(modelId, async () => {
       try {
-        if (this.runtime.currentModelId !== modelId || this.runtime.status !== "ready") request.onProgress?.({ phase: "loading", model: modelId });
+        if (this.runtime.forModel(modelId)?.status !== "ready") request.onProgress?.({ phase: "loading", model: modelId });
         await this.ensureLoaded(modelId, signal);
         signal.throwIfAborted(); request.onProgress?.({ phase: "generating", model: modelId });
         const profile = request.outputPurpose === "agent-action"
@@ -191,7 +198,7 @@ export class LocalModelService implements LocalModelManager {
       } finally {
         // The runtime settles cancelled decoding before releasing the queue slot.
         // Only application shutdown should discard an otherwise healthy model.
-        if (this.lifetime.signal.aborted) await this.runtime.stop();
+        if (this.lifetime.signal.aborted) await this.runtime.stop(modelId);
       }
     }, signal, (queuePosition) => request.onProgress?.({ phase: "queued", model: modelId, queuePosition }));
   }
@@ -203,7 +210,7 @@ export class LocalModelService implements LocalModelManager {
   async attachProjector(modelId: string, filePath: string): Promise<LibraryModel> {
     await this.init(); this.assertLibrary(); this.store.getModel(modelId);
     if (this.scheduler.isModelBusy(modelId)) throw new LocalModelError("This model is in use or queued. Interrupt its requests before changing the vision adapter.", 409, "model_busy");
-    return this.scheduler.run("__projector", () => this.installProjector(modelId, filePath), this.lifetime.signal);
+    return this.scheduler.run(modelId, () => this.installProjector(modelId, filePath), this.lifetime.signal);
   }
 
   private async importFiles(paths: string[]): Promise<LibraryModel> {
@@ -250,7 +257,6 @@ export class LocalModelService implements LocalModelManager {
 
   private async installProjector(modelId: string, filePath: string): Promise<LibraryModel> {
     if (typeof filePath !== "string" || !path.isAbsolute(filePath) || !/\.gguf$/i.test(filePath)) throw new LocalModelError("Select an absolute path to a vision mmproj GGUF.");
-    if (this.scheduler.isModelBusy(modelId)) throw new LocalModelError("This model was queued for inference. Wait before changing its vision adapter.", 409, "model_busy");
     const model = this.store.getModel(modelId);
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) throw new LocalModelError("The vision adapter path is not a regular file.");
@@ -275,7 +281,7 @@ export class LocalModelService implements LocalModelManager {
       this.lifetime.signal.throwIfAborted();
       const destination = await this.store.safePath(this.store.modelDirectory(modelId), projector.path, true);
       await fs.rename(staged, destination); copiedPath = destination;
-      if (this.runtime.currentModelId === modelId) await this.runtime.stop();
+      await this.runtime.stop(modelId);
       this.lifetime.signal.throwIfAborted();
       try { await this.store.putModel({ ...model, projector, vision: true, sizeBytes: modelDiskBytes({ files: model.files, projector }) }); }
       catch (error) { await this.store.putModel(model).catch(() => {}); throw error; }

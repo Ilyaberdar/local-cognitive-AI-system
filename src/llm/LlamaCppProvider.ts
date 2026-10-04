@@ -8,7 +8,7 @@ export class LlamaCppProvider implements LLMProvider {
   readonly defaultModel: string;
   constructor(private readonly service: LocalModelService, private readonly options: { model: string; enabled?: boolean }) { this.defaultModel = options.model; }
   isConfigured(): boolean { return this.options.enabled !== false && this.service.available; }
-  getContextWindow(): number { return this.service.getContextWindow(); }
+  getContextWindow(modelId?: string): number { return this.service.getContextWindow(modelId); }
   getDescriptor(): ProviderDescriptor { return { id: this.id, name: this.name, defaultModel: this.defaultModel, configured: this.isConfigured(),
     capabilities: { local: true, managed: true, jsonMode: true, structuredOutputs: true, reasoning: false, vision: true } }; }
   async listModels(): Promise<ProviderModel[]> {
@@ -17,7 +17,7 @@ export class LlamaCppProvider implements LLMProvider {
   }
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     if (this.options.enabled === false) return { provider: this.id, model: request.model ?? this.defaultModel, text: "", error: "Local models are disabled in Settings." };
-    try { return await this.service.generateText({ ...request, model: request.model || this.defaultModel }); }
+    try { return await this.service.generateText({ ...request, model: this.service.resolveModelId(request.model || this.defaultModel) }); }
     catch (error) {
       if (request.signal?.aborted) throw error;
       return { provider: this.id, model: request.model || this.defaultModel, text: "", error: error instanceof Error ? error.message : "Local inference failed." };

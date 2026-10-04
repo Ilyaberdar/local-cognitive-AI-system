@@ -187,6 +187,7 @@ export class WorkflowRunner {
               at: event.at, type: event.output ? "node.output" : "node.progress",
               level: event.phase === "tool_error" ? "error" : event.output?.stream === "stderr" || event.phase === "correction" ? "warning" : "info",
               phase: event.phase,
+              note: event.note,
               message: event.output ? event.output.stream : event.label,
               detail: event.output?.text ?? event.detail, stream: event.output?.stream });
             if (!event.output) await this.runStore.updateNodeRun(nodeRun.id, { progress: event });

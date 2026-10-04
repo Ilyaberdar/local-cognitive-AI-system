@@ -773,6 +773,7 @@ a {
   font-weight: 560;
   letter-spacing: 0.01em;
 }
+.subagent-pending-line.is-streaming-answer { white-space: pre-wrap; font-weight: 400; }
 
 .message-runtime-line {
   display: flex;
@@ -1251,6 +1252,7 @@ a {
 
 .activity-hint {
   flex: 0 0 auto;
+  margin-left: auto;
   color: #8a8a8a;
 }
 
@@ -2863,3 +2865,36 @@ a {
 .workflow-activity .markdown-code pre { white-space: pre; overflow: auto; max-height: none; padding: 14px 16px; }
 .workflow-activity .message-markdown p { white-space: normal; }
 .node-run-card .message-markdown { min-width: 0; max-width: 100%; }
+
+/* Activity is secondary to the answer; details stay deliberately bounded. */
+.activity-trace { max-width: 100%; margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.activity-trace > summary { display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; padding: 4px 0; list-style: none; cursor: pointer; user-select: none; }
+.activity-trace summary::-webkit-details-marker { display: none; }
+.activity-trace > summary:hover { color: var(--text); }
+.activity-trace__current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-trace time { flex: none; font-size: 10px; font-variant-numeric: tabular-nums; opacity: .7; }
+.activity-trace__dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; opacity: .55; }
+.activity-trace.is-live .activity-trace__dot { background: var(--accent, #8eabce); animation: activity-breathe 1.8s ease-in-out infinite; }
+.activity-trace.is-error > summary { color: var(--danger); }
+.activity-trace__chevron { font-size: 16px; transition: transform .15s; }
+.activity-trace[open] > summary .activity-trace__chevron { transform: rotate(90deg); }
+.activity-trace__body { max-height: 330px; overflow: auto; scrollbar-width: thin; padding: 12px 12px 8px 2px; border-bottom: 1px solid var(--line); }
+.activity-trace__body > ol { padding: 0; margin: 0; list-style: none; }
+.activity-trace__body > small { display: block; margin: 10px 0 2px 18px; font-size: 10px; opacity: .7; }
+.activity-trace__event { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: start; gap: 10px; position: relative; padding: 0 0 14px; }
+.activity-trace__event:not(:last-child)::before { content: ""; position: absolute; left: 3px; top: 12px; bottom: 3px; border-left: 1px solid var(--line); }
+.activity-trace__marker { width: 5px; height: 5px; margin: 7px 0 0 1px; border: 1px solid currentColor; border-radius: 50%; }
+.activity-trace__event.is-active .activity-trace__marker { background: currentColor; }
+.activity-trace__event.is-error .activity-trace__label { color: var(--danger); }
+.activity-trace__label { color: var(--text); font-size: 12px; }
+.activity-trace .activity-trace__event p { font-size: 11px; color: var(--muted); margin: 3px 0 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.activity-trace__note { margin-top: 5px; font-size: 11px; }
+.activity-trace__note summary { cursor: pointer; }
+.activity-trace__note pre, .workflow-activity__notes pre { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; padding: 10px 12px; margin: 6px 0; border-radius: 8px; background: var(--surface-2); }
+.subagent-pending-line:empty { display: none; }
+.workflow-activity__event pre { max-height: 200px; overflow: auto; }
+.workflow-activity__notes > summary { color: var(--muted); font-size: 11px; }
+.workflow-activity__current.status-running > strong::before { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 7px; background: currentColor; animation: activity-breathe 1.8s ease-in-out infinite; }
+@keyframes activity-breathe { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .activity-trace.is-live .activity-trace__dot, .workflow-activity__current.status-running > strong::before { animation: none; } }
+html[data-animations="off"] .activity-trace__dot, html[data-animations="off"] .workflow-activity__current > strong::before { animation: none; }
