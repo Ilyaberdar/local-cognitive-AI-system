@@ -4,6 +4,8 @@ const PROVIDER = "llamacpp";
 const ACTIVE_DOWNLOADS = new Set(["queued", "downloading", "paused", "verifying"]);
 const DOWNLOAD_LABELS = { queued: "Queued", downloading: "Downloading", paused: "Paused", verifying: "Verifying files", completed: "Installed", failed: "Download failed", cancelled: "Cancelled" };
 const MODEL_LABELS = { unloaded: "On device", loading: "Loading into memory", ready: "Loaded", unloading: "Unloading", error: "Runtime error" };
+// What stays possible while a server's tab is offline: nothing that would be sent to it.
+const OFFLINE_ACTIONS = new Set(["tab", "close-detail", "delete-prompt", "delete-dismiss", "copy-error"]);
 const MODEL_SETTINGS_TABS = [
   { id: "context", label: "Context" },
   { id: "gpuLayers", label: "GPU layers" },
@@ -40,7 +42,9 @@ const downloadedOf = (item) => Number(item?.downloadedBytes ?? item?.receivedByt
 const modelState = (model) => model?.runtimeState || model?.runtimeStatus || model?.state || (model?.loaded || model?.loadedInstanceIds?.length ? "ready" : "unloaded");
 
 // Catalog traffic and download progress stay isolated from the conversation DOM.
-export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, onContextChange, onLocalSettingsChange, notify, isVisible }) {
+// A paired server's tab (server-models.js) passes `EventSourceClass` and `desktopModels: null`,
+// and its context names the server (`host`) and says while it is `offline`.
+export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, onContextChange, onLocalSettingsChange, notify, isVisible, EventSourceClass, desktopModels }) {
   const state = {
     tab: "catalog", source: "recommended", query: "", cursor: null, catalog: [], catalogLoading: false,
     catalogLoaded: false, catalogError: "", catalogWarning: "", runtime: null, downloads: [], connected: false, connectionError: "",
@@ -64,7 +68,10 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   const models = () => asArray(getContext().models).filter((model) => model.providerId === PROVIDER);
   const isDefault = (model) => getContext().settings?.llm?.defaultProvider === PROVIDER && getContext().settings?.providers?.[PROVIDER]?.model === idOf(model);
   const isCurrent = (model) => getContext().currentTarget?.providerId === PROVIDER && getContext().currentTarget?.model === idOf(model);
-  const actionButton = (action, id, label, { primary = false, disabled = false, title = "", symbol = "", spinning = false } = {}) => `<button type="button" class="${primary ? "primary-button" : "ghost-button"}" data-mm-action="${action}" data-mm-id="${escape(id)}" ${disabled || state.actions.has(`${action}:${id}`) ? "disabled" : ""} ${title ? `title="${escape(title)}"${!label ? ` aria-label="${escape(title)}"` : ""}` : ""}>${spinning || state.actions.has(`${action}:${id}`) ? '<span class="button-spinner mm-loading-spinner" aria-hidden="true"></span>' : symbol ? icon(symbol) : ""}${escape(label)}</button>`;
+  const hostName = () => getContext().host || "";
+  const place = (local) => hostName() ? `on ${hostName()}` : local;
+  const desktop = () => desktopModels === undefined ? window.desktopModels : desktopModels;
+  const actionButton = (action, id, label, { primary = false, disabled = false, title = "", symbol = "", spinning = false } = {}) => `<button type="button" class="${primary ? "primary-button" : "ghost-button"}" data-mm-action="${action}" data-mm-id="${escape(id)}" ${disabled || state.actions.has(`${action}:${id}`) || (getContext().offline && !OFFLINE_ACTIONS.has(action)) ? "disabled" : ""} ${title ? `title="${escape(title)}"${!label ? ` aria-label="${escape(title)}"` : ""}` : ""}>${spinning || state.actions.has(`${action}:${id}`) ? '<span class="button-spinner mm-loading-spinner" aria-hidden="true"></span>' : symbol ? icon(symbol) : ""}${escape(label)}</button>`;
 
   function compatibility(item) {
     const result = item?.compatibility;
@@ -96,7 +103,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
 
   function renderCompatibility(item, expanded = false, projector = null) {
     const result = compatibility(item);
-    return `<div class="mm-compatibility mm-compatibility--${result.tone}" title="${escape(result.messages.join(" "))}"><span class="mm-status-dot" aria-hidden="true"></span><span>${projector ? "Main model: " : ""}${escape(result.label)}</span></div>${expanded && (result.messages.length || result.memory || projector) ? `<div class="mm-compatibility-detail ${result.tone}">${result.memory ? `<div>${projector ? "Main-model memory estimate" : "Estimated memory"}: <strong>${bytes(result.memory)}</strong>${result.totalMemory ? ` · Device memory: ${bytes(result.totalMemory)}` : ""}${result.disk ? ` · ${projector ? "Main-model disk estimate" : "Required disk space"}: ${bytes(result.disk)}` : ""}</div>` : ""}${projector ? `<div>Vision adapter: ${bytes(projector.sizeBytes)} additional disk space. Additional memory for image processing is checked when loading.</div>` : ""}${result.messages.length ? `<ul>${result.messages.map((message) => `<li>${escape(message)}</li>`).join("")}</ul>` : ""}</div>` : ""}`;
+    return `<div class="mm-compatibility mm-compatibility--${result.tone}" title="${escape(result.messages.join(" "))}"><span class="mm-status-dot" aria-hidden="true"></span><span>${projector ? "Main model: " : ""}${escape(hostName() && result.label === "Fits this device" ? `Fits ${hostName()}` : result.label)}</span></div>${expanded && (result.messages.length || result.memory || projector) ? `<div class="mm-compatibility-detail ${result.tone}">${result.memory ? `<div>${projector ? "Main-model memory estimate" : "Estimated memory"}: <strong>${bytes(result.memory)}</strong>${result.totalMemory ? ` · Device memory: ${bytes(result.totalMemory)}` : ""}${result.disk ? ` · ${projector ? "Main-model disk estimate" : "Required disk space"}: ${bytes(result.disk)}` : ""}</div>` : ""}${projector ? `<div>Vision adapter: ${bytes(projector.sizeBytes)} additional disk space. Additional memory for image processing is checked when loading.</div>` : ""}${result.messages.length ? `<ul>${result.messages.map((message) => `<li>${escape(message)}</li>`).join("")}</ul>` : ""}</div>` : ""}`;
   }
 
   function renderRuntime() {
@@ -111,12 +118,22 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const missing = ["unavailable", "missing", "error", "unsupported"].includes(status);
     const label = status === "ready" && runtime?.busy ? "Running inference" : { ready: "Runtime ready", running: "Runtime ready", idle: "Ready when needed", stopped: "Ready when needed", loading: "Loading model", stopping: "Stopping runtime", starting: "Starting runtime", unavailable: "Runtime unavailable", missing: "Runtime not installed", error: "Runtime needs attention", unsupported: "Unsupported platform" }[status] || status;
     const contextSize = runtime?.effectiveContextSize;
+    // A server's GPUs (system.metrics): how much of each one's memory its models use.
+    const gpus = getContext().host ? metrics?.gpus || [] : [];
+    const gpuBars = gpus.map((gpu) => { const used = Number(gpu.totalBytes) > 0 ? Math.min(100, Math.max(0, Number(gpu.usedBytes) / Number(gpu.totalBytes) * 100)) : 0;
+      return `<span class="mm-gpu" title="${escape(gpu.name)}"><span>GPU ${escape(gpu.index)}</span><span class="mm-gpu-bar" role="img" aria-label="${escape(`${gpu.name}: ${bytes(gpu.usedBytes)} of ${bytes(gpu.totalBytes)} used`)}"><span style="width: ${used.toFixed(1)}%"></span></span><span>${bytes(gpu.freeBytes)} free / ${bytes(gpu.totalBytes)}</span></span>`; }).join("");
     return `<div class="mm-runtime-strip" data-mm-runtime>
       <div class="mm-runtime-status"><span class="mm-status-dot ${missing ? "is-warning" : "is-success"}"></span><span>${escape(label)}</span>${runtime?.backend ? `<span class="mm-runtime-backend">${escape(runtime.backend)}</span>` : ""}${runtime?.fallbackReason ? `<span class="mm-runtime-backend is-warning" title="${escape(runtime.fallbackReason)}">CPU fallback</span>` : ""}${runtime?.queueLength ? `<span>${runtime.queueLength} waiting</span>` : ""}</div>
-      <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
+      <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${gpuBars}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
       ${missing && (runtime?.message || runtime?.error) ? renderModelError(runtime.message || runtime.error) : ""}
       ${runtime?.fallbackReason ? `<p class="mm-runtime-message">${escape(runtime.fallbackReason)}</p>` : ""}
     </div>`;
+  }
+
+  // Settings change the runtime of the machine on screen; a server's for every device using it.
+  function reconfigureNote() {
+    const host = getContext().host;
+    return host ? `Saving reconfigures the runtime on ${host} and unloads its models for every device using it.` : "Saving reconfigures the local runtime. Load the model again to use the new value.";
   }
 
   function errorSummary(error) {
@@ -135,9 +152,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   function renderContextControl() {
     const configured = getContext().settings?.localModels?.contextSize ?? 4096;
     return `<form class="mm-settings-form" id="mm-context-form">
-      <div class="mm-settings-copy"><h3>Context size</h3><p class="subtle">Tokens shared by the conversation, tools and answer. Larger context uses more memory.</p><p class="subtle">Saving reconfigures the local runtime. Load the model again to use the new value.</p></div>
+      <div class="mm-settings-copy"><h3>Context size</h3><p class="subtle">Tokens shared by the conversation, tools and answer. Larger context uses more memory.</p><p class="subtle">${escape(reconfigureNote())}</p></div>
       <label class="mm-settings-field" for="mm-context-size"><span>Context size (tokens)</span><span class="mm-settings-input-row"><input id="mm-context-size" name="contextSize" type="number" min="512" max="131072" step="1" required value="${escape(state.contextDraft ?? configured)}" aria-label="Local model context size in tokens" ${state.contextSaving ? "disabled" : ""} /><button id="mm-context-save" class="ghost-button mm-settings-save" type="submit" ${state.contextSaving ? "disabled" : ""}>${state.contextSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>
-      ${state.contextError ? renderModelError(state.contextError) : state.contextSaved ? '<div class="subtle mm-context-feedback" role="status">Context saved. The local runtime was reconfigured; load the models again to use it.</div>' : ""}
+      ${state.contextError ? renderModelError(state.contextError) : state.contextSaved ? `<div class="subtle mm-context-feedback" role="status">${getContext().host ? escape(`Context saved on ${getContext().host}. Its models were unloaded; load them again to use it.`) : "Context saved. The local runtime was reconfigured; load the models again to use it."}</div>` : ""}
     </form>`;
   }
 
@@ -154,9 +171,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (!field) return "";
     const formId = `mm-${tab}-form`;
     return `<form class="mm-settings-form" id="${formId}" data-mm-settings-form="${tab}">
-      <div class="mm-settings-copy"><h3>${escape(field.label)}</h3><p class="subtle">${escape(field.description)}</p><p class="subtle">Saving reconfigures the local runtime. Load the model again to use the new value.</p></div>
+      <div class="mm-settings-copy"><h3>${escape(field.label)}</h3><p class="subtle">${escape(field.description)}</p><p class="subtle">${escape(reconfigureNote())}</p></div>
       ${renderAdvancedField(field)}
-      ${state.advancedError ? renderModelError(state.advancedError) : state.advancedSaved ? '<div class="subtle mm-context-feedback" role="status">Settings saved. The local runtime was reconfigured.</div>' : ""}
+      ${state.advancedError ? renderModelError(state.advancedError) : state.advancedSaved ? `<div class="subtle mm-context-feedback" role="status">${getContext().host ? escape(`Settings saved on ${getContext().host}. Its models were unloaded.`) : "Settings saved. The local runtime was reconfigured."}</div>` : ""}
     </form>`;
   }
 
@@ -174,10 +191,10 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const values = generationValues(generation);
     return `<form class="mm-settings-form" id="mm-generation-form">
       <div class="mm-settings-copy"><h3>Generation profile</h3><p class="subtle">Controls the next local response. Changing these values keeps a loaded model in memory.</p></div>
-      <label class="mm-settings-field" for="mm-generation-preset"><span>Profile</span><select id="mm-generation-preset" data-mm-generation-preset aria-label="Generation profile">${[["server", "Default"], ["precise", "Precise"], ["balanced", "Balanced"], ["creative", "Creative"], ["custom", "Custom"]].map(([id, label]) => `<option value="${id}" ${generation.preset === id ? "selected" : ""}>${label}</option>`).join("")}</select><small>${generation.preset === "server" ? "Uses built-in values until you choose a profile or edit a value." : "Open Local Runtime for Top P, Top K, Min P, repeat penalty and seed."}</small></label>
+      <label class="mm-settings-field" for="mm-generation-preset"><span>Profile</span><select id="mm-generation-preset" data-mm-generation-preset aria-label="Generation profile">${[["server", "Default"], ["precise", "Precise"], ["balanced", "Balanced"], ["creative", "Creative"], ["custom", "Custom"]].map(([id, label]) => `<option value="${id}" ${generation.preset === id ? "selected" : ""}>${label}</option>`).join("")}</select><small>${generation.preset === "server" ? "Uses built-in values until you choose a profile or edit a value." : getContext().host ? "Top P, Top K, Min P, repeat penalty and seed keep their values." : "Open Local Runtime for Top P, Top K, Min P, repeat penalty and seed."}</small></label>
       <label class="mm-settings-field" for="mm-generation-temperature"><span>Temperature</span><span class="mm-settings-input-row"><input id="mm-generation-temperature" data-mm-generation-value="temperature" type="number" min="0" max="2" step="0.01" value="${escape(values.temperature ?? "")}" placeholder="Use default" aria-label="Temperature" ${state.generationSaving ? "disabled" : ""} /><button class="ghost-button mm-settings-save" type="submit" ${state.generationSaving ? "disabled" : ""}>${state.generationSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>
       <label class="mm-settings-field" for="mm-generation-max-tokens"><span>Max response tokens</span><input id="mm-generation-max-tokens" data-mm-generation-value="maxTokens" type="number" min="1" max="32768" step="1" value="${escape(values.maxTokens ?? "")}" placeholder="Runtime default" aria-label="Max response tokens" ${state.generationSaving ? "disabled" : ""} /></label>
-      <a class="mm-generation-link" href="#/settings/runtime">Open full local generation settings ${icon("chevronRight")}</a>
+      ${getContext().host ? "" : `<a class="mm-generation-link" href="#/settings/runtime">Open full local generation settings ${icon("chevronRight")}</a>`}
       ${state.generationError ? renderModelError(state.generationError) : state.generationSaved ? '<div class="subtle mm-context-feedback" role="status">Generation settings saved. The loaded models stay ready.</div>' : ""}
     </form>`;
   }
@@ -197,7 +214,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const activeTab = MODEL_SETTINGS_TABS.some((tab) => tab.id === state.settingsTab) ? state.settingsTab : "context";
     const activePanel = activeTab === "context" ? renderContextControl() : activeTab === "generation" ? renderGenerationSettings() : renderAdvancedSettings(activeTab);
     return `<section id="mm-settings" class="mm-settings" popover="auto" role="dialog" tabindex="-1" aria-labelledby="mm-settings-title">
-      <header class="mm-settings-header"><div><h2 id="mm-settings-title">Model settings</h2><p class="subtle">Configure local inference</p></div><button type="button" class="mm-settings-close" popovertarget="mm-settings" popovertargetaction="hide" aria-label="Close model settings">${icon("close")}</button></header>
+      <header class="mm-settings-header"><div><h2 id="mm-settings-title">Model settings</h2><p class="subtle">${getContext().host ? escape(`Configure inference on ${getContext().host}`) : "Configure local inference"}</p></div><button type="button" class="mm-settings-close" popovertarget="mm-settings" popovertargetaction="hide" aria-label="Close model settings">${icon("close")}</button></header>
       <div class="mm-settings-body"><div class="mm-settings-tabs" role="tablist" aria-label="Model settings">${MODEL_SETTINGS_TABS.map((tab) => `<button type="button" role="tab" id="mm-${tab.id}-tab" data-mm-settings-tab="${tab.id}" aria-selected="${tab.id === activeTab}" aria-controls="mm-${tab.id}-panel" tabindex="${tab.id === activeTab ? "0" : "-1"}">${tab.label}</button>`).join("")}</div>
       <div id="mm-${activeTab}-panel" class="mm-settings-panel" role="tabpanel" aria-labelledby="mm-${activeTab}-tab">${activePanel}</div>${renderStorage()}</div>
     </section>`;
@@ -287,7 +304,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const installed = models().some((model) => model.repoId === repoId);
     const preview = variantsOf(item)[0] || item;
     return `<article class="mm-model-card">
-      <div class="mm-card-heading"><div class="mm-model-mark">${icon("models")}</div><div><h3>${escape(nameOf(item))}</h3><div class="subtle">${escape(author)}</div></div>${installed ? '<span class="badge success">On device</span>' : ""}</div>
+      <div class="mm-card-heading"><div class="mm-model-mark">${icon("models")}</div><div><h3>${escape(nameOf(item))}</h3><div class="subtle">${escape(author)}</div></div>${installed ? `<span class="badge success">${escape(hostName() ? `On ${hostName()}` : "On device")}</span>` : ""}</div>
       ${item.description ? `<p class="mm-description">${escape(item.description)}</p>` : ""}
       <div class="mm-tags"><span>GGUF</span><span>${asArray(item.projectors).length ? "Images with adapter" : item.projectors ? "Text only" : "Check image support"}</span>${item.parameterCount || item.parameters ? `<span>${escape(item.parameterCount || item.parameters)}</span>` : ""}${item.license ? `<span title="Model license">${escape(item.license)}</span>` : ""}${totalOf(preview) ? `<span>${bytes(totalOf(preview))}${variantsOf(item).length > 1 ? "+" : ""}</span>` : ""}${item.gated ? '<span class="warning">Access required</span>' : ""}</div>
       ${preview.compatibility ? renderCompatibility(preview) : '<div class="subtle mm-card-note">Choose a quantization to check memory and disk requirements.</div>'}
@@ -325,24 +342,24 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const used = Boolean(model.busy) || Number(model.activeRequests || model.inUse || 0) > 0;
     const fit = compatibility(model);
     return `<article class="mm-model-card mm-library-card" data-mm-library-id="${escape(id)}">
-      <div class="mm-card-heading"><div class="mm-model-mark ${loaded ? "is-loaded" : ""}">${icon("models")}</div><div><h3>${escape(nameOf(model))}</h3><div class="subtle">${escape(model.repoId || model.providerName || "Local models")}</div></div><span class="badge ${loaded ? "success" : status === "error" ? "danger" : ""}">${busy ? '<span class="button-spinner mm-loading-spinner" aria-hidden="true"></span>' : ""}${escape(MODEL_LABELS[status] || status)}</span></div>
+      <div class="mm-card-heading"><div class="mm-model-mark ${loaded ? "is-loaded" : ""}">${icon("models")}</div><div><h3>${escape(nameOf(model))}</h3><div class="subtle">${escape(model.repoId || model.providerName || "Local models")}</div></div><span class="badge ${loaded ? "success" : status === "error" ? "danger" : ""}">${busy ? '<span class="button-spinner mm-loading-spinner" aria-hidden="true"></span>' : ""}${escape(status === "unloaded" && hostName() ? `On ${hostName()}` : MODEL_LABELS[status] || status)}</span></div>
       <div class="mm-tags"><span>${bytes(totalOf(model))}</span><span>${model.vision === true ? "Images" : "Text only"}</span>${model.quantization ? `<span>${escape(model.quantization)}</span>` : ""}${model.license ? `<span>${escape(model.license)}</span>` : ""}${isDefault(model) ? '<span class="mm-tag-selected">App default</span>' : ""}${isCurrent(model) ? '<span class="mm-tag-selected">Current chat</span>' : ""}${used ? '<span>In use</span>' : ""}</div>
       <div class="mm-library-status">${renderCompatibility(model)}
-      ${fit.memory ? `<div class="subtle mm-memory-estimate">Estimated memory: ${bytes(fit.memory)}${fit.totalMemory ? ` · ${bytes(fit.totalMemory)} on device` : ""}</div>` : ""}
+      ${fit.memory ? `<div class="subtle mm-memory-estimate">Estimated memory: ${bytes(fit.memory)}${fit.totalMemory ? ` · ${bytes(fit.totalMemory)} ${place("on device")}` : ""}</div>` : ""}
       ${fit.messages.length ? `<details class="mm-memory-details"><summary>Compatibility details</summary>${renderCompatibility(model, true)}</details>` : ""}
       ${model.projector ? `<div class="subtle mm-projector-note">Vision adapter: ${escape(model.projector.path)} · ${bytes(model.projector.sizeBytes)}</div>` : ""}
-      ${loaded && window.desktopModels?.importProjector ? '<div class="subtle mm-projector-note">Changing the vision adapter unloads this model. It loads again with the next request.</div>' : ""}
+      ${loaded && desktop()?.importProjector ? '<div class="subtle mm-projector-note">Changing the vision adapter unloads this model. It loads again with the next request.</div>' : ""}
       ${loaded ? renderPlacement(id) : ""}
       ${model.error ? renderModelError(model.error) : ""}</div>
       <div class="mm-library-actions">${actionButton(loaded ? "unload" : "load", id, status === "loading" || state.actions.has(`load:${id}`) ? "Loading…" : status === "unloading" ? "Unloading…" : loaded ? "Unload" : "Load model", { spinning: busy, primary: !loaded, disabled: busy || used || (!loaded && fit.loadBlocked), symbol: loaded ? "stop" : "play", title: loaded ? "Free memory and keep the downloaded files" : fit.loadBlocked ? fit.messages.join(" ") : "Load this model into memory" })}${actionButton("use", id, isCurrent(model) ? "Open chat" : "Use in chat", { disabled: busy || (!loaded && fit.loadBlocked), symbol: "chat" })}</div>
-      <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? "Ready for chat, agents and workflows" : fit.loadBlocked ? "Downloaded · Cannot run on this device" : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${window.desktopModels?.importProjector ? actionButton("projector", id, model.projector ? "Change vision adapter" : "Add vision adapter", { disabled: busy || used, title: "Choose the matching mmproj GGUF file for this model" }) : ""}${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: "Delete from device" })}</div></div>
-      ${state.deleteId === id ? `<div class="mm-delete-confirm" role="alert"><p>Delete <strong>${escape(nameOf(model))}</strong> and free ${bytes(totalOf(model))}? You can download it again. Saved chats and workflows keep their model reference.</p><div class="mm-inline-actions">${actionButton("delete", id, "Delete from device")}${actionButton("delete-dismiss", id, "Keep model")}</div></div>` : ""}</div>
+      <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? hostName() ? "Ready for chats" : "Ready for chat, agents and workflows" : fit.loadBlocked ? `Downloaded · Cannot run ${place("on this device")}` : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${desktop()?.importProjector ? actionButton("projector", id, model.projector ? "Change vision adapter" : "Add vision adapter", { disabled: busy || used, title: "Choose the matching mmproj GGUF file for this model" }) : ""}${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: `Delete from ${hostName() || "device"}` })}</div></div>
+      ${state.deleteId === id ? `<div class="mm-delete-confirm" role="alert"><p>Delete <strong>${escape(nameOf(model))}</strong> and free ${bytes(totalOf(model))}? You can download it again. Saved chats and workflows keep their model reference.</p><div class="mm-inline-actions">${actionButton("delete", id, `Delete from ${hostName() || "device"}`)}${actionButton("delete-dismiss", id, "Keep model")}</div></div>` : ""}</div>
     </article>`;
   }
 
   function renderLibrary() {
     const installed = [...models()].sort((left, right) => Number(modelState(right) === "ready") - Number(modelState(left) === "ready") || nameOf(left).localeCompare(nameOf(right)));
-    return `<div id="mm-device" role="tabpanel" aria-labelledby="mm-tab-device"><div class="mm-library-intro"><span class="subtle">Downloaded files stay on this device. Load model uses memory; Unload frees it.</span><div class="mm-inline-actions">${window.desktopModels?.importModel ? actionButton("import", "", "Import GGUF", { symbol: "plus", title: "Choose model weights and, optionally, a matching mmproj vision adapter" }) : ""}${actionButton("refresh", "", "Refresh", { symbol: "refresh" })}</div></div>${installed.length ? `<div class="mm-library-grid">${installed.map(renderLibraryCard).join("")}</div>` : `<div class="mm-empty">${icon("models")}<h3>Your local library starts here</h3><p>Download a model from the catalog, then use it in chats, agents and workflows — including workflows with cloud models.</p>${actionButton("tab", "catalog", "Browse catalog", { primary: true })}</div>`}</div>`;
+    return `<div id="mm-device" role="tabpanel" aria-labelledby="mm-tab-device"><div class="mm-library-intro"><span class="subtle">${hostName() ? escape(`Downloaded files stay on ${hostName()}. Load model uses its memory; Unload frees it.`) : "Downloaded files stay on this device. Load model uses memory; Unload frees it."}</span><div class="mm-inline-actions">${desktop()?.importModel ? actionButton("import", "", "Import GGUF", { symbol: "plus", title: "Choose model weights and, optionally, a matching mmproj vision adapter" }) : ""}${actionButton("refresh", "", "Refresh", { symbol: "refresh" })}</div></div>${installed.length ? `<div class="mm-library-grid">${installed.map(renderLibraryCard).join("")}</div>` : `<div class="mm-empty">${icon("models")}${hostName() ? `<h3>${escape(`No models on ${hostName()} yet`)}</h3><p>Download a model from the catalog to the server, then use it in its chats.</p>` : "<h3>Your local library starts here</h3><p>Download a model from the catalog, then use it in chats, agents and workflows — including workflows with cloud models.</p>"}${actionButton("tab", "catalog", "Browse catalog", { primary: true })}</div>`}</div>`;
   }
 
   function renderDetail() {
@@ -358,7 +375,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const gated = detail?.gated || detail?.private;
     const installed = variant && models().some((model) => model.repoId === repoId && model.variantId === (variant.id || variant.variantId) && (!detail?.revision || model.revision === detail.revision));
     const active = variant && state.downloads.some((job) => job.repoId === repoId && job.variantId === (variant.id || variant.variantId) && ACTIVE_DOWNLOADS.has(job.status || job.state));
-    return `<dialog class="mm-detail-dialog" id="mm-detail-dialog" aria-labelledby="mm-detail-title"><div class="mm-detail-head"><div><div class="mm-eyebrow">Local model</div><h2 id="mm-detail-title">${escape(detail ? nameOf(detail) : repoId.split("/").at(-1))}</h2><a class="mm-source-link" href="https://huggingface.co/${encodeRepo(repoId)}" target="_blank" rel="noopener noreferrer">${escape(repoId)} ↗</a></div><button type="button" class="icon-button" data-mm-action="close-detail" aria-label="Close model details">${icon("close")}</button></div>
+    return `<dialog class="mm-detail-dialog" id="mm-detail-dialog" aria-labelledby="mm-detail-title"><div class="mm-detail-head"><div><div class="mm-eyebrow">${escape(hostName() ? `Download to ${hostName()}` : "Local model")}</div><h2 id="mm-detail-title">${escape(detail ? nameOf(detail) : repoId.split("/").at(-1))}</h2><a class="mm-source-link" href="https://huggingface.co/${encodeRepo(repoId)}" target="_blank" rel="noopener noreferrer">${escape(repoId)} ↗</a></div><button type="button" class="icon-button" data-mm-action="close-detail" aria-label="Close model details">${icon("close")}</button></div>
       <div class="mm-detail-body">${state.detailLoading ? '<div class="mm-empty" role="status"><span class="activity-scan" aria-hidden="true"></span><p>Checking available files and device compatibility…</p></div>' : state.detailError ? `<div class="mm-inline-error" role="alert">${escape(state.detailError)}</div>` : `
         <div class="mm-tags"><span>GGUF · ${projector ? "Images" : "Text only"}</span>${detail?.license ? `<span>License: ${escape(detail.license)}</span>` : '<span>License not specified</span>'}${detail?.revision ? `<span title="${escape(detail.revision)}">Revision ${escape(detail.revision.slice(0, 8))}</span>` : ""}</div>
         ${detail?.description ? `<p class="mm-description">${escape(detail.description)}</p>` : ""}
@@ -369,15 +386,16 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
           ${gated ? '<div class="mm-compatibility-detail warning">This model requires access on Hugging Face. Choose a public model from the catalog for direct download.</div>' : ""}
           ${variant?.files?.length ? `<details class="mm-file-details"><summary>Included files (${variant.files.length + Number(Boolean(projector))})</summary><ul>${[...variant.files, ...(projector ? [projector] : [])].map((file) => `<li><span>${escape(typeof file === "string" ? file : file.path || file.filename || file.name)}</span><span>${typeof file === "object" ? bytes(file.sizeBytes ?? file.size) : ""}</span></li>`).join("")}</ul></details>` : ""}
         </div>`}
-      </div><div class="mm-detail-footer"><div class="subtle">${installed ? "This variant is already on your device. Add or change its vision adapter in On device." : active ? "Download is already in progress. You can manage it in Downloads." : "Files are checked before the model is added to your library."}</div>${actionButton("download", repoId, installed ? "Installed" : active ? "Downloading" : `Download${variant ? ` · ${bytes(downloadSize)}` : ""}`, { primary: true, disabled: state.detailLoading || Boolean(state.detailError) || !variant || result.downloadBlocked || Boolean(gated) || installed || active, symbol: "arrowDown" })}</div>
+      </div><div class="mm-detail-footer"><div class="subtle">${installed ? hostName() ? escape(`This variant is already on ${hostName()}.`) : "This variant is already on your device. Add or change its vision adapter in On device." : active ? "Download is already in progress. You can manage it in Downloads." : "Files are checked before the model is added to your library."}</div>${actionButton("download", repoId, installed ? "Installed" : active ? "Downloading" : `Download${variant ? ` · ${bytes(downloadSize)}` : ""}`, { primary: true, disabled: state.detailLoading || Boolean(state.detailError) || !variant || result.downloadBlocked || Boolean(gated) || installed || active, symbol: "arrowDown" })}</div>
     </dialog>`;
   }
 
   function render() {
     const installed = models();
-    return `<div class="model-manager" id="local-model-manager"><section class="mm-main-panel" aria-labelledby="mm-title"><div class="mm-heading"><div><div class="mm-eyebrow">Private inference, on your computer</div><h2 id="mm-title">Local models</h2><p class="subtle">Download a model once. Use it in chats, agents and workflows.</p></div><div class="mm-heading-actions"><div class="mm-library-summary"><strong>${installed.length}</strong><span>on device</span><span class="mm-summary-divider"></span><strong>${installed.filter((model) => modelState(model) === "ready").length}</strong><span>loaded</span></div><button type="button" id="mm-settings-toggle" class="mm-settings-toggle" popovertarget="mm-settings" aria-haspopup="dialog" aria-controls="mm-settings" aria-expanded="${state.settingsOpen}" aria-label="Model settings" title="Model settings">${icon("settings")}</button></div></div>
-      ${renderSettings()}${renderRuntime()}<div class="mm-tabs" role="tablist" aria-label="Local model library"><button type="button" id="mm-tab-catalog" role="tab" aria-selected="${state.tab === "catalog"}" aria-controls="mm-catalog" data-mm-action="tab" data-mm-id="catalog">${icon("search")}Catalog</button><button type="button" id="mm-tab-device" role="tab" aria-selected="${state.tab === "device"}" aria-controls="mm-device" data-mm-action="tab" data-mm-id="device">${icon("models")}On device<span class="mm-count">${installed.length}</span></button><span class="mm-live-status" title="${state.connected ? "Live model and download updates" : "Reconnecting; snapshots are refreshed automatically"}"><span class="mm-status-dot ${state.connected ? "is-success" : ""}"></span>${state.connected ? "Live" : "Connecting"}</span></div>
-      ${state.connectionError ? renderModelError(state.connectionError) : ""}
+    const host = hostName(), offline = getContext().offline;
+    return `<div class="model-manager${offline ? " is-offline" : ""}" id="${host ? "server-model-manager" : "local-model-manager"}"><section class="mm-main-panel" aria-labelledby="mm-title"><div class="mm-heading"><div><div class="mm-eyebrow">${host ? escape(`Private inference, on ${host}`) : "Private inference, on your computer"}</div><h2 id="mm-title">${host ? escape(`Models on ${host}`) : "Local models"}</h2><p class="subtle">${host ? "Download a model to the server once. Use it in its chats from any paired device." : "Download a model once. Use it in chats, agents and workflows."}</p></div><div class="mm-heading-actions"><div class="mm-library-summary"><strong>${installed.length}</strong><span>${escape(place("on device"))}</span><span class="mm-summary-divider"></span><strong>${installed.filter((model) => modelState(model) === "ready").length}</strong><span>loaded</span></div><button type="button" id="mm-settings-toggle" class="mm-settings-toggle" popovertarget="mm-settings" aria-haspopup="dialog" aria-controls="mm-settings" aria-expanded="${state.settingsOpen}" aria-label="Model settings" title="Model settings">${icon("settings")}</button></div></div>
+      ${renderSettings()}${renderRuntime()}<div class="mm-tabs" role="tablist" aria-label="Local model library"><button type="button" id="mm-tab-catalog" role="tab" aria-selected="${state.tab === "catalog"}" aria-controls="mm-catalog" data-mm-action="tab" data-mm-id="catalog">${icon("search")}Catalog</button><button type="button" id="mm-tab-device" role="tab" aria-selected="${state.tab === "device"}" aria-controls="mm-device" data-mm-action="tab" data-mm-id="device">${icon("models")}${escape(host ? `On ${host}` : "On device")}<span class="mm-count">${installed.length}</span></button><span class="mm-live-status" title="${state.connected ? "Live model and download updates" : "Reconnecting; snapshots are refreshed automatically"}"><span class="mm-status-dot ${state.connected ? "is-success" : ""}"></span>${state.connected ? "Live" : "Connecting"}</span></div>
+      ${offline ? `<div class="mm-offline-banner" role="status">${icon("info")}<span>${escape(offline)}</span></div>` : state.connectionError ? renderModelError(state.connectionError) : ""}
       ${renderDownloads()}${state.tab === "catalog" ? renderCatalog() : renderLibrary()}
     </section>${renderDetail()}</div>`;
   }
@@ -540,8 +558,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (state.started) return;
     state.started = true;
     void refresh();
-    if (typeof EventSource !== "undefined") {
-      events = new EventSource("/local/events");
+    const Source = EventSourceClass ?? (typeof EventSource !== "undefined" ? EventSource : undefined);
+    if (Source) {
+      events = new Source("/local/events");
       events.onopen = () => { state.connected = true; scheduleRepaint(); };
       events.onerror = () => { state.connected = false; scheduleRepaint(); };
       events.onmessage = receiveEvent;
@@ -567,8 +586,8 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     state.actions.add(key); repaint();
     try {
       if (action === "refresh") await refresh();
-      else if (action === "import") { const model = await window.desktopModels.importModel(); if (model) { await refresh(); notify(`${nameOf(model)} was added to the library.`, "info"); } }
-      else if (action === "projector") { const model = await window.desktopModels.importProjector(id); if (model) { await refresh(); notify(`${nameOf(model)} now has a vision adapter. It will load with the next request.`, "info"); } }
+      else if (action === "import") { const model = await desktop().importModel(); if (model) { await refresh(); notify(`${nameOf(model)} was added to the library.`, "info"); } }
+      else if (action === "projector") { const model = await desktop().importProjector(id); if (model) { await refresh(); notify(`${nameOf(model)} now has a vision adapter. It will load with the next request.`, "info"); } }
       else if (action === "download") {
         const variant = variantsOf(state.detail).find((item) => String(item.id || item.variantId) === state.variantId);
         if (!variant || compatibility(variant).downloadBlocked || state.detail.gated || state.detail.private) return;

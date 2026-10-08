@@ -86,7 +86,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
   const runtime = bridge?.runtime;
   let target = "local", status = { state: runtime ? "idle" : "unavailable" }, hosts = [], sessions = [], sessionsLoaded = false, models;
   const refs = new Map(), keysByRef = new Map(), settings = new Map(), views = new Map(), lastSession = new Map();
-  let subscribed, generation = 0;
+  let subscribed, generation = 0, modelsStale = false;
 
   // Every call names its server (the selected one, or the one a chat lives on): the main process
   // refuses it once another server is connected.
@@ -135,6 +135,8 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     /** Remote and not connected: nothing may be sent, approved or cancelled. */
     blocksSend: () => target !== "local" && !(status.state === "online" && status.hostId === target),
     canChat: () => (status.capabilities ?? []).includes("chat.runs.start"),
+    /** Whether the connected server offers an operation (known once it is online). */
+    supports: op => target !== "local" && status.hostId === target && (status.capabilities ?? []).includes(op),
     generation: () => generation,
     owns: key => typeof key === "string" && refs.has(key),
     serverSessionId: serverId,
@@ -150,7 +152,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       api.release();
       target = next || "local";
       generation++;
-      sessions = []; sessionsLoaded = false; models = undefined;
+      sessions = []; sessionsLoaded = false; models = undefined; modelsStale = false;
       if (target !== "local" && !(status.state === "online" && status.hostId === target)) {
         const result = await bridge.connect(target).catch(() => undefined);
         if (result?.ok) status = result.value;
@@ -205,10 +207,18 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     cancel: runId => call("chat.runs.cancel", { runId }),
     resolveApproval: (runId, approvalId, approved) => call("chat.approvals.resolve", { runId, approvalId, approved }),
     async models(refresh = false) {
-      if (!models || refresh) { const host = target; const value = await call("models.available"); if (host === target) models = value; }
+      if (!models || refresh) {
+        const host = target;
+        modelsStale = false;
+        const value = await call("models.available");
+        if (host === target) models = value;
+      }
       return models;
     },
     cachedModels: () => models,
+    /** The server's library changed (Models tab): the chat's model choices are fetched again. */
+    invalidateModels: () => { if (target !== "local") modelsStale = true; },
+    modelsStale: () => modelsStale,
     subscribe(key, cursor) {
       if (subscribed && subscribed.streamId !== cursor.streamId) void runtime.unsubscribe(subscribed.streamId);
       subscribed = { key, streamId: cursor.streamId };
@@ -224,7 +234,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
 
 const STATE_LABEL = { online: "Online", connecting: "Connecting…", reconnecting: "Reconnecting…", offline: "Offline", revoked: "Access removed", identity_changed: "Identity changed", error: "Not connected", idle: "Not connected" };
 
-/** The chat screen's "This computer / <server>" switch for the top bar. */
+/** The window's "This computer / <server>" switch for the top bar: chats and models follow it. */
 export function renderTargetSwitch(target) {
   const status = target.status(), remote = target.isRemote();
   const tone = !remote ? "is-local" : target.online() ? "is-online" : ["connecting", "reconnecting"].includes(status.state) ? "is-busy" : "is-warning";
@@ -235,10 +245,10 @@ export function renderTargetSwitch(target) {
     return `<button type="button" class="chat-target-option" data-chat-target="${escape(host.hostId)}" aria-pressed="${target.hostId() === host.hostId}">
       ${icon("remote")}<span><strong>${escape(host.name)}</strong><small>${escape(note)}</small></span><span class="chat-target-option__check">${target.hostId() === host.hostId ? icon("check") : ""}</span></button>`;
   }).join("");
-  return `<span class="chat-target"><button type="button" class="chat-target-trigger ${tone}" popovertarget="chat-target-menu" aria-label="Chats run on: ${escape(label)}" title="Where this chat runs">
+  return `<span class="chat-target"><button type="button" class="chat-target-trigger ${tone}" popovertarget="chat-target-menu" aria-label="Runs on: ${escape(label)}" title="Where chats and models run">
       <span class="status-dot"></span><span class="chat-target-label">${escape(label)}</span>${icon("chevronDown")}</button>
-    <div id="chat-target-menu" class="chat-target-menu access-menu" popover="auto" role="group" aria-label="Where chats run">
-      <div class="access-menu__heading">Where should chats run?</div>
+    <div id="chat-target-menu" class="chat-target-menu access-menu" popover="auto" role="group" aria-label="Where chats and models run">
+      <div class="access-menu__heading">Where should chats and models run?</div>
       <button type="button" class="chat-target-option" data-chat-target="local" aria-pressed="${!remote}">${icon("chat")}<span><strong>This computer</strong><small>Chats and models on this Mac</small></span><span class="chat-target-option__check">${!remote ? icon("check") : ""}</span></button>
       ${rows}
       <a class="access-menu__footer chat-target-manage" href="#/remote">Manage servers</a>
