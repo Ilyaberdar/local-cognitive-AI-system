@@ -5,20 +5,16 @@ import path from "path";
 import { NextFunction, Request, Response } from "express";
 import {
   AppSettingsPatch,
-  ChatMessage,
-  GenerationMetrics,
   LanguagePreference,
   OutputStyle,
   SessionMode,
   SessionSettingsPatch,
-  SubagentRunSummary,
-  SystemMetrics,
-  ToolExecutionResult
+  SystemMetrics
 } from "../types";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { SessionIndexStore } from "../session/SessionIndexStore";
 import { processRuntimeInput } from "../transports/shared/runtimeActions";
-import { readAttachments } from "../utils/attachments";
+import { loadSessionMessages } from "../conversations/sessionHistory";
 import { processRunRegistry } from "./ProcessRunRegistry";
 import { getSystemMemory } from "../utils/systemMemory";
 import { resolveReviewPath, revealWorkspacePath } from "./workspaceReview";
@@ -551,49 +547,7 @@ export const createGetSessionMessagesController =
   (runtimeManager: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const runtime = runtimeManager.getRuntime();
-      const settings = await runtimeManager.getSettings();
-      const sessionId = String(req.params.sessionId);
-      const session = await runtime.sessionIndexStore?.get(sessionId);
-      const entries = await runtime.memoryService.recent({
-        actor: {
-          sessionId,
-          userId: settings.memory.localProfileId,
-          channel: "http",
-          ...(session?.projectId ? { projectId: session.projectId, memoryScope: `project:${session.projectId}` } : {})
-        },
-        limit: 60
-      });
-
-      const messages = entries
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-        .flatMap((entry): ChatMessage[] => {
-          const formatted = buildStoredMessageContent(runtime.formatter, entry);
-
-          return [
-            {
-              id: `${entry.id}:user`,
-              role: "user",
-              content: entry.input,
-              createdAt: entry.createdAt,
-              includePreviousAttachments: (entry.metadata?.requestMetadata as Record<string, unknown> | undefined)?.includePreviousAttachments === false ? false : undefined,
-              attachments: readAttachments(
-                (entry.metadata?.requestMetadata as Record<string, unknown> | undefined) ?? undefined
-              )
-            },
-            {
-              id: `${entry.id}:assistant`,
-              role: "assistant",
-              content: formatted,
-              createdAt: entry.createdAt,
-              metrics: readStoredMetrics(entry.output, entry.metadata),
-              activity: Array.isArray(entry.metadata?.activity) ? entry.metadata.activity as ChatMessage["activity"] : undefined,
-              tools: readStoredTools(entry.metadata),
-              subagents: readStoredSubagents(entry.output)
-            }
-          ];
-        });
-
+      const { messages } = await loadSessionMessages(runtimeManager, String(req.params.sessionId));
       res.status(200).json(messages);
     } catch (error) {
       next(error);
@@ -740,134 +694,6 @@ const isDebateProfile = (
   value === "product" ||
   value === "research" ||
   value === "security";
-
-const buildStoredMessageContent = (
-  formatter: ReturnType<RuntimeManager["getRuntime"]>["formatter"],
-  entry: {
-    input: string;
-    mode: "hypothesis" | "code" | "general";
-    output: unknown;
-    metadata?: Record<string, unknown>;
-  }
-): string => {
-  if (!entry.output || typeof entry.output !== "object") {
-    return JSON.stringify(entry.output, null, 2);
-  }
-
-  return formatter.formatForChat(
-    {
-      input: entry.input,
-      mode: entry.mode,
-      providerId: String(entry.metadata?.providerId ?? "unknown"),
-      result: entry.output as never,
-      tools: readStoredTools(entry.metadata),
-      memory: [],
-      conversationSize: 0,
-      sessionSettings: {
-        mode: "auto",
-        language: "auto",
-        outputStyle: "balanced",
-	      reasoningEffort: "medium",
-	        defaultTarget: {
-	          providerId: "unknown"
-	        },
-	        defaultAccessMode: "default",
-	        codeAgents: [],
-        hypothesisAgents: [],
-        debate: {
-          enabled: false,
-          profile: "general",
-          support: { providerId: "unknown" },
-          attack: { providerId: "unknown" },
-          judge: { providerId: "local" }
-        }
-      }
-    }
-  );
-};
-
-const readStoredMetrics = (
-  output: unknown,
-  metadata?: Record<string, unknown>
-) : GenerationMetrics | undefined => {
-  if (output && typeof output === "object" && "metrics" in output) {
-    const metrics = (output as { metrics?: unknown }).metrics;
-    if (isGenerationMetrics(metrics)) {
-      return metrics;
-    }
-  }
-
-  const candidate = metadata?.metrics;
-  return isGenerationMetrics(candidate) ? candidate : undefined;
-};
-
-const readStoredTools = (metadata?: Record<string, unknown>): ToolExecutionResult[] => {
-  const candidate = metadata?.tools;
-
-  if (!Array.isArray(candidate)) {
-    return [];
-  }
-
-  return candidate.filter(isToolExecutionResult);
-};
-
-const readStoredSubagents = (output: unknown): SubagentRunSummary[] => {
-  if (!output || typeof output !== "object" || !("subagents" in output)) {
-    return [];
-  }
-
-  const candidate = (output as { subagents?: unknown }).subagents;
-
-  if (!Array.isArray(candidate)) {
-    return [];
-  }
-
-  return candidate.filter(isSubagentRunSummary);
-};
-
-const isGenerationMetrics = (value: unknown): value is GenerationMetrics => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  return (
-    typeof record.startedAt === "string" &&
-    typeof record.completedAt === "string" &&
-    typeof record.durationMs === "number"
-  );
-};
-
-const isToolExecutionResult = (value: unknown): value is ToolExecutionResult => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  return (
-    typeof record.tool === "string" &&
-    typeof record.ok === "boolean" &&
-    typeof record.output === "string"
-  );
-};
-
-const isSubagentRunSummary = (value: unknown): value is SubagentRunSummary => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  return (
-    typeof record.id === "string" &&
-    typeof record.name === "string" &&
-    (record.role === "writer" || record.role === "advisor") &&
-    typeof record.provider === "string" &&
-    (record.status === "ok" || record.status === "degraded")
-  );
-};
 
 const getSystemMetricsSnapshot = (gpus?: SystemMetrics["gpus"]): SystemMetrics => {
   const cpuCores = Math.max(1, os.cpus().length);

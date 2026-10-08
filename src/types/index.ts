@@ -446,6 +446,10 @@ export interface ChatMessage {
   includePreviousAttachments?: boolean;
   tools?: ToolExecutionResult[];
   subagents?: SubagentRunSummary[];
+  /** A durable chat run (Remote) the turn belongs to, shown while unfinished or when it did not complete. */
+  runId?: string;
+  runStatus?: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "needs_review";
+  runError?: string;
 }
 
 export interface LLMImage {

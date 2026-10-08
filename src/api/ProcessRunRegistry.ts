@@ -101,6 +101,10 @@ export class ProcessRunRegistry {
     return true;
   }
 
+  hasActiveSession(sessionId: string): boolean {
+    return [...this.runs.values()].some(run => run.status === "running" && run.sessionId === sessionId);
+  }
+
   activeCount(): number {
     return [...this.runs.values()].filter(run => run.status === "running").length;
   }
