@@ -8,6 +8,7 @@ import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelOptions, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
 import { createServerModels } from "./server-models.js";
+import { createServerOrchestration } from "./server-orchestration.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
@@ -155,6 +156,10 @@ let chatTarget = null;
 let savedLocalChat = null;
 // The Models tab of the selected server (R5); this computer's model manager stays as it is.
 let serverModels = null;
+// The Tasks & workflows screen of the selected server (R5-2), read through `state.orchestration`.
+let serverOrchestration = null;
+// What the Tasks & workflows screen holds per machine ("local" or a server id) across a switch.
+const parkedOrchestration = new Map();
 const isServerChat = sessionId => Boolean(chatTarget?.owns(sessionId));
 const notForServerChats = () => Promise.reject(new Error("This is not available for server chats yet."));
 
@@ -491,6 +496,10 @@ chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountSt
     if (cameOnline && isServerChat(state.activeSessionId)) void reloadRemoteChat();
   },
   onEvent: (key, update) => handleRemoteUpdate(key, update) });
+serverOrchestration = createServerOrchestration({ target: chatTarget,
+  onChange: () => { if (state.route === "orchestration" && !state.loading) render(); } });
+// Null on this computer: the screen's local code paths are the fallback everywhere it is read.
+Object.defineProperty(state, "orchestration", { get: () => (chatTarget?.isRemote() ? serverOrchestration?.source() ?? null : null) });
 serverModels = createServerModels({ target: chatTarget, createModelManager, onUse: useServerModel,
   isVisible: () => state.route === "models" && Boolean(chatTarget?.isRemote()),
   notify: (message, tone) => { const scroll = captureScrollState(); pushToast(message, tone); render(); restoreScrollState(scroll); },
@@ -508,7 +517,7 @@ const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
 });
 systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") applyTheme("system", false); });
 
-window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); });
+window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); serverOrchestration?.dispose(); });
 
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
@@ -751,7 +760,7 @@ function render(options = {}) {
             ${renderModelsRoute()}
           </section>
           <section class="route route--orchestration ${state.route === "orchestration" ? "active" : ""}">
-            ${chatTarget?.isRemote() ? renderNotOnServer("Tasks & workflows") : renderOrchestrationRoute()}
+            ${renderOrchestrationRoute()}
           </section>
           <section class="route route--synthesis ${state.route === "synthesis" ? "active" : ""}">
             ${chatTarget?.isRemote() ? renderNotOnServer("Synthesis") : ""}<div id="synthesis-workspace"></div>
@@ -1597,11 +1606,16 @@ function normalizeHypothesisAgentsForUi(settings) {
 }
 
 function renderOrchestrationRoute() {
-  const workflows = state.bootstrap?.workflows ?? [];
-  const tasks = state.bootstrap?.tasks ?? [];
-  const schedules = state.bootstrap?.schedules ?? [];
-  const workflowRuns = state.bootstrap?.workflowRuns ?? [];
-  const workflowDraft = ensureWorkflowBuilderDraft(workflows);
+  const server = state.orchestration;
+  if (server?.unsupported()) return renderServerUpdateNeeded("tasks and workflows");
+  if (server && state.route === "orchestration") server.ensureLoaded();
+  const lists = server?.lists ?? state.bootstrap;
+  const workflows = lists?.workflows ?? [];
+  const tasks = lists?.tasks ?? [];
+  const schedules = lists?.schedules ?? [];
+  const workflowRuns = lists?.workflowRuns ?? [];
+  // The editor runs on this computer only until it can run on a server (R5-2 next step).
+  const workflowDraft = server ? null : ensureWorkflowBuilderDraft(workflows);
   const selectedRunId = state.activeWorkflowRunId;
   const selectedRun = state.workflowRunDetail?.run?.id === selectedRunId
     ? state.workflowRunDetail.run
@@ -1609,7 +1623,8 @@ function renderOrchestrationRoute() {
   const activeTab = state.orchestrationTab === "workflow" ? "workflow" : "tasks";
 
   return `
-    <div class="orchestration-shell">
+    <div class="orchestration-shell ${server && !server.online() ? "is-offline" : ""}">
+      ${server ? renderServerOrchestrationBanner(server) : ""}
       <div class="orchestration-tabs">
         <div class="segmented-control">
           <button class="orchestration-tab ${activeTab === "tasks" ? "active" : ""}" type="button" data-action="set-orchestration-tab" data-orchestration-tab="tasks">${icon("orchestration")}Tasks</button>
@@ -1626,7 +1641,7 @@ function renderOrchestrationRoute() {
       </div>
       ${
         activeTab === "workflow"
-          ? renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun)
+          ? server ? renderNotOnServer("The workflow editor") : renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun)
           : renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules)
       }
     </div>
@@ -1635,12 +1650,16 @@ function renderOrchestrationRoute() {
 
 function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) {
   const defaultWorkflowId = workflows[0]?.id ?? "default-task-workflow";
+  // On a server: its name in the copy, no attachments yet, and nothing to send while it is offline.
+  const server = state.orchestration;
+  const host = server ? escapeHtml(server.hostName()) : "";
+  const offline = Boolean(server && !server.online());
 
   return `
     <div class="orchestration-layout orchestration-layout--tasks">
       <details class="panel orchestration-intake task-disclosure" data-ui-disclosure="task-create">
         <summary><span>New task</span>${icon("close")}</summary>
-        <p class="subtle">Add a task to your queue.</p>
+        <p class="subtle">${server ? `Add a task to the queue on ${host}.` : "Add a task to your queue."}</p>
         <form id="task-form" class="form-grid">
           <div class="field">
             <label for="task-title">Title</label>
@@ -1669,10 +1688,10 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
             <label for="task-description">Description</label>
             <textarea id="task-description" name="description" rows="5" placeholder="Describe the expected outcome, constraints, files, and verification." required></textarea>
           </div>
-          <div class="field field--full">${renderTaskAttachments(null)}</div>
+          ${server ? "" : `<div class="field field--full">${renderTaskAttachments(null)}</div>`}
           <div class="footer-row field--full">
             <span class="subtle">${tasks.length} tasks · ${workflowRuns.length} runs · ${schedules.length} schedules</span>
-            <button class="primary-button" type="submit" ${state.loading || state.attachmentImports["task:new"] ? "disabled" : ""}>Create Task</button>
+            <button class="primary-button" type="submit" ${state.loading || offline || state.attachmentImports["task:new"] ? "disabled" : ""}>Create Task</button>
           </div>
         </form>
       </details>
@@ -1680,10 +1699,10 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
       <section class="panel orchestration-main">
         <div class="card-header">
           <div>
-            <h2>Tasks</h2>
-            <p class="subtle">Your workspace, one task at a time.</p>
+            <h2>${server ? `Tasks on ${host}` : "Tasks"}</h2>
+            <p class="subtle">${server ? `They run on ${host}, also while this window is closed.` : "Your workspace, one task at a time."}</p>
           </div>
-          <button class="ghost-button" type="button" data-action="run-next-task" ${state.loading || Object.keys(state.attachmentImports).some((key) => key.startsWith("task:")) ? "disabled" : ""}>${icon("play")}Run next</button>
+          <button class="ghost-button" type="button" data-action="run-next-task" ${state.loading || offline || Object.keys(state.attachmentImports).some((key) => key.startsWith("task:")) ? "disabled" : ""}>${icon("play")}Run next</button>
         </div>
         ${renderTaskBoard(tasks)}
       </section>
@@ -1694,7 +1713,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
           <div class="card-header">
             <div>
               <h2>Scheduled Task</h2>
-              <p class="subtle">Creates a fresh task daily or weekly while this app is running.</p>
+              <p class="subtle">${server ? `Creates a fresh task daily or weekly while ${host} is running.` : "Creates a fresh task daily or weekly while this app is running."}</p>
             </div>
           </div>
           <form id="schedule-form" class="form-grid">
@@ -1753,8 +1772,8 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
               <textarea id="schedule-description" name="description" rows="4" placeholder="Describe the analysis, sources, expected result, and constraints." required></textarea>
             </div>
             <div class="footer-row field--full">
-              <span class="subtle">Missed time triggers one catch-up run when the app starts again.</span>
-              <button id="schedule-submit" class="primary-button" type="submit" ${state.loading ? "disabled" : ""}>Create Daily Schedule</button>
+              <span class="subtle">${server ? `Missed time triggers one catch-up run when ${host} starts again.` : "Missed time triggers one catch-up run when the app starts again."}</span>
+              <button id="schedule-submit" class="primary-button" type="submit" ${state.loading || offline ? "disabled" : ""}>Create Daily Schedule</button>
             </div>
           </form>
         </div>
@@ -1870,6 +1889,14 @@ function workspaceHint(projectId) {
 }
 
 function renderWorkspaceFields(prefix, value = {}, disabled = false) {
+  const server = state.orchestration;
+  if (server) {
+    // Projects, folders and full access on a server come later: its managed folder, with approvals.
+    return `<div class="field">
+    <label for="${escapeAttr(prefix)}-access">Access</label>
+    <select id="${escapeAttr(prefix)}-access" name="accessMode" ${disabled ? "disabled" : ""}>${ACCESS_MODES.filter(mode => mode.id !== "full").map(mode => option(mode.id, value.accessMode || "default", mode.label)).join("")}</select>
+  </div><p class="field--full workspace-hint" data-workspace-hint>${escapeHtml(`Uses a separate, persistent task folder on ${server.hostName()}.`)}</p>`;
+  }
   return `<div class="field">
     <div class="workspace-project-label"><label for="${escapeAttr(prefix)}-project">Project</label><button id="${escapeAttr(prefix)}-add-project" class="icon-button" type="button" data-action="add-workspace-project" data-project-select-id="${escapeAttr(prefix)}-project" aria-label="Add project" title="Add project" ${disabled ? "disabled" : ""}>${icon("plus")}</button></div>
     <select id="${escapeAttr(prefix)}-project" name="projectId" data-workspace-project aria-describedby="${escapeAttr(prefix)}-workspace-hint" ${disabled ? "disabled" : ""}>${projectOptions(state.bootstrap?.projects, value.projectId)}</select>
@@ -1884,9 +1911,9 @@ function renderWorkspaceEditor(kind, value) {
   const workspace = state.taskWorkspaces[value.id];
   return `<form id="${kind}-workspace-${escapeAttr(value.id)}" class="form-grid workspace-fields workspace-edit-form" data-workspace-kind="${kind}" data-workspace-id="${escapeAttr(value.id)}">
     ${renderWorkspaceFields(`${kind}-${value.id}`, value, running)}
-    <div class="field--full task-workspace-actions"><button class="ghost-button" type="submit" ${running || state.loading ? "disabled" : ""}>Save workspace</button>${kind === "task" ? `<button class="ghost-button" type="button" data-action="open-task-folder" data-task-id="${escapeAttr(value.id)}">${icon("folder")}Open folder</button>` : ""}</div>
+    <div class="field--full task-workspace-actions"><button class="ghost-button" type="submit" ${running || state.loading || (state.orchestration && !state.orchestration.online()) ? "disabled" : ""}>Save workspace</button>${kind === "task" && !state.orchestration ? `<button class="ghost-button" type="button" data-action="open-task-folder" data-task-id="${escapeAttr(value.id)}">${icon("folder")}Open folder</button>` : ""}</div>
     ${running ? '<p class="field--full workspace-hint">This run keeps the workspace chosen when it started.</p>' : ""}
-    ${kind === "task" ? `<span class="field--full task-workspace-path" data-task-workspace-path="${escapeAttr(value.id)}">${escapeHtml(workspace?.rootPath || "")}</span>` : ""}
+    ${kind === "task" && !state.orchestration ? `<span class="field--full task-workspace-path" data-task-workspace-path="${escapeAttr(value.id)}">${escapeHtml(workspace?.rootPath || "")}</span>` : ""}
   </form>`;
 }
 
@@ -1906,8 +1933,16 @@ function bindWorkspaceForms() {
       event.preventDefault();
       if (state.loading) return;
       const data = new FormData(form);
+      const server = state.orchestration;
       await runAction(async () => {
         const payload = { projectId: String(data.get("projectId") || "") || null, accessMode: String(data.get("accessMode") || "default") };
+        if (server) {
+          // A server's task keeps its managed folder; there is no folder to show for it here.
+          if (kind === "task") await server.api.updateTask(taskId, payload); else await server.api.updateSchedule(taskId, payload);
+          await server.refresh();
+          pushToast("Workspace saved.", "info");
+          return;
+        }
         if (kind === "task") { await api.updateTask(taskId, payload); delete state.taskWorkspaces[taskId]; }
         else await api.updateSchedule(taskId, payload);
         await refreshBootstrap();
@@ -1915,7 +1950,7 @@ function bindWorkspaceForms() {
         pushToast("Workspace saved.", "info");
       });
     });
-    if (kind === "task") {
+    if (kind === "task" && !state.orchestration) {
       const disclosure = form.closest("details");
       disclosure?.addEventListener("toggle", async () => {
         if (!disclosure.open || state.taskWorkspaces[taskId]) return;
@@ -1947,7 +1982,9 @@ function selectCreatedWorkspaceProject(selectId, project) {
 }
 
 function renderTaskCard(task) {
-  const workflow = (state.bootstrap?.workflows ?? []).find((item) => item.id === task.workflowId);
+  const server = state.orchestration;
+  const offline = Boolean(server && !server.online());
+  const workflow = ((server?.lists ?? state.bootstrap)?.workflows ?? []).find((item) => item.id === task.workflowId);
   const canRun = getTaskBoardStatus(task) === "todo" || ["blocked", "failed"].includes(task.status);
 
   return `
@@ -1962,17 +1999,17 @@ function renderTaskCard(task) {
       <div class="task-meta">
         <span>${escapeHtml(workflow?.name ?? task.workflowId)}</span>
         <span>${task.scheduledFor ? `Scheduled ${formatDate(task.scheduledFor)}` : formatDate(task.updatedAt)}</span>
-      </div>${renderWorkspaceEditor("task", task)}${renderTaskAttachments(task)}</details>
+      </div>${renderWorkspaceEditor("task", task)}${server ? "" : renderTaskAttachments(task)}</details>
       <div class="task-actions task-actions--card">
         <div class="task-actions__primary">
-          ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading || state.attachmentImports[`task:${task.id}`] ? "disabled" : ""}>Run</button>` : ""}
+          ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading || offline || state.attachmentImports[`task:${task.id}`] ? "disabled" : ""}>Run</button>` : ""}
           ${
-            task.lastRunId
+            task.lastRunId && !server
               ? `<button class="ghost-button" type="button" data-action="select-workflow-run" data-run-id="${escapeAttr(task.lastRunId)}">Trace</button>`
               : ""
           }
         </div>
-        <button class="ghost-button task-delete-button" type="button" data-action="delete-task" data-task-id="${escapeAttr(task.id)}">Delete</button>
+        <button class="ghost-button task-delete-button" type="button" data-action="delete-task" data-task-id="${escapeAttr(task.id)}" ${offline ? "disabled" : ""}>Delete</button>
       </div>
     </article>
   `;
@@ -1987,7 +2024,9 @@ function renderScheduleList(schedules) {
 }
 
 function renderScheduleCard(schedule) {
-  const workflow = (state.bootstrap?.workflows ?? []).find((item) => item.id === schedule.workflowId);
+  const server = state.orchestration;
+  const offline = Boolean(server && !server.online());
+  const workflow = ((server?.lists ?? state.bootstrap)?.workflows ?? []).find((item) => item.id === schedule.workflowId);
   const status = schedule.enabled ? "active" : "paused";
 
   return `
@@ -2006,8 +2045,8 @@ function renderScheduleCard(schedule) {
       <details class="task-card-details" data-ui-disclosure="schedule-${escapeAttr(schedule.id)}"><summary>Workspace</summary>${renderWorkspaceEditor("schedule", schedule)}</details>
       ${schedule.lastError ? `<p class="schedule-error">Last error: ${escapeHtml(schedule.lastError)}</p>` : ""}
       <div class="task-actions task-actions--card">
-        <button class="ghost-button" type="button" data-action="toggle-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Resume"}</button>
-        <button class="ghost-button task-delete-button" type="button" data-action="delete-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading ? "disabled" : ""}>Delete</button>
+        <button class="ghost-button" type="button" data-action="toggle-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading || offline ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Resume"}</button>
+        <button class="ghost-button task-delete-button" type="button" data-action="delete-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading || offline ? "disabled" : ""}>Delete</button>
       </div>
     </article>
   `;
@@ -3720,9 +3759,11 @@ function bindEvents() {
     if (!title || !description || state.loading || state.attachmentImports["task:new"]) {
       return;
     }
+    // The machine on screen: this computer's API, or the selected server's.
+    const server = state.orchestration, calls = server?.api ?? api, reload = server ? server.refresh : refreshBootstrap;
 
     await runAction(async () => {
-      await api.createTask({
+      await calls.createTask({
         title,
         description,
         workflowId,
@@ -3735,7 +3776,7 @@ function bindEvents() {
       document.querySelector("#task-form")?.reset();
       const intake = document.querySelector('[data-ui-disclosure="task-create"]');
       if (intake) intake.open = false;
-      await refreshBootstrap();
+      await reload();
     });
   });
 
@@ -3780,9 +3821,10 @@ function bindEvents() {
     if (!title || !description || !workflowId || !time || !timezone || (frequency === "weekly" && !Number.isInteger(weekday))) {
       return;
     }
+    const server = state.orchestration, calls = server?.api ?? api, reload = server ? server.refresh : refreshBootstrap;
 
     await runAction(async () => {
-      await api.createSchedule({
+      await calls.createSchedule({
         title,
         description,
         workflowId,
@@ -3794,7 +3836,7 @@ function bindEvents() {
         projectId: String(form.get("projectId") || "") || null,
         accessMode: String(form.get("accessMode") || "default")
       });
-      await refreshBootstrap();
+      await reload();
       pushToast(frequency === "weekly" ? "Weekly schedule created." : "Daily schedule created.", "info");
     });
   });
@@ -3802,7 +3844,9 @@ function bindEvents() {
   document.querySelector("[data-action='refresh-orchestration']")?.addEventListener("click", async () => {
     const key = workflowWorkspaceKey;
     const runId = state.activeWorkflowRunId;
+    const server = state.orchestration;
     await runAction(async () => {
+      if (server) { await server.refresh(); return; }
       await refreshBootstrap();
       if (runId) {
         const detail = await api.getWorkflowRun(runId);
@@ -3853,9 +3897,10 @@ function bindEvents() {
         return;
       }
 
+      const server = state.orchestration, calls = server?.api ?? api, reload = server ? server.refresh : refreshBootstrap;
       await runAction(async () => {
-        await api.updateTask(taskId, { status });
-        await refreshBootstrap();
+        await calls.updateTask(taskId, { status });
+        await reload();
       });
     });
   });
@@ -4012,21 +4057,22 @@ function bindEvents() {
   document.querySelectorAll("[data-action='delete-task']").forEach((button) => {
     button.addEventListener("click", async () => {
       const taskId = button.dataset.taskId;
-      const task = (state.bootstrap?.tasks ?? []).find((item) => item.id === taskId);
+      const server = state.orchestration, calls = server?.api ?? api, reload = server ? server.refresh : refreshBootstrap;
+      const task = ((server?.lists ?? state.bootstrap)?.tasks ?? []).find((item) => item.id === taskId);
 
       if (!taskId || !window.confirm(`Delete task "${task?.title ?? "Untitled"}"?`)) {
         return;
       }
 
       await runAction(async () => {
-        await api.deleteTask(taskId);
+        await calls.deleteTask(taskId);
 
         if (task?.lastRunId && state.activeWorkflowRunId === task.lastRunId) {
           state.activeWorkflowRunId = null;
           state.workflowRunDetail = null;
         }
 
-        await refreshBootstrap();
+        await reload();
       });
     });
   });
@@ -4034,15 +4080,16 @@ function bindEvents() {
   document.querySelectorAll("[data-action='toggle-schedule']").forEach((button) => {
     button.addEventListener("click", async () => {
       const scheduleId = button.dataset.scheduleId;
-      const schedule = (state.bootstrap?.schedules ?? []).find((item) => item.id === scheduleId);
+      const server = state.orchestration, calls = server?.api ?? api, reload = server ? server.refresh : refreshBootstrap;
+      const schedule = ((server?.lists ?? state.bootstrap)?.schedules ?? []).find((item) => item.id === scheduleId);
 
       if (!scheduleId || !schedule) {
         return;
       }
 
       await runAction(async () => {
-        await api.updateSchedule(scheduleId, { enabled: !schedule.enabled });
-        await refreshBootstrap();
+        await calls.updateSchedule(scheduleId, { enabled: !schedule.enabled });
+        await reload();
         pushToast(schedule.enabled ? "Schedule paused." : "Schedule resumed.", "info");
       });
     });
@@ -4051,15 +4098,16 @@ function bindEvents() {
   document.querySelectorAll("[data-action='delete-schedule']").forEach((button) => {
     button.addEventListener("click", async () => {
       const scheduleId = button.dataset.scheduleId;
-      const schedule = (state.bootstrap?.schedules ?? []).find((item) => item.id === scheduleId);
+      const server = state.orchestration, calls = server?.api ?? api, reload = server ? server.refresh : refreshBootstrap;
+      const schedule = ((server?.lists ?? state.bootstrap)?.schedules ?? []).find((item) => item.id === scheduleId);
 
       if (!scheduleId || !schedule || !window.confirm(`Delete schedule "${schedule.title}"?`)) {
         return;
       }
 
       await runAction(async () => {
-        await api.deleteSchedule(scheduleId);
-        await refreshBootstrap();
+        await calls.deleteSchedule(scheduleId);
+        await reload();
         pushToast("Schedule deleted.", "info");
       });
     });
@@ -4074,7 +4122,15 @@ function bindEvents() {
       }
 
       const sequence = ++workflowSelectionSequence;
+      const server = state.orchestration;
       await runAction(async () => {
+        if (server) {
+          // Accepted on the server: it runs there, and the board follows it.
+          await server.api.runTask(taskId);
+          await server.refresh();
+          pushToast(`Started on ${server.hostName()}.`, "info");
+          return;
+        }
         const result = await api.runTask(taskId);
         await refreshBootstrap();
         const detail = result.runId ? await api.getWorkflowRun(result.runId) : null;
@@ -4086,7 +4142,14 @@ function bindEvents() {
   document.querySelector("[data-action='run-next-task']")?.addEventListener("click", async () => {
     if (Object.keys(state.attachmentImports).some((key) => key.startsWith("task:"))) return;
     const sequence = ++workflowSelectionSequence;
+    const server = state.orchestration;
     await runAction(async () => {
+      if (server) {
+        const result = await server.api.runNextTask();
+        await server.refresh();
+        pushToast(result?.runId ? `Started on ${server.hostName()}.` : "No task is waiting to run.", "info");
+        return;
+      }
       const result = await api.runNextTask();
       await refreshBootstrap();
       const detail = result.runId ? await api.getWorkflowRun(result.runId) : null;
@@ -4834,6 +4897,7 @@ async function waitForManagedModelState(providerId, modelKey, loaded) {
 }
 
 async function pollWorkflowProgress() {
+  if (state.route === "orchestration" && chatTarget?.isRemote()) { await pollServerOrchestration(); return; }
   if (workflowPollInFlight || state.route !== "orchestration" || state.loading || chatTarget?.isRemote()) return;
   if (!(state.bootstrap?.workflowRuns ?? []).some((run) => ["queued", "running"].includes(run.status))) return;
   workflowPollInFlight = true;
@@ -4863,6 +4927,14 @@ async function pollWorkflowProgress() {
     }
   } catch { /* Retry on the next dashboard tick. */ }
   finally { workflowPollInFlight = false; }
+}
+
+/** The selected server's board: refreshed every 2 s while a run is active there, else every 15 s. */
+async function pollServerOrchestration() {
+  const server = state.orchestration;
+  if (!server || state.loading || server.unsupported()) return;
+  const changed = await server.poll();
+  if (changed && state.route === "orchestration" && state.orchestration === server && !state.loading && state.orchestrationTab !== "workflow") render();
 }
 
 async function pollSystemMetrics() {
@@ -5584,6 +5656,8 @@ async function addChatAttachments(files, sessionId) {
 }
 
 async function addTaskAttachments(files, taskId) {
+  // Attachments for tasks on a server come later; its screen offers none.
+  if (state.orchestration) return;
   const key = `task:${taskId || "new"}`;
   const task = (state.bootstrap?.tasks || []).find((item) => item.id === taskId);
   if (state.loading || state.attachmentImports[key] || isTaskAttachmentLocked(task) || (taskId && !task)) return;
@@ -6424,7 +6498,11 @@ async function switchChatTarget(next, { route = state.route } = {}) {
     if (chatTarget.isRemote()) chatTarget.rememberSession(state.activeSessionId);
     else savedLocalChat = { activeSessionId: state.activeSessionId, activeProjectId: state.activeProjectId, sessionSettings: state.sessionSettings, messages: state.messages };
     ++sessionLoadSequence;
-    await chatTarget.select(wanted);
+    parkOrchestrationState(current);
+    // The target changes before select() first waits: the next render already shows that machine.
+    const selecting = chatTarget.select(wanted);
+    restoreOrchestrationState(wanted);
+    await selecting;
     if (chatTarget.isRemote()) {
       state.activeProjectId = null;
       state.activeSessionId = chatTarget.lastSessionKey() ?? null;
@@ -6445,6 +6523,35 @@ async function switchChatTarget(next, { route = state.route } = {}) {
       if (!window.location.hash.startsWith("#/chat")) window.location.hash = "/chat";
     }
   });
+}
+
+/** What the Tasks & workflows screen holds for one machine, kept while another one is on screen. */
+function parkOrchestrationState(machine) {
+  parkedOrchestration.set(machine, { taskWorkspaces: state.taskWorkspaces, taskDraftAttachments: state.taskDraftAttachments });
+}
+
+function restoreOrchestrationState(machine) {
+  const parked = parkedOrchestration.get(machine);
+  parkedOrchestration.delete(machine);
+  state.taskWorkspaces = parked?.taskWorkspaces ?? {};
+  state.taskDraftAttachments = parked?.taskDraftAttachments ?? [];
+}
+
+/** The Tasks & workflows screen of a server that is loading, unreachable or failed to answer. */
+function renderServerOrchestrationBanner(server) {
+  const name = server.hostName();
+  const text = !server.online() ? `${name} is reconnecting. Showing the last known state; nothing is sent.`
+    : server.error() ? `${name} did not send its tasks: ${server.error()}`
+    : !server.loaded() ? `Loading tasks and workflows from ${name}…` : "";
+  return text ? `<div class="server-banner" role="status">${icon("info")}<span>${escapeHtml(text)}</span></div>` : "";
+}
+
+/** A server too old for a screen: update it, or use this computer. */
+function renderServerUpdateNeeded(what) {
+  const name = chatTarget.hostName();
+  return `<div class="project-landing server-unavailable">${icon("remote")}<h2>${escapeHtml(`Update Local Cognitive on ${name}`)}</h2>
+    <p>${escapeHtml(`The version on ${name} cannot show its ${what} here yet.`)}</p>
+    <button class="primary-button" type="button" data-chat-target="local">Use This computer</button></div>`;
 }
 
 /** A screen that does not run on a server yet: said plainly, with the way back to this computer. */
@@ -6637,6 +6744,7 @@ function repaintChatTarget() {
     bindChatTargetControls();
   }
   if (state.route === "models" && serverModels?.statusChanged()) { render(); return; }
+  if (state.route === "orchestration" && serverOrchestration?.statusChanged()) { render(); return; }
   if (state.route !== "chat") return;
   if (!isServerChat(state.activeSessionId)) {
     if (chatTarget?.isRemote() && !state.activeSessionId) render();

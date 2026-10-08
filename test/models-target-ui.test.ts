@@ -248,14 +248,14 @@ test("Use in chat on fedora's tab sets the server chat's model and opens it", as
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => /^(PUT|POST)/.test(entry)), [], "no local chat was created or changed");
 });
 
-test("Workflow and Synthesis say they run on this computer while fedora is selected", async t => {
+test("Synthesis says it runs on this computer; an older fedora is asked to update for Tasks & workflows", async t => {
   const fedora = fedoraWithModels();
   const app = await bootApp({ ...localModels(), remote: { bridge: fedora.bridge } });
   t.after(() => app.close());
   await selectFedora(app);
   app.window.location.hash = "#/orchestration";
   await settle();
-  assert.match(text(app, ".route--orchestration"), /Tasks & workflows is not available on fedora yet/);
+  assert.match(text(app, ".route--orchestration"), /Update Local Cognitive on fedora/);
   app.window.location.hash = "#/synthesis";
   await settle();
   assert.match(text(app, ".route--synthesis"), /Synthesis is not available on fedora yet/);
