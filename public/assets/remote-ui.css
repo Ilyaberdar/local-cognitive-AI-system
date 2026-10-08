@@ -32,3 +32,33 @@
 .remote-devices li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; font-size: calc(12px * var(--font-scale, 1)); }
 .remote-devices li > span:first-child { overflow-wrap: anywhere; }
 .remote-server-status { margin-top: -4px; }
+
+/* Chat target switch (R4): "This computer / <server>" in the chat top bar. Menu options reuse the access menu. */
+.chat-target { display: inline-flex; }
+.chat-target-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); font: inherit; font-size: calc(10px * var(--font-scale, 1)); cursor: pointer; }
+.chat-target-trigger:hover, .chat-target-trigger:focus-visible { background: var(--highlight); color: var(--text); }
+.chat-target-trigger .ui-icon { width: 12px; height: 12px; }
+.chat-target-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-target-trigger .status-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; background: var(--success); }
+.chat-target-trigger.is-online .status-dot { background: var(--success); }
+.chat-target-trigger.is-busy .status-dot { background: var(--warning); animation: remote-pulse 1.4s ease-in-out infinite; }
+.chat-target-trigger.is-warning .status-dot { background: var(--warning); }
+.chat-target-trigger:not(.is-local) { color: var(--text); border-color: var(--line-strong); }
+@media (prefers-reduced-motion: reduce) { .chat-target-trigger.is-busy .status-dot { animation: none; } }
+.chat-target-menu { inset: auto; margin: 0; }
+.chat-target-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.chat-target-option:hover, .chat-target-option:focus-visible { background: var(--highlight); }
+.chat-target-option > .ui-icon { width: 16px; height: 16px; flex: 0 0 16px; }
+.chat-target-option > span:nth-child(2) { flex: 1; min-width: 0; }
+.chat-target-option strong { display: block; font-size: calc(12px * var(--font-scale, 1)); font-weight: 500; margin-bottom: 2px; overflow-wrap: anywhere; }
+.chat-target-option small { display: block; line-height: 1.3; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); }
+.chat-target-option__check { width: 14px; flex: 0 0 14px; }
+.chat-target-option__check .ui-icon { width: 14px; height: 14px; }
+.chat-target-manage { display: block; text-decoration: none; color: var(--muted); }
+.chat-target-manage:hover { color: var(--text); }
+.chat-target-banner .chat-approval__heading strong { font-weight: 500; }
+.message-run-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
+.message-run-status.is-failed, .message-run-status.is-interrupted, .message-run-status.is-needs_review { color: var(--warning); }
+.remote-setup-note { margin: 4px 0 0; font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; }

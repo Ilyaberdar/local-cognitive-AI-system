@@ -111,7 +111,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
     const unverified = view.profile && !view.profile.emailVerified ? `<p class="remote-error" role="status">${icon("info")}<span>Verify your email address to connect servers, then choose Check again in Account settings.</span></p>` : "";
     return `${unverified}${statusCard()}${serverStatus()}${notice ? `<p class="remote-error" role="alert">${escape(notice)}</p>` : ""}${connectForm()}
       <section class="remote-section"><div class="remote-section-head"><h2>Your servers</h2><button type="button" class="ghost-button" data-remote-action="reload"${pending ? " disabled" : ""}>Refresh</button></div>${serverList()}</section>
-      <p class="settings-footnote">Traffic between this computer and the server is end-to-end encrypted; Local Cognitive Cloud only routes it. In this version Remote connects and shows the server's state — chats and models still run on this computer.</p>`;
+      <p class="settings-footnote">Traffic between this computer and the server is end-to-end encrypted; Local Cognitive Cloud only routes it. To chat on a server, choose it in the switch at the top of the chat screen; its answers continue even when this app is closed.</p>`;
   }
   const note = (title, text) => `<div class="account-card"><div><h2>${escape(title)}</h2><p>${text}</p></div></div>`;
 
