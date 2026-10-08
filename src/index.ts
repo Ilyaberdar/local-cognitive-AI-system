@@ -20,6 +20,7 @@ import { processRunRegistry } from "./api/ProcessRunRegistry";
 import { WorkflowRunner } from "./workflows/WorkflowRunner";
 import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
+import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
@@ -32,7 +33,7 @@ export interface ActiveWork { processRuns: number; workflowRuns: number; inferen
   chatRuns?: number }
 
 /** The host's durable store and the services on it (headless server only in R4). */
-export interface HostServices { database: HostDatabase; journal: EventJournal; runService: RunService }
+export interface HostServices { database: HostDatabase; journal: EventJournal; runService: RunService; ledger: CommandLedger }
 
 export interface BackendStatus {
   phase: "running" | "draining";
@@ -216,7 +217,7 @@ const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, ses
     if (recovered) logger.warn("Chat turns were interrupted by the previous shutdown", { count: recovered });
     journal.compact();
     setInterval(() => { try { journal.compact(); } catch (error) { logger.warn("Event journal compaction failed", { message: error instanceof Error ? error.message : String(error) }); } }, 3_600_000).unref();
-    return { database, journal, runService };
+    return { database, journal, runService, ledger: new CommandLedger(database) };
   } catch (error) { database.close(); throw error; }
 };
 

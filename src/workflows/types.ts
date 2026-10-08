@@ -180,6 +180,11 @@ export class WorkflowRunConflictError extends Error {
   readonly statusCode = 409;
 }
 
+/** The workflow changed since the editor opened it (another device saved it first). */
+export class WorkflowConflictError extends Error {
+  readonly statusCode = 409;
+}
+
 export interface NodeRunRecord {
   nodeRuns: NodeRun[];
 }

@@ -28,6 +28,8 @@ export class WorkflowRunner {
   private static readonly steps = new Map<string, Promise<WorkflowRun>>();
   private static readonly loops = new Map<string, Promise<WorkflowRun>>();
   private static readonly controllers = new Map<string, AbortController>();
+  /** Runs this process created or set queued: recovery never treats them as left over. */
+  private static readonly ownRuns = new Set<string>();
   /** Runs with an active step or loop in this process. */
   static activeRunIds(): string[] { return [...new Set([...WorkflowRunner.steps.keys(), ...WorkflowRunner.loops.keys()])]; }
   constructor(
@@ -40,17 +42,25 @@ export class WorkflowRunner {
     private readonly sessionSettingsStore?: Pick<SessionSettingsStore, "get">
   ) {}
 
-  /** Recovery is explicit: a previous process's in-flight effects are never replayed at startup. */
+  /** Recovery is explicit: a previous process's in-flight effects are never replayed at startup.
+   * A run left queued (started, resumed or approved just before the process stopped) has nothing
+   * left to drive it, so it is interrupted too and Resume continues it. */
   async recoverInterruptedRuns(): Promise<void> {
+    // A queued run of this process may be between its creation and its loop.
+    const drivenHere = (id: string) => WorkflowRunner.ownRuns.has(id) || WorkflowRunner.activeRunIds().includes(id);
     for (const candidate of await this.runStore.listRuns()) {
       if (WorkflowRunner.controllers.has(candidate.id) || !["running", "queued", "waiting"].includes(candidate.status)) continue;
+      if (candidate.status === "queued" && drivenHere(candidate.id)) continue;
       await withFileLock(`workflow-run:${candidate.id}`, async () => {
         const run = await this.requireRun(candidate.id);
-        if (WorkflowRunner.controllers.has(run.id)) return;
+        if (WorkflowRunner.controllers.has(run.id) || (run.status === "queued" && drivenHere(run.id))) return;
         if (this.workspaceResolver && (!run.workspace || !run.executionSnapshot)) {
           await this.blockRun(run, "This legacy run has no workspace snapshot. Cancel it and start a new run with a selected project or managed task workspace.");
         } else if (run.status === "running") {
           await this.runStore.updateRun(run.id, { status: "interrupted", error: "Execution was interrupted. Resume to recover its saved operation; uncertain effects will not be repeated." });
+          await this.setTaskStatus(run.taskId, "interrupted");
+        } else if (run.status === "queued") {
+          await this.runStore.updateRun(run.id, { status: "interrupted", error: "The app stopped before this run continued. Resume to continue it." });
           await this.setTaskStatus(run.taskId, "interrupted");
         }
       });
@@ -77,6 +87,7 @@ export class WorkflowRunner {
         if (target) nodeTargets[node.id] = target;
       }
       const run = await this.runStore.createRun({ task, workflow, workspace, settings, nodeTargets, executionSessionId, id });
+      WorkflowRunner.ownRuns.add(run.id);
       await this.setTaskStatus(task?.id, "in_progress", { workflowVersion: workflow.version, lastRunId: run.id });
       return run;
     });
@@ -97,6 +108,7 @@ export class WorkflowRunner {
       const target = this.executors.get(node.type).snapshotTarget?.(node, settings);
       if (target) nodeTargets[node.id] = target;
     }
+    WorkflowRunner.ownRuns.add(id);
     return this.runStore.createRun({ id, workflow, workspace, settings, nodeTargets, executionSessionId,
       input: { title: workflow.name, description: options.description ?? "" },
       accessMode: options.accessMode ?? "default", maxSteps: options.maxSteps ?? 25 });
@@ -213,7 +225,7 @@ export class WorkflowRunner {
   runUntilStopped(runId: string, maxSteps?: number): Promise<WorkflowRun> {
     const existing = WorkflowRunner.loops.get(runId);
     if (existing) return existing;
-    const operation = this.executeUntilStopped(runId, maxSteps).finally(() => WorkflowRunner.loops.delete(runId));
+    const operation = this.executeUntilStopped(runId, maxSteps).finally(() => { WorkflowRunner.loops.delete(runId); WorkflowRunner.ownRuns.delete(runId); });
     WorkflowRunner.loops.set(runId, operation);
     return operation;
   }
@@ -274,6 +286,7 @@ export class WorkflowRunner {
             summary: comment.trim() || (approved ? "Approved by user." : "Rejected by user."), data: { ...waitingNodeRun.output.data, approved } },
           completedAt: new Date().toISOString()
         });
+        WorkflowRunner.ownRuns.add(runId);
         return (await this.runStore.updateRun(runId, {
           status: "queued", state: { ...run.state, approvedNodeId: node.id, approvedOperation: { ...waitingData, approved } }
         }))!;
@@ -300,6 +313,7 @@ export class WorkflowRunner {
       if (run.status !== "interrupted") throw new WorkflowRunConflictError("Only an interrupted run can be resumed.");
       if (!run.workspace || !run.executionSnapshot) throw new WorkflowRunConflictError("This run has no workspace snapshot. Start a new run.");
       await this.workspaceResolver?.validate(run.workspace);
+      WorkflowRunner.ownRuns.add(runId);
       const updated = (await this.runStore.updateRun(runId, { status: "queued", error: undefined }))!;
       await this.setTaskStatus(run.taskId, "in_progress");
       return updated;
