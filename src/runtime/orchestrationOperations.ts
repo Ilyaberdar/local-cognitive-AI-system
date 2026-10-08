@@ -11,7 +11,7 @@ import { canonical, sha256 } from "./canonical";
 import type { CommandLedger, CommandRecord, LedgerCommand } from "./CommandLedger";
 import type { JournalEvent } from "./EventJournal";
 import type { StreamSource } from "./eventStreams";
-import { agentTraceDto, orchestrationLists, runDetail, safeRun, safeSchedule, safeTask, scrubberFor } from "./orchestrationDto";
+import { agentTraceDto, orchestrationLists, runDetail, safeRun, safeSchedule, safeTask, safeWorkflow, scrubberFor } from "./orchestrationDto";
 import { publicError } from "./publicError";
 
 const MAX_WORKFLOW_BYTES = 200 * 1024;
@@ -347,7 +347,11 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         // What a device saves would run with the full access of the host's tasks and schedules that use it.
         const [tasks, schedules] = await Promise.all([runtime().taskService.list(), runtime().scheduleService.list()]);
         if ([...tasks, ...schedules].some(item => item.workflowId === definition.id && item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
-        return runtime().workflowStore.save(definition, { expectedUpdatedAt: input.expectedUpdatedAt });
+        // The device never saw the folder chosen on the host for this workflow's runs: it stays.
+        const stored = await runtime().workflowStore.get(definition.id, definition.version);
+        const rootPath = stored?.runDefaults?.rootPath;
+        const merged = rootPath === undefined ? definition : { ...definition, runDefaults: { ...definition.runDefaults, rootPath } };
+        return safeWorkflow(await runtime().workflowStore.save(merged, { expectedUpdatedAt: input.expectedUpdatedAt }));
       });
     })
   };

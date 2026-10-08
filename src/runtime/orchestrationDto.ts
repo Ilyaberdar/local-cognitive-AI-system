@@ -6,8 +6,8 @@ import { publicError } from "./publicError";
 
 /** What a paired device sees of the host's tasks, schedules and workflow runs: no host
  * directories, no execution internals (session ids, frozen inputs and settings, attachment
- * contents) and error texts reduced by `publicError`. Workflow definitions are the user's own
- * and pass as saved; the run's snapshot of one loses its folder. */
+ * contents) and error texts reduced by `publicError`. Workflow definitions are the user's own and
+ * pass as saved, except the folder chosen on the host for their runs. */
 
 export const safeTask = (task: Task) => {
   const { sessionId: _sessionId, sourceSessionId: _sourceSessionId, metadata, attachments, ...rest } = task;
@@ -22,8 +22,9 @@ export const safeSchedule = (schedule: Schedule) => {
   return { ...rest, ...(lastError ? { lastError: publicError(lastError) } : {}) };
 };
 
-const withoutFolder = (workflow: WorkflowDefinition): WorkflowDefinition => {
-  if (!workflow.runDefaults?.rootPath) return workflow;
+/** A workflow without the folder chosen on the host for its runs (saving from a device keeps it). */
+export const safeWorkflow = (workflow: WorkflowDefinition): WorkflowDefinition => {
+  if (workflow.runDefaults?.rootPath === undefined) return workflow;
   const { rootPath: _rootPath, ...runDefaults } = workflow.runDefaults;
   return { ...workflow, runDefaults };
 };
@@ -32,7 +33,7 @@ const withoutFolder = (workflow: WorkflowDefinition): WorkflowDefinition => {
 export const safeRun = (run: WorkflowRun, options: { withSnapshot?: boolean } = {}) => {
   const { state: _state, executionSnapshot: _snapshot, executionSessionId: _session, workspace, error, workflowSnapshot, ...rest } = run;
   return { ...rest,
-    ...(workflowSnapshot && options.withSnapshot !== false ? { workflowSnapshot: withoutFolder(workflowSnapshot) } : {}),
+    ...(workflowSnapshot && options.withSnapshot !== false ? { workflowSnapshot: safeWorkflow(workflowSnapshot) } : {}),
     ...(workspace ? { workspace: { kind: workspace.kind, ...(workspace.projectName ? { projectName: workspace.projectName } : {}) } } : {}),
     ...(error ? { error: publicError(error) } : {}) };
 };
@@ -53,7 +54,7 @@ export const orchestrationLists = (input: { tasks: Task[]; schedules: Schedule[]
     lists = {
       tasks: input.tasks.filter(task => keepTasks.has(task.id)).map(safeTask),
       schedules: input.schedules.map(safeSchedule),
-      workflows: input.workflows.filter(workflow => keepWorkflows.has(workflow)),
+      workflows: input.workflows.filter(workflow => keepWorkflows.has(workflow)).map(safeWorkflow),
       workflowRuns: newest(input.runs, step.runs).map((run, index) => safeRun(run, { withSnapshot: index < step.snapshots }))
     };
     if (bytes(lists) <= MAX_LIST_BYTES) break;
