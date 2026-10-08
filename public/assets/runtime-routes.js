@@ -4,6 +4,11 @@
 
 const coded = (message, code) => Object.assign(new Error(message), { code });
 const pick = (body, keys) => Object.fromEntries(keys.filter(key => body?.[key] !== undefined && body[key] !== "").map(key => [key, body[key]]));
+/** A body as the host reads it: empty values (null, "", []) mean "not set" and are left out; the
+ * rest is forwarded as is, so the host's strict check refuses what it does not take. */
+const present = body => Object.fromEntries(Object.entries(body ?? {}).filter(([, value]) =>
+  value !== undefined && value !== null && value !== "" && !(Array.isArray(value) && !value.length)));
+const segment = value => decodeURIComponent(value);
 
 /** The Models tab's routes (public/assets/model-manager.js) → src/runtime/modelOperations.ts. */
 export const MODEL_ROUTES = [
@@ -113,3 +118,19 @@ export function createWatchSource({ runtime, onStatus, hostId, streamId, isCurre
     }
   };
 }
+
+/** The Tasks & workflows screen's routes (public/assets/app.js) → src/runtime/orchestrationOperations.ts. */
+export const ORCHESTRATION_ROUTES = [
+  // Commands carry a command id: a create or start lost in a reconnect is resent, never doubled.
+  { method: "POST", pattern: /^\/tasks$/, op: "tasks.create", send: true, payload: (_match, _query, body) => present(body) },
+  { method: "POST", pattern: /^\/tasks\/run-next$/, op: "tasks.runNext", send: true, payload: () => ({}) },
+  { method: "POST", pattern: /^\/tasks\/([^/]+)\/run$/, op: "tasks.run", send: true, payload: match => ({ taskId: segment(match[1]) }) },
+  { method: "PATCH", pattern: /^\/tasks\/([^/]+)$/, op: "tasks.update", payload: (match, _query, body) => ({ taskId: segment(match[1]), patch: present(body) }) },
+  { method: "DELETE", pattern: /^\/tasks\/([^/]+)$/, op: "tasks.delete", payload: match => ({ taskId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/schedules$/, op: "schedules.create", send: true, payload: (_match, _query, body) => present(body) },
+  { method: "PATCH", pattern: /^\/schedules\/([^/]+)$/, op: "schedules.update", payload: (match, _query, body) => ({ scheduleId: segment(match[1]), patch: present(body) }) },
+  { method: "DELETE", pattern: /^\/schedules\/([^/]+)$/, op: "schedules.delete", payload: match => ({ scheduleId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/workflows\/[^/]+\/validate$/, op: "workflows.validate", payload: (_match, _query, body) => ({ workflow: body }) },
+  { method: "GET", pattern: /^\/workflow-runs\/([^/]+)$/, op: "workflows.runs.get", payload: match => ({ runId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/workflow-runs\/([^/]+)\/cancel$/, op: "workflows.runs.cancel", payload: match => ({ runId: segment(match[1]) }) }
+];

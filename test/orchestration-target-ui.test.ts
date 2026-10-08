@@ -181,3 +181,146 @@ test("this computer's Tasks & workflows screen makes exactly the same requests w
   assert.deepEqual(await walkOrchestration(paired), LOCAL_ORCHESTRATION_TRACE);
   assert.deepEqual(paired.bridgeCalls.filter(call => call.op.startsWith("runtime.")), [], "nothing went to the server");
 });
+
+const SERVER_FLOW = { ...WORKFLOW, id: "server-flow", name: "Server flow" };
+/** fedora with its own tasks, schedule and workflow; `setStatus` changes the connection. */
+function fedoraWithTasks({ name = "fedora", capabilities = ["chat.runs.start", "events.poll", "orchestration.snapshot", "tasks.create"] } = {}) {
+  let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: name, serverVersion: "0.2.0", capabilities };
+  const statusListeners: Array<(value: unknown) => void> = [];
+  const db = { revision: 1, tasks: [{ id: "srv-task-1", title: "Server task", description: "On fedora", status: "todo", priority: "normal", workflowId: "server-flow",
+    createdAt: T0, updatedAt: T0 }] as any[], schedules: [{ id: "srv-schedule-1", title: "Server schedule", description: "", workflowId: "server-flow", priority: "normal",
+    frequency: "daily", time: "09:00", timezone: "UTC", enabled: true, nextRunAt: T0, createdAt: T0, updatedAt: T0 }] as any[], runs: [] as any[], next: 1 };
+  const changed = () => { db.revision++; };
+  const ok = (value: unknown) => ({ ok: true, value });
+  const handlers: Record<string, (payload: any) => unknown> = {
+    "sessions.list": () => [],
+    "models.available": () => ({ providers: [], availableModels: [], loadedModels: [], allManagedModels: [], appSettings: { llm: {}, providers: {} } }),
+    "orchestration.snapshot": payload => payload?.revision === `r${db.revision}` ? { revision: payload.revision, unchanged: true }
+      : copy({ revision: `r${db.revision}`, workflows: [WORKFLOW, SERVER_FLOW], tasks: db.tasks, schedules: db.schedules, workflowRuns: db.runs }),
+    "tasks.update": payload => { const task = db.tasks.find(item => item.id === payload.taskId); Object.assign(task, payload.patch); changed(); return copy(task); },
+    "tasks.delete": payload => { db.tasks = db.tasks.filter(item => item.id !== payload.taskId); changed(); return { deleted: true }; },
+    "schedules.update": payload => { const schedule = db.schedules.find(item => item.id === payload.scheduleId); Object.assign(schedule, payload.patch); changed(); return copy(schedule); },
+    "schedules.delete": payload => { db.schedules = db.schedules.filter(item => item.id !== payload.scheduleId); changed(); return { deleted: true }; }
+  };
+  const commands: Record<string, (payload: any) => unknown> = {
+    "tasks.create": payload => { const task = { id: `srv-task-${++db.next}`, status: "todo", createdAt: T0, updatedAt: T0, ...payload }; db.tasks.push(task); changed(); return copy(task); },
+    "tasks.run": payload => {
+      const task = db.tasks.find(item => item.id === payload.taskId);
+      const run = { id: `4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d${String(++db.next).padStart(2, "0")}`, workflowId: "server-flow", workflowVersion: 1, status: "running", taskId: task.id,
+        createdAt: T0, updatedAt: T0 };
+      db.runs.unshift(run); Object.assign(task, { status: "in_progress", lastRunId: run.id }); changed();
+      return { task: copy(task), runId: run.id };
+    },
+    "schedules.create": payload => { const schedule = { id: `srv-schedule-${++db.next}`, enabled: true, nextRunAt: T0, createdAt: T0, updatedAt: T0, ...payload }; db.schedules.push(schedule); changed(); return copy(schedule); }
+  };
+  const bridge = {
+    status: async () => ok(status),
+    hosts: async () => ok([{ hostId: HOST, name, online: true, appVersion: "0.2.0", paired: true, devices: [] }]),
+    connect: async () => ok(status), disconnect: async () => ok({ state: "idle" }), hostStatus: async () => ok({}),
+    onChange: (listener: (value: unknown) => void) => { statusListeners.push(listener); return () => undefined; },
+    runtime: {
+      request: async (op: string, payload: unknown) => handlers[op] ? ok(handlers[op]!(payload)) : { ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } },
+      send: async (op: string, payload: unknown) => commands[op] ? ok(commands[op]!(payload)) : { ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } },
+      subscribe: async () => ok(undefined), unsubscribe: async () => ok(undefined), watch: async () => ok(undefined), unwatch: async () => ok(undefined), onEvent() {}
+    }
+  };
+  return { bridge, db, setStatus(next: Record<string, unknown>) { status = { ...status, ...next }; statusListeners.forEach(listener => listener(status)); } };
+}
+
+const text = (app: Harness, selector: string) => String(app.document.querySelector(selector)?.textContent ?? "").replace(/\s+/g, " ").trim();
+/** Bridge calls as [kind, operation, payload, server], plain values of the test's realm. */
+const runtimeCalls = (app: Harness, from = 0) => copy(app.bridgeCalls.slice(from).filter(call => /^runtime\.(request|send)$/.test(call.op))
+  .map(call => [call.op.slice("runtime.".length), ...call.payload])) as unknown[][];
+const LOCAL_ORCHESTRATION_API = /^(EVENTSOURCE |\w+ )\/(tasks|schedules|workflows|workflow-runs|integrations\/available|projects|dashboard\/bootstrap)/;
+async function onFedoraTasks(app: Harness) {
+  await click(app, `[data-chat-target="${HOST}"]`);
+  await settle();
+  app.window.location.hash = "#/orchestration";
+  await settle();
+}
+
+test("with fedora selected, the Tasks tab shows fedora's work and asks this computer nothing", async t => {
+  const local = localOrchestration();
+  local.db.tasks.push({ id: "local-task", title: "Local task", description: "Here", status: "todo", priority: "normal", workflowId: WORKFLOW.id, createdAt: T0, updatedAt: T0 });
+  const fedora = fedoraWithTasks();
+  const app = await bootApp({ ...local, remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  const localBefore = app.requests.length, callsBefore = app.bridgeCalls.length;
+  await onFedoraTasks(app);
+  assert.match(text(app, ".orchestration-main"), /Tasks on fedora[\s\S]*Server task/);
+  assert.doesNotMatch(text(app, ".route--orchestration"), /Local task/);
+  assert.equal(app.document.querySelector("#task-form [data-workspace-project]"), null, "no project of this computer is offered");
+  assert.equal(app.document.querySelector("#task-form .task-attachments, #task-form [data-action='attach-task-files']"), null);
+  assert.equal([...app.document.querySelectorAll("#task-access option")].some((item: { value: string }) => item.value === "full"), false, "no full access on a server");
+
+  fill(app, { "#task-title": "Server report", "#task-description": "Summarise on fedora." });
+  submit(app, "#task-form");
+  await settle();
+  assert.match(text(app, ".task-board"), /Server report/);
+  await click(app, '[data-action="run-task"][data-task-id="srv-task-1"]');
+  await settle();
+  assert.match(text(app, ".task-board"), /in_progress/);
+  await click(app, '[data-action="toggle-schedule"][data-schedule-id="srv-schedule-1"]');
+  await settle();
+  await click(app, '[data-action="delete-task"][data-task-id="srv-task-1"]');
+  await settle();
+  assert.equal(fedora.db.tasks.some(item => item.id === "srv-task-1"), false);
+  await app.tick(1000);
+
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => LOCAL_ORCHESTRATION_API.test(entry)), [], "this computer's tasks API was not asked");
+  const calls = runtimeCalls(app, callsBefore);
+  assert.ok(calls.every(call => call.at(-1) === HOST), "every call names fedora");
+  const sent = calls.filter(call => call[0] === "send").map(call => call[1]);
+  assert.deepEqual(sent, ["tasks.create", "tasks.run"], "what creates or starts work is sent as a command");
+  const created = calls.find(call => call[1] === "tasks.create")![2] as Record<string, unknown>;
+  assert.deepEqual(created, { title: "Server report", description: "Summarise on fedora.", workflowId: "default-task-workflow", priority: "normal", accessMode: "default" });
+  assert.deepEqual(calls.find(call => call[1] === "schedules.update")!.slice(1, 3), ["schedules.update", { scheduleId: "srv-schedule-1", patch: { enabled: false } }]);
+  assert.equal(local.db.tasks.length, 1, "this computer's tasks are untouched");
+});
+
+test("offline, fedora's board stays dimmed and nothing is sent; switching back shows this computer's tasks", async t => {
+  const local = localOrchestration();
+  local.db.tasks.push({ id: "local-task", title: "Local task", description: "Here", status: "todo", priority: "normal", workflowId: WORKFLOW.id, createdAt: T0, updatedAt: T0 });
+  const fedora = fedoraWithTasks();
+  const app = await bootApp({ ...local, remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await onFedoraTasks(app);
+  fedora.setStatus({ state: "reconnecting" });
+  await settle();
+  assert.match(text(app, ".server-banner"), /fedora is reconnecting\. Showing the last known state; nothing is sent\./);
+  assert.match(text(app, ".task-board"), /Server task/);
+  const run = app.document.querySelector('[data-action="run-task"]');
+  assert.equal(run.disabled, true);
+  const callsBefore = app.bridgeCalls.length;
+  run.click();
+  await app.tick(1000);
+  await settle();
+  assert.deepEqual(runtimeCalls(app, callsBefore), [], "nothing is sent or queued while offline");
+
+  await click(app, '[data-chat-target="local"]');
+  await settle();
+  assert.equal(app.window.location.hash, "#/orchestration");
+  assert.match(text(app, ".task-board"), /Local task/);
+  assert.doesNotMatch(text(app, ".task-board"), /Server task/);
+  assert.equal(app.document.querySelector(".server-banner"), null);
+});
+
+test("an older fedora is asked to update and nothing is sent; fedora's name is text", async t => {
+  const older = fedoraWithTasks({ capabilities: ["chat.runs.start", "events.poll"] });
+  const app = await bootApp({ ...localOrchestration(), remote: { bridge: older.bridge } });
+  t.after(() => app.close());
+  const callsBefore = app.bridgeCalls.length;
+  await onFedoraTasks(app);
+  assert.match(text(app, ".route--orchestration"), /Update Local Cognitive on fedora/);
+  assert.equal(runtimeCalls(app, callsBefore).some(call => String(call[1]).startsWith("orchestration.") || String(call[1]).startsWith("tasks.")), false);
+
+  const marked = fedoraWithTasks({ name: `<img src=x onerror="globalThis.hacked=1">` });
+  const other = await bootApp({ ...localOrchestration(), remote: { bridge: marked.bridge } });
+  t.after(() => other.close());
+  await onFedoraTasks(other);
+  marked.setStatus({ state: "reconnecting" });
+  await settle();
+  assert.equal(other.document.querySelector(".route--orchestration img"), null);
+  assert.equal(other.window.hacked, undefined);
+  assert.match(text(other, ".orchestration-main"), /Tasks on <img/);
+});

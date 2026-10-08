@@ -62,3 +62,8 @@
   color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 .message-run-status.is-failed, .message-run-status.is-interrupted, .message-run-status.is-needs_review { color: var(--warning); }
 .remote-setup-note { margin: 4px 0 0; font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; }
+
+/* A server's screen while it loads, reconnects or failed to answer (R5). */
+.server-banner { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--warning); background: var(--surface-2); font-size: calc(12px * var(--font-scale, 1)); }
+.server-banner .ui-icon { flex: 0 0 auto; width: 15px; }
+.orchestration-shell.is-offline :is(.task-board, .schedule-list) { opacity: .55; }
