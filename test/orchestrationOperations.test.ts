@@ -378,3 +378,17 @@ test("a run start accepted before a restart answers with the reserved run if it 
   assert.equal((await call("workflows.runs.start", { commandId: "cmd-start-made", ...payload }) as { id: string }).id, reserved);
   assert.equal((await f.workflowRunStore.listRuns()).length, 1, "nothing was started a second time");
 });
+
+test("the folder chosen on the host for a workflow's runs does not reach a device, and a device's save keeps it", async t => {
+  const f = await setup(t);
+  const folder = path.join(f.root, "chosen-on-the-host");
+  await fs.mkdir(folder);
+  await f.workflowStore.create(reviewWorkflow({ id: "foldered", runDefaults: { rootPath: folder, description: "In the folder" } }));
+  const listed = (await f.call("orchestration.snapshot", {})).workflows.find((item: { id: string }) => item.id === "foldered");
+  assert.deepEqual(listed.runDefaults, { description: "In the folder" });
+  const saved = await f.call("workflows.save", { commandId: "cmd-folder-1", workflow: { ...listed, name: "Renamed" }, expectedUpdatedAt: listed.updatedAt });
+  assert.equal(saved.runDefaults.rootPath, undefined);
+  const stored = (await f.workflowStore.get("foldered"))!;
+  assert.equal(stored.name, "Renamed");
+  assert.equal(stored.runDefaults?.rootPath, folder, "the host keeps its folder");
+});
