@@ -11,6 +11,8 @@ const id = value => { if (typeof value !== "string" || !UUID.test(value)) throw 
 const RUNTIME_REQUESTS = new Set(operationsOfKind("request"));
 const RUNTIME_COMMANDS = new Set(operationsOfKind("command"));
 const RUNTIME_WATCHES = new Map(Object.entries(WATCHES));
+// Streams a screen may follow: a chat's journal or a workflow run's event log.
+const STREAM_ID = /^(session:.{1,200}|workflow-run:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const MAX_PAYLOAD_BYTES = 256 * 1024;
 const checkedPayload = payload => {
   if (payload !== undefined && (typeof payload !== "object" || payload === null || Array.isArray(payload))) throw Object.assign(new Error("Invalid request."), { code: "invalid_request" });
@@ -69,7 +71,7 @@ function registerRemote({ app, ipcMain, vault, accountService, assertSender, get
   handle("runtime-request", (op, payload, hostId) => runtime.request(allowed(RUNTIME_REQUESTS, op), checkedPayload(payload), { hostId: id(hostId) }));
   handle("runtime-send", (op, payload, hostId) => runtime.send(allowed(RUNTIME_COMMANDS, op), checkedPayload(payload) ?? {}, { hostId: id(hostId) }));
   handle("runtime-subscribe", (cursor, hostId) => {
-    if (!cursor || typeof cursor.streamId !== "string" || !/^session:.{1,200}$/.test(cursor.streamId) || typeof cursor.epoch !== "string"
+    if (!cursor || typeof cursor.streamId !== "string" || !STREAM_ID.test(cursor.streamId) || typeof cursor.epoch !== "string"
       || !Number.isSafeInteger(cursor.after) || cursor.after < 0) throw Object.assign(new Error("Invalid cursor."), { code: "invalid_request" });
     runtime.subscribe({ streamId: cursor.streamId, epoch: cursor.epoch, after: cursor.after }, { hostId: id(hostId) });
   });
