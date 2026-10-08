@@ -48,7 +48,17 @@ function fixture(t: TestContext, overlayFiles: Record<string, string>, options: 
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const base = path.join(root, "base", "llama-b10809");
   fs.mkdirSync(base, { recursive: true });
-  fs.writeFileSync(path.join(base, "llama-server"), "#!/bin/sh\necho 'version: 0.4.0 (build 10809)'\n", { mode: 0o755 });
+  fs.writeFileSync(
+    path.join(base, "llama-server"),
+    `#!/bin/sh
+case "$1" in
+  --version) echo 'version: 0.4.0 (build 10809)' ;;
+  --list-devices) echo 'Available devices:' ;;
+  *) exit 1 ;;
+esac
+`,
+    { mode: 0o755 }
+  );
   fs.writeFileSync(path.join(base, "libggml-base.so"), "base");
   fs.writeFileSync(path.join(base, "libggml-cpu-haswell.so"), "cpu");
   spawnSync("tar", ["-czf", path.join(root, "base.tar.gz"), "-C", path.join(root, "base"), "llama-b10809"]);
