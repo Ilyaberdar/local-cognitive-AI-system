@@ -51,7 +51,7 @@ export class RemoteRuntime extends EventEmitter {
         const code = (error as { code?: string }).code ?? "";
         if (!IN_DOUBT.includes(code)) throw error;
         if (!await this.client.waitOnline(Math.max(0, deadline - Date.now())) || this.client.status().hostId !== hostId) {
-          throw new RemoteError("The connection dropped while sending. The server may have received the message; open the chat again to check.", "unknown_outcome");
+          throw new RemoteError("The connection dropped while sending. The server may have received it; refresh to check.", "unknown_outcome");
         }
       }
     }

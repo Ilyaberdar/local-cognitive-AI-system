@@ -145,6 +145,10 @@ test("the desktop bridge lets screens call the catalog's operations, each by its
     assert.equal(await code("runtime-request", "models.local.delete", { modelId: "m" }, FEDORA), "host_changed", "not connected to that server");
     assert.equal(await code("runtime-send", "models.downloads.start", { repoId: "r" }, FEDORA), "not_connected");
     assert.equal(await code("runtime-watch", "models.local", FEDORA), "host_changed");
+    const cursor = (streamId: string) => ({ streamId, epoch: "e", after: 0 });
+    assert.equal(await code("runtime-subscribe", cursor("workflow-run:4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d11"), FEDORA), "host_changed", "a run's log can be followed");
+    assert.equal(await code("runtime-subscribe", cursor("workflow-run:../../etc/passwd"), FEDORA), "invalid_request");
+    assert.equal(await code("runtime-subscribe", cursor("models.local"), FEDORA), "invalid_request");
   } finally { bridge.dispose(); }
   for (const op of Object.values(WATCHES)) assert.equal(OPERATIONS[op]!.kind, "watch");
   assert.ok(operationsOfKind("command").includes("chat.runs.start") && !operationsOfKind("request").includes("events.poll"));
