@@ -9,13 +9,17 @@ const standaloneVariants = (model: CatalogModel): CatalogModel => ({
   ...model, variants: model.variants.filter(variant => variant.files.length > 0 && !variant.files.some(file => isAuxiliaryModelPath(file.path)))
 });
 
-const origin = "https://huggingface.co";
+/** Hugging Face, or a loopback stand-in for tests (LOCAL_COGNITIVE_HF_ORIGIN); any other value is ignored. */
+const hfOrigin = (): string => {
+  const override = process.env.LOCAL_COGNITIVE_HF_ORIGIN?.replace(/\/$/, "");
+  return override && /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(override) ? override : "https://huggingface.co";
+};
 const repoPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,150}$/;
 export const validateRepository = (repoId: string): void => { if (!repoPattern.test(repoId) || repoId.includes("..")) throw new LocalModelError("Invalid Hugging Face repository ID."); };
 export const validateRevision = (revision: string): void => { if (!/^[a-f0-9]{40}$/i.test(revision)) throw new LocalModelError("Downloads require an immutable Hugging Face revision. Refresh the model details first."); };
 export const artifactDownloadUrl = (repoId: string, revision: string, file: string): string => {
   validateRepository(repoId); validateRevision(revision); validateArtifactPath(file);
-  return `${origin}/${repoId}/resolve/${revision}/${file.split("/").map(encodeURIComponent).join("/")}`;
+  return `${hfOrigin()}/${repoId}/resolve/${revision}/${file.split("/").map(encodeURIComponent).join("/")}`;
 };
 
 interface HfRecord {
@@ -45,7 +49,7 @@ export class HuggingFaceCatalog {
   async list(query = "", cursor?: string, source?: string): Promise<CatalogPage> {
     if (!query.trim() && source !== "search") return { items: structuredClone(this.recommended), cached: true };
     if (query.length > 200 || (cursor?.length ?? 0) > 4096) throw new LocalModelError("Search query or cursor is too long.");
-    const url = new URL(`${origin}/api/models`);
+    const url = new URL(`${hfOrigin()}/api/models`);
     url.searchParams.set("search", query.trim()); url.searchParams.set("filter", "gguf");
     url.searchParams.set("sort", "downloads"); url.searchParams.set("direction", "-1"); url.searchParams.set("limit", "12"); url.searchParams.set("full", "true");
     if (cursor) url.searchParams.set("cursor", cursor);
@@ -71,7 +75,7 @@ export class HuggingFaceCatalog {
     const cached = revision ? this.cache.get(`${repoId}@${revision}`) : undefined;
     // Older cached records excluded projectors; refresh their pinned metadata once.
     if (cached && Array.isArray(cached.projectors)) return structuredClone({ ...cached, cached: true });
-    const url = `${origin}/api/models/${repoId}${revision ? `/revision/${revision}` : ""}?blobs=true`;
+    const url = `${hfOrigin()}/api/models/${repoId}${revision ? `/revision/${revision}` : ""}?blobs=true`;
     const response = await this.fetcher(url, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new LocalModelError(`Hugging Face model details returned ${response.status}. The repository may require access or be unavailable.`, 502);
     const record = await response.json() as HfRecord;

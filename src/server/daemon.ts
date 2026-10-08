@@ -13,6 +13,7 @@ import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
 import { createChatOperations } from "../runtime/chatOperations";
+import { createModelOperations } from "../runtime/modelOperations";
 import { publicError } from "../runtime/publicError";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
@@ -62,8 +63,11 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   };
   const host = backend.host!;
   const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
-    operations: createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore: backend.runtimeManager.getRuntime().sessionIndexStore,
-      runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
+    operations: {
+      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore: backend.runtimeManager.getRuntime().sessionIndexStore,
+        runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
+      ...createModelOperations({ runtimeManager: backend.runtimeManager })
+    },
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();
       let loadedModels: string[] = [];
