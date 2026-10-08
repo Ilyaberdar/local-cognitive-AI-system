@@ -7,6 +7,7 @@ import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelOptions, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
+import { createServerModels } from "./server-models.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
@@ -152,6 +153,8 @@ const state = {
 // state exists; server chats have their own session keys, which never reach this computer's API.
 let chatTarget = null;
 let savedLocalChat = null;
+// The Models tab of the selected server (R5); this computer's model manager stays as it is.
+let serverModels = null;
 const isServerChat = sessionId => Boolean(chatTarget?.owns(sessionId));
 const notForServerChats = () => Promise.reject(new Error("This is not available for server chats yet."));
 
@@ -395,7 +398,7 @@ const modelManager = createModelManager({
     testing: Boolean(state.localModelTest),
     currentTarget: localChatSettings()?.defaultTarget
   }),
-  isVisible: () => state.route === "models",
+  isVisible: () => state.route === "models" && !chatTarget?.isRemote(),
   notify: (message, tone) => {
     const scroll = captureScrollState();
     pushToast(message, tone);
@@ -488,8 +491,13 @@ chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountSt
     if (cameOnline && isServerChat(state.activeSessionId)) void reloadRemoteChat();
   },
   onEvent: (key, update) => handleRemoteUpdate(key, update) });
+serverModels = createServerModels({ target: chatTarget, createModelManager, onUse: useServerModel,
+  isVisible: () => state.route === "models" && Boolean(chatTarget?.isRemote()),
+  notify: (message, tone) => { const scroll = captureScrollState(); pushToast(message, tone); render(); restoreScrollState(scroll); },
+  currentTarget: () => isServerChat(state.activeSessionId) ? state.sessionSettings?.defaultTarget : undefined });
 const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput, account: accountState,
-  getContext: () => ({ ...state.bootstrap, route: state.route }),
+  // Settings are this computer's; with a server selected the pages say so (R5 settings split comes later).
+  getContext: () => ({ ...state.bootstrap, route: state.route, remoteHost: chatTarget?.isRemote() ? chatTarget.hostName() : "" }),
   renderModelControl: renderProviderSettingsModelControl, applyPreferences: applyUiPreferences,
   captureScroll: captureScrollState, restoreScroll: restoreScrollState,
   onReturn: () => {
@@ -500,7 +508,7 @@ const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
 });
 systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") applyTheme("system", false); });
 
-window.addEventListener("beforeunload", () => modelManager.dispose());
+window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); });
 
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
@@ -516,6 +524,9 @@ window.addEventListener("hashchange", () => {
   syncRouteFromHash();
   if (!wasSettings || state.route !== previous) render();
   syncSystemMetricsPolling();
+  if (state.route === "chat" && chatTarget?.isRemote() && chatTarget.modelsStale()) {
+    void chatTarget.models(true).then(() => { if (state.route === "chat" && isServerChat(state.activeSessionId)) render(); }).catch(() => undefined);
+  }
 });
 
 async function init() {
@@ -740,10 +751,10 @@ function render(options = {}) {
             ${renderModelsRoute()}
           </section>
           <section class="route route--orchestration ${state.route === "orchestration" ? "active" : ""}">
-            ${renderOrchestrationRoute()}
+            ${chatTarget?.isRemote() ? renderNotOnServer("Tasks & workflows") : renderOrchestrationRoute()}
           </section>
           <section class="route route--synthesis ${state.route === "synthesis" ? "active" : ""}">
-            <div id="synthesis-workspace"></div>
+            ${chatTarget?.isRemote() ? renderNotOnServer("Synthesis") : ""}<div id="synthesis-workspace"></div>
           </section>
           <section class="route route--remote ${state.route === "remote" ? "active" : ""}">
             ${remoteUi.render()}
@@ -762,6 +773,7 @@ function render(options = {}) {
   voiceInput.bind();
   reviewPanel.bind();
   modelManager.bind(document.querySelector("#local-model-manager"));
+  serverModels?.bind(document.querySelector("#server-model-manager"));
   remoteUi.bind(document.querySelector(".route--remote"));
   restorePresentationState(presentation);
   sessionSetupMotion.restore(setupViewport, options.setupAddedId);
@@ -841,7 +853,7 @@ function renderAppTopbar(nativeTitlebar) {
     <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
     <div class="app-topbar__actions">
       ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
-      ${state.route === "chat" && chatTarget?.visible() ? renderTargetSwitch(chatTarget)
+      ${chatTarget?.visible() ? renderTargetSwitch(chatTarget)
         : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`}
     </div>
   </header>`;
@@ -2169,13 +2181,17 @@ function connectWorkflowRun(detail, generation, workspace) {
 }
 
 async function mountActiveSynthesisWorkspace() {
+  // Synthesis stays on this computer: while a server is selected it is hidden, not unmounted.
+  const remote = Boolean(chatTarget?.isRemote());
+  const host = document.querySelector("#synthesis-workspace");
+  if (host) host.hidden = remote;
   if (synthesisWorkspaceHandle) {
     synthesisWorkspaceHandle.setProjects(state.bootstrap?.projects ?? []);
-    synthesisWorkspaceHandle.setActive(state.route === "synthesis");
+    synthesisWorkspaceHandle.setActive(state.route === "synthesis" && !remote);
     return;
   }
-  const container = document.querySelector("#synthesis-workspace");
-  if (!container || state.route !== "synthesis") return;
+  const container = host;
+  if (!container || state.route !== "synthesis" || remote) return;
   const generation = synthesisWorkspaceMountGeneration;
   container.innerHTML = '<div class="empty compact">Loading Synthesis…</div>';
   try {
@@ -2835,6 +2851,7 @@ function readWorkflowDraftOrToast() {
 }
 
 function renderModelsRoute() {
+  if (serverModels?.active()) return `<div class="grid">${serverModels.render()}</div>`;
   const externalModels = (state.bootstrap?.allManagedModels ?? []).filter((model) => model.providerId !== "llamacpp");
   const providerDefaults = state.bootstrap?.appSettings?.providers ?? {};
   const providers = (state.bootstrap?.providers ?? []).filter((provider) => provider.id !== "llamacpp");
@@ -4817,7 +4834,7 @@ async function waitForManagedModelState(providerId, modelKey, loaded) {
 }
 
 async function pollWorkflowProgress() {
-  if (workflowPollInFlight || state.route !== "orchestration" || state.loading) return;
+  if (workflowPollInFlight || state.route !== "orchestration" || state.loading || chatTarget?.isRemote()) return;
   if (!(state.bootstrap?.workflowRuns ?? []).some((run) => ["queued", "running"].includes(run.status))) return;
   workflowPollInFlight = true;
   const selectedRunId = state.activeWorkflowRunId;
@@ -4850,6 +4867,10 @@ async function pollWorkflowProgress() {
 
 async function pollSystemMetrics() {
   if (state.route !== "models" || !state.bootstrap) {
+    return;
+  }
+  if (serverModels?.active()) {
+    await serverModels.pollMetrics();
     return;
   }
 
@@ -6377,13 +6398,16 @@ function bindWorkflowReviewActions() {
 // ---- Chat on a paired server (R4) -------------------------------------------------------
 // The chat screen keeps one implementation: a server chat has its own session key, its data is
 // projected into the same state fields, and events from the server feed the same render paths.
+// Since R5 the selection is the whole window's: the Models tab follows it (server-models.js),
+// and screens that do not run on a server yet say so.
 
 /** This computer's chat settings, also while a server chat is on screen (Models, Workflow). */
 function localChatSettings() {
   return chatTarget?.isRemote() ? savedLocalChat?.sessionSettings : state.sessionSettings;
 }
 
-async function switchChatTarget(next) {
+/** Selects where the window works; the screen on display stays (Use in chat navigates itself). */
+async function switchChatTarget(next, { route = state.route } = {}) {
   const wanted = next || "local";
   const current = chatTarget.isRemote() ? chatTarget.hostId() : "local";
   if (wanted === current) {
@@ -6416,9 +6440,36 @@ async function switchChatTarget(next) {
       await refreshBootstrap();
       await ensureSession();
     }
-    state.route = "chat";
-    if (!window.location.hash.startsWith("#/chat")) window.location.hash = "/chat";
+    if (route === "chat") {
+      state.route = "chat";
+      if (!window.location.hash.startsWith("#/chat")) window.location.hash = "/chat";
+    }
   });
+}
+
+/** A screen that does not run on a server yet: said plainly, with the way back to this computer. */
+function renderNotOnServer(screen) {
+  const name = chatTarget.hostName();
+  return `<div class="project-landing server-unavailable">${icon("remote")}<h2>${escapeHtml(`${screen} is not available on ${name} yet`)}</h2>
+    <p>${escapeHtml(`Chats and models run on ${name}. ${screen} runs on this computer.`)}</p>
+    <button class="primary-button" type="button" data-chat-target="local">Use This computer</button></div>`;
+}
+
+/** Use in chat on a server's Models tab: the server chat on screen, or a new one, runs the model. */
+async function useServerModel(model) {
+  if (!chatTarget?.isRemote()) return;
+  window.clearTimeout(state.ui.autosaveTimer);
+  await state.ui.autosavePromise.catch(() => undefined);
+  if (!isServerChat(state.activeSessionId)) await createRemoteChat();
+  const key = state.activeSessionId;
+  if (!isServerChat(key)) return;
+  const saved = await chatTarget.updateSettings(key, { defaultTarget: { providerId: "llamacpp", model: model.libraryId || model.id } });
+  await chatTarget.models(true).catch(() => undefined);
+  if (state.activeSessionId !== key) return;
+  state.sessionSettings = saved;
+  state.route = "chat";
+  render();
+  window.location.hash = "#/chat";
 }
 
 async function ensureRemoteSession() {
@@ -6579,13 +6630,14 @@ async function cancelRemoteRun(active) {
 
 /** Status changes repaint the switch, banner and send button only: typing is not interrupted. */
 function repaintChatTarget() {
-  if (state.route !== "chat") return;
   const actions = document.querySelector(".app-topbar__actions");
   const existing = actions?.querySelector(".chat-target, .local-indicator");
   if (existing) {
     existing.outerHTML = chatTarget?.visible() ? renderTargetSwitch(chatTarget) : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`;
     bindChatTargetControls();
   }
+  if (state.route === "models" && serverModels?.statusChanged()) { render(); return; }
+  if (state.route !== "chat") return;
   if (!isServerChat(state.activeSessionId)) {
     if (chatTarget?.isRemote() && !state.activeSessionId) render();
     return;

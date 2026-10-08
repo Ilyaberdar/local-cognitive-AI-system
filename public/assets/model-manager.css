@@ -68,6 +68,14 @@
 .mm-runtime-backend.is-warning { color: var(--warning); }
 .mm-resource-list { gap: 12px; }
 .mm-runtime-message { flex-basis: 100%; color: var(--warning); overflow-wrap: anywhere; line-height: 1.5; }
+/* A paired server's tab: one memory bar per GPU, and the last known state while it reconnects. */
+.mm-gpu { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.mm-gpu-bar { position: relative; width: 72px; height: 6px; overflow: hidden; border-radius: 3px; background: var(--line); }
+.mm-gpu-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); transition: width .4s ease; }
+.mm-offline-banner { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--warning); background: var(--surface-2); font-size: calc(11px * var(--font-scale, 1)); }
+.mm-offline-banner .ui-icon { flex: 0 0 auto; width: 15px; }
+.model-manager.is-offline :is(.mm-runtime-strip, .mm-downloads, .mm-library-grid, .mm-catalog-grid) { opacity: .55; }
+@media (prefers-reduced-motion: reduce) { .mm-gpu-bar > span { transition: none; } }
 .model-loaded-badge { color: var(--success, #85c9a4); font-size: 11px; font-weight: 500; white-space: nowrap; border: 0; background: none; padding: 0; }
 .model-loaded-badge[hidden] { display: none; }
 .mm-settings-form > .mm-inline-error, .mm-context-feedback { flex-basis: 100%; }

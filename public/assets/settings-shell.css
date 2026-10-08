@@ -18,6 +18,8 @@
 .settings-content h1 { font-size: calc(24px * var(--font-scale, 1)); font-weight: 550; letter-spacing: -.6px; margin: 0 0 34px; outline: none; }
 .settings-parent { display: flex; align-items: center; gap: 5px; color: var(--muted); text-decoration: none; margin: -24px 0 14px; }
 .settings-parent .ui-icon { width: 15px; }
+.settings-target-note { display: flex; align-items: center; gap: 8px; margin: -8px 0 18px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
+.settings-target-note .ui-icon { flex: 0 0 auto; width: 15px; }
 .settings-description { color: var(--muted); line-height: 1.65; margin: 0 0 24px; max-width: 660px; }
 .settings-footnote { color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.65; margin: var(--settings-card-note-gap) 0 24px; max-width: 660px; }
 .settings-runtime-overview { margin-bottom: 24px; }
