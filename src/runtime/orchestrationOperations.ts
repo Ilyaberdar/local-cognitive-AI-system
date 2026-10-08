@@ -1,9 +1,10 @@
+import path from "path";
 import { z } from "zod";
 import type { RuntimeManager } from "../app/RuntimeManager";
 import { RemoteOperationError, type OperationContext, type RemoteOperation } from "../remote/host/RemoteHost";
 import { ScheduleValidationError } from "../schedules/ScheduleService";
 import type { ScheduleWeekday } from "../schedules/types";
-import { TaskValidationError, type Task } from "../tasks/types";
+import { TaskValidationError } from "../tasks/types";
 import { AgentTraceNotFoundError, readAgentTrace } from "../workflows/agentTrace";
 import { DEFAULT_TASK_WORKFLOW_ID } from "../workflows/defaultWorkflows";
 import { WorkflowConflictError, WorkflowRunConflictError, type WorkflowDefinition, type WorkflowRun } from "../workflows/types";
@@ -64,10 +65,10 @@ const LATER = {
   fullAccess: "Full access is not available from a device yet: on the server, steps ask for approval.",
   plugins: "Plugins in workflows on the server come in a later update."
 };
-// Full access configured on the host stays the host's: a device can neither start nor change it.
+// What the host set up with full access, or bound to a folder or project chosen there, stays the
+// host's: a device can delete, cancel or pause it, never start, continue or change it.
 const FULL_ON_HOST = "This runs with full access on the server, so it can only be started or changed there.";
-// Likewise a folder or project chosen on the host: a device does not change what runs there.
-const FOLDER_ON_HOST = "This workflow runs in a folder or project chosen on the server, so it can only be changed there.";
+const FOLDER_ON_HOST = "This runs in a folder or project chosen on the server, so it can only be started or changed there.";
 const unsupported = (message: string) => new RemoteOperationError(message, "unsupported");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -96,6 +97,15 @@ const skipsApproval = (workflow: WorkflowDefinition | null | undefined, accessMo
   accessMode === "full" || workflowLimits(workflow).includes(LATER.fullAccess);
 /** A run continues with what it started with: its own access and its snapshot of the workflow. */
 const runSkipsApproval = (run: WorkflowRun): boolean => skipsApproval(run.workflowSnapshot, run.executionSnapshot?.accessMode);
+const hasFolder = (workflow: WorkflowDefinition | null | undefined) => workflow?.runDefaults?.rootPath !== undefined || workflow?.runDefaults?.projectId !== undefined;
+/** Why only the host may start or continue this run, if it may not be done from a device. */
+const runHostOnly = (run: WorkflowRun): string | undefined => {
+  if (runSkipsApproval(run)) return FULL_ON_HOST;
+  const workspace = run.workspace;
+  // A managed run folder is <data>/workspaces/workflow-runs/<run id>; any other one was chosen on the host.
+  const chosen = workspace?.kind === "project" || (workspace?.kind === "workflow" && !(path.basename(workspace.rootPath) === run.id && path.basename(path.dirname(workspace.rootPath)) === "workflow-runs"));
+  return chosen || hasFolder(run.workflowSnapshot) ? FOLDER_ON_HOST : undefined;
+};
 
 const parse = <T>(schema: z.ZodType<T>, payload: unknown): T => {
   const result = schema.safeParse(payload);
@@ -149,7 +159,9 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     if (!versions.length) throw notFound("workflow");
     if (versions.some(workflow => skipsApproval(workflow))) throw unsupported(FULL_ON_HOST);
   };
-  const taskSkipsApproval = async (task: Task) => skipsApproval(await workflowOf(task.workflowId, task.workflowVersion), task.accessMode);
+  /** Why only the host may start or change this task or schedule, if so. */
+  const hostOnly = async (item: { workflowId: string; workflowVersion?: number; accessMode?: string; projectId?: string }) =>
+    skipsApproval(await workflowOf(item.workflowId, item.workflowVersion), item.accessMode) ? FULL_ON_HOST : item.projectId ? FOLDER_ON_HOST : undefined;
   const requireRun = async (id: string) => {
     const run = await runtime().workflowRunStore.getRun(id);
     if (!run) throw notFound("run");
@@ -195,8 +207,9 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       mutable();
       const current = await runtime().taskService.get(taskId);
       if (!current) throw notFound("task");
-      // Not even its column: a full-access task moved back to the queue could be started on the host.
-      if (await taskSkipsApproval(current)) throw unsupported(FULL_ON_HOST);
+      // Not even its column: back in the queue, the host could start it.
+      const reason = await hostOnly(current);
+      if (reason) throw unsupported(reason);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       const task = await runtime().taskService.update(taskId, { ...patch, ...(patch.description === undefined ? {} : { description: patch.description.trim() }) });
       if (!task) throw notFound("task");
@@ -217,7 +230,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       return command(context, "tasks.run", input, async () => {
         const task = await runtime().taskService.get(input.taskId);
         if (!task) throw notFound("task");
-        if (await taskSkipsApproval(task)) throw unsupported(FULL_ON_HOST);
+        const reason = await hostOnly(task);
+        if (reason) throw unsupported(reason);
         const started = await runtime().taskService.startTask(input.taskId);
         return { task: safeTask(started.task), runId: started.runId };
       }, { target: input.taskId,
@@ -230,7 +244,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "tasks.runNext": (payload, context) => known(async () => {
       const input = parse(schemas.runNext, payload);
       return command(context, "tasks.runNext", input, async () => {
-        const started = await runtime().taskService.startNextQueued(async task => !await taskSkipsApproval(task));
+        const started = await runtime().taskService.startNextQueued(async task => !await hostOnly(task));
         return started ? { task: safeTask(started.task), runId: started.runId } : { task: null, runId: null };
       });
     }),
@@ -252,7 +266,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const current = await runtime().scheduleService.get(scheduleId);
       if (!current) throw notFound("schedule");
       const pausing = Object.keys(patch).length === 1 && patch.enabled === false;
-      if (!pausing && skipsApproval(await workflowOf(current.workflowId), current.accessMode)) throw unsupported(FULL_ON_HOST);
+      const reason = pausing ? undefined : await hostOnly(current);
+      if (reason) throw unsupported(reason);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       const schedule = await runtime().scheduleService.update(scheduleId, patch);
       if (!schedule) throw notFound("schedule");
@@ -319,7 +334,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "workflows.runs.review": (payload, context) => known(async () => {
       const input = parse(schemas.review, payload);
       return command(context, "workflows.runs.review", input, async () => {
-        if (runSkipsApproval(await requireRun(input.runId))) throw unsupported(FULL_ON_HOST);
+        const reason = runHostOnly(await requireRun(input.runId));
+        if (reason) throw unsupported(reason);
         return safeRun(await runtime().workflowRunner.review(input.runId, input.approved, input.comment ?? "", true,
           { ...(input.approvalId ? { approvalId: input.approvalId } : {}), ...(input.waitingNodeRunId ? { waitingNodeRunId: input.waitingNodeRunId } : {}) }));
       }, { target: input.runId, allowWhileDraining: true });
@@ -327,7 +343,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "workflows.runs.resume": (payload, context) => known(async () => {
       const input = parse(schemas.runCommand, payload);
       return command(context, "workflows.runs.resume", input, async () => {
-        if (runSkipsApproval(await requireRun(input.runId))) throw unsupported(FULL_ON_HOST);
+        const reason = runHostOnly(await requireRun(input.runId));
+        if (reason) throw unsupported(reason);
         return safeRun(await runtime().workflowRunner.resume(input.runId, true));
       }, { target: input.runId });
     }),
@@ -346,11 +363,12 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       if (limits.length) throw unsupported(limits[0]!);
       const definition = input.workflow as unknown as WorkflowDefinition;
       return command(context, "workflows.save", input, async () => {
-        // What a device saves would run with the full access of the host's tasks and schedules that use it.
-        const [tasks, schedules] = await Promise.all([runtime().taskService.list(), runtime().scheduleService.list()]);
-        if ([...tasks, ...schedules].some(item => item.workflowId === definition.id && item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
-        const stored = await runtime().workflowStore.get(definition.id, definition.version);
-        if (stored?.runDefaults?.rootPath !== undefined || stored?.runDefaults?.projectId !== undefined) throw unsupported(FOLDER_ON_HOST);
+        // What a device saves would run with whatever the host's tasks and schedules that use it
+        // were given there, and a task may run any version of it: all of them count.
+        const [tasks, schedules, workflows] = await Promise.all([runtime().taskService.list(), runtime().scheduleService.list(), runtime().workflowStore.list()]);
+        const users = [...tasks, ...schedules].filter(item => item.workflowId === definition.id);
+        if (users.some(item => item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
+        if (users.some(item => item.projectId) || workflows.some(item => item.id === definition.id && hasFolder(item))) throw unsupported(FOLDER_ON_HOST);
         return safeWorkflow(await runtime().workflowStore.save(definition, { expectedUpdatedAt: input.expectedUpdatedAt }));
       });
     })

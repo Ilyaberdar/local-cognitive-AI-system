@@ -392,3 +392,31 @@ test("the folder chosen on the host for a workflow's runs does not reach a devic
   assert.equal(stored.name, "Review flow", "the host's workflow is unchanged");
   assert.equal(stored.runDefaults?.rootPath, folder);
 });
+
+test("a task, schedule, workflow or run bound to a folder or project chosen on the host stays the host's", async t => {
+  const f = await setup(t);
+  const refused = (promise: Promise<unknown>) => assert.rejects(promise, (error: unknown) => code("unsupported")(error) && /folder or project chosen on the server/.test((error as Error).message));
+  const folder = path.join(f.root, "site");
+  await fs.mkdir(folder);
+  const project = await new ProjectStore(f.root).create({ name: "Site", rootPath: folder });
+  await f.workflowStore.create(reviewWorkflow());
+  const bound = await f.taskService.create({ title: "Host task", description: "", workflowId: "review-flow", projectId: project.id });
+  await refused(f.call("tasks.update", { taskId: bound.id, patch: { description: "Read everything" } }));
+  await refused(f.call("tasks.run", { commandId: "cmd-folder-run-1", taskId: bound.id }));
+  await refused(f.call("workflows.save", { commandId: "cmd-folder-save-1", workflow: { ...(await f.workflowStore.get("review-flow"))!, name: "Changed" },
+    expectedUpdatedAt: (await f.workflowStore.get("review-flow"))!.updatedAt }));
+  // Another version of a workflow whose saved version has a host folder: still the host's.
+  await f.workflowStore.create(reviewWorkflow({ id: "foldered", runDefaults: { rootPath: folder } }));
+  await refused(f.call("workflows.save", { commandId: "cmd-folder-save-2", workflow: reviewWorkflow({ id: "foldered", version: 2 }), expectedUpdatedAt: null }));
+  // Run next passes over it.
+  assert.deepEqual(await f.call("tasks.runNext", { commandId: "cmd-folder-next-1" }), { task: null, runId: null });
+  // A run started on the host in a chosen folder is continued there only.
+  const hostRun = await f.workflowRunner.startStandalone(reviewWorkflow({ id: "plain-review" }), { rootPath: folder });
+  f.workflowRunner.runInBackground(hostRun.id);
+  const waiting = await settled(f, hostRun.id, "waiting");
+  const review = waiting.nodeRuns.find((item: { status: string }) => item.status === "waiting");
+  await refused(f.call("workflows.runs.review", { commandId: "cmd-folder-review-1", runId: hostRun.id, approved: true, waitingNodeRunId: review.id }));
+  assert.deepEqual(waiting.run.workspace, { kind: "workflow" }, "the folder itself is not shown");
+  assert.equal((await f.call("workflows.runs.cancel", { runId: hostRun.id })).status, "cancelled", "cancelling stays possible");
+  assert.deepEqual(await f.call("tasks.delete", { taskId: bound.id }), { deleted: true }, "and so does deleting");
+});
