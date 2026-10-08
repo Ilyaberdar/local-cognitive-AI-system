@@ -88,12 +88,15 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
   const refs = new Map(), keysByRef = new Map(), settings = new Map(), views = new Map(), lastSession = new Map();
   let subscribed, generation = 0;
 
-  const call = async (op, payload) => {
-    const result = await runtime.request(op, payload);
+  // Every call names its server (the selected one, or the one a chat lives on): the main process
+  // refuses it once another server is connected.
+  const call = async (op, payload, host = target) => {
+    const result = await runtime.request(op, payload, host);
     if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The server did not answer."), { code: result?.error?.code });
     return result.value;
   };
   const serverId = key => refs.get(key)?.sessionId;
+  const hostOf = key => refs.get(key)?.hostId;
   /** A screen key for a server chat: one key per server and chat, in the alphabet voice input accepts. */
   const keyFor = (sessionId, hostId = target) => {
     const ref = `${hostId}:${sessionId}`;
@@ -174,7 +177,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     /** History, the turn in progress and the cursor to follow the chat from. */
     async load(key) {
       const sessionId = serverId(key);
-      const [snapshot, sessionSettings] = await Promise.all([call("sessions.messages.list", { sessionId }), call("sessions.settings.get", { sessionId })]);
+      const [snapshot, sessionSettings] = await Promise.all([call("sessions.messages.list", { sessionId }, hostOf(key)), call("sessions.settings.get", { sessionId }, hostOf(key))]);
       settings.set(key, sessionSettings);
       const run = snapshot.activeRun;
       const runMessages = run ? snapshot.messages.filter(message => message.runId === run.runId) : [];
@@ -190,12 +193,12 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       const current = settings.get(key);
       const changes = remoteSettingsPatch(patch, current);
       if (!Object.keys(changes).length && current) return current;
-      const saved = await call("sessions.settings.update", { sessionId: serverId(key), patch: changes });
+      const saved = await call("sessions.settings.update", { sessionId: serverId(key), patch: changes }, hostOf(key));
       settings.set(key, saved);
       return saved;
     },
     async send(key, input) {
-      const result = await runtime.send("chat.runs.start", { sessionId: serverId(key), input });
+      const result = await runtime.send("chat.runs.start", { sessionId: serverId(key), input }, hostOf(key));
       if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The message was not sent."), { code: result?.error?.code });
       return result.value;
     },
@@ -209,7 +212,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     subscribe(key, cursor) {
       if (subscribed && subscribed.streamId !== cursor.streamId) void runtime.unsubscribe(subscribed.streamId);
       subscribed = { key, streamId: cursor.streamId };
-      void runtime.subscribe(cursor);
+      void runtime.subscribe(cursor, hostOf(key));
     },
     release() {
       if (subscribed) void runtime?.unsubscribe(subscribed.streamId);

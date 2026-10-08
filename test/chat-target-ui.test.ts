@@ -94,12 +94,12 @@ test("a server chat runs on the server only: history, sending, streaming and the
   assert.equal(app.document.querySelector(".access-trigger"), null, "access modes stay local");
   assert.match(app.document.querySelector("#session-settings-form").textContent, /Main model · on fedora/);
   assert.deepEqual(ops(app, "request").map(([op]: [string]) => op).sort(), ["models.available", "sessions.list", "sessions.messages.list", "sessions.settings.get"]);
-  assert.deepEqual(ops(app, "subscribe"), [[{ streamId: "session:srv-1", epoch: "e1", after: 0 }]]);
+  assert.deepEqual(ops(app, "subscribe"), [[{ streamId: "session:srv-1", epoch: "e1", after: 0 }, HOST]], "every call names the server it is for");
 
   type(app, "Hi server");
   submit(app);
   await settle();
-  assert.deepEqual(ops(app, "send"), [["chat.runs.start", { sessionId: "srv-1", input: "Hi server" }]]);
+  assert.deepEqual(ops(app, "send"), [["chat.runs.start", { sessionId: "srv-1", input: "Hi server" }, HOST]]);
   assert.equal(app.document.querySelector(".message.pending.user")?.textContent.includes("Hi server") ?? app.document.querySelector(".message.pending")?.textContent.includes("Hi server"), true);
   paired.emit([{ seq: 1, type: "message.accepted", occurredAt: "t", payload: { runId: RUN, message: { content: "Hi server", createdAt: "t" } } },
     { seq: 2, type: "run.started", occurredAt: "t", payload: { runId: RUN } },
@@ -160,6 +160,6 @@ test("settings of a server chat are saved on the server, only the changed ones",
   await new Promise(resolve => setTimeout(resolve, 800));
   await settle();
   const updates = ops(app, "request").filter(([op]: [string]) => op === "sessions.settings.update");
-  assert.deepEqual(updates, [["sessions.settings.update", { sessionId: "srv-1", patch: { language: "en" } }]]);
+  assert.deepEqual(updates, [["sessions.settings.update", { sessionId: "srv-1", patch: { language: "en" } }, HOST]]);
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => entry.startsWith("PUT")), [], "no local settings write");
 });
