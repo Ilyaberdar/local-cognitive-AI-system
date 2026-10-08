@@ -72,6 +72,7 @@ export class RemoteClient extends EventEmitter {
       await this.saveProfile(accountId, { hostId: key.hostId, hostName: session.welcome.hostName, hostSpkiSha256: key.hostSpkiSha256.toString("hex"),
         deviceId: device.deviceId, pairedAt: new Date().toISOString() });
       this.online(session, generation);
+      void this.options.vault.write(`remote/last-host/${accountId}`, key.hostId).catch(() => undefined);
       return this.current;
     } catch (error) { return this.failed(error, generation); }
   }
@@ -86,14 +87,42 @@ export class RemoteClient extends EventEmitter {
   disconnect(): RemoteStatus {
     this.reset();
     this.set({ state: "idle" });
+    // Choosing this computer is remembered: the next start does not reconnect.
+    void this.options.account().then(account => account && this.options.vault.remove(`remote/last-host/${account.accountId}`)).catch(() => undefined);
     return this.current;
+  }
+
+  /** At startup: reconnects to the server this computer was last connected to, if any. */
+  async resume(): Promise<RemoteStatus> {
+    const account = await this.options.account().catch(() => undefined);
+    if (!account || this.current.state !== "idle") return this.current;
+    const hostId = await this.options.vault.read(`remote/last-host/${account.accountId}`).catch(() => undefined);
+    if (!hostId || !(await this.profiles(account.accountId)).some(profile => profile.hostId === hostId)) return this.current;
+    return this.connect(hostId);
+  }
+
+  /** Resolves true once online, false on timeout or when the connection needs the user. */
+  waitOnline(timeoutMs: number): Promise<boolean> {
+    if (this.current.state === "online") return Promise.resolve(true);
+    return new Promise(resolve => {
+      const done = (value: boolean) => { clearTimeout(timer); this.off("change", onChange); resolve(value); };
+      const onChange = (status: RemoteStatus) => {
+        if (status.state === "online") done(true);
+        else if (["idle", "revoked", "identity_changed", "error"].includes(status.state)) done(false);
+      };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      this.on("change", onChange);
+    });
   }
 
   /** Disconnects and forgets the server on this computer (the server keeps its record until revoked). */
   async forget(hostId: string): Promise<RemoteStatus> {
     if (this.current.hostId === hostId) this.disconnect();
     const account = await this.options.account();
-    if (account) await this.saveProfiles(account.accountId, (await this.profiles(account.accountId)).filter(profile => profile.hostId !== hostId));
+    if (account) {
+      await this.saveProfiles(account.accountId, (await this.profiles(account.accountId)).filter(profile => profile.hostId !== hostId));
+      if (await this.options.vault.read(`remote/last-host/${account.accountId}`) === hostId) await this.options.vault.remove(`remote/last-host/${account.accountId}`);
+    }
     return this.current;
   }
 
@@ -113,12 +142,16 @@ export class RemoteClient extends EventEmitter {
     await this.api(accessToken, "DELETE", `/v1/hosts/${encodeURIComponent(hostId)}/devices/${encodeURIComponent(deviceId)}`);
   }
 
-  request<T = unknown>(op: string, payload?: unknown): Promise<T> {
+  request<T = unknown>(op: string, payload?: unknown, timeoutMs?: number): Promise<T> {
     if (!this.session?.isOpen) return Promise.reject(new RemoteError("Not connected to a server.", "not_connected"));
-    return this.session.request<T>(op, payload);
+    return this.session.request<T>(op, payload, timeoutMs);
   }
 
-  dispose(): void { this.reset(); }
+  /** Ends the session without forgetting the last server (the app is closing). */
+  dispose(): void {
+    this.reset();
+    if (this.current.state !== "idle") this.set({ state: "idle" });
+  }
 
   private async connectAs(hostId: string, generation: number, state: "connecting" | "reconnecting"): Promise<RemoteStatus> {
     this.set({ state, hostId, ...(this.current.hostName ? { hostName: this.current.hostName } : {}) });
@@ -132,6 +165,7 @@ export class RemoteClient extends EventEmitter {
       const session = await this.open(ticket.ticket, generation, { purpose: "connect", hostId, hostSpkiSha256: Buffer.from(profile.hostSpkiSha256, "hex"),
         ticketId: ticket.ticketId, accountId, deviceId: device.deviceId, identity: device.identity });
       this.online(session, generation);
+      if (state === "connecting") void this.options.vault.write(`remote/last-host/${accountId}`, hostId).catch(() => undefined);
       return this.current;
     } catch (error) { return this.failed(error, generation, true); }
   }

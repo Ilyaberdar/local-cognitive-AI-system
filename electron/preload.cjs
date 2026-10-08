@@ -63,6 +63,18 @@ contextBridge.exposeInMainWorld("desktopRemote", {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("remote:changed", listener);
     return () => ipcRenderer.removeListener("remote:changed", listener);
+  },
+  // The chat screen on the selected server: allowlisted operations, safe resends, event streams.
+  runtime: {
+    request: (op, payload) => ipcRenderer.invoke("remote:runtime-request", op, payload),
+    send: (op, payload) => ipcRenderer.invoke("remote:runtime-send", op, payload),
+    subscribe: cursor => ipcRenderer.invoke("remote:runtime-subscribe", cursor),
+    unsubscribe: streamId => ipcRenderer.invoke("remote:runtime-unsubscribe", streamId),
+    onEvent: callback => {
+      const listener = (_event, update) => callback(update);
+      ipcRenderer.on("remote:runtime-event", listener);
+      return () => ipcRenderer.removeListener("remote:runtime-event", listener);
+    }
   }
 });
 

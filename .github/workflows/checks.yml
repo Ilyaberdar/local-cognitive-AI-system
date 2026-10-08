@@ -79,7 +79,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build -w @local-cognitive/cloud
-      - run: npm run build:server && node --test dist/test/remote-e2e.test.js dist/test/remote-channel.test.js
+      - run: npm run build:server && node --test dist/test/remote-e2e.test.js dist/test/remote-chat-e2e.test.js dist/test/remote-channel.test.js dist/test/runService.test.js
 
   cloud-image:
     needs: cloud
