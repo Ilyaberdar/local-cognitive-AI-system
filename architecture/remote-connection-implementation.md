@@ -505,6 +505,35 @@ digest/revision; повторное или устаревшее подтверж
 до mobile. Workflow/tasks/schedules используют существующие runners, дополняемые
 command dedupe, approval/reconciliation и revisions там, где их не хватает.
 
+### 7.4 Реализация R4 (9 октября)
+
+- **Host** (`src/runtime/`): `RunService` — команда `chat.runs.start` пишется в
+  `host.db` до ответа (идемпотентность по `commandId` в рамках account/device,
+  другой payload — `idempotency_conflict`), один активный ход на чат
+  (`session_busy`), выполнение через тот же `processRuntimeInput` (channel `http`,
+  локальный профиль — общая история), частичный ответ сохраняется каждые 300 мс,
+  cancel — отдельная команда, approvals привязаны к `approvalId`/digest. После
+  рестарта `recover()` переводит незавершённые ходы в `interrupted` (или
+  `needs_review`, если ход был в шаге tools) без повторного выполнения.
+  `EventJournal` — поток на чат с плотными sequence, epoch и resync.
+- **Протокол**: `events.poll` (long-poll до 20 с) поверх канала R3 вместо push-кадров;
+  операции `sessions.*`, `models.available`, `chat.runs.*`, `chat.approvals.resolve`
+  (`src/runtime/chatOperations.ts`). Ответ больше 1 MiB — ошибка, а не падение host.
+- **Клиент**: `RemoteRuntime` — повтор неподтверждённой команды с тем же `commandId`,
+  подписки с курсором переживают reconnect; авто-переподключение к последнему
+  серверу при запуске; IPC `remote:runtime-*` с allowlist операций.
+- **UI**: переключатель «This computer / сервер» на экране чата
+  (`public/assets/chat-target.js`). Чаты сервера имеют свои ключи сессий; `api`
+  не пропускает их к локальному backend; без связи ничего не отправляется,
+  черновик сохраняется; черновики раздельны по машинам. Трасса запросов локального
+  чата закреплена тестом и не изменилась.
+- **Ограничения R4**: только текст; без проектов, вложений, subagents/debate,
+  смены режима доступа, переименования и удаления чатов сервера. Прерванный ход в
+  контекст модели следующих ходов не попадает. История между машинами не переносится.
+- **Проверено вживую**: Mac → fedora через production relay, ответ с GPU сервера.
+  Автотесты: RunService, журнал, E2E (обрыв посреди ответа, повтор команды,
+  закрытие приложения, cancel, SIGKILL сервера), UI в JSDOM.
+
 ## 8. Переключение UI и функциональное покрытие
 
 В навигации есть **отдельная кнопка Remote**. Она открывает список hosts,
