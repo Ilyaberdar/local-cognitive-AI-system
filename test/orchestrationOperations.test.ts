@@ -228,3 +228,34 @@ test("a run left queued by an earlier process is interrupted at startup and Resu
   assert.equal((await f.workflowRunStore.getRun(mine.id))!.status, "queued");
   assert.equal((await f.workflowRunner.resume(id)).status, "done");
 });
+
+test("nothing a device sends runs without approvals: host full access stays the host's", async t => {
+  const f = await setup(t);
+  const refused = (promise: Promise<unknown>) => assert.rejects(promise, (error: unknown) => code("unsupported")(error) && /full access on the server/.test((error as Error).message));
+  // Set up on the host itself: a workflow whose step never asks, a full-access task and schedule.
+  const unattended = reviewWorkflow({ id: "unattended", nodes: [node("entry", "entry"), node("review", "human_review", { approval: "never" }), node("done", "terminal")] });
+  await f.workflowStore.create(unattended);
+  await f.workflowStore.create(reviewWorkflow());
+  const fullTask = await f.taskService.create({ title: "Host task", description: "", workflowId: "review-flow", accessMode: "full" });
+  const schedules = new ScheduleService(new ScheduleStore(path.join(f.root, "schedules")), f.taskService);
+  const fullSchedule = await schedules.create({ title: "Host schedule", description: "", workflowId: "review-flow", time: "09:00", timezone: "UTC", accessMode: "full" });
+
+  await refused(f.call("tasks.create", { commandId: "cmd-full-1", title: "x", workflowId: "unattended" }));
+  await refused(f.call("schedules.create", { commandId: "cmd-full-2", title: "x", workflowId: "unattended", time: "09:00", timezone: "UTC" }));
+  await refused(f.call("tasks.run", { commandId: "cmd-full-3", taskId: fullTask.id }));
+  await refused(f.call("tasks.update", { taskId: fullTask.id, patch: { description: "Delete everything" } }));
+  await refused(f.call("schedules.update", { scheduleId: fullSchedule.id, patch: { description: "Delete everything" } }));
+  await refused(f.call("workflows.save", { commandId: "cmd-full-4", workflow: { ...(await f.workflowStore.get("review-flow"))!, name: "Changed" },
+    expectedUpdatedAt: (await f.workflowStore.get("review-flow"))!.updatedAt }));
+  const own = await f.call("tasks.create", { commandId: "cmd-full-5", title: "Mine", workflowId: "review-flow" });
+  await refused(f.call("tasks.update", { taskId: own.id, patch: { workflowId: "unattended" } }));
+  // Moving the task between columns and pausing the schedule stay possible.
+  assert.equal((await f.call("tasks.update", { taskId: fullTask.id, patch: { status: "done" } })).status, "done");
+  assert.equal((await f.call("schedules.update", { scheduleId: fullSchedule.id, patch: { enabled: false } })).enabled, false);
+  // Run next starts the device's own task, not a full-access one queued before it.
+  await f.taskService.update(fullTask.id, { status: "todo" });
+  const next = await f.call("tasks.runNext", { commandId: "cmd-full-6" });
+  assert.equal(next.task.id, own.id);
+  await until(() => f.workflowRunStore.getRun(next.runId), run => run?.status === "waiting");
+  assert.equal((await f.taskService.get(fullTask.id))!.lastRunId, undefined);
+});

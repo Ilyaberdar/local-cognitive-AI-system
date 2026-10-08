@@ -114,10 +114,13 @@ export class TaskService {
     return { task: await this.requireTask(taskId), runId: run.id };
   }
 
-  async startNextQueued(): Promise<{ task: Task; runId: string } | null> {
+  /** Starts the first queued task `accept` allows (a paired device skips tasks it may not start). */
+  async startNextQueued(accept: (task: Task) => boolean | Promise<boolean> = () => true): Promise<{ task: Task; runId: string } | null> {
     return withFileLock("workflow-queue", async () => {
-      const task = (await this.taskStore.listQueued()).find((item) => !TaskService.active.has(item.id));
-      return task ? this.startTask(task.id) : null;
+      for (const task of await this.taskStore.listQueued()) {
+        if (!TaskService.active.has(task.id) && await accept(task)) return this.startTask(task.id);
+      }
+      return null;
     });
   }
 

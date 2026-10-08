@@ -3,7 +3,7 @@ import type { RuntimeManager } from "../app/RuntimeManager";
 import { RemoteOperationError, type OperationContext, type RemoteOperation } from "../remote/host/RemoteHost";
 import { ScheduleValidationError } from "../schedules/ScheduleService";
 import type { ScheduleWeekday } from "../schedules/types";
-import { TaskValidationError } from "../tasks/types";
+import { TaskValidationError, type Task } from "../tasks/types";
 import { DEFAULT_TASK_WORKFLOW_ID } from "../workflows/defaultWorkflows";
 import { WorkflowConflictError, WorkflowRunConflictError, type WorkflowDefinition } from "../workflows/types";
 import { canonical, sha256 } from "./canonical";
@@ -51,6 +51,8 @@ const LATER = {
   fullAccess: "Full access is not available from a device yet: on the server, steps ask for approval.",
   plugins: "Plugins in workflows on the server come in a later update."
 };
+// Full access configured on the host stays the host's: a device can neither start nor change it.
+const FULL_ON_HOST = "This runs with full access on the server, so it can only be started or changed there.";
 const unsupported = (message: string) => new RemoteOperationError(message, "unsupported");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -73,6 +75,10 @@ export const workflowLimits = (definition: unknown): string[] => {
   }
   return [...problems];
 };
+
+/** Whether running this would skip approvals: nothing a device sends may lead there (R5-2). */
+const skipsApproval = (workflow: WorkflowDefinition | null | undefined, accessMode?: string): boolean =>
+  accessMode === "full" || workflowLimits(workflow).includes(LATER.fullAccess);
 
 const parse = <T>(schema: z.ZodType<T>, payload: unknown): T => {
   const result = schema.safeParse(payload);
@@ -113,6 +119,12 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
   const runtime = () => deps.runtimeManager.getRuntime();
   const draining = () => new RemoteOperationError("The server is shutting down. Try again when it is back.", "host_draining");
   const mutable = () => { if (deps.isDraining()) throw draining(); };
+  const workflowOf = (workflowId: string, version?: number) => runtime().workflowStore.get(workflowId, version);
+  /** A task or schedule a device creates or retargets may not point at a workflow that skips approvals. */
+  const allowedWorkflow = async (workflowId: string) => {
+    if (skipsApproval(await workflowOf(workflowId))) throw unsupported(FULL_ON_HOST);
+  };
+  const taskSkipsApproval = async (task: Task) => skipsApproval(await workflowOf(task.workflowId, task.workflowVersion), task.accessMode);
   const command = <T>(context: OperationContext, operation: string, input: { commandId: string }, execute: () => Promise<T>,
     options: Pick<LedgerCommand<T>, "target" | "reconcile"> = {}): Promise<T> => {
     const { commandId: key, ...payload } = input;
@@ -134,14 +146,21 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "tasks.create": (payload, context) => known(async () => {
       refuseLater(record(payload));
       const input = parse(schemas.taskCreate, payload);
-      return command(context, "tasks.create", input, async () => safeTask(await runtime().taskService.create({
-        title: input.title, description: (input.description ?? "").trim(), workflowId: input.workflowId || DEFAULT_TASK_WORKFLOW_ID,
-        priority: input.priority ?? "normal", accessMode: input.accessMode ?? "default" })));
+      const workflowId = input.workflowId || DEFAULT_TASK_WORKFLOW_ID;
+      return command(context, "tasks.create", input, async () => {
+        await allowedWorkflow(workflowId);
+        return safeTask(await runtime().taskService.create({ title: input.title, description: (input.description ?? "").trim(), workflowId,
+          priority: input.priority ?? "normal", accessMode: input.accessMode ?? "default" }));
+      });
     }),
     "tasks.update": payload => known(async () => {
       refuseLater(record(record(payload).patch));
       const { taskId, patch } = parse(schemas.taskUpdate, payload);
       mutable();
+      const current = await runtime().taskService.get(taskId);
+      if (!current) throw notFound("task");
+      if (Object.keys(patch).some(key => key !== "status") && await taskSkipsApproval(current)) throw unsupported(FULL_ON_HOST);
+      if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       const task = await runtime().taskService.update(taskId, { ...patch, ...(patch.description === undefined ? {} : { description: patch.description.trim() }) });
       if (!task) throw notFound("task");
       return safeTask(task);
@@ -159,7 +178,9 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         return task ? { task: safeTask(task), runId } : undefined;
       };
       return command(context, "tasks.run", input, async () => {
-        if (!await runtime().taskService.get(input.taskId)) throw notFound("task");
+        const task = await runtime().taskService.get(input.taskId);
+        if (!task) throw notFound("task");
+        if (await taskSkipsApproval(task)) throw unsupported(FULL_ON_HOST);
         const started = await runtime().taskService.startTask(input.taskId);
         return { task: safeTask(started.task), runId: started.runId };
       }, { target: input.taskId,
@@ -172,7 +193,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "tasks.runNext": (payload, context) => known(async () => {
       const input = parse(schemas.runNext, payload);
       return command(context, "tasks.runNext", input, async () => {
-        const started = await runtime().taskService.startNextQueued();
+        const started = await runtime().taskService.startNextQueued(async task => !await taskSkipsApproval(task));
         return started ? { task: safeTask(started.task), runId: started.runId } : { task: null, runId: null };
       });
     }),
@@ -181,13 +202,21 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       refuseLater(record(payload));
       const input = parse(schemas.scheduleCreate, payload);
       const { commandId: _commandId, ...fields } = input;
-      return command(context, "schedules.create", input, async () => safeSchedule(await runtime().scheduleService.create({
-        ...fields, description: fields.description ?? "", workflowId: fields.workflowId || DEFAULT_TASK_WORKFLOW_ID })));
+      const workflowId = fields.workflowId || DEFAULT_TASK_WORKFLOW_ID;
+      return command(context, "schedules.create", input, async () => {
+        await allowedWorkflow(workflowId);
+        return safeSchedule(await runtime().scheduleService.create({ ...fields, description: fields.description ?? "", workflowId }));
+      });
     }),
     "schedules.update": payload => known(async () => {
       refuseLater(record(record(payload).patch));
       const { scheduleId, patch } = parse(schemas.scheduleUpdate, payload);
       mutable();
+      const current = await runtime().scheduleService.get(scheduleId);
+      if (!current) throw notFound("schedule");
+      const pausing = Object.keys(patch).length === 1 && patch.enabled === false;
+      if (!pausing && skipsApproval(await workflowOf(current.workflowId), current.accessMode)) throw unsupported(FULL_ON_HOST);
+      if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       const schedule = await runtime().scheduleService.update(scheduleId, patch);
       if (!schedule) throw notFound("schedule");
       return safeSchedule(schedule);
@@ -210,8 +239,13 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const input = parse(schemas.save, payload);
       const limits = workflowLimits(input.workflow);
       if (limits.length) throw unsupported(limits[0]!);
-      return command(context, "workflows.save", input, () =>
-        runtime().workflowStore.save(input.workflow as unknown as WorkflowDefinition, { expectedUpdatedAt: input.expectedUpdatedAt }));
+      const definition = input.workflow as unknown as WorkflowDefinition;
+      return command(context, "workflows.save", input, async () => {
+        // What a device saves would run with the full access of the host's tasks and schedules that use it.
+        const [tasks, schedules] = await Promise.all([runtime().taskService.list(), runtime().scheduleService.list()]);
+        if ([...tasks, ...schedules].some(item => item.workflowId === definition.id && item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
+        return runtime().workflowStore.save(definition, { expectedUpdatedAt: input.expectedUpdatedAt });
+      });
     })
   };
 };
