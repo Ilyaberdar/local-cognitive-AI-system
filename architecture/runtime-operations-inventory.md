@@ -134,7 +134,7 @@ definition → call sites.
 | MM:465 | GET /local/catalog/model LMC:14 | | HOST-API | `models.catalog.get` |
 | MM:485 | GET /local/runtime LMC:28 | also 5 s fallback poll; paths | HOST-API | `models.local.snapshot` |
 | MM:485 | GET /local/downloads LMC:15 | | HOST-API | `models.downloads.list` |
-| MM:532 | GET /local/events LMC:29 | **SSE**, first frame is a snapshot; Last-Event-ID ignored | HOST-API (subscribe) | `models.local.events` |
+| MM:532 | GET /local/events LMC:29 | **SSE**, first frame is a snapshot; Last-Event-ID ignored | HOST-API (watch) | `models.local.watch` (R5-1: state long-poll `{epoch, after}` → `{epoch, sequence, snapshot?}`) |
 | MM:563 | POST /local/downloads LMC:16 | 202 | HOST-API | `models.downloads.start` |
 | MM:567 | POST /local/downloads/:id/{pause,resume,cancel} LMC:18-20 | | HOST-API | `models.downloads.pause/resume/cancel` |
 | MM:573 | DELETE /local/models/:libraryId LMC:26 | | HOST-API | `models.local.delete` |
@@ -251,7 +251,7 @@ Telegram and MCP stdio call runtime services directly; both go through `processR
 2. Replace the body of `request()` with the same signature (63 sites); update the two
    source-slicing tests.
 3. Convert PU:16 and `frontend/synthesis/api.ts`; drop the SS:337 fallback.
-4. Subscriptions: an `EventSourceClass` shim for WL:49; MM:532 to `subscribe("models.local.events")`.
+4. Subscriptions: an `EventSourceClass` shim for WL:49; MM:532 to `watch("models.local")` (done in R5-1, `public/assets/runtime-routes.js`).
 5. ADAPT items: `fs.browse` for all pickers; capability-gated reveal/open-editor; `openDataFolder`
    local only; synthesis preview via `readArtifact`; attachments via `upload`; OAuth per §9.
 6. Safe DTOs for bootstrap, settings and errors; split `ui`/`profile` into client settings.

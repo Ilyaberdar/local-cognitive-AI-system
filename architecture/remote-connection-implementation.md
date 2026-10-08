@@ -534,6 +534,57 @@ command dedupe, approval/reconciliation и revisions там, где их не х
   Автотесты: RunService, журнал, E2E (обрыв посреди ответа, повтор команды,
   закрытие приложения, cancel, SIGKILL сервера), UI в JSDOM.
 
+### 7.5 Реализация R5-1: Models на выбранном сервере (9 октября)
+
+- **Выбор машины — общий для окна.** Переключатель «This computer / сервер» есть
+  на каждом экране; переключение оставляет текущий экран. Чаты и Models идут на
+  выбранную машину. Tasks & workflows и Synthesis при выбранном сервере пишут «not
+  available on <server> yet» с кнопкой Use This computer; их опрос и монтирование
+  приостановлены. Страницы Settings помечены как настройки этого компьютера.
+- **Каталог операций** (`src/runtime/operationCatalog.ts`): имя, вид (`request`,
+  `command` с `commandId`, `watch`) и таймаут клиента. Electron строит allowlist
+  только из каталога по виду операции; `WATCHES` задаёт потоки состояния.
+- **Операции Models на host** (`src/runtime/modelOperations.ts`) вызывают
+  `LocalModelService` напрямую, без Express: каталог (не больше 24 моделей и
+  700 KiB), загрузки (start идемпотентен; pause, resume, cancel), `models.load`
+  (ждёт до 25 с, затем `loading`; загрузка переживает отключение устройства),
+  unload, delete, `models.settings.get/update` (только contextSize, gpuLayers,
+  memoryLimitPercent, таймауты и generation; без `modelsDir` и backend),
+  `models.setDefault`, `system.metrics` (RAM и VRAM по каждому GPU).
+- **Безопасные DTO** (`src/runtime/modelDto.ts`): без каталогов host и путей
+  других библиотек моделей; ошибки — через `publicError`. Секреты провайдеров не
+  передаются.
+- **`models.local.watch`** заменяет запланированный `models.local.events`. Это
+  long-poll состояния `{epoch, after, waitMs}` → `{epoch, sequence, snapshot?}`.
+  Если устройство отстало или epoch другой (рестарт процесса), сразу приходит всё
+  состояние; иначе ответ после изменения (прогресс загрузки сливается за 500 мс),
+  по таймауту или при отключении устройства. Журнал не нужен: каждое событие
+  моделей и так полный снимок.
+- **Клиент**: `RemoteRuntime.watch/unwatch`. Пустой ответ не сдвигает курсор;
+  после reconnect к тому же серверу watch продолжается сам; на сервере без
+  операции поток заканчивается без повторов. Каждый вызов из UI несёт `hostId`
+  выбранного сервера: вызов для другого сервера отклоняется до отправки
+  (`host_changed`), команда «в сомнении» не переотправляется на другой сервер.
+- **UI**: второй экземпляр model manager на сервер и выбор (`server-models.js`).
+  `runtime-routes.js` переводит его локальные вызовы API в операции сервера:
+  неизвестный маршрут отклоняется, без связи ничего не отправляется, поздний ответ
+  для прошлого выбора отбрасывается; watch выступает как EventSource. Подписи
+  «Models on fedora», «Fits fedora», «Delete from fedora». Полоса памяти на
+  каждый GPU сервера. Без связи последнее состояние остаётся, но затемнено, и
+  действия выключены. Старому серверу предлагается обновиться. Use in chat задаёт
+  модель чата сервера (создаёт чат, если его нет). Импорт GGUF с этого компьютера
+  на сервере не предлагается; импорт из папок сервера (`fs.browse`) отложен.
+  Вкладка Models этого компьютера не изменилась: её трасса запросов закреплена
+  тестом.
+- **Изменение настроек runtime сервера** выгружает его модели для всех устройств;
+  UI говорит об этом до сохранения.
+- **Автотесты**: операции на настоящем `LocalModelService` с заглушкой Hugging Face
+  и fake llama-server. E2E через relay: загрузка переживает отключение Mac и
+  SIGTERM сервера (задача возвращается на паузе и продолжается с частичного
+  файла), затем load, unload и delete; ни в одном ответе нет каталогов host. UI в
+  JSDOM: изоляция от локального API, офлайн, возврат на This computer, Use in chat,
+  старый сервер.
+
 ## 8. Переключение UI и функциональное покрытие
 
 В навигации есть **отдельная кнопка Remote**. Она открывает список hosts,
@@ -794,7 +845,7 @@ src/server/                        CLI, RuntimeSupervisor, DataRootLock, host co
 src/local/DeviceInventory.ts       список устройств и свободной памяти (раздел 5.1)
 src/local/PlacementPlanner.ts      выбор GPU/CPU для загрузки модели
 src/remote/                        ключ, TLS-канал, host (RemoteHost, HostAgent, RemoteHostStore), client (RemoteClient)
-src/runtime/                       CommandService, RunService, event journal
+src/runtime/                       RunService, event journal, operationCatalog, chat/model operations и их DTO
 src/conversations/                 durable messages, history importer
 src/usage/                         ledger, outbox, projection
 src/diagnostics/                   allowlisted collection, redaction, report export
