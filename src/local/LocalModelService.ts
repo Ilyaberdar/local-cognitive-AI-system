@@ -8,7 +8,7 @@ import { LocalModelManager } from "../llm/LocalModelManager";
 import { HuggingFaceCatalog, groupVariants } from "./HuggingFaceCatalog";
 import { ModelDownloadService, sha256File } from "./ModelDownloadService";
 import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
-import { evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
+import { estimateModelMemory, evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
 import { LocalRuntimePool } from "./LocalRuntimePool";
 import { inspectModelStorage } from "./ModelStorageInventory";
@@ -109,7 +109,7 @@ export class LocalModelService implements LocalModelManager {
       const current = this.runtime.forModel(model.id);
       const state = current?.modelId ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[current.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : this.fileErrors.has(model.id) ? "error" : "unloaded";
       return { ...model, filesAvailable: !this.fileErrors.has(model.id), sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
-        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, undefined, model.files.map(file => file.path)),
+        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, this.runtime.memoryCapacity(), model.files.map(file => file.path)),
         error: state === "error" ? (current?.error ?? this.fileErrors.get(model.id)) : undefined };
     });
     return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence, storage: this.storage ? structuredClone(this.storage) : undefined };
@@ -297,6 +297,10 @@ export class LocalModelService implements LocalModelManager {
     }
   }
 
+  /** Inference in progress or queued, for server drain. */
+  activity(): { busy: boolean; queued: number } { return { busy: this.scheduler.busy, queued: this.scheduler.queueLength }; }
+  /** Per-GPU memory of this host for metrics; undefined without NVIDIA GPUs. */
+  gpuMetrics() { return this.runtime.gpuMetrics(); }
   dispose(): Promise<void> {
     this.disposePromise ??= (async () => {
       this.lifetime.abort(); await this.runtime.dispose(); await this.scheduler.dispose();
@@ -309,9 +313,11 @@ export class LocalModelService implements LocalModelManager {
     this.assertLibrary();
     if (!this.options.enabled) throw new LocalModelError("Local models are disabled in Settings.", 503);
     const model = this.store.getModel(id);
-    const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true, undefined, model.files.map(file => file.path));
+    const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true, this.runtime.memoryCapacity(), model.files.map(file => file.path));
     if (!compatibility.canLoad) throw new LocalModelError(compatibility.reasons.join(" "), 409, "model_incompatible");
-    await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model));
+    const weightsBytes = model.files.reduce((sum, file) => sum + file.sizeBytes, 0);
+    const estimate = estimateModelMemory(weightsBytes, this.options.contextSize, model.metadata, model.projector?.sizeBytes ?? 0);
+    await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model), estimate);
   }
   private inspectStorage(): Promise<void> {
     this.storageInspection ??= (async () => {
@@ -358,7 +364,7 @@ export class LocalModelService implements LocalModelManager {
     }
   }
   private decorateCatalog(model: CatalogModel): CatalogModel {
-    return { ...model, variants: model.variants.map((variant) => ({ ...variant, compatibility: evaluateCompatibility(variant.sizeBytes, this.options, undefined, this.freeDiskBytes) })) };
+    return { ...model, variants: model.variants.map((variant) => ({ ...variant, compatibility: evaluateCompatibility(variant.sizeBytes, this.options, undefined, this.freeDiskBytes, false, this.runtime.memoryCapacity()) })) };
   }
   private async moveStorage(options: LocalModelOptions): Promise<void> {
     if (this.downloads.list().some((job) => ["queued", "downloading", "verifying"].includes(job.state))) throw new LocalModelError("Pause downloads before moving the model library to another folder.", 409, "downloads_busy");

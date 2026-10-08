@@ -11,6 +11,10 @@ export class ScheduleRunner {
     private readonly intervalMs = 30_000
   ) {}
 
+  get running(): boolean { return Boolean(this.timer); }
+  /** A tick is in flight; due schedules may be running their workflows. */
+  get busy(): boolean { return this.ticking; }
+
   start(): void {
     if (this.timer) {
       return;

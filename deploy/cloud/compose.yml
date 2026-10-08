@@ -1,0 +1,75 @@
+# Production stack: Postgres, one-shot migrations and the Cloud API. Always use the project
+# name local-cognitive so volumes and containers never collide with other stacks.
+# 1. cp .env.example .env && chmod 600 .env, then fill in the values.
+# 2. Point DNS for CLOUD_DOMAIN at the server.
+# 3a. Own TLS proxy (ports 80/443 free): open 80/443 in the VCN security list / NSG and the
+#     instance firewall, then
+#       docker compose -p local-cognitive --profile standalone-proxy up -d --build
+# 3b. Behind an existing reverse proxy on the same host (see compose.edge.yml):
+#       docker compose -p local-cognitive -f compose.yml -f compose.edge.yml up -d --build
+#     and add caddy-site.caddy to that proxy's configuration.
+# Ampere is arm64: build on the server, or use buildx.
+# Backups: run pg_dump from the postgres container on a schedule and copy it off the host.
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lc_cloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: lc_cloud
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lc_cloud -d lc_cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build: { context: ../.., dockerfile: deploy/cloud/Dockerfile }
+    command: ["node", "dist/src/db/migrateCli.js"]
+    environment:
+      DATABASE_URL: postgres://lc_cloud:${POSTGRES_PASSWORD}@postgres:5432/lc_cloud
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  cloud:
+    build: { context: ../.., dockerfile: deploy/cloud/Dockerfile }
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: postgres://lc_cloud:${POSTGRES_PASSWORD}@postgres:5432/lc_cloud
+      AUTH0_ISSUER: ${AUTH0_ISSUER:?set AUTH0_ISSUER}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE:?set AUTH0_AUDIENCE}
+      HOST: 0.0.0.0
+      PORT: "8080"
+      TRUST_PROXY: "1"
+      # Hosts sign relay challenges for this origin: it must be the public URL of the API.
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://api.local-cognitive.com}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  caddy:
+    image: caddy:2
+    profiles: ["standalone-proxy"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      CLOUD_DOMAIN: ${CLOUD_DOMAIN:?set CLOUD_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - cloud
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

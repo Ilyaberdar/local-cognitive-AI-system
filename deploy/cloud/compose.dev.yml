@@ -1,0 +1,19 @@
+# Local development database for apps/cloud: `npm run cloud:db:up`.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: lc_cloud
+      POSTGRES_PASSWORD: lc_cloud
+      POSTGRES_DB: lc_cloud
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - lc_cloud_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lc_cloud -d lc_cloud"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  lc_cloud_dev:

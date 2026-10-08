@@ -432,3 +432,19 @@ test("local runtime phases and technical model references render readable instal
   assert.equal(context.getModelDisplayName("openai", "remote-model"), "remote-model");
   assert.equal(context.getModelDisplayName("llamacpp", "gguf-removed"), "Select model");
 });
+
+test("the runtime strip explains a CPU fallback without rendering the reason as markup", () => {
+  const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8");
+  const from = managerSource.indexOf("  function renderRuntime()");
+  const until = managerSource.indexOf("  function renderDownload(", from);
+  const escapeSource = /const escape = .*;/.exec(managerSource)![0];
+  const state: any = { catalog: [], runtime: { status: "stopped", backend: "CPU", fallbackReason: "No NVIDIA GPU <img src=x onerror=alert(1)> was found." } };
+  const context: any = { state, bytes: String, variantsOf: () => [], models: () => [], getContext: () => ({}) };
+  vm.runInNewContext(`${escapeSource}\n${managerSource.slice(from, until)}`, context);
+  const html = context.renderRuntime();
+  assert.match(html, /CPU fallback/);
+  assert.match(html, /No NVIDIA GPU &lt;img src=x onerror=alert\(1\)&gt; was found\./);
+  assert.doesNotMatch(html, /<img/);
+  state.runtime = { status: "stopped", backend: "CUDA" };
+  assert.doesNotMatch(context.renderRuntime(), /CPU fallback/);
+});

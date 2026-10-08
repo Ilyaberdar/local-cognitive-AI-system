@@ -18,6 +18,17 @@ memory/
 !src/memory/*.ts
 data/output
 data/app/settings.json
+# Settings and their migration archives can contain provider keys.
+/data/app/settings*.json
+!/data/app/settings.example.json
+/data/app/integrations/
+/data/app/runtime/
+/data/openmemory.db*
+/deploy/**/*.env
+*.pem
+*.p12
+*.p8
+*.key
 data/app/sessions.json
 data/app/tasks/
 data/app/workflows/

@@ -1,5 +1,5 @@
 import { icon, bindGlassLighting } from './ui-primitives.js';
-import { entityPatch, localProfileView, mcpServerCount } from './settings-data.js';
+import { createAccountState, entityPatch, localProfileView, mcpServerCount } from './settings-data.js';
 import { mountIntegrationPage } from './plugins-ui.js';
 
 const groups = [
@@ -39,7 +39,7 @@ const generationFields = [
   ['maxTokens', 'Max response tokens', '1–32,768', '1', '32768', '1']
 ];
 
-export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, captureScroll, restoreScroll, voiceInput }) {
+export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, captureScroll, restoreScroll, voiceInput, account = createAccountState(window.desktopAccount) }) {
   const root = document.createElement('section');
   root.id = 'settings-root'; root.hidden = true;
   document.body.append(root);
@@ -48,7 +48,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   document.body.append(menu);
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest;
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, accountPending, accountNotice;
   const context = () => getContext() || {};
   const settings = () => context().appSettings || {};
   const fieldsFor = route => {
@@ -81,7 +81,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'providers') return [select('llm.defaultProvider', 'Default provider', Object.keys(settings().providers || {}).map(id => [id, providerNames[id] || id]), 'Used when a chat or workflow has no explicit provider override.')];
     if (name === 'runtime') return [
       field('localModels.modelsDir', 'Model storage folder', 'directory', { description: 'Changing storage copies and verifies models before switching. Previous files remain as a backup. Pause downloads first.' }),
-      number('localModels.contextSize', 'Context size (tokens)', 512, 131072), number('localModels.gpuLayers', 'GPU layers', 0, 999),
+      number('localModels.contextSize', 'Context size (tokens)', 512, 131072), field('localModels.gpuLayers', 'GPU layers', 'text', { description: 'auto places each model on the GPU first by free memory. A number fixes the offloaded layers; 0 runs on the CPU.' }),
       number('localModels.memoryLimitPercent', 'Memory warning threshold (%)', 10, 90),
       number('localModels.loadTimeoutMs', 'Load timeout (ms)', 10000, 1800000), number('localModels.generationTimeoutMs', 'Generation timeout (ms)', 10000, 3600000),
       field('localModels.generation', 'Generation profile', 'local-generation', { description: 'Sampling controls apply to the next local response without unloading the model. Structured tool actions use a precise profile for safety.' })
@@ -192,9 +192,66 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const user = localProfileView(settings());
     return `<div class="local-profile-view">${avatar(user)}<h2>${escape(user.name)}</h2><p>Stored only on this device</p></div>`;
   }
+  function accountSubtitle(view) {
+    return view.state === 'signed-in' ? view.profile?.email || view.profile?.name || 'Signed in' : 'On this device';
+  }
+  function accountLinkDescription(view) {
+    if (view.state === 'unavailable') return 'Available in the desktop app';
+    return view.state === 'signed-in' ? view.profile?.email || 'Signed in' : 'Sign in to use Remote';
+  }
+  function accountButtons(disabled) {
+    const attr = disabled ? ' disabled' : '';
+    return `<div class="account-actions"><button type="button" class="primary-button" data-account-action="google"${attr}>Continue with Google</button><button type="button" class="ghost-button" data-account-action="email"${attr}>Continue with email</button><button type="button" class="ghost-button" data-account-action="signup"${attr}>Create account</button></div>`;
+  }
+  function accountPanel() {
+    const view = account.get(), busy = Boolean(accountPending);
+    if (view.state === 'unavailable') return note('Sign-in is available in the desktop app', 'Open the Local Cognitive desktop app to sign in. Local features work without an account.');
+    if (view.state === 'loading') return '<p class="settings-description" role="status">Checking your account…</p>';
+    if (view.state === 'signing-in') return `<div class="account-card" role="status"><div><h2>Waiting for your browser…</h2><p>Finish signing in in the browser window that opened, then return here. This page updates automatically.</p></div><div class="account-actions"><button type="button" class="ghost-button" data-account-action="cancel">Cancel</button></div></div>`;
+    const signIn = `<div class="account-card"><div><h2>Sign in to Local Cognitive</h2><p>An account is needed only for Remote — controlling Local Cognitive on another computer you own. Chats, models, plugins and everything on this device work without signing in.</p></div>${accountButtons(busy)}<p class="settings-footnote">Sign-in opens in your web browser; your password is never entered in this app. Signing in doesn't change your local profile, chats or plugin connections.</p></div>`;
+    if (view.state === 'error') return `<div class="settings-test-result is-error" role="alert"><div class="settings-test-heading">${icon('shieldAlert')}<strong>Sign-in didn't complete</strong></div><p>${escape(view.error?.message)}</p></div>${signIn}`;
+    if (view.state !== 'signed-in') return signIn;
+    const user = view.profile, title = user.name || user.email || 'Signed in', initial = (Array.from(title)[0] || '?').toUpperCase();
+    const disabled = busy ? ' disabled' : '';
+    const offline = view.cloudReachable ? '' : `<p class="account-offline" role="status">${icon('info')}<span>Can't reach Local Cognitive Cloud. You're still signed in on this device; Remote needs a connection. Local features are unaffected.</span></p>`;
+    const verified = user.emailVerified ? '<span class="account-badge is-verified">Verified</span>' : '<span class="account-badge is-unverified">Not verified</span>';
+    const emailRow = user.email ? `<div class="settings-row"><div><label>Email</label>${user.emailVerified ? '' : '<p>Confirm your email to use Remote, then choose Check again.</p>'}</div><div class="settings-control"><span>${escape(user.email)}</span>${verified}</div></div>` : '';
+    const copy = navigator.clipboard?.writeText ? `<button type="button" class="ghost-button" data-account-action="copy-id"${disabled}>Copy</button>` : '';
+    // R3/R5: the Remote hosts and devices link attaches after the identity rows.
+    return `${offline}<div class="account-identity"><span class="local-avatar account-avatar">${escape(initial)}</span><span><strong>${escape(title)}</strong>${user.email && user.name ? `<small>${escape(user.email)}</small>` : ''}</span></div><div class="settings-rows">${emailRow}<div class="settings-row"><div><label>Account ID</label><p>Identifies this account to Local Cognitive Cloud.</p></div><div class="settings-control"><code class="account-id">${escape(user.accountId)}</code>${copy}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-account-status>${escape(accountNotice || "Signing out doesn't remove local chats, models or plugin connections.")}</span><div class="settings-form-actions">${!user.emailVerified || !view.cloudReachable ? `<button type="button" class="ghost-button" data-account-action="refresh"${disabled}>Check again</button>` : ''}<button type="button" class="ghost-button" data-account-action="sign-out"${disabled}>Sign out</button></div></div>`;
+  }
+  function updateAccountPage() {
+    const container = root.querySelector('[data-account-page]');
+    if (!container) return;
+    const hadFocus = container.contains(document.activeElement);
+    container.innerHTML = accountPanel();
+    if (hadFocus) (container.querySelector('[data-account-action]:not(:disabled)') || root.querySelector('h1'))?.focus({ preventScroll: true });
+  }
+  function bindAccountPage() {
+    root.querySelector('[data-account-page]')?.addEventListener('click', event => {
+      const action = event.target.closest('[data-account-action]')?.dataset.accountAction;
+      if (action) void runAccountAction(action);
+    });
+  }
+  async function runAccountAction(action) {
+    if (accountPending && action !== 'cancel') return;
+    accountPending = action; accountNotice = undefined;
+    updateAccountPage();
+    try {
+      if (['google', 'email', 'signup'].includes(action)) await account.signIn(action);
+      else if (action === 'cancel') await account.cancelSignIn();
+      else if (action === 'sign-out') await account.signOut();
+      else if (action === 'refresh') await account.refresh();
+      else if (action === 'copy-id') { await navigator.clipboard.writeText(account.get().profile?.accountId || ''); accountNotice = 'Account ID copied.'; }
+    } catch { if (action === 'copy-id') accountNotice = 'Copying is unavailable.'; }
+    finally {
+      if (accountPending === action) accountPending = undefined;
+      if (active && page === 'account') updateAccountPage();
+    }
+  }
   function profileEditor() {
     const user = localProfileView(settings());
-    return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', 'Authentication availability') + link('usage', 'Usage', 'Activity reporting availability');
+    return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', accountLinkDescription(account.get())) + link('usage', 'Usage', 'Activity reporting availability');
   }
   function externalMcpServers() { return settings().mcp?.client?.servers || {}; }
   function externalMcpBindings(serverId) {
@@ -261,7 +318,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const testResult = result ? `<div class="settings-test-result ${result.ok ? 'is-success' : 'is-error'}" role="status"><div class="settings-test-heading">${icon(result.ok ? 'check' : 'shieldAlert')}<strong>${result.ok ? 'Test succeeded' : 'Test failed'}</strong></div>${result.ok && name === 'providers' ? '<div class="settings-connection-status">Provider connected <small>Verified by the last test</small></div>' : ''}<p>${escape(result.message)}</p>${result.model ? `<small>Model: ${escape(result.model)}</small>` : ''}</div>` : '';
     if (name === 'voice') return '<div data-voice-settings-page></div>';
     if (name === 'profile') return profileEditor();
-    if (name === 'account') return profile() + note('Cloud account unavailable', 'Sign-in, cloud synchronization and billing are not available in this release. Local features work without an account.');
+    if (name === 'account') return `<div data-account-page>${accountPanel()}</div>`;
     if (name === 'usage') return note('Usage statistics are not available yet', 'This version does not maintain a complete usage ledger across chats, agents, workflows and providers. Token totals, subscription limits and lifetime activity cannot be reported reliably.');
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. Configurable desktop notifications are not available in this release.');
     if (name === 'connections') return '<div data-integrations-page></div>';
@@ -329,6 +386,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     root.querySelector('#settings-search').addEventListener('input', event => { search = event.target.value; renderSearch(); });
     renderSearch(); bindForm(); bindGlassLighting(root);
     if (name === 'profile') bindProfileForm();
+    if (name === 'account') bindAccountPage();
     if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
     if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(settings()) });
@@ -473,7 +531,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         return;
       }
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
-      const value = spec.name === 'filesystem.allowedDirectories' ? event.target.value.split('\n').map(value => value.trim()).filter(Boolean) : spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
+      const value = spec.name === 'localModels.gpuLayers' ? (/^\s*(auto)?\s*$/i.test(event.target.value) ? 'auto' : Number(event.target.value)) : spec.name === 'filesystem.allowedDirectories' ? event.target.value.split('\n').map(value => value.trim()).filter(Boolean) : spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
       if (spec.type === 'secret' && value === '') delete dirty(current)[spec.name]; else dirty(current)[spec.name] = value;
       results.delete(current);
       root.querySelector('.settings-test-result')?.remove();
@@ -637,7 +695,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function openMenu() {
     if (menu.matches(':popover-open')) { closeMenu(); return; }
     const user = localProfileView(settings());
-    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>On this device</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
+    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>${escape(accountSubtitle(account.get()))}</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
     menu.querySelectorAll('[data-profile-route]').forEach(button => button.addEventListener('click', () => {
       closeMenu(false);
       if (button.dataset.profileRoute === 'data-folder') { void openDataFolder(); document.getElementById('local-profile-button')?.focus(); }
@@ -665,6 +723,14 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (active && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); const input = root.querySelector('#settings-search'); if (search) { search = ''; input.value = ''; renderSearch(); } }
   }, true);
   window.addEventListener('resize', () => closeMenu(false));
+  account.subscribe(view => {
+    if (active && page === 'account') updateAccountPage();
+    // Update descriptions in place: a full render would drop profile form drafts.
+    const link = root.querySelector('a.settings-list-row[href="#/settings/account"] small');
+    if (link) link.textContent = accountLinkDescription(view);
+    const header = menu.querySelector('.profile-menu-header small');
+    if (header) header.textContent = accountSubtitle(view);
+  });
   return {
     isOpen: () => active,
     profileButton: () => { const user = localProfileView(settings()); return `<button id="local-profile-button" class="local-profile-button" type="button" aria-label="${escape(user.name)} profile" aria-haspopup="menu" aria-controls="profile-menu" aria-expanded="false">${avatar(user)}<span class="local-profile-label">${escape(user.name)}</span>${icon('chevronDown')}</button>`; },

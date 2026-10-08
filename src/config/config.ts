@@ -6,8 +6,27 @@ import type { McpClientConfiguration } from "../mcp/client/types";
 import { parseMcpConfiguration } from "../mcp/client/configuration";
 import { AgentLimits, readAgentLimits } from "../agents/runtime/AgentLimits";
 import { defaultLocalGenerationSettings } from "../local/GenerationSettings";
+import { hasSecretName, isSharedEnvFile } from "./secrets";
 
-dotenv.config();
+/** The desktop app is configured through Settings in its user data directory. A
+ * repository .env is for development and headless runs and must not leak into it. */
+export const shouldLoadDotenv = (versions: NodeJS.ProcessVersions = process.versions): boolean => !versions.electron;
+
+const loadEnvFile = (): void => {
+  if (!shouldLoadDotenv()) return;
+  // "none" (set by the server CLI) disables env files: the server is configured explicitly.
+  if (process.env.LOCAL_COGNITIVE_ENV_FILE === "none") return;
+  const file = path.resolve(process.cwd(), process.env.LOCAL_COGNITIVE_ENV_FILE || ".env");
+  if (!fs.existsSync(file)) return;
+  if (isSharedEnvFile(file)) {
+    const message = `${file} is accessible to other users. Restrict it to its owner (chmod 600).`;
+    if (process.env.NODE_ENV === "production") throw new Error(message);
+    console.warn(`[config] ${message}`);
+  }
+  dotenv.config({ path: file });
+};
+
+loadEnvFile();
 
 type MemoryAdapterName = "local-json" | "openmemory" | "world-partition";
 type MemoryPartitionStrategy = "auto" | "global" | "partitioned";
@@ -98,6 +117,8 @@ export interface AppConfig {
   appDataDir: string;
   ui: {
     publicDir: string;
+    /** false on the headless server: the UI ships only with the desktop app. */
+    serve?: boolean;
   };
 }
 
@@ -143,25 +164,52 @@ const positiveNumber = (value: string | undefined, fallback: number, minimum = 1
 const nonNegativeNumber = (value: string | undefined, fallback: number): number =>
   positiveNumber(value, fallback, 0);
 
+/** GPU layers: unset, empty or "auto" lets placement decide; a number is used as given. */
+export const parseGpuLayers = (value: string | undefined): number | "auto" => {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed || trimmed === "auto") return "auto";
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(999, Math.floor(parsed))) : "auto";
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const secretKeyPath = (value: unknown, prefix: string): string | undefined => {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = secretKeyPath(item, `${prefix}[${index}]`);
+      if (found) return found;
+    }
+  } else if (isRecord(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      const keyPath = prefix ? `${prefix}.${key}` : key;
+      // Token counts such as maxTokens are numbers; credentials are strings.
+      if (hasSecretName(key) && typeof item === "string" && item.trim()) return keyPath;
+      const found = secretKeyPath(item, keyPath);
+      if (found) return found;
+    }
+  }
+  return undefined;
+};
+
+/** Parses the optional config file. Credentials belong in the environment or the
+ * credential vault, so a file containing them is rejected without echoing values. */
+export const parseFileConfig = (raw: string, source: string): Record<string, unknown> => {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error(`${source} is not valid JSON.`); }
+  if (!isRecord(parsed)) throw new Error(`${source} must contain a JSON object.`);
+  const secret = secretKeyPath(parsed, "");
+  if (secret) throw new Error(`${source} must not contain credentials (${secret}). Use environment variables or Settings.`);
+  return parsed;
+};
 
 const readFileConfig = (): Record<string, unknown> => {
   const configPath = path.resolve(
     process.cwd(),
     process.env.LOCAL_COGNITIVE_CONFIG ?? "local-cognitive.config.json"
   );
-
-  if (!fs.existsSync(configPath)) {
-    return {};
-  }
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
+  return fs.existsSync(configPath) ? parseFileConfig(fs.readFileSync(configPath, "utf8"), configPath) : {};
 };
 
 const fileConfig = readFileConfig();
@@ -170,6 +218,10 @@ const fileMcpServer = isRecord(fileMcp.server) ? fileMcp.server : {};
 const fileLocalModels = isRecord(fileConfig.localModels) ? fileConfig.localModels : {};
 const localValue = (key: string, environment: string): string | undefined =>
   process.env[environment] ?? (["string", "number"].includes(typeof fileLocalModels[key]) ? String(fileLocalModels[key]) : undefined);
+
+/** Set by `local-cognitive-server start` from its runtime selection. */
+const inferenceFromServer = (preference?: string, fallbackReason?: string): Pick<LocalModelOptions, "inference"> =>
+  preference === "auto" || preference === "cuda" || preference === "cpu" ? { inference: { preference, ...(fallbackReason ? { fallbackReason } : {}) } } : {};
 
 const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 60000);
 const defaultLocalTimeoutMs = Number(process.env.LOCAL_PROVIDER_TIMEOUT_MS ?? 300000);
@@ -181,11 +233,12 @@ export const config: AppConfig = {
     runtimeDir: resolveDir(process.env.LLAMA_RUNTIME_DIR ?? `./resources/llama/${process.platform}-${process.arch}`, "./resources/llama"),
     executablePath: toOptional(process.env.LLAMA_SERVER_PATH),
     contextSize: Math.min(131072, positiveNumber(localValue("contextSize", "LLAMA_CONTEXT_SIZE"), 4096, 512)),
-    gpuLayers: nonNegativeNumber(localValue("gpuLayers", "LLAMA_GPU_LAYERS"), process.platform === "darwin" ? 99 : 0),
+    gpuLayers: parseGpuLayers(localValue("gpuLayers", "LLAMA_GPU_LAYERS")),
     loadTimeoutMs: positiveNumber(localValue("loadTimeoutMs", "LLAMA_LOAD_TIMEOUT_MS"), 300000),
     generationTimeoutMs: positiveNumber(localValue("generationTimeoutMs", "LLAMA_GENERATION_TIMEOUT_MS"), 600000),
     memoryLimitPercent: Math.min(90, positiveNumber(localValue("memoryLimitPercent", "LLAMA_MEMORY_LIMIT_PERCENT"), 75, 10)),
-    generation: defaultLocalGenerationSettings()
+    generation: defaultLocalGenerationSettings(),
+    ...inferenceFromServer(process.env.LOCAL_INFERENCE, process.env.LOCAL_INFERENCE_FALLBACK)
   },
   server: {
     enabled: toBoolean(process.env.HTTP_ENABLED, true),
@@ -299,7 +352,8 @@ export const config: AppConfig = {
   outputDir: resolveDir(process.env.OUTPUT_DIR ?? "./data/output", "./data/output"),
   appDataDir: resolveDir(process.env.APP_DATA_DIR ?? "./data/app", "./data/app"),
   ui: {
-    publicDir: resolveDir(process.env.UI_PUBLIC_DIR ?? "./public", "./public")
+    publicDir: resolveDir(process.env.UI_PUBLIC_DIR ?? "./public", "./public"),
+    serve: process.env.UI_SERVE !== "false"
   }
 };
 
@@ -311,7 +365,7 @@ export const localModelOptions = (source: AppConfig): LocalModelOptions => ({
   runtimeDir: path.resolve(process.env.LLAMA_RUNTIME_DIR ?? `resources/llama/${process.platform}-${process.arch}`),
   executablePath: process.env.LLAMA_SERVER_PATH,
   contextSize: 4096,
-  gpuLayers: process.platform === "darwin" ? 99 : 0,
+  gpuLayers: "auto",
   loadTimeoutMs: 300000,
   generationTimeoutMs: 600000,
   memoryLimitPercent: 75,

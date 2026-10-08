@@ -1,0 +1,159 @@
+#!/usr/bin/env node
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { appVersion, releaseRoot } from "../utils/appVersion";
+import { initVaultKey } from "../security/vaultKey";
+import { parseServerArgs, ServerArgs, usage } from "./args";
+import { controlRequest } from "./ControlServer";
+import { checkDataRoot, controlSocketPathFor, dataDirectories, initDataRoot, readServerConfig } from "./dataRoot";
+import { CliError, ExitCode } from "./exitCodes";
+import { selectInference } from "./inference";
+import { serverEnvironment } from "./serverEnv";
+
+// Only modules that do not read the application configuration are imported above: the
+// configuration is evaluated when its module loads, after `start` has set the environment.
+
+const print = (args: ServerArgs, text: string, json: unknown) => { if (!args.quiet) process.stdout.write(args.json ? `${JSON.stringify(json)}\n` : `${text}\n`); };
+const defaultKeyFile = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "local-cognitive", "vault.key");
+const ownerFile = (root: string) => path.join(dataDirectories(root).app, "runtime", "data-root.owner.json");
+const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
+const unreachable = (error: unknown) => ["ENOENT", "ECONNREFUSED"].includes((error as NodeJS.ErrnoException).code ?? "");
+
+const init = (args: ServerArgs) => {
+  const { root, created, config } = initDataRoot(args.dataDir!, { inference: args.inference, httpPort: args.httpPort, http: args.http });
+  const keyFile = path.resolve(args.vaultKeyFile || process.env.LOCAL_COGNITIVE_VAULT_KEY_FILE || defaultKeyFile());
+  const key = initVaultKey(keyFile, { forbiddenRoots: [root, releaseRoot()] });
+  print(args, [
+    `Data directory: ${root}${created.length ? ` (created ${created.length} entries)` : " (already initialised)"}`,
+    `Credential key: ${keyFile} (${key.created ? "created" : "already present"}, id ${key.id})`,
+    `Set LOCAL_COGNITIVE_VAULT_KEY_FILE=${keyFile} for the server.`,
+    "Back up the key separately from the data directory: without it saved credentials cannot be read."
+  ].join("\n"), { dataDir: root, created, config, vaultKeyFile: keyFile, vaultKeyId: key.id, vaultKeyCreated: key.created });
+  return ExitCode.ok;
+};
+
+const start = async (args: ServerArgs) => {
+  if (process.platform === "win32") throw new CliError("The server runs on Linux and macOS.", ExitCode.config);
+  if (process.getuid?.() === 0 && !args.allowRoot) throw new CliError("Refusing to run as root. Use a dedicated user, or pass --allow-root.", ExitCode.config);
+  if (args.init) initDataRoot(args.dataDir!, { inference: args.inference, httpPort: args.httpPort, http: args.http });
+  const root = path.resolve(args.dataDir!);
+  const serverConfig = readServerConfig(root);
+  checkDataRoot(root);
+  const release = releaseRoot();
+  const inference = selectInference(args.inference ?? serverConfig.inference, { release, override: args.llamaRuntimeDir || process.env.LLAMA_RUNTIME_DIR });
+  const { env, overridden } = serverEnvironment({ root, config: serverConfig, args, release, inference, base: process.env });
+  controlSocketPathFor(dataDirectories(root).app, env);
+  Object.assign(process.env, env);
+  process.umask(0o077);
+  // Agent commands run here; .env and config files are never read from this directory.
+  process.chdir(dataDirectories(root).output);
+  const { runDaemon } = await import("./daemon");
+  return runDaemon({ drainTimeoutSec: args.drainTimeoutSec ?? serverConfig.drainTimeoutSec, inference, overriddenEnv: overridden });
+};
+
+const status = async (args: ServerArgs) => {
+  const root = path.resolve(args.dataDir!);
+  try {
+    const response = await controlRequest(controlSocketPathFor(dataDirectories(root).app), { op: "status" }, { timeoutMs: 5_000 });
+    const result = response.result as { phase: string; pid: number; activeWork: { total: number }; http?: { port: number }; inference: { backend: string; active?: string; fallbackReason?: string } };
+    const { backend, active, fallbackReason } = result.inference;
+    const inference = active && active.toLowerCase() !== backend ? `${backend} → ${active}${fallbackReason ? ` (${fallbackReason})` : ""}` : backend;
+    print(args, `Running (${result.phase}), pid ${result.pid}, inference ${inference}, ${result.http ? `HTTP 127.0.0.1:${result.http.port}` : "HTTP disabled"}, active work ${result.activeWork.total}`,
+      { running: true, ...result });
+    return ExitCode.ok;
+  } catch (error) {
+    if (!unreachable(error)) throw error;
+    let owner: { pid?: number } | undefined;
+    try { owner = JSON.parse(fs.readFileSync(ownerFile(root), "utf8")); } catch { owner = undefined; }
+    if (owner?.pid && isAlive(owner.pid)) { print(args, `Starting or not responding (pid ${owner.pid}).`, { running: "unknown", pid: owner.pid }); return ExitCode.unknownState; }
+    print(args, "Not running.", { running: false });
+    return ExitCode.notRunning;
+  }
+};
+
+const drain = async (args: ServerArgs) => {
+  const root = path.resolve(args.dataDir!);
+  let result: Record<string, unknown> | undefined;
+  try {
+    await controlRequest(controlSocketPathFor(dataDirectories(root).app), { op: "drain", timeoutSec: args.drainTimeoutSec }, {
+      onEvent: event => {
+        if (event.event === "drain.progress" && !args.json && !args.quiet) process.stdout.write(`Waiting for ${String(event.active)} active task(s)…\n`);
+        if (event.event === "drain.done") result = event;
+      }
+    });
+  } catch (error) {
+    if (!unreachable(error)) throw error;
+    throw new CliError("The server is not running.", ExitCode.unavailable);
+  }
+  if (args.wait) for (let waited = 0; fs.existsSync(ownerFile(root)) && waited < 60_000; waited += 250) await new Promise(resolve => setTimeout(resolve, 250));
+  print(args, result?.drained ? "Drained and stopped." : `Stopped after the timeout; ${String(result?.remaining ?? "some")} task(s) were interrupted.`, result ?? {});
+  return result?.drained === false ? ExitCode.failure : ExitCode.ok;
+};
+
+/** Sends a pairing administration request to the running server. */
+const remoteRequest = async (args: ServerArgs, request: Record<string, unknown>) => {
+  const root = path.resolve(args.dataDir!);
+  let response: Record<string, unknown>;
+  try { response = await controlRequest(controlSocketPathFor(dataDirectories(root).app), request, { timeoutMs: 15_000 }); }
+  catch (error) { if (unreachable(error)) throw new CliError("The server is not running. Start it first.", ExitCode.unavailable); throw error; }
+  if (!response.ok) {
+    const error = response.error as { code?: string; message?: string } | undefined;
+    throw new CliError(error?.message ?? "The server refused the request.", error?.code === "offline" || error?.code === "remote_off" ? ExitCode.unavailable : ExitCode.failure);
+  }
+  return response.result as Record<string, unknown>;
+};
+
+const connectKey = async (args: ServerArgs) => {
+  const result = await remoteRequest(args, { op: "connect-key", ...(args.ttlMinutes ? { ttlSec: args.ttlMinutes * 60 } : {}) }) as { key: string; expiresAt: number; claimed: boolean };
+  const minutes = Math.round((result.expiresAt - Date.now()) / 60_000);
+  // The key is a secret: only this command's output shows it, never the service log.
+  print(args, [
+    `Connection key (valid ${minutes} minute${minutes === 1 ? "" : "s"}, one use):`, "", result.key, "",
+    "On your computer: Local Cognitive → Remote → Connect, then paste the key.",
+    result.claimed ? "Only the account that owns this server can connect with it." : "This server is not linked to an account yet: the account that connects first becomes its owner."
+  ].join("\n"), result);
+  return ExitCode.ok;
+};
+
+const devices = async (args: ServerArgs) => {
+  const { devices: list } = await remoteRequest(args, { op: "devices" }) as { devices: Array<{ deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string }> };
+  const active = list.filter(device => device.status === "active");
+  print(args, active.length ? active.map(device => `${device.deviceId}  ${device.deviceName ?? "(unnamed)"}  paired ${device.grantedAt.slice(0, 10)}${device.lastConnectedAt ? `, last seen ${device.lastConnectedAt.slice(0, 16).replace("T", " ")}` : ""}`).join("\n")
+    : "No computers can connect yet. Run connect-key to add one.", { devices: list });
+  return ExitCode.ok;
+};
+
+export const main = async (argv: string[]): Promise<number> => {
+  try {
+    const args = parseServerArgs(argv);
+    switch (args.command) {
+      case "help": process.stdout.write(`${usage}\n`); return ExitCode.ok;
+      case "version": process.stdout.write(`${appVersion()}\n`); return ExitCode.ok;
+      case "init": return init(args);
+      case "start": return await start(args);
+      case "status": return await status(args);
+      case "drain": return await drain(args);
+      case "connect-key": return await connectKey(args);
+      case "devices": return await devices(args);
+      case "revoke-device": {
+        const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
+        print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });
+        return revoked ? ExitCode.ok : ExitCode.failure;
+      }
+      case "reset-owner":
+        print(args, "The server is no longer linked to an account; every computer lost access.", await remoteRequest(args, { op: "reset-owner" }));
+        return ExitCode.ok;
+    }
+  } catch (error) {
+    if (error instanceof CliError) {
+      process.stderr.write(`${error.message}\n`);
+      if (error.exitCode === ExitCode.usage) process.stderr.write(`\n${usage}\n`);
+      return error.exitCode;
+    }
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    return ExitCode.failure;
+  }
+};
+
+if (require.main === module) void main(process.argv.slice(2)).then(code => process.exit(code));

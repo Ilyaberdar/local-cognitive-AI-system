@@ -1,10 +1,11 @@
 import { createProjectsUi, projectOptions } from "./projects-ui.js";
 import { activityLabel, renderChatActivity, patchChatActivity } from "./activity-ui.js";
 import { createSettingsShell } from "./settings-shell.js";
-import { createSettingsData } from "./settings-data.js";
+import { createAccountState, createSettingsData } from "./settings-data.js";
 import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
+import { createRemoteUi } from "./remote-ui.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
@@ -464,7 +465,10 @@ function applyCodeFontSize(value) {
   document.documentElement.style.setProperty("--code-font-size", `${size}px`);
   localStorage.setItem("lcai.codeFontSize", String(size));
 }
-const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
+// One account store for the app; Remote (R3+) subscribes to the same state.
+const accountState = createAccountState(window.desktopAccount);
+const remoteUi = createRemoteUi({ account: accountState });
+const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput, account: accountState,
   getContext: () => ({ ...state.bootstrap, route: state.route }),
   renderModelControl: renderProviderSettingsModelControl, applyPreferences: applyUiPreferences,
   captureScroll: captureScrollState, restoreScroll: restoreScrollState,
@@ -513,7 +517,8 @@ async function init() {
 
 function syncRouteFromHash() {
   const route = window.location.hash.replace(/^#\/?/, "");
-  state.route = ["chat", "orchestration", "synthesis", "models"].includes(route) ? route : "chat";
+  state.route = ["chat", "orchestration", "synthesis", "models", "remote"].includes(route) ? route : "chat";
+  if (state.route === "remote") void remoteUi.refresh();
 }
 
 async function refreshBootstrap() {
@@ -717,6 +722,9 @@ function render(options = {}) {
           <section class="route route--synthesis ${state.route === "synthesis" ? "active" : ""}">
             <div id="synthesis-workspace"></div>
           </section>
+          <section class="route route--remote ${state.route === "remote" ? "active" : ""}">
+            ${remoteUi.render()}
+          </section>
         </div>
         ${renderToasts()}
       </main>
@@ -730,6 +738,7 @@ function render(options = {}) {
   voiceInput.bind();
   reviewPanel.bind();
   modelManager.bind(document.querySelector("#local-model-manager"));
+  remoteUi.bind(document.querySelector(".route--remote"));
   restorePresentationState(presentation);
   sessionSetupMotion.restore(setupViewport, options.setupAddedId);
   bindGlassLighting(app);
@@ -829,6 +838,7 @@ function renderSidebar(nativeTitlebar = false) {
         ${renderNavButton("orchestration", "Workflow")}
         ${renderNavButton("synthesis", "Synthesis")}
         ${renderNavButton("models", "Models")}
+        ${renderNavButton("remote", "Remote")}
       </nav>
 
       ${projectsUi.sidebar()}
@@ -4831,7 +4841,7 @@ function buildAppSettingsPayload(form) {
     if (key === "apiKey" && !String(raw).trim()) continue;
     let target = payload;
     for (const part of keys.slice(0, -1)) target = target[part] ??= {};
-    target[key] = numeric.has(key) ? Number(raw) : ["true", "false"].includes(raw) ? raw === "true" : String(raw).trim();
+    target[key] = key === "gpuLayers" && /^\s*(auto)?\s*$/i.test(String(raw)) ? "auto" : numeric.has(key) ? Number(raw) : ["true", "false"].includes(raw) ? raw === "true" : String(raw).trim();
   }
   return payload;
 }
@@ -4889,6 +4899,8 @@ function routeTitle(route) {
       return "Synthesis";
     case "models":
       return "Models";
+    case "remote":
+      return "Remote";
     case "plugins":
       return "Plugins";
     case "settings":
@@ -5241,6 +5253,11 @@ function renderSystemMetricsPanel(metrics, loadedModels = []) {
         estimatedModelPercent,
         loadedModelBytes ? `${formatBytes(loadedModelBytes)} est.` : "No loaded model memory"
       )}
+      ${(metrics.gpus || []).map(gpu => renderMetricMini(
+        `GPU ${gpu.index}`,
+        gpu.totalBytes > 0 ? (gpu.usedBytes / gpu.totalBytes) * 100 : 0,
+        `${formatBytes(gpu.usedBytes)} / ${formatBytes(gpu.totalBytes)}`
+      )).join("")}
     </div>
   `;
 }

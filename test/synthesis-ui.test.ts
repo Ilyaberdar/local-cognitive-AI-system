@@ -24,7 +24,11 @@ async function until(check: () => boolean, label: string, timeout = 1800) {
 }
 function harness(route: (path: string, options: RequestInit) => unknown | Promise<unknown>) {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
-  dom.window.fetch = async (path: string, options: RequestInit) => ({ ok: true, json: async () => route(path, options) });
+  dom.window.fetch = async (path: string, options: RequestInit) => {
+    // The local API guard rejects mutations without this header (403).
+    if (options.method && options.method !== "GET") assert.equal((options.headers as Record<string, string>)["X-Local-Cognitive"], "1", `${options.method} ${path}`);
+    return { ok: true, json: async () => route(path, options) };
+  };
   dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
   const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"), { projects, active: true });
   const text = () => dom.window.document.body.textContent;

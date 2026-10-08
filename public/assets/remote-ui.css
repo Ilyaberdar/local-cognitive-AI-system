@@ -1,0 +1,34 @@
+/* Remote → Connect. Cards, rows and buttons reuse the Account settings styles. */
+.remote-page { display: grid; gap: 18px; max-width: 760px; margin: 0 auto; padding: 18px 4px 32px; }
+.remote-header h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: calc(20px * var(--font-scale, 1)); font-weight: 550; letter-spacing: -.3px; }
+.remote-header h1 .ui-icon { width: 20px; height: 20px; }
+.remote-header p { margin: 6px 0 0; font-size: calc(12px * var(--font-scale, 1)); }
+[data-remote-root] { display: grid; gap: 14px; }
+.remote-status h2 { display: flex; align-items: center; gap: 9px; }
+.remote-status .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: none; }
+.remote-status.is-online .status-dot { background: var(--success); box-shadow: 0 0 7px color-mix(in srgb, var(--success) 35%, transparent); }
+.remote-status.is-busy .status-dot { background: var(--warning); animation: remote-pulse 1.4s ease-in-out infinite; }
+.remote-status.is-warning .status-dot { background: var(--warning); }
+@keyframes remote-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .remote-status.is-busy .status-dot { animation: none; } }
+.remote-error { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; color: var(--warning); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.55; overflow-wrap: anywhere; }
+.remote-error .ui-icon { flex: 0 0 auto; width: 15px; height: 15px; }
+.remote-key { width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--control-bg, var(--surface)); color: var(--text); font: calc(12px * var(--font-scale, 1))/1.5 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  word-break: break-all; }
+.remote-key:focus { outline: none; border-color: var(--line-strong); }
+.remote-connect code, .remote-page .settings-footnote code { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: .95em; }
+.remote-section { display: grid; gap: 10px; }
+.remote-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.remote-section-head h2 { margin: 0; font-size: calc(14px * var(--font-scale, 1)); font-weight: 550; }
+.remote-hosts { display: grid; gap: 10px; }
+.remote-host { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.remote-host-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.remote-host-head strong { display: block; font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; overflow-wrap: anywhere; }
+.remote-host-head .subtle { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: calc(11px * var(--font-scale, 1)); }
+.remote-host-head .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); box-shadow: none; }
+.remote-host-head .status-dot.is-online { background: var(--success); }
+.remote-devices { display: grid; gap: 6px; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--line); list-style: none; }
+.remote-devices li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; font-size: calc(12px * var(--font-scale, 1)); }
+.remote-devices li > span:first-child { overflow-wrap: anywhere; }
+.remote-server-status { margin-top: -4px; }

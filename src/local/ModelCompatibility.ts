@@ -7,16 +7,22 @@ const GiB = 1024 ** 3;
 export const GGUF_INSPECTION_VERSION = 2;
 const deltaNetArchitectures = new Set(["qwen35", "qwen35moe", "qwen3next"]);
 
-export const evaluateCompatibility = (
-  sizeBytes: number,
-  options: Pick<LocalModelOptions, "contextSize" | "memoryLimitPercent">,
-  metadata?: GGUFMetadata,
-  freeDiskBytes?: number,
-  installed = false,
-  memory = getSystemMemory(),
-  files: readonly string[] = []
-): ModelCompatibility => {
-  // KV cache is shared RAM on Apple Silicon, not a second VRAM allowance.
+export interface ModelMemoryEstimate {
+  /** Repeating transformer blocks; the output layer is counted separately in perLayerBytes. */
+  layers: number;
+  weightsBytes: number;
+  projectorBytes: number;
+  kvCacheBytes: number;
+  recurrentStateBytes: number;
+  overheadBytes: number;
+  totalBytes: number;
+  /** Approximate bytes per offloaded layer, used to split a model between devices. Fixed GPU costs
+   * (CUDA context, compute buffers) are reserved by the placement policy, not spread over layers. */
+  perLayerBytes: number;
+}
+
+/** Memory needed to run a GGUF model at a context size: weights, KV cache, recurrent state and a fixed overhead. */
+export const estimateModelMemory = (weightsBytes: number, contextSize: number, metadata?: GGUFMetadata, projectorBytes = 0): ModelMemoryEstimate => {
   const layers = Math.max(0, (metadata?.blockCount ?? 0) - (metadata?.nextnPredictLayers ?? 0));
   const deltaNet = Boolean(metadata && deltaNetArchitectures.has(metadata.architecture));
   const interval = metadata?.fullAttentionInterval ?? 4;
@@ -29,14 +35,30 @@ export const evaluateCompatibility = (
   const keyLength = metadata?.attentionKeyLength ?? headLength;
   const valueLength = metadata?.attentionValueLength ?? keyLength;
   const kvCacheBytes = layers && keyLength
-    ? options.contextSize * attentionLayers * (metadata?.headCountKv ?? metadata?.headCount ?? 1) * (keyLength + valueLength) * 2
-    : options.contextSize * 256 * 1024;
+    ? contextSize * attentionLayers * (metadata?.headCountKv ?? metadata?.headCount ?? 1) * (keyLength + valueLength) * 2
+    : contextSize * 256 * 1024;
   // Qwen gated-delta-net state, FP32, one sequence and no speculative decoding.
   // Mirrors llama-hparams.cpp n_embd_r/n_embd_s in the pinned runtime.
   const recurrentStateBytes = deltaNet && metadata?.ssmInnerSize && metadata.ssmStateSize && metadata.ssmConvKernel && metadata.ssmGroupCount
     ? recurrentLayers * 4 * ((metadata.ssmConvKernel - 1) * (metadata.ssmInnerSize + 2 * metadata.ssmGroupCount * metadata.ssmStateSize) + metadata.ssmStateSize * metadata.ssmInnerSize)
     : recurrentLayers * 4 * 1024 ** 2;
-  const estimatedMemoryBytes = Math.ceil(sizeBytes * 1.1 + kvCacheBytes + recurrentStateBytes + 384 * 1024 ** 2);
+  const overheadBytes = 384 * 1024 ** 2;
+  return { layers, weightsBytes, projectorBytes, kvCacheBytes, recurrentStateBytes, overheadBytes,
+    totalBytes: Math.ceil((weightsBytes + projectorBytes) * 1.1 + kvCacheBytes + recurrentStateBytes + overheadBytes),
+    perLayerBytes: layers ? weightsBytes / (layers + 1) + (kvCacheBytes + recurrentStateBytes) / layers : 0 };
+};
+
+export const evaluateCompatibility = (
+  sizeBytes: number,
+  options: Pick<LocalModelOptions, "contextSize" | "memoryLimitPercent">,
+  metadata?: GGUFMetadata,
+  freeDiskBytes?: number,
+  installed = false,
+  memory = getSystemMemory(),
+  files: readonly string[] = []
+): ModelCompatibility => {
+  // KV cache is shared RAM on Apple Silicon, not a second VRAM allowance.
+  const { kvCacheBytes, recurrentStateBytes, totalBytes: estimatedMemoryBytes } = estimateModelMemory(sizeBytes, options.contextSize, metadata);
   const availableMemoryBytes = memory.total;
   const memoryWarningBytes = Math.floor(memory.total * options.memoryLimitPercent / 100);
   const warnings: string[] = [];

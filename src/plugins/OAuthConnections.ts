@@ -5,6 +5,7 @@ import { auth, OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { z } from "zod";
 import { withFileLock } from "../utils/fileStore";
+import { sendAuthPage } from "../security/AuthCompletionPage";
 import { CatalogPlugin, CredentialVault, PluginError, ServiceConnection } from "./contracts";
 
 const clientSchema = z.object({ clientId: z.string().trim().min(1).max(500),
@@ -54,6 +55,7 @@ export class OAuthConnections {
   private closed = false;
   constructor(private readonly vault: CredentialVault, readonly ownerId: string, private readonly registrations: OAuthClientRegistrations = {}) {}
   available() { return this.vault.available(); }
+  unavailableReason() { return this.vault.unavailableReason?.(); }
   private key(id: string) { return `owners/${this.ownerId}/connections/${id}`; }
   private configKey(plugin: CatalogPlugin) { return `owners/${this.ownerId}/oauth-clients/${plugin.id}`; }
   private async settings(plugin: CatalogPlugin): Promise<ClientSettings | undefined> {
@@ -110,7 +112,7 @@ export class OAuthConnections {
   pending(id: string) { return this.flows.has(id); }
   async connected(id: string) { return !!(await this.load(id))?.tokens?.access_token; }
   async begin(plugin: CatalogPlugin, id: string) {
-    if (!this.available()) throw new PluginError("Open the desktop app with protected storage available to connect accounts.", 503);
+    if (!this.available()) throw new PluginError(this.unavailableReason() ?? "Open the desktop app with protected storage available to connect accounts.", 503);
     this.assertActive(id);
     const settings = nativeProviders[plugin.id] ? await this.settings(plugin) : undefined;
     if (nativeProviders[plugin.id] && !settings) throw new PluginError(`${plugin.name} sign-in is not available in this build. The application developer must finish this integration; you do not need to register another account.`, 503);
@@ -121,13 +123,11 @@ export class OAuthConnections {
       if (plugin.id === "github") return await this.deviceFlow(plugin, id, settings!, flow);
       const record: SavedAuth = { pluginId: plugin.id, redirect: "", settings };
       flow.server = http.createServer((request, response) => {
-        response.setHeader("Cache-Control", "no-store"); response.setHeader("Content-Type", "text/plain; charset=utf-8");
-        response.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
         const url = new URL(request.url ?? "/", record.redirect);
         const expectedHost = new URL(record.redirect).host;
         if (request.method !== "GET" || request.headers.host !== expectedHost || url.pathname !== "/oauth/callback" ||
             !safeEqual(url.searchParams.get("state") ?? "", flow.state) || flow.consumed) {
-          response.writeHead(400); response.end("Invalid or expired authorization callback."); return;
+          sendAuthPage(response, 400, { outcome: "failure", title: "Invalid or expired authorization", message: "Return to Local Cognitive and connect again." }); return;
         }
         flow.consumed = true;
         void (async () => {
@@ -138,8 +138,9 @@ export class OAuthConnections {
               serverUrl: plugin.mcpEndpoint, authorizationCode: code, fetchFn: this.oauthFetch(plugin, flow.controller.signal) });
             else await this.exchange(plugin, id, record, { grant_type: "authorization_code", code,
               redirect_uri: record.redirect, code_verifier: flow.verifier }, flow.controller.signal);
-            response.end("Account authorized. Return to Local Cognitive and check the connection before enabling it.");
-          } catch { response.writeHead(400); response.end("Authorization failed or was cancelled. Return to Local Cognitive and reconnect."); }
+            // Shown only after the credential is stored; the app still inspects the connection.
+            sendAuthPage(response, 200, { outcome: "success", title: `${plugin.name} authorized`, message: "Return to Local Cognitive and check the connection before enabling it." });
+          } catch { sendAuthPage(response, 400, { outcome: "failure", title: "Could not connect", message: "Authorization failed or was cancelled. Return to Local Cognitive and reconnect." }); }
           finally { this.stop(id); }
         })();
       });

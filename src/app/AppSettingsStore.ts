@@ -3,7 +3,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { AppConfig, localModelOptions } from "../config/config";
 import { AppSettings, AppSettingsPatch } from "../types";
-import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
+import { isMissingFile, restrictToOwner, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { constants } from "node:fs";
 import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
 import { validateSettingsPatch, defaultUiPreferences } from "./settingsValidation";
@@ -36,6 +36,7 @@ export class AppSettingsStore {
     }
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid application settings.");
+    await restrictToOwner(this.filePath);
     const settings = this.normalize(parsed);
     const migratePlugins = ["file", "notion", "vscode"].some(id => Object.hasOwn(parsed.plugins ?? {}, id));
     if (migratePlugins) {
@@ -44,14 +45,23 @@ export class AppSettingsStore {
       await fs.writeFile(archive, raw, { mode: 0o600, flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
     }
     const requiresMigration = parsed.schemaVersion === undefined || parsed.schemaVersion < 4;
+    // Schema 5: GPU layers became "auto". The old platform default (99 on macOS, else 0) was
+    // persisted like a choice; it becomes auto, while other explicit values are kept.
+    const migrateGpuLayers = (parsed.schemaVersion ?? 0) < 5;
+    if (migrateGpuLayers) {
+      if (settings.localModels && parsed.localModels?.gpuLayers === (process.platform === "darwin" ? 99 : 0)) settings.localModels.gpuLayers = "auto";
+      settings.schemaVersion = 5;
+    }
     const migrateLegacyAnthropicOutput = parsed.providers?.anthropic?.maxTokens === 1024 && this.baseConfig.providers.anthropic.maxTokens > 1024;
     if (migrateLegacyAnthropicOutput) settings.providers.anthropic.maxTokens = this.baseConfig.providers.anthropic.maxTokens;
     if (requiresMigration) {
-      await fs.copyFile(this.filePath, path.join(this.appDataDir, "settings.pre-llamacpp.json"), constants.COPYFILE_EXCL).catch((error: NodeJS.ErrnoException) => {
+      const archive = path.join(this.appDataDir, "settings.pre-llamacpp.json");
+      await fs.copyFile(this.filePath, archive, constants.COPYFILE_EXCL).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST") throw error;
       });
+      await restrictToOwner(archive);
     }
-    if (!parsed.memory?.localProfileId || !parsed.profile || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem) await this.write(settings);
+    if (!parsed.memory?.localProfileId || !parsed.profile || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem || migrateGpuLayers) await this.write(settings);
     return settings;
   }
 
@@ -186,12 +196,13 @@ export class AppSettingsStore {
 
   private async write(settings: AppSettings): Promise<void> {
     await fs.mkdir(this.appDataDir, { recursive: true });
-    await writeJsonAtomically(this.filePath, settings);
+    // Settings still hold provider keys until they move to the credential vault.
+    await writeJsonAtomically(this.filePath, settings, { mode: 0o600 });
   }
 
   private fromConfig(): AppSettings {
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       filesystem: { outputDir: this.baseConfig.outputDir, ...this.baseConfig.filesystem },
       profile: this.defaultProfile(),
       localModels: this.localDefaults(),
@@ -409,7 +420,7 @@ export class AppSettingsStore {
       ...input,
       modelsDir: typeof input?.modelsDir === "string" && input.modelsDir.trim() ? path.resolve(input.modelsDir.trim()) : defaults.modelsDir,
       contextSize: Math.min(131072, this.positiveInteger(input?.contextSize, defaults.contextSize, 512)),
-      gpuLayers: typeof input?.gpuLayers === "number" && Number.isFinite(input.gpuLayers) ? Math.max(0, Math.min(999, Math.floor(input.gpuLayers))) : defaults.gpuLayers,
+      gpuLayers: input?.gpuLayers === "auto" ? "auto" : typeof input?.gpuLayers === "number" && Number.isFinite(input.gpuLayers) ? Math.max(0, Math.min(999, Math.floor(input.gpuLayers))) : defaults.gpuLayers,
       loadTimeoutMs: Math.min(1800000, this.positiveInteger(input?.loadTimeoutMs, defaults.loadTimeoutMs, 10000)),
       generationTimeoutMs: Math.min(3600000, this.positiveInteger(input?.generationTimeoutMs, defaults.generationTimeoutMs, 10000)),
       memoryLimitPercent: Math.min(90, this.positiveInteger(input?.memoryLimitPercent, defaults.memoryLimitPercent, 10)),

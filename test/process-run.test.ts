@@ -41,3 +41,26 @@ test("progress retains participant states through final phases and cancellation 
   assert.deepEqual(registry.get("progress")?.progress?.agents?.map((agent) => agent.status), ["completed", "cancelled"]);
   assert.throws(() => registry.start("progress"), /already exists/);
 });
+
+test("registry keeps 100 runs, pruning only finished ones and freeing their ids", () => {
+  const registry = new ProcessRunRegistry();
+  registry.start("running");
+  for (let index = 0; index < 99; index++) { registry.start(`done-${index}`); registry.complete(`done-${index}`); }
+  registry.start("next");
+  assert.equal(registry.get("done-0"), undefined);
+  assert.equal(registry.get("running")?.status, "running");
+  assert.equal(registry.get("done-1")?.status, "completed");
+  registry.start("done-0");
+  assert.equal(registry.get("done-0")?.status, "running");
+});
+
+test("a run has one pending approval at a time and none after cancel", async () => {
+  const registry = new ProcessRunRegistry();
+  registry.start("run", "chat");
+  const operation = { tool: "file", operation: "write", summary: "Write file", details: "hello" };
+  const first = registry.requestApproval("run", operation);
+  await assert.rejects(registry.requestApproval("run", operation), /cannot request approval/);
+  registry.cancel("run");
+  await assert.rejects(first);
+  await assert.rejects(registry.requestApproval("run", operation), /cannot request approval/);
+});
