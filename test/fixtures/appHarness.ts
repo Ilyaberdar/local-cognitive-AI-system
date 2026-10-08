@@ -8,8 +8,10 @@ const { JSDOM } = require("jsdom");
  * desktop bridges. Requests are recorded as "METHOD url [body]". */
 const repo = path.resolve(__dirname, "..", "..", "..");
 let bundle: string | undefined;
+// The workflow editor is a separately built React bundle: the page gets a recording stand-in.
 const bundled = () => bundle ??= buildSync({ entryPoints: [path.join(repo, "public/assets/app.js")], bundle: true, write: false, format: "iife",
-  platform: "browser", external: ["/assets/*"], logLevel: "error" }).outputFiles[0].text;
+  platform: "browser", external: ["/assets/*"], logLevel: "error" }).outputFiles[0].text
+  .replace('import("/assets/workflow-editor.js")', "Promise.resolve(globalThis.__workflowEditorModule)");
 
 export const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 export const sessionSettings = () => ({ mode: "general", language: "auto", outputStyle: "balanced", reasoningEffort: "medium",
@@ -31,6 +33,8 @@ export interface Harness {
   requests: string[];
   /** Calls the renderer made through window.desktopRemote. */
   bridgeCalls: Array<{ op: string; payload?: any }>;
+  /** Workflow editors the page mounted, newest last: their props and handle. */
+  editors: Array<{ props: any; handle: any }>;
   /** Runs the 600 ms process-run poll once (it is a manual interval here). */
   poll(): Promise<void>;
   /** Runs every live interval with this period once (dashboard, metrics, model refresh). */
@@ -49,6 +53,7 @@ export interface BootOptions {
 export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   const requests: string[] = [];
   const bridgeCalls: Harness["bridgeCalls"] = [];
+  const editors: Harness["editors"] = [];
   const settings = sessionSettings();
   let resolveChat: () => void = () => undefined;
   const route = (method: string, url: string, body?: string): unknown => {
@@ -73,6 +78,13 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   window.HTMLElement.prototype.hidePopover = function () {};
   window.HTMLDialogElement.prototype.showModal = function (this: any) { this.setAttribute("open", ""); };
   window.HTMLDialogElement.prototype.close = function (this: any) { this.removeAttribute("open"); };
+  window.confirm = () => true;
+  window.__workflowEditorModule = { mountWorkflowEditor: (_container: unknown, props: any) => {
+    const handle = { unmounted: false, setPlugins() {}, setValidation() {}, setColorMode() {}, setNodeRuns() {}, setExecution() {}, setStarting() {},
+      captureState: () => undefined, unmount() { handle.unmounted = true; } };
+    editors.push({ props, handle });
+    return handle;
+  } };
   // JSDOM has no EventSource: record which streams the page opens.
   window.EventSource = class { constructor(url: string) { requests.push(`EVENTSOURCE ${url}`); } addEventListener() {} close() {} };
   const intervals: Array<{ fn: (() => unknown) | null; ms: number }> = [];
@@ -95,7 +107,7 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   window.eval(bundled());
   await flush(30);
   return {
-    window, document: window.document, requests, bridgeCalls,
+    window, document: window.document, requests, bridgeCalls, editors,
     async poll() { const poll = intervals.find(item => item.ms === 600 && item.fn); if (poll) { await poll.fn!(); await flush(10); } },
     async tick(ms: number) { for (const item of intervals.filter(entry => entry.ms === ms && entry.fn)) await item.fn!(); await flush(20); },
     resolveChat: () => resolveChat(),
