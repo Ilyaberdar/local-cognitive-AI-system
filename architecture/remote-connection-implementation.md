@@ -584,6 +584,12 @@ command dedupe, approval/reconciliation и revisions там, где их не х
   файла), затем load, unload и delete; ни в одном ответе нет каталогов host. UI в
   JSDOM: изоляция от локального API, офлайн, возврат на This computer, Use in chat,
   старый сервер.
+- **Проверено вживую** (9 октября): Mac → fedora через production relay —
+  вкладка Models на сервере, загрузка 14B на GPU 0 с частью слоёв на CPU, полоса
+  VRAM, переключение обратно на This computer.
+- **Замечено при проверке**: в чате сервера нет subagents и debate (ограничение R4,
+  план — R5 «остатки чата»); имя сервера — системный hostname (`os.hostname()`),
+  своё имя задать нельзя, а Cloud хранит имя с первой регистрации.
 
 ## 8. Переключение UI и функциональное покрытие
 
