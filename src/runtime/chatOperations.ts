@@ -6,6 +6,7 @@ import { RemoteOperationError, type OperationContext, type RemoteOperation } fro
 import type { SessionIndexStore } from "../session/SessionIndexStore";
 import type { ChatMessage, SessionSettingsPatch } from "../types";
 import type { EventJournal } from "./EventJournal";
+import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 
 const MAX_HISTORY_BYTES = 768 * 1024;
@@ -111,7 +112,12 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       // Only the default model per provider: provider settings also hold API keys.
       const appSettings = { llm: { defaultProvider: settings.llm.defaultProvider },
         providers: Object.fromEntries(Object.entries(settings.providers).map(([providerId, provider]) => [providerId, { model: (provider as { model?: string }).model }])) };
-      return { providers: current.providerDescriptors, availableModels, loadedModels, allManagedModels, appSettings };
+      // A model's load error can hold the runtime's log with server paths: devices get its summary.
+      const safe = <T extends object>(model: T): T => {
+        const error = (model as { error?: unknown }).error;
+        return typeof error === "string" && error ? { ...model, error: publicError(error) } : model;
+      };
+      return { providers: current.providerDescriptors, availableModels, loadedModels: loadedModels.map(safe), allManagedModels: allManagedModels.map(safe), appSettings };
     },
 
     "chat.runs.start": (payload, context) => known(async () => {

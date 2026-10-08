@@ -172,3 +172,22 @@ test("journal cursors resync on another epoch or a cursor ahead, and waits wake 
   controller.abort();
   await aborted;
 });
+
+test("devices see a short error without server paths; the host log keeps the full text", async t => {
+  const { publicError } = await import("../src/runtime/publicError");
+  assert.equal(publicError("Local runtime exited (1).\nllama_model_load: /srv/local-cognitive/models/a/x.gguf: bad magic"), "Local runtime exited (1).");
+  assert.equal(publicError("Cannot open /srv/local-cognitive/models/a/x.gguf for reading"), "Cannot open <path> for reading");
+  assert.equal(publicError("Failed: C:\\Users\\me\\models\\x.gguf"), "Failed: <path>");
+  assert.equal(publicError("x".repeat(400)).length, 300);
+  assert.equal(publicError(""), "The operation failed on the server.");
+  assert.equal(publicError("Provider unavailable"), "Provider unavailable");
+
+  const f = setup(t);
+  const ack = await f.service.start("local:p", { commandId: "c1", sessionId: "s1", input: "hello" });
+  await until(() => f.script.calls.length === 1);
+  f.script.finish(ack.runId!, { error: "Local runtime exited (1).\n" + "/srv/local-cognitive/models/secret-name.gguf ".repeat(2000) });
+  await until(() => f.service.get(ack.runId!)?.status === "failed");
+  const visible = JSON.stringify([f.service.get(ack.runId!), f.service.unfinishedTurns("s1"), f.events("s1")]);
+  assert.equal(visible.includes("/srv/"), false);
+  assert.equal(f.service.get(ack.runId!)?.error, "Local runtime exited (1).");
+});

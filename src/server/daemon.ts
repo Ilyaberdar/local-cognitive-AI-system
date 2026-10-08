@@ -13,6 +13,7 @@ import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
 import { createChatOperations } from "../runtime/chatOperations";
+import { publicError } from "../runtime/publicError";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
  * environment: the configuration is read when its module loads. */
@@ -67,7 +68,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       const { phase, activeWork, scheduler, telegram } = backend.status();
       let loadedModels: string[] = [];
       try { loadedModels = backend.runtimeManager.getRuntime().localModelService.snapshot().runtime.loadedModelIds ?? []; } catch { /* Runtime not built. */ }
-      return { version: appVersion(), phase, activeWork, scheduler, telegram, inference: inference(), loadedModels };
+      const { fallbackReason, ...current } = inference();
+      return { version: appVersion(), phase, activeWork, scheduler, telegram, loadedModels,
+        inference: { ...current, ...(fallbackReason ? { fallbackReason: publicError(fallbackReason) } : {}) } };
     } });
   const control = await ControlServer.listen(controlSocketPathFor(config.appDataDir), {
     status: () => ({ pid: process.pid, version: appVersion(), inference: inference(),

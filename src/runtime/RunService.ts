@@ -3,6 +3,7 @@ import type { ApprovalOperation, ChatMessage, ProcessProgressEvent } from "../ty
 import type { Logger } from "../utils/Logger";
 import type { HostDatabase } from "./db/HostDatabase";
 import type { EventJournal, JournalEvent } from "./EventJournal";
+import { publicError } from "./publicError";
 
 export type RunStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "needs_review";
 const ACTIVE: RunStatus[] = ["queued", "running", "waiting_approval"];
@@ -226,10 +227,7 @@ export class RunService {
       const reason = run.controller.signal.aborted ? run.controller.signal.reason : undefined;
       if (reason === "cancel") this.finish(run, "cancelled");
       else if (reason === "host_shutdown") this.finish(run, "interrupted", "The server stopped while answering.");
-      else {
-        this.deps.logger?.warn("Chat run failed", { runId, error: error instanceof Error ? error.message : String(error) });
-        this.finish(run, "failed", error instanceof Error ? error.message : "The answer failed on the server.");
-      }
+      else this.finish(run, "failed", error instanceof Error ? error.message : "The answer failed on the server.");
     }
   }
 
@@ -300,6 +298,11 @@ export class RunService {
     this.active.delete(run.runId);
     clearTimeout(run.timer);
     if (this.disposed) return;
+    // Devices read this error; the host log keeps the full text.
+    if (error !== undefined) {
+      if (status === "failed") this.deps.logger?.warn("Chat run failed", { runId: run.runId, error });
+      error = publicError(error);
+    }
     // Providers that do not stream report no partial text; the stored turn has the final answer.
     const finalText = turn?.find(message => message.role === "assistant")?.content;
     if (finalText !== undefined) run.text = finalText;
