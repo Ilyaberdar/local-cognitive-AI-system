@@ -4,15 +4,20 @@ import { RemoteOperationError, type OperationContext, type RemoteOperation } fro
 import { ScheduleValidationError } from "../schedules/ScheduleService";
 import type { ScheduleWeekday } from "../schedules/types";
 import { TaskValidationError, type Task } from "../tasks/types";
+import { AgentTraceNotFoundError, readAgentTrace } from "../workflows/agentTrace";
 import { DEFAULT_TASK_WORKFLOW_ID } from "../workflows/defaultWorkflows";
-import { WorkflowConflictError, WorkflowRunConflictError, type WorkflowDefinition } from "../workflows/types";
+import { WorkflowConflictError, WorkflowRunConflictError, type WorkflowDefinition, type WorkflowRun } from "../workflows/types";
 import { canonical, sha256 } from "./canonical";
-import type { CommandLedger, LedgerCommand } from "./CommandLedger";
-import { orchestrationLists, safeSchedule, safeTask } from "./orchestrationDto";
+import type { CommandLedger, CommandRecord, LedgerCommand } from "./CommandLedger";
+import type { JournalEvent } from "./EventJournal";
+import type { StreamSource } from "./eventStreams";
+import { agentTraceDto, orchestrationLists, runDetail, safeRun, safeSchedule, safeTask, scrubberFor } from "./orchestrationDto";
 import { publicError } from "./publicError";
 
 const MAX_WORKFLOW_BYTES = 200 * 1024;
+const MAX_HISTORY_EVENTS = 500, MAX_HISTORY_BYTES = 256 * 1024;
 const id = z.string().min(1).max(200);
+const runId = z.uuid();
 const commandId = z.string().min(8).max(100);
 const priority = z.enum(["low", "normal", "high"]);
 // Full access is set up on the host itself: from a device, steps ask for approval (R5-2).
@@ -42,7 +47,15 @@ const schemas = {
   scheduleUpdate: z.object({ scheduleId: id, patch: z.object(scheduleFields).partial().strict() }).strict(),
   schedule: z.object({ scheduleId: id }).strict(),
   validate: z.object({ workflow }).strict(),
-  save: z.object({ commandId, workflow, expectedUpdatedAt: z.string().max(40).nullable() }).strict()
+  save: z.object({ commandId, workflow, expectedUpdatedAt: z.string().max(40).nullable() }).strict(),
+  runStart: z.object({ commandId, workflow, options: z.object({ description: z.string().max(100_000).optional(), accessMode: access.optional(),
+    maxSteps: z.number().int().min(1).max(250).optional() }).strict().optional() }).strict(),
+  run: z.object({ runId }).strict(),
+  runEvents: z.object({ runId, after: z.number().int().nonnegative().optional() }).strict(),
+  review: z.object({ commandId, runId, approved: z.boolean(), comment: z.string().max(4000).optional(), approvalId: z.string().max(200).optional(),
+    waitingNodeRunId: z.string().max(200).optional() }).strict(),
+  runCommand: z.object({ commandId, runId }).strict(),
+  agentTrace: z.object({ runId, agentRunId: z.string().min(1).max(500) }).strict()
 };
 
 const LATER = {
@@ -59,7 +72,7 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 /** Settings a device cannot make on the host yet, checked before the schema so the answer says why. */
 const refuseLater = (fields: Record<string, unknown>): void => {
   if (Array.isArray(fields.attachments) && fields.attachments.length) throw unsupported(LATER.attachments);
-  if (fields.projectId !== undefined && fields.projectId !== null) throw unsupported(LATER.project);
+  if ((fields.projectId !== undefined && fields.projectId !== null) || (fields.rootPath !== undefined && fields.rootPath !== null)) throw unsupported(LATER.project);
   if (fields.accessMode === "full") throw unsupported(LATER.fullAccess);
 };
 
@@ -79,6 +92,8 @@ export const workflowLimits = (definition: unknown): string[] => {
 /** Whether running this would skip approvals: nothing a device sends may lead there (R5-2). */
 const skipsApproval = (workflow: WorkflowDefinition | null | undefined, accessMode?: string): boolean =>
   accessMode === "full" || workflowLimits(workflow).includes(LATER.fullAccess);
+/** A run continues with what it started with: its own access and its snapshot of the workflow. */
+const runSkipsApproval = (run: WorkflowRun): boolean => skipsApproval(run.workflowSnapshot, run.executionSnapshot?.accessMode);
 
 const parse = <T>(schema: z.ZodType<T>, payload: unknown): T => {
   const result = schema.safeParse(payload);
@@ -110,6 +125,10 @@ export interface OrchestrationOperationDependencies {
   scopeOf(context: OperationContext): string;
   /** True while the host drains: new work is refused; reads, cancels and reviews still answer. */
   isDraining(): boolean;
+  /** The event journal's epoch: workflow run streams use it, so their cursors survive restarts. */
+  journalEpoch(): string;
+  /** The host's data directories, replaced in run outputs and events a device receives. */
+  hostDirectories?: string[];
 }
 
 /** Tasks & workflows on the host for a paired device (R5-2): lists, tasks, schedules and
@@ -129,10 +148,21 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     if (versions.some(workflow => skipsApproval(workflow))) throw unsupported(FULL_ON_HOST);
   };
   const taskSkipsApproval = async (task: Task) => skipsApproval(await workflowOf(task.workflowId, task.workflowVersion), task.accessMode);
-  const command = <T>(context: OperationContext, operation: string, input: { commandId: string }, execute: () => Promise<T>,
-    options: Pick<LedgerCommand<T>, "target" | "reconcile"> = {}): Promise<T> => {
+  const requireRun = async (id: string) => {
+    const run = await runtime().workflowRunStore.getRun(id);
+    if (!run) throw notFound("run");
+    return run;
+  };
+  const detailOf = async (id: string) => {
+    const detail = await runtime().taskService.getRunDetail(id);
+    if (!detail) throw notFound("run");
+    return runDetail(detail, deps.hostDirectories);
+  };
+  /** `allowWhileDraining`: answering a waiting step finishes work, so it is not refused. */
+  const command = <T>(context: OperationContext, operation: string, input: { commandId: string }, execute: (record: CommandRecord) => Promise<T>,
+    { allowWhileDraining, ...options }: Pick<LedgerCommand<T>, "target" | "reconcile" | "reserveRunId"> & { allowWhileDraining?: boolean } = {}): Promise<T> => {
     const { commandId: key, ...payload } = input;
-    return deps.ledger.run({ scope: deps.scopeOf(context), key, operation, payload, accepting: () => !deps.isDraining(), ...options }, execute);
+    return deps.ledger.run({ scope: deps.scopeOf(context), key, operation, payload, ...(allowWhileDraining ? {} : { accepting: () => !deps.isDraining() }), ...options }, execute);
   };
 
   return {
@@ -239,6 +269,74 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const errors = [...validation.errors, ...workflowLimits(definition)];
       return { ok: errors.length === 0, errors };
     }),
+    /** Starts a workflow from the editor; returns once it is queued, its progress is followed separately. */
+    "workflows.runs.start": (payload, context) => known(async () => {
+      refuseLater(record(record(payload).options));
+      const input = parse(schemas.runStart, payload);
+      const limits = workflowLimits(input.workflow);
+      if (limits.length) throw unsupported(limits[0]!);
+      const definition = input.workflow as unknown as WorkflowDefinition;
+      const validation = runtime().workflowStore.validate(definition);
+      if (!validation.ok) throw new RemoteOperationError(publicError(validation.errors.join("; ")), "invalid_request");
+      return command(context, "workflows.runs.start", input, async reserved => {
+        const run = await runtime().workflowRunner.startStandalone(definition, input.options ?? {}, { runId: reserved.runId });
+        runtime().workflowRunner.runInBackground(run.id);
+        return safeRun(run);
+      }, { reserveRunId: true,
+        // A restart after the run was created: that run is the answer (recovery interrupted it if it never ran).
+        reconcile: async accepted => {
+          const run = accepted.runId ? await runtime().workflowRunStore.getRun(accepted.runId) : null;
+          return run ? safeRun(run) : undefined;
+        } });
+    }),
+    "workflows.runs.get": payload => known(async () => detailOf(parse(schemas.run, payload).runId)),
+    /** What the run's live view starts from: its events after `after` (newest when there are many),
+     * then its detail, and the cursor to follow it with `events.poll`. */
+    "workflows.runs.events": payload => known(async () => {
+      const input = parse(schemas.runEvents, payload);
+      const run = await requireRun(input.runId);
+      const events = runtime().workflowRunStore.events;
+      let history = await events.list(input.runId, input.after ?? 0);
+      // The device is ahead of the log (it was reset): start again from the beginning.
+      if ((input.after ?? 0) > history.lastSequence) history = await events.list(input.runId, 0);
+      const scrub = scrubberFor(run, deps.hostDirectories);
+      const kept = scrub(history.events).slice(-MAX_HISTORY_EVENTS);
+      while (kept.length > 1 && Buffer.byteLength(JSON.stringify(kept)) > MAX_HISTORY_BYTES) kept.shift();
+      const dropped = kept.length < history.events.length;
+      return { events: kept, firstSequence: dropped ? kept[0]!.sequence : history.firstSequence, lastSequence: history.lastSequence,
+        truncated: history.truncated || dropped, detail: await detailOf(input.runId),
+        cursor: { streamId: `workflow-run:${input.runId}`, epoch: deps.journalEpoch(), after: history.lastSequence } };
+    }),
+    /** Cancel needs no command id: cancelling twice is cancelling once. */
+    "workflows.runs.cancel": payload => known(async () => {
+      const { runId: id } = parse(schemas.run, payload);
+      await requireRun(id);
+      return safeRun(await runtime().workflowRunner.cancel(id));
+    }),
+    /** Answers a waiting step (approval or human review); the run continues on the host. */
+    "workflows.runs.review": (payload, context) => known(async () => {
+      const input = parse(schemas.review, payload);
+      return command(context, "workflows.runs.review", input, async () => {
+        if (runSkipsApproval(await requireRun(input.runId))) throw unsupported(FULL_ON_HOST);
+        return safeRun(await runtime().workflowRunner.review(input.runId, input.approved, input.comment ?? "", true,
+          { ...(input.approvalId ? { approvalId: input.approvalId } : {}), ...(input.waitingNodeRunId ? { waitingNodeRunId: input.waitingNodeRunId } : {}) }));
+      }, { target: input.runId, allowWhileDraining: true });
+    }),
+    "workflows.runs.resume": (payload, context) => known(async () => {
+      const input = parse(schemas.runCommand, payload);
+      return command(context, "workflows.runs.resume", input, async () => {
+        if (runSkipsApproval(await requireRun(input.runId))) throw unsupported(FULL_ON_HOST);
+        return safeRun(await runtime().workflowRunner.resume(input.runId, true));
+      }, { target: input.runId });
+    }),
+    "workflows.runs.agentTrace.get": payload => known(async () => {
+      const input = parse(schemas.agentTrace, payload);
+      const run = await requireRun(input.runId);
+      const detail = await runtime().taskService.getRunDetail(input.runId);
+      try { return agentTraceDto(await readAgentTrace(runtime().agentLoopRunner.store, detail?.nodeRuns, input.agentRunId), run, deps.hostDirectories); }
+      catch (error) { if (error instanceof AgentTraceNotFoundError) throw new RemoteOperationError(error.message, "not_found"); throw error; }
+    }),
+
     /** `expectedUpdatedAt`: the version the editor started from, null for a new workflow. */
     "workflows.save": (payload, context) => known(async () => {
       const input = parse(schemas.save, payload);
@@ -254,3 +352,37 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     })
   };
 };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_POLL_BYTES = 256 * 1024;
+
+/** A workflow run's event log as an `events.poll` stream (`workflow-run:<runId>`). Its sequences
+ * are the log's own and survive restarts, so the journal's epoch fits it; a cursor the log no
+ * longer covers gets `resync`, as does a run that does not exist. */
+export const createWorkflowRunStreams = (deps: Pick<OrchestrationOperationDependencies, "runtimeManager" | "journalEpoch" | "hostDirectories">): StreamSource => ({
+  prefix: "workflow-run:",
+  async read(id, cursor, maxEvents) {
+    if (!UUID.test(id)) throw new RemoteOperationError("The request is not valid.", "invalid_request");
+    const store = deps.runtimeManager.getRuntime().workflowRunStore;
+    const run = await store.getRun(id);
+    if (!run) return { resync: "run_unknown" };
+    if (cursor.epoch !== deps.journalEpoch()) return { resync: "epoch_changed" };
+    const history = await store.events.list(id, cursor.after);
+    if (cursor.after > history.lastSequence) return { resync: "cursor_ahead" };
+    if (history.truncated) return { resync: "cursor_expired" };
+    const scrub = scrubberFor(run, deps.hostDirectories);
+    const events: JournalEvent[] = [];
+    let bytes = 0;
+    for (const event of history.events.slice(0, maxEvents)) {
+      const payload = scrub(event) as unknown as Record<string, unknown>;
+      bytes += Buffer.byteLength(JSON.stringify(payload));
+      // At least one event, so a large one cannot stall the cursor.
+      if (events.length && bytes > MAX_POLL_BYTES) break;
+      events.push({ seq: event.sequence, type: event.type, runId: id, occurredAt: event.at, payload });
+    }
+    return { events };
+  },
+  subscribe(id, wake) {
+    return UUID.test(id) ? deps.runtimeManager.getRuntime().workflowRunStore.events.subscribe(id, () => wake()) : () => undefined;
+  }
+});

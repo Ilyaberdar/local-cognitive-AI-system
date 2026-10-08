@@ -10,7 +10,6 @@ import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 
 const MAX_HISTORY_BYTES = 768 * 1024;
-const MAX_POLL_MS = 20_000;
 const id = z.string().min(1).max(200);
 const uuid = z.uuid();
 const schemas = {
@@ -25,9 +24,7 @@ const schemas = {
   }).strict() }).strict(),
   start: z.object({ commandId: z.string().min(8).max(100), sessionId: id, input: z.string().min(1).max(MAX_INPUT_CHARS) }).strict(),
   run: z.object({ runId: uuid }).strict(),
-  approval: z.object({ runId: uuid, approvalId: uuid, approved: z.boolean() }).strict(),
-  poll: z.object({ streams: z.array(z.object({ streamId: z.string().regex(/^session:.{1,200}$/), epoch: z.string().max(100), after: z.number().int().nonnegative() }).strict()).min(1).max(8),
-    waitMs: z.number().int().min(0).max(MAX_POLL_MS).optional(), maxEvents: z.number().int().min(1).max(500).optional() }).strict()
+  approval: z.object({ runId: uuid, approvalId: uuid, approved: z.boolean() }).strict()
 };
 
 const parse = <T>(schema: z.ZodType<T>, payload: unknown): T => {
@@ -56,14 +53,17 @@ export interface ChatOperationDependencies {
 
 /** Chat on the host for a remote device (R4): text turns in ordinary chats, with durable runs,
  * history and an event journal the device polls. Project chats and attachments come in R5. */
+/** A chat a device may use: it exists and is not a project chat (R4). */
+export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string) => {
+  const session = await store.get(sessionId);
+  if (!session) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+  if (session.projectId) throw new RemoteOperationError("Project chats are not available remotely yet.", "unsupported");
+  return session;
+};
+
 export const createChatOperations = (deps: ChatOperationDependencies): Record<string, RemoteOperation> => {
   const runtime = () => deps.runtimeManager.getRuntime();
-  const requireSession = async (sessionId: string) => {
-    const session = await deps.sessionIndexStore.get(sessionId);
-    if (!session) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
-    if (session.projectId) throw new RemoteOperationError("Project chats are not available remotely yet.", "unsupported");
-    return session;
-  };
+  const requireSession = (sessionId: string) => requireRemoteSession(deps.sessionIndexStore, sessionId);
   return {
     "sessions.list": async () => (await deps.sessionIndexStore.list()).filter(session => !session.projectId).map(session => ({
       id: session.id, title: session.title, updatedAt: session.updatedAt, ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {})
@@ -138,20 +138,5 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const { runId, approvalId, approved } = parse(schemas.approval, payload);
       return deps.runService.resolveApproval(runId, approvalId, approved);
     }),
-
-    /** Long poll: answers at once when any stream has news, otherwise waits up to `waitMs` or
-     * until the device disconnects. A stale cursor gets `resync`; the device reloads a snapshot. */
-    "events.poll": async (payload, context) => {
-      const { streams, waitMs = MAX_POLL_MS, maxEvents = 500 } = parse(schemas.poll, payload);
-      for (const stream of streams) await requireSession(stream.streamId.slice("session:".length));
-      const read = () => streams.map(stream => ({ streamId: stream.streamId, ...deps.journal.read(stream.streamId, stream, { maxEvents }) }));
-      let results = read();
-      const news = () => results.some(result => "resync" in result || result.events.length > 0);
-      if (!news() && waitMs > 0) {
-        await deps.journal.wait(streams.map(stream => stream.streamId), waitMs, context.signal);
-        results = read();
-      }
-      return { streams: results };
-    }
   };
 };

@@ -93,13 +93,14 @@ export class WorkflowRunner {
     });
   }
 
-  async startStandalone(workflow: WorkflowDefinition, options: WorkflowRunOptions = {}): Promise<WorkflowRun> {
+  /** `ids.runId` lets a caller name the run in advance (a remote command reserves it). */
+  async startStandalone(workflow: WorkflowDefinition, options: WorkflowRunOptions = {}, ids: { runId?: string } = {}): Promise<WorkflowRun> {
     const validation = this.workflowStore.validate(workflow);
     if (!validation.ok) throw Object.assign(new Error(validation.errors.join("; ")), { statusCode: 400 });
     const errors = validateRunOptions(options);
     if (errors.length) throw Object.assign(new Error(errors.join("; ")), { statusCode: 400 });
     if (!this.workspaceResolver?.forWorkflowRun) throw new Error("Standalone workspaces are unavailable.");
-    const id = randomUUID();
+    const id = ids.runId ?? randomUUID();
     const executionSessionId = `workflow-${id}`;
     const workspace = await this.workspaceResolver.forWorkflowRun(id, options);
     const settings = await this.sessionSettingsStore?.get(executionSessionId);

@@ -6,11 +6,14 @@ import test, { TestContext } from "node:test";
 import type { RuntimeManager } from "../src/app/RuntimeManager";
 import { ProjectStore } from "../src/projects/ProjectStore";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
+import { AgentRunStore } from "../src/agents/runtime/AgentRunStore";
 import { CommandLedger } from "../src/runtime/CommandLedger";
 import { HostDatabase } from "../src/runtime/db/HostDatabase";
 import { hostMigrations } from "../src/runtime/db/hostSchema";
+import { createEventStreamOperations } from "../src/runtime/eventStreams";
+import { EventJournal } from "../src/runtime/EventJournal";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
-import { createOrchestrationOperations } from "../src/runtime/orchestrationOperations";
+import { createOrchestrationOperations, createWorkflowRunStreams } from "../src/runtime/orchestrationOperations";
 import { ScheduleService } from "../src/schedules/ScheduleService";
 import { ScheduleStore } from "../src/schedules/ScheduleStore";
 import { SessionIndexStore } from "../src/session/SessionIndexStore";
@@ -62,16 +65,18 @@ async function setup(t: TestContext) {
   const host = HostDatabase.open(path.join(root, "host.db"), hostMigrations);
   t.after(() => host.close());
   const state = { draining: false };
-  const runtimeManager = { getRuntime: () => ({ taskService, scheduleService, workflowStore, workflowRunStore, workflowRunner }) } as unknown as RuntimeManager;
+  const agentRuns = new AgentRunStore(path.join(root, "agents"));
+  const runtimeManager = { getRuntime: () => ({ taskService, scheduleService, workflowStore, workflowRunStore, workflowRunner, agentLoopRunner: { store: agentRuns } }) } as unknown as RuntimeManager;
   const operations = (ledger = new CommandLedger(host)) => createOrchestrationOperations({ runtimeManager, ledger,
-    scopeOf: ({ accountId, deviceId }) => `remote:${accountId}:${deviceId}`, isDraining: () => state.draining });
-  const ops = operations();
+    scopeOf: ({ accountId, deviceId }) => `remote:${accountId}:${deviceId}`, isDraining: () => state.draining, journalEpoch: () => "epoch-1", hostDirectories: [root] });
+  const ops = { ...operations(), ...createEventStreamOperations({ journal: new EventJournal(host), requireSession: async () => undefined,
+    sources: [createWorkflowRunStreams({ runtimeManager, journalEpoch: () => "epoch-1", hostDirectories: [root] })] }) };
   const call = <T = any>(op: string, payload?: unknown, ctx = context()) => Promise.resolve(ops[op]!(payload, ctx)) as Promise<T>;
-  return { root, host, state, ops, operations, call, resolver, taskService, workflowStore, workflowRunStore, workflowRunner };
+  return { root, host, state, ops, operations, call, resolver, taskService, workflowStore, workflowRunStore, workflowRunner, agentRuns };
 }
 
 test("every orchestration operation is in the catalog; what creates or starts work is a command", () => {
-  const ops = createOrchestrationOperations({ runtimeManager: {} as RuntimeManager, ledger: {} as CommandLedger, scopeOf: () => "", isDraining: () => false });
+  const ops = createOrchestrationOperations({ runtimeManager: {} as RuntimeManager, ledger: {} as CommandLedger, scopeOf: () => "", isDraining: () => false, journalEpoch: () => "" });
   for (const name of Object.keys(ops)) assert.ok(OPERATIONS[name], `${name} is missing from the operation catalog`);
   for (const name of ["tasks.create", "tasks.run", "tasks.runNext", "schedules.create", "workflows.save"]) assert.equal(OPERATIONS[name]!.kind, "command", name);
 });
@@ -264,4 +269,112 @@ test("nothing a device sends runs without approvals: host full access stays the 
   assert.equal(next.task.id, own.id);
   await until(() => f.workflowRunStore.getRun(next.runId), run => run?.status === "waiting");
   assert.equal((await f.taskService.get(fullTask.id))!.lastRunId, undefined);
+});
+
+/** Waits until a device-started run reaches `status` and returns its detail as a device sees it. */
+const settled = async (f: Awaited<ReturnType<typeof setup>>, runId: string, status: string) => {
+  await until(() => f.workflowRunStore.getRun(runId), run => run?.status === status);
+  return f.call("workflows.runs.get", { runId });
+};
+
+test("a device starts a workflow, follows it live and answers its review; a resend never starts it twice", async t => {
+  const f = await setup(t);
+  const received: unknown[] = [];
+  const call = async (op: string, payload: unknown) => { const value = await f.call(op, payload); received.push(value); return value; };
+  const start = { commandId: "cmd-start-1", workflow: reviewWorkflow(), options: { description: "Check the report" } };
+  const [run, again] = await Promise.all([call("workflows.runs.start", start), call("workflows.runs.start", start)]);
+  assert.equal(again.id, run.id, "one run for two sends");
+  assert.equal((await f.workflowRunStore.listRuns()).length, 1);
+  await settled(f, run.id, "waiting");
+
+  const history = await call("workflows.runs.events", { runId: run.id });
+  assert.ok(history.events.length > 0 && history.events.every((event: { runId: string }) => event.runId === run.id));
+  assert.deepEqual(history.cursor, { streamId: `workflow-run:${run.id}`, epoch: "epoch-1", after: history.lastSequence });
+  assert.equal(history.detail.run.status, "waiting");
+  const waiting = history.detail.nodeRuns.find((step: { status: string }) => step.status === "waiting");
+  assert.ok(waiting && !("input" in waiting), "a step's input stays on the host");
+
+  // A long poll wakes when the review moves the run on.
+  const polling = call("events.poll", { streams: [history.cursor], waitMs: 10_000 });
+  const reviewed = await call("workflows.runs.review", { commandId: "cmd-review-1", runId: run.id, approved: true, waitingNodeRunId: waiting.id });
+  assert.equal((await call("workflows.runs.review", { commandId: "cmd-review-1", runId: run.id, approved: true, waitingNodeRunId: waiting.id })).id, reviewed.id);
+  const woken = await polling;
+  assert.ok(woken.streams[0].events.length > 0, "the poll answered with the run's new events");
+  assert.ok(woken.streams[0].events.every((event: { seq: number }) => event.seq > history.lastSequence));
+  assert.equal((await settled(f, run.id, "done")).run.status, "done");
+  await assert.rejects(f.call("workflows.runs.review", { commandId: "cmd-review-2", runId: run.id, approved: true, waitingNodeRunId: waiting.id }), code("conflict"));
+  assert.equal(JSON.stringify(received).includes(f.root), false, "no host directory reaches the device");
+});
+
+test("a run stream resyncs on a cursor it cannot continue and ends for an unknown run", async t => {
+  const f = await setup(t);
+  const run = await f.call("workflows.runs.start", { commandId: "cmd-start-1", workflow: reviewWorkflow() });
+  await settled(f, run.id, "waiting");
+  const { cursor } = await f.call("workflows.runs.events", { runId: run.id });
+  const poll = async (stream: { streamId: string; epoch: string; after: number }) => (await f.call("events.poll", { streams: [stream], waitMs: 0 })).streams[0];
+  assert.deepEqual((await poll(cursor)).events, []);
+  assert.equal((await poll({ ...cursor, after: cursor.after + 5 })).resync, "cursor_ahead");
+  assert.equal((await poll({ ...cursor, epoch: "older" })).resync, "epoch_changed");
+  assert.equal((await poll({ ...cursor, streamId: "workflow-run:4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d12" })).resync, "run_unknown");
+  await assert.rejects(f.call("events.poll", { streams: [{ ...cursor, streamId: "workflow-run:../../etc" }], waitMs: 0 }), code("invalid_request"));
+  await assert.rejects(f.call("events.poll", { streams: [{ ...cursor, streamId: "other:1" }], waitMs: 0 }), code("invalid_request"));
+  // The device ahead of a reset log reads it again from the start.
+  const ahead = await f.call("workflows.runs.events", { runId: run.id, after: cursor.after + 100 });
+  assert.equal(ahead.events[0].sequence, 1);
+});
+
+test("cancel twice is cancelling once; Resume continues an interrupted run; agent steps come without instructions", async t => {
+  const f = await setup(t);
+  const run = await f.call("workflows.runs.start", { commandId: "cmd-start-1", workflow: reviewWorkflow() });
+  await settled(f, run.id, "waiting");
+  assert.equal((await f.call("workflows.runs.cancel", { runId: run.id })).status, "cancelled");
+  assert.equal((await f.call("workflows.runs.cancel", { runId: run.id })).status, "cancelled");
+  await assert.rejects(f.call("workflows.runs.cancel", { runId: "4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d12" }), code("not_found"));
+
+  const workflow = reviewWorkflow({ id: "plain", nodes: [node("entry", "entry"), node("done", "terminal", { runStatus: "done" })],
+    transitions: [{ id: "a", from: "entry", to: "done", priority: 1, guard: { type: "always" } }] });
+  const id = "4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d13";
+  await f.workflowRunStore.createRun({ id, workflow, workspace: await f.resolver.forWorkflowRun(id, {}), nodeTargets: {}, executionSessionId: `workflow-${id}`,
+    input: { title: "Plain", description: "" }, accessMode: "default", maxSteps: 25 });
+  await f.workflowRunner.recoverInterruptedRuns();
+  assert.equal((await f.call("workflows.runs.resume", { commandId: "cmd-resume-1", runId: id })).status, "queued");
+  await settled(f, id, "done");
+
+  // An agent step of the run: its turns, never its instructions or tools.
+  await f.workflowRunStore.appendNodeRun({ runId: run.id, workflowId: "review-flow", nodeId: "review", status: "ok", input: {}, agentRunId: "agent-1", startedAt: new Date().toISOString() });
+  await f.agentRuns.save({ id: "agent-1", fingerprint: "f", input: "task", instructions: "SECRET INSTRUCTIONS", status: "completed", tools: [],
+    turns: [{ type: "result", content: `Wrote ${f.root}/report.md` }], steps: 1, repairs: 0, activeMs: 1, usage: {} as never });
+  const trace = await f.call("workflows.runs.agentTrace.get", { runId: run.id, agentRunId: "agent-1" });
+  assert.deepEqual(trace, { id: "agent-1", status: "completed", turns: [{ type: "result", content: "Wrote <server>/report.md" }] });
+  await assert.rejects(f.call("workflows.runs.agentTrace.get", { runId: run.id, agentRunId: "agent-2" }), code("not_found"));
+});
+
+test("a device cannot start, resume or review a run that skips approvals, nor give one a folder", async t => {
+  const f = await setup(t);
+  const refused = (promise: Promise<unknown>, pattern: RegExp) => assert.rejects(promise, (error: unknown) => code("unsupported")(error) && pattern.test((error as Error).message));
+  await refused(f.call("workflows.runs.start", { commandId: "cmd-start-1", workflow: reviewWorkflow(), options: { accessMode: "full" } }), /Full access/);
+  await refused(f.call("workflows.runs.start", { commandId: "cmd-start-2", workflow: reviewWorkflow(), options: { rootPath: "/srv/data" } }), /folders/);
+  await assert.rejects(f.call("workflows.runs.start", { commandId: "cmd-start-3", workflow: reviewWorkflow({ entryNodeId: "missing" }) }), code("invalid_request"));
+  // Started on the host itself with full access: a device does not continue it.
+  const hostRun = await f.workflowRunner.startStandalone(reviewWorkflow(), { accessMode: "full" });
+  f.workflowRunner.runInBackground(hostRun.id);
+  const waiting = await settled(f, hostRun.id, "waiting");
+  const review = waiting.nodeRuns.find((item: { status: string }) => item.status === "waiting");
+  await refused(f.call("workflows.runs.review", { commandId: "cmd-review-1", runId: hostRun.id, approved: true, waitingNodeRunId: review.id }), /full access on the server/);
+  assert.equal((await f.workflowRunStore.getRun(hostRun.id))!.status, "waiting");
+});
+
+test("a run start accepted before a restart answers with the reserved run if it was created", async t => {
+  const f = await setup(t);
+  const stuck = new CommandLedger(f.host);
+  const payload = { workflow: reviewWorkflow() };
+  void stuck.run({ scope: "remote:account:mac", key: "cmd-start-lost", operation: "workflows.runs.start", payload, reserveRunId: true }, () => new Promise<never>(() => undefined));
+  void stuck.run({ scope: "remote:account:mac", key: "cmd-start-made", operation: "workflows.runs.start", payload, reserveRunId: true }, () => new Promise<never>(() => undefined));
+  const reserved = String(f.host.db.prepare("SELECT run_id FROM commands WHERE idempotency_key = 'cmd-start-made'").get()!.run_id);
+  await f.workflowRunner.startStandalone(reviewWorkflow(), {}, { runId: reserved });
+  const after = f.operations(new CommandLedger(f.host));
+  const call = (op: string, value: unknown) => Promise.resolve(after[op]!(value, context()));
+  await assert.rejects(call("workflows.runs.start", { commandId: "cmd-start-lost", ...payload }), code("not_started"));
+  assert.equal((await call("workflows.runs.start", { commandId: "cmd-start-made", ...payload }) as { id: string }).id, reserved);
+  assert.equal((await f.workflowRunStore.listRuns()).length, 1, "nothing was started a second time");
 });
