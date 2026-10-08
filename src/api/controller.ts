@@ -1,6 +1,5 @@
 import { randomUUID } from "crypto";
 import fs from "fs/promises";
-import os from "os";
 import path from "path";
 import { NextFunction, Request, Response } from "express";
 import {
@@ -16,7 +15,7 @@ import { SessionIndexStore } from "../session/SessionIndexStore";
 import { processRuntimeInput } from "../transports/shared/runtimeActions";
 import { loadSessionMessages } from "../conversations/sessionHistory";
 import { processRunRegistry } from "./ProcessRunRegistry";
-import { getSystemMemory } from "../utils/systemMemory";
+import { systemMetricsSnapshot } from "../local/systemMetrics";
 import { resolveReviewPath, revealWorkspacePath } from "./workspaceReview";
 import { ProjectError } from "../projects/types";
 import { isReasoningEffort } from "../llm/ReasoningEffort";
@@ -203,7 +202,7 @@ export const createDashboardBootstrapController =
         loadedModels,
         allManagedModels,
         localModels: runtime.localModelService.snapshot(),
-        systemMetrics: getSystemMetricsSnapshot(runtime.localModelService.gpuMetrics())
+        systemMetrics: systemMetricsSnapshot(runtime.localModelService.gpuMetrics())
       });
     } catch (error) {
       next(error);
@@ -215,7 +214,7 @@ export const createSystemMetricsController =
   async (_req: Request, res: Response): Promise<void> => {
     let gpus: SystemMetrics["gpus"];
     try { gpus = runtimeManager?.getRuntime().localModelService.gpuMetrics(); } catch { gpus = undefined; }
-    res.status(200).json(getSystemMetricsSnapshot(gpus));
+    res.status(200).json(systemMetricsSnapshot(gpus));
   };
 
 export const createModelsController =
@@ -695,25 +694,3 @@ const isDebateProfile = (
   value === "research" ||
   value === "security";
 
-const getSystemMetricsSnapshot = (gpus?: SystemMetrics["gpus"]): SystemMetrics => {
-  const cpuCores = Math.max(1, os.cpus().length);
-  const loadAverage1m = os.loadavg()[0] ?? 0;
-  const cpuPercent = Math.max(0, Math.min(100, (loadAverage1m / cpuCores) * 100));
-  const memory = getSystemMemory();
-  const memoryTotalBytes = memory.total;
-  const memoryUsedBytes = Math.max(0, memory.total - memory.free);
-  const memoryCachedBytes = memory.cached;
-  const ramPercent =
-    memoryTotalBytes > 0 ? Math.max(0, Math.min(100, (memoryUsedBytes / memoryTotalBytes) * 100)) : 0;
-
-  return {
-    cpuPercent,
-    ramPercent,
-    memoryUsedBytes,
-    memoryTotalBytes,
-    memoryCachedBytes,
-    cpuCores,
-    loadAverage1m,
-    ...(gpus?.length ? { gpus } : {})
-  };
-};
