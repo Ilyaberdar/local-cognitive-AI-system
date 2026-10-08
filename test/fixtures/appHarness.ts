@@ -33,17 +33,28 @@ export interface Harness {
   bridgeCalls: Array<{ op: string; payload?: any }>;
   /** Runs the 600 ms process-run poll once (it is a manual interval here). */
   poll(): Promise<void>;
+  /** Runs every live interval with this period once (dashboard, metrics, model refresh). */
+  tick(ms: number): Promise<void>;
   resolveChat(): void;
   close(): void;
 }
 
-export async function bootApp(options: { remote?: { bridge: any; account?: any } } = {}): Promise<Harness> {
+export interface BootOptions {
+  remote?: { bridge: any; account?: any };
+  /** Answers a request before the defaults; return undefined to fall through. */
+  route?: (method: string, url: string, body?: string) => unknown;
+  bootstrap?: () => object;
+}
+
+export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   const requests: string[] = [];
   const bridgeCalls: Harness["bridgeCalls"] = [];
   const settings = sessionSettings();
   let resolveChat: () => void = () => undefined;
   const route = (method: string, url: string, body?: string): unknown => {
-    if (url === "/dashboard/bootstrap") return bootstrap();
+    const custom = options.route?.(method, url, body);
+    if (custom !== undefined) return custom;
+    if (url === "/dashboard/bootstrap") return (options.bootstrap ?? bootstrap)();
     if (url === "/integrations/available") return [];
     if (url === `/sessions/${SESSION_ID}/messages`) return [];
     if (url === `/sessions/${SESSION_ID}/settings`) return method === "PUT" ? { ...settings, ...JSON.parse(body ?? "{}") } : settings;
@@ -60,6 +71,10 @@ export async function bootApp(options: { remote?: { bridge: any; account?: any }
   window.Element.prototype.scrollTo = function () {};
   window.HTMLElement.prototype.showPopover = function () {};
   window.HTMLElement.prototype.hidePopover = function () {};
+  window.HTMLDialogElement.prototype.showModal = function (this: any) { this.setAttribute("open", ""); };
+  window.HTMLDialogElement.prototype.close = function (this: any) { this.removeAttribute("open"); };
+  // JSDOM has no EventSource: record which streams the page opens.
+  window.EventSource = class { constructor(url: string) { requests.push(`EVENTSOURCE ${url}`); } addEventListener() {} close() {} };
   const intervals: Array<{ fn: (() => unknown) | null; ms: number }> = [];
   window.setInterval = (fn: () => unknown, ms: number) => { intervals.push({ fn, ms }); return intervals.length; };
   window.clearInterval = (id: number) => { if (intervals[id - 1]) intervals[id - 1]!.fn = null; };
@@ -82,6 +97,7 @@ export async function bootApp(options: { remote?: { bridge: any; account?: any }
   return {
     window, document: window.document, requests, bridgeCalls,
     async poll() { const poll = intervals.find(item => item.ms === 600 && item.fn); if (poll) { await poll.fn!(); await flush(10); } },
+    async tick(ms: number) { for (const item of intervals.filter(entry => entry.ms === ms && entry.fn)) await item.fn!(); await flush(20); },
     resolveChat: () => resolveChat(),
     close: () => window.close()
   };
