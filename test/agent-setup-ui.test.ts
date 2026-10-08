@@ -49,7 +49,7 @@ const snapshotHarness = (mode: string) => {
     querySelector: (selector: string) => selector === ".hypothesis-agents" ? (isHypothesis ? {} : null) : (!isHypothesis ? {} : null),
     querySelectorAll: (selector: string) => selector === ".code-agent-card" ? [] : cards
   };
-  const context: any = {
+  const context: any = { isServerChat: () => false, chatTarget: null, 
     state: { sessionSettings: initial }, cloneSessionSettings: structuredClone, reconcileLocalModelTargets() {},
     getCurrentSessionSummary: () => ({ title: "Test" }),
     document: { querySelector: () => form },

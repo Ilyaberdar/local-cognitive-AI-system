@@ -6,6 +6,7 @@ import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
+import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelOptions, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
@@ -147,6 +148,13 @@ const state = {
   }
 };
 
+// Where the chat screen runs (R4): this computer or a paired server. Assigned once the account
+// state exists; server chats have their own session keys, which never reach this computer's API.
+let chatTarget = null;
+let savedLocalChat = null;
+const isServerChat = sessionId => Boolean(chatTarget?.owns(sessionId));
+const notForServerChats = () => Promise.reject(new Error("This is not available for server chats yet."));
+
 const api = {
   getAvailablePlugins: () => request('/integrations/available'),
   getBootstrap: () => request("/dashboard/bootstrap"),
@@ -159,23 +167,24 @@ const api = {
       method: "POST",
       body: JSON.stringify({ title, ...(projectId ? { projectId } : {}) })
     }),
-  renameSession: (sessionId, title) =>
+  renameSession: (sessionId, title) => isServerChat(sessionId) ? notForServerChats() :
     request(`/sessions/${sessionId}`, {
       method: "PATCH",
       body: JSON.stringify({ title })
     }),
-  deleteSession: (sessionId) =>
+  deleteSession: (sessionId) => isServerChat(sessionId) ? notForServerChats() :
     request(`/sessions/${sessionId}`, {
       method: "DELETE"
     }),
-  getSessionMessages: (sessionId) => request(`/sessions/${sessionId}/messages`),
-  getSessionSettings: (sessionId) => request(`/sessions/${sessionId}/settings`),
-  updateSessionSettings: (sessionId, payload) =>
+  getSessionMessages: (sessionId) => isServerChat(sessionId) ? notForServerChats() : request(`/sessions/${sessionId}/messages`),
+  getSessionSettings: (sessionId) => isServerChat(sessionId) ? notForServerChats() : request(`/sessions/${sessionId}/settings`),
+  // A server chat saves the settings it supports on the server, and only those that changed.
+  updateSessionSettings: (sessionId, payload) => isServerChat(sessionId) ? chatTarget.updateSettings(sessionId, payload) :
     request(`/sessions/${sessionId}/settings`, {
       method: "PUT",
       body: JSON.stringify(payload)
     }),
-  sendChat: (payload, controller) =>
+  sendChat: (payload, controller) => isServerChat(payload?.sessionId) ? notForServerChats() :
     request("/chat", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -185,18 +194,18 @@ const api = {
       timeoutMs: 0,
       controller
     }),
-  reviewProcessRun: (requestId, sessionId, approvalId, approved) =>
+  reviewProcessRun: (requestId, sessionId, approvalId, approved) => isServerChat(sessionId) ? notForServerChats() :
     request(`/process-runs/${encodeURIComponent(requestId)}/review`, {
       method: "POST", body: JSON.stringify({ sessionId, approvalId, approved })
     }),
   getProcessRun: (requestId) => request(`/process-runs/${encodeURIComponent(requestId)}`),
   cancelProcessRun: (requestId) =>
     request(`/process-runs/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
-  readWorkspaceFile: (filePath, sessionId) =>
+  readWorkspaceFile: (filePath, sessionId) => isServerChat(sessionId) ? notForServerChats() :
     request(`/workspace/file?path=${encodeURIComponent(filePath)}&sessionId=${encodeURIComponent(sessionId || "")}`),
-  openWorkspaceEditor: (filePath, sessionId) =>
+  openWorkspaceEditor: (filePath, sessionId) => isServerChat(sessionId) ? notForServerChats() :
     request("/workspace/editor", { method: "POST", body: JSON.stringify({ path: filePath, sessionId }) }),
-  revealWorkspacePath: (filePath, sessionId = state.activeSessionId, runId) =>
+  revealWorkspacePath: (filePath, sessionId = state.activeSessionId, runId) => isServerChat(sessionId) ? notForServerChats() :
     request("/workspace/reveal", {
       method: "POST",
       body: JSON.stringify({ path: filePath, ...(runId ? { runId } : { sessionId }) })
@@ -308,6 +317,8 @@ const api = {
 
 const projectsUi = createProjectsUi({
   getState: () => state,
+  // While a server is the chat target, the sidebar lists that server's chats only.
+  remoteSessions: () => chatTarget?.isRemote() ? { hostName: chatTarget.hostName(), sessions: chatTarget.sessionList(), loaded: chatTarget.sessionsLoaded() } : null,
   createProject: api.createProject,
   updateProject: api.updateProject,
   notify: message => { pushToast(message, "danger"); render(); },
@@ -355,8 +366,8 @@ const voiceInput = createVoiceInput({
   bridge: window.desktopVoice,
   sessionId: () => state.activeSessionId,
   isChat: () => state.route === "chat" && document.getElementById('settings-root')?.hidden !== false,
-  hasSession: id => (state.bootstrap?.sessions ?? []).some(session => session.id === id),
-  sendBusy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving),
+  hasSession: id => isServerChat(id) || (state.bootstrap?.sessions ?? []).some(session => session.id === id),
+  sendBusy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving || chatTarget?.blocksSend()),
   icon,
   appendText: (sessionId, text) => {
     state.drafts[sessionId] = appendDictation(state.drafts[sessionId] || "", text);
@@ -382,7 +393,7 @@ const modelManager = createModelManager({
     systemMetrics: state.bootstrap?.systemMetrics,
     settings: state.bootstrap?.appSettings,
     testing: Boolean(state.localModelTest),
-    currentTarget: state.sessionSettings?.defaultTarget
+    currentTarget: localChatSettings()?.defaultTarget
   }),
   isVisible: () => state.route === "models",
   notify: (message, tone) => {
@@ -398,7 +409,7 @@ const modelManager = createModelManager({
     state.bootstrap.loadedModels = state.bootstrap.allManagedModels.filter((model) => model.loaded || model.loadedInstanceIds?.length || model.state === "ready");
     state.bootstrap.availableModels = [...(state.bootstrap.availableModels ?? []).filter((model) => model.providerId !== "llamacpp"), ...localModels];
     if (runtime) state.bootstrap.localModels = { ...state.bootstrap.localModels, models: localModels, runtime };
-    if (state.sessionSettings) reconcileLocalModelTargets(state.sessionSettings);
+    if (state.sessionSettings && !chatTarget?.isRemote()) reconcileLocalModelTargets(state.sessionSettings);
     updateLocalModelTestProgress();
     updateAttachmentGuidance();
     updateLoadedModelIndicators();
@@ -406,6 +417,8 @@ const modelManager = createModelManager({
   onContextChange: (contextSize) => saveLocalModelSettings({ contextSize }),
   onLocalSettingsChange: saveLocalModelSettings,
   onUse: async (model) => {
+    // A model of this computer is used in this computer's chat.
+    if (chatTarget?.isRemote()) await switchChatTarget("local");
     if (!state.activeSessionId || !state.sessionSettings) await createChatInProject(state.activeProjectId);
     const sessionId = state.activeSessionId;
     window.clearTimeout(state.ui.autosaveTimer);
@@ -468,6 +481,13 @@ function applyCodeFontSize(value) {
 // One account store for the app; Remote (R3+) subscribes to the same state.
 const accountState = createAccountState(window.desktopAccount);
 const remoteUi = createRemoteUi({ account: accountState });
+chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountState,
+  onChange: ({ cameOnline } = {}) => {
+    repaintChatTarget();
+    // Back online after a drop: catch up on what the server did meanwhile.
+    if (cameOnline && isServerChat(state.activeSessionId)) void reloadRemoteChat();
+  },
+  onEvent: (key, update) => handleRemoteUpdate(key, update) });
 const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput, account: accountState,
   getContext: () => ({ ...state.bootstrap, route: state.route }),
   renderModelControl: renderProviderSettingsModelControl, applyPreferences: applyUiPreferences,
@@ -542,6 +562,7 @@ async function refreshAvailablePlugins(force = false) {
 }
 
 async function ensureSession() {
+  if (chatTarget?.isRemote()) return ensureRemoteSession();
   const sessions = state.bootstrap?.sessions ?? [];
   if (state.activeSessionId && sessions.some(session => session.id === state.activeSessionId)) {
     state.activeProjectId = sessions.find(session => session.id === state.activeSessionId)?.projectId ?? null;
@@ -563,6 +584,7 @@ async function ensureSession() {
 }
 
 async function createChatInProject(projectId) {
+  if (chatTarget?.isRemote()) return createRemoteChat();
   const snapshot = readSessionSetupSnapshot();
   const currentSettings = snapshot ? sessionSettingsToPatch(snapshot.settings) : null;
   await persistActiveSessionSetup({ refreshBootstrap: false });
@@ -592,6 +614,7 @@ async function loadActiveSession() {
   if (!state.activeSessionId) {
     return;
   }
+  if (isServerChat(state.activeSessionId)) return loadRemoteSession();
 
   const sessionId = state.activeSessionId;
   const sequence = ++sessionLoadSequence;
@@ -733,6 +756,7 @@ function render(options = {}) {
 
   if (synthesisHost) document.querySelector("#synthesis-workspace")?.replaceWith(synthesisHost);
   bindEvents();
+  bindChatTargetControls();
   projectsUi.bind();
   settingsShell.bindProfile();
   voiceInput.bind();
@@ -817,7 +841,8 @@ function renderAppTopbar(nativeTitlebar) {
     <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
     <div class="app-topbar__actions">
       ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
-      <span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>
+      ${state.route === "chat" && chatTarget?.visible() ? renderTargetSwitch(chatTarget)
+        : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`}
     </div>
   </header>`;
 }
@@ -943,6 +968,12 @@ function renderNavIcon(route) {
 }
 
 function renderChatRoute() {
+  const serverChat = isServerChat(state.activeSessionId);
+  if (!state.activeSessionId && chatTarget?.isRemote()) {
+    const name = chatTarget.hostName();
+    const waiting = chatTarget.blocksSend() || !chatTarget.sessionsLoaded();
+    return `<div class="project-landing">${icon("remote")}<h2>${escapeHtml(`Chats on ${name}`)}</h2><p>${escapeHtml(chatTarget.blocksSend() ? "Waiting for the server to connect." : !chatTarget.canChat() ? "Update Local Cognitive on the server to chat with it." : "Messages run on the server, and its answers continue when this window closes.")}</p><div data-chat-target-banner>${renderTargetBanner(chatTarget)}</div><button class="primary-button" type="button" data-action="new-session" ${waiting || !chatTarget.canChat() ? "disabled" : ""}>New chat on ${escapeHtml(name)}</button></div>`;
+  }
   if (!state.activeSessionId) {
     const project = currentProject();
     return `<div class="project-landing">${icon(project ? "folder" : "chat")}<h2>${escapeHtml(project?.name || "Your conversations")}</h2><p>${escapeHtml(project?.rootPath || "Start a chat to explore an idea.")}</p><button class="primary-button" type="button" data-action="new-session" ${project?.archivedAt ? "disabled" : ""}>${project ? "New chat in project" : "New chat"}</button>${project ? `<button class="ghost-button" type="button" data-action="open-project-folder" data-project-id="${escapeAttr(project.id)}">Open folder</button>` : ""}</div>`;
@@ -950,7 +981,7 @@ function renderChatRoute() {
   if (!state.sessionSettings) return `<div class="empty">Loading chat workspace...</div>`;
 
   const settings = state.sessionSettings;
-  const currentSession = (state.bootstrap?.sessions ?? []).find((session) => session.id === state.activeSessionId);
+  const currentSession = getCurrentSessionSummary();
   const providerOptions = getProviderOptions();
   const pendingMessages = state.pendingRequest && state.pendingRequest.sessionId === state.activeSessionId
     ? [
@@ -974,8 +1005,8 @@ function renderChatRoute() {
     ...state.messages,
     ...pendingMessages
   ];
-  const draftAttachments = getActiveDraftAttachments();
-  const attachmentGuidance = getImageAttachmentGuidance(draftAttachments, settings);
+  const draftAttachments = serverChat ? [] : getActiveDraftAttachments();
+  const attachmentGuidance = serverChat ? { blocked: false, message: "" } : getImageAttachmentGuidance(draftAttachments, settings);
   const preparingAttachments = Boolean(state.attachmentImports[`chat:${state.activeSessionId}`]);
 
   return `
@@ -996,8 +1027,9 @@ function renderChatRoute() {
           aria-label="Scroll to latest message"
         >${icon("arrowDown")}</button>
 
+        <div class="chat-approval-slot" data-chat-target-banner>${serverChat ? renderTargetBanner(chatTarget) : ""}</div>
         <div class="chat-approval-slot" data-chat-approval>${renderChatApproval()}</div>
-        <form class="composer liquid-glass" id="chat-form">
+        <form class="composer liquid-glass" id="chat-form" data-session-key="${escapeAttr(state.activeSessionId)}">
           <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="${ATTACHMENT_ACCEPT}" />
           ${
             draftAttachments.length
@@ -1010,13 +1042,13 @@ function renderChatRoute() {
           ${voiceInput.renderStrip()}
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
-            <button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files" ${preparingAttachments ? "disabled" : ""}>${icon("plus")}</button>
+            ${serverChat ? "" : `<button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files" ${preparingAttachments ? "disabled" : ""}>${icon("plus")}</button>`}
             ${renderChatActivityBar(settings)}
             <div class="composer-actions">
               ${renderEffortControl(settings)}
               ${voiceInput.renderButton()}
               ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
-              <button class="primary-button send-button" type="submit" aria-label="Send message" title="Send message" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked ? "disabled" : ""}>${icon("arrowUp")}</button>
+              <button class="primary-button send-button" type="submit" aria-label="Send message" title="${serverChat ? escapeAttr(`Send to ${chatTarget.hostName()}`) : "Send message"}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || (serverChat && chatTarget.blocksSend()) ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -1105,9 +1137,11 @@ function isSubagentRequest(input) {
 function renderChatActivityBar(settings) {
   const running = Boolean(state.chatSubmitting || state.pendingRequest);
   const target = settings?.defaultTarget ?? {};
-  const provider = getProviderDisplayName(target.providerId);
-  const model = getModelDisplayName(target.providerId, target.model) || "default";
-  const modelInfo = getTargetModel(target);
+  const serverChat = isServerChat(state.activeSessionId);
+  // A server chat names the server's model as saved; this computer's library does not describe it.
+  const provider = serverChat ? `${target.providerId || "server"} on ${chatTarget.hostName()}` : getProviderDisplayName(target.providerId);
+  const model = serverChat ? target.model || "default" : getModelDisplayName(target.providerId, target.model) || "default";
+  const modelInfo = serverChat ? undefined : getTargetModel(target);
   const capability = modelInfo?.vision === true ? "Images" : modelInfo?.vision === false ? "Text only" : "";
   const progress = state.pendingRequest?.progress;
   const label = progress ? activityLabel(progress) : (running
@@ -1121,7 +1155,7 @@ function renderChatActivityBar(settings) {
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
       <span class="activity-scan status-dot" aria-hidden="true"><span></span></span>
       <span class="activity-label">${escapeHtml(label)}</span>
-      ${renderAccessControl(settings)}
+      ${serverChat ? "" : renderAccessControl(settings)}
       <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
     </div>
   `;
@@ -1152,8 +1186,8 @@ function renderChatApproval() {
     <p>${escapeHtml(approval.summary)}</p>
     <pre tabindex="0">${escapeHtml(approval.details)}</pre>
     <div class="chat-approval__actions"><span>Waiting for your decision</span>
-      <button type="button" class="ghost-button" data-approval-id="${escapeAttr(approval.id)}" data-approval-decision="cancel" ${pending.reviewing ? "disabled" : ""}>Cancel</button>
-      <button type="button" class="primary-button" data-approval-id="${escapeAttr(approval.id)}" data-approval-decision="approve" ${pending.reviewing ? "disabled" : ""}>Approve</button>
+      <button type="button" class="ghost-button" data-approval-id="${escapeAttr(approval.id)}" data-approval-decision="cancel" ${pending.reviewing || (pending.remote && chatTarget.blocksSend()) ? "disabled" : ""}>Cancel</button>
+      <button type="button" class="primary-button" data-approval-id="${escapeAttr(approval.id)}" data-approval-decision="approve" ${pending.reviewing || (pending.remote && chatTarget.blocksSend()) ? "disabled" : ""}>Approve</button>
     </div>
   </section>`;
 }
@@ -1210,7 +1244,10 @@ function bindChatAccess() {
     pending.reviewing = true;
     document.querySelector("[data-chat-approval]").innerHTML = renderChatApproval();
     try {
-      await api.reviewProcessRun(pending.requestId, pending.sessionId, pending.approval.id, button.dataset.approvalDecision === "approve");
+      if (pending.remote) {
+        if (chatTarget.blocksSend()) throw new Error("The server is not connected. Decide once it reconnects.");
+        await chatTarget.resolveApproval(pending.requestId, pending.approval.id, button.dataset.approvalDecision === "approve");
+      } else await api.reviewProcessRun(pending.requestId, pending.sessionId, pending.approval.id, button.dataset.approvalDecision === "approve");
       if (state.pendingRequest === pending) updateChatApproval(undefined);
     } catch (error) {
       pushToast(error instanceof Error ? error.message : "Could not submit decision", "danger");
@@ -1249,6 +1286,7 @@ async function cancelActiveChatRequest() {
   if (!active || active.cancelled) {
     return;
   }
+  if (active.remote) return cancelRemoteRun(active);
 
   active.cancelled = true;
   stopProcessProgressPolling(active);
@@ -1443,6 +1481,10 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
 }
 
 function renderChatRightPanel(settings, currentSession, providerOptions) {
+  if (isServerChat(state.activeSessionId)) {
+    return renderRemoteSetupPanel({ settings, sessionKey: state.activeSessionId, title: currentSession?.title ?? "", hostName: chatTarget.hostName(),
+      models: chatTarget.cachedModels(), collapsed: state.ui.sessionSetupCollapsed, autosaveLabel: autosaveStatusLabel(state.ui.autosaveStatus) });
+  }
   return reviewPanel.render() || renderSessionSetupPanel(settings, currentSession, providerOptions);
 }
 
@@ -2348,7 +2390,7 @@ function renderWorkflowModelControl(index, providerId, model, fallbackTarget) {
 }
 
 function getWorkflowFallbackTarget() {
-  const sessionTarget = state.sessionSettings?.defaultTarget;
+  const sessionTarget = localChatSettings()?.defaultTarget;
   const providerId = sessionTarget?.providerId || state.bootstrap?.appSettings?.llm?.defaultProvider || "lmstudio";
 
   return {
@@ -2894,6 +2936,7 @@ function renderMessage(message) {
     message.attachments?.length
       ? `<div class="message-attachments">${message.attachments.map(renderMessageAttachment).join("")}</div>`
       : "";
+  const runNote = message.role === "assistant" && !message.pending ? renderRunStatusNote(message) : "";
 
   return `
     <article class="message ${message.role} ${message.pending ? "pending" : ""}">
@@ -2901,7 +2944,7 @@ function renderMessage(message) {
         <span>${escapeHtml(message.role)}</span>
         <span>${escapeHtml(message.role === "assistant" ? formatDate(message.createdAt) : "")}</span>
       </div>
-      <div class="message-content">${message.role === "assistant" ? `<div data-chat-activity>${renderChatActivity({ ...message, agents: message.agents?.length > 1 ? renderAgentProgress(message.agents) : "", format: formatLocalModelReferences })}</div>` : ""}${toolCards}${subagentCards}${content}</div>
+      <div class="message-content">${message.role === "assistant" ? `<div data-chat-activity>${renderChatActivity({ ...message, agents: message.agents?.length > 1 ? renderAgentProgress(message.agents) : "", format: formatLocalModelReferences })}</div>` : ""}${toolCards}${subagentCards}${content}${runNote}</div>
       ${attachments}
       ${footer}
     </article>
@@ -3332,6 +3375,7 @@ async function submitChatMessage(input, attachments, options = {}) {
   if (!input || state.chatSubmitting || state.activeChatRequest || state.accessSaving || state.attachmentImports?.[`chat:${state.activeSessionId}`] || (options.sessionId && options.sessionId !== state.activeSessionId)) {
     return;
   }
+  if (isServerChat(state.activeSessionId)) return submitRemoteChat(input, attachments, options);
   const setupSnapshot = readSessionSetupSnapshot();
   const attachmentGuidance = getImageAttachmentGuidance(attachments, setupSnapshot?.settings || state.sessionSettings);
   if (attachmentGuidance.blocked) { pushToast(attachmentGuidance.message, "danger"); render(); return; }
@@ -3630,7 +3674,8 @@ function bindEvents() {
       await runAction(async () => {
         await persistActiveSessionSetup({ refreshBootstrap: false });
         state.activeSessionId = button.dataset.sessionId;
-        state.activeProjectId = (state.bootstrap?.sessions ?? []).find(session => session.id === state.activeSessionId)?.projectId ?? null;
+        state.activeProjectId = isServerChat(state.activeSessionId) ? null
+          : (state.bootstrap?.sessions ?? []).find(session => session.id === state.activeSessionId)?.projectId ?? null;
         await loadActiveSession();
         window.location.hash = "/chat";
       });
@@ -4204,9 +4249,11 @@ function bindEvents() {
   mentionPicker?.dispose();
   mentionPicker = bindMentionPicker({
     textarea: document.querySelector("#chat-form textarea[name='input']"), menu: document.querySelector('[data-mention-menu]'),
-    selected: document.querySelector('[data-composer-mentions]'), getPlugins: () => state.availablePlugins,
-    getCatalog: () => state.bootstrap?.plugins ?? [], getAgents: () => state.sessionSettings?.codeAgents ?? [],
-    refresh: () => refreshAvailablePlugins(true), getError: () => state.pluginsError,
+    selected: document.querySelector('[data-composer-mentions]'),
+    // Plugins run on this computer: a server chat mentions none in R4.
+    getPlugins: () => isServerChat(state.activeSessionId) ? [] : state.availablePlugins,
+    getCatalog: () => isServerChat(state.activeSessionId) ? [] : state.bootstrap?.plugins ?? [], getAgents: () => state.sessionSettings?.codeAgents ?? [],
+    refresh: () => isServerChat(state.activeSessionId) ? Promise.resolve([]) : refreshAvailablePlugins(true), getError: () => isServerChat(state.activeSessionId) ? "" : state.pluginsError,
     onChange: value => { if (state.activeSessionId) state.drafts[state.activeSessionId] = value; }
   });
 
@@ -4706,6 +4753,8 @@ function optimisticallyUnloadModel(providerId, modelKey, instanceId) {
 function invalidateSessionModelSelection(providerId, modelKey) {
   // The built-in library survives unloading; its targets must keep their model ID.
   if (providerId === "llamacpp") return;
+  // This computer's models never change a server chat.
+  if (chatTarget?.isRemote()) return;
   if (!state.sessionSettings) {
     return;
   }
@@ -5474,6 +5523,7 @@ function getImageAttachmentGuidance(attachments, settings) {
 }
 
 function updateAttachmentGuidance() {
+  if (isServerChat(state.activeSessionId)) return;
   const settings = readSessionSetupSnapshot()?.settings || state.sessionSettings;
   const guidance = getImageAttachmentGuidance(getActiveDraftAttachments(), settings);
   const pending = Boolean(state.attachmentImports?.[`chat:${state.activeSessionId}`]);
@@ -5680,12 +5730,19 @@ function cloneSessionSettings(settings) {
 }
 
 function getCurrentSessionSummary() {
+  if (isServerChat(state.activeSessionId)) return chatTarget.sessionList().find((session) => session.id === state.activeSessionId);
   return (state.bootstrap?.sessions ?? []).find((session) => session.id === state.activeSessionId);
 }
 
 function readSessionSetupSnapshot() {
   if (!state.sessionSettings) {
     return null;
+  }
+  if (isServerChat(state.activeSessionId)) {
+    // Server chats are never resolved against this computer's models, and are not renamed here.
+    const form = document.querySelector("#session-settings-form[data-remote-setup]");
+    const settings = cloneSessionSettings(state.sessionSettings);
+    return { title: undefined, settings: form ? readRemoteSetup(form, settings) : settings };
   }
 
   const fallbackSettings = cloneSessionSettings(state.sessionSettings);
@@ -6028,7 +6085,7 @@ function sessionModelLabel(name) {
 }
 
 async function deleteSessionById(sessionId) {
-  if (!sessionId) {
+  if (!sessionId || isServerChat(sessionId)) {
     return;
   }
 
@@ -6112,6 +6169,10 @@ function sessionSettingsToPatch(settings) {
 function bindSessionSetupFieldSync() {
   const form = document.querySelector("#session-settings-form");
   if (!form) {
+    return;
+  }
+  if (form.dataset.remoteSetup) {
+    bindRemoteSetupSync(form);
     return;
   }
   form.addEventListener("change", (event) => {
@@ -6311,4 +6372,287 @@ function bindWorkflowReviewActions() {
   }));
 
 
+}
+
+// ---- Chat on a paired server (R4) -------------------------------------------------------
+// The chat screen keeps one implementation: a server chat has its own session key, its data is
+// projected into the same state fields, and events from the server feed the same render paths.
+
+/** This computer's chat settings, also while a server chat is on screen (Models, Workflow). */
+function localChatSettings() {
+  return chatTarget?.isRemote() ? savedLocalChat?.sessionSettings : state.sessionSettings;
+}
+
+async function switchChatTarget(next) {
+  const wanted = next || "local";
+  const current = chatTarget.isRemote() ? chatTarget.hostId() : "local";
+  if (wanted === current) {
+    if (chatTarget.isRemote() && chatTarget.blocksSend()) await chatTarget.reconnect();
+    return;
+  }
+  await runAction(async () => {
+    // Finish saving the outgoing chat first: a timer must not write to the other target later.
+    window.clearTimeout(state.ui.autosaveTimer);
+    await state.ui.autosavePromise.catch(() => undefined);
+    await persistActiveSessionSetup({ refreshBootstrap: false }).catch(() => undefined);
+    state.ui.autosaveSeq++;
+    rememberMessageStreamScroll();
+    if (chatTarget.isRemote()) chatTarget.rememberSession(state.activeSessionId);
+    else savedLocalChat = { activeSessionId: state.activeSessionId, activeProjectId: state.activeProjectId, sessionSettings: state.sessionSettings, messages: state.messages };
+    ++sessionLoadSequence;
+    await chatTarget.select(wanted);
+    if (chatTarget.isRemote()) {
+      state.activeProjectId = null;
+      state.activeSessionId = chatTarget.lastSessionKey() ?? null;
+      state.sessionSettings = null;
+      state.messages = [];
+      render();
+      await ensureRemoteSession();
+    } else {
+      const restored = savedLocalChat ?? { activeSessionId: null, activeProjectId: null, sessionSettings: null, messages: [] };
+      savedLocalChat = null;
+      Object.assign(state, restored);
+      render();
+      await refreshBootstrap();
+      await ensureSession();
+    }
+    state.route = "chat";
+    if (!window.location.hash.startsWith("#/chat")) window.location.hash = "/chat";
+  });
+}
+
+async function ensureRemoteSession() {
+  if (chatTarget.blocksSend()) return;
+  await chatTarget.refreshSessions();
+  void chatTarget.models().then(() => { if (isServerChat(state.activeSessionId)) render(); }).catch(() => undefined);
+  const sessions = chatTarget.sessionList();
+  if (!sessions.some(session => session.id === state.activeSessionId)) {
+    const last = chatTarget.lastSessionKey();
+    state.activeSessionId = sessions.some(session => session.id === last) ? last : sessions[0]?.id ?? null;
+  }
+  state.activeProjectId = null;
+  if (state.activeSessionId) await loadRemoteSession();
+  else { state.sessionSettings = null; state.messages = []; }
+}
+
+async function loadRemoteSession() {
+  const key = state.activeSessionId;
+  const sequence = ++sessionLoadSequence;
+  const loaded = await chatTarget.load(key);
+  if (state.activeSessionId !== key || sequence !== sessionLoadSequence) return;
+  state.messages = loaded.messages;
+  state.sessionSettings = loaded.settings;
+  chatTarget.rememberSession(key);
+  syncRemoteRequest(key, loaded.view);
+  chatTarget.subscribe(key, loaded.cursor);
+}
+
+async function createRemoteChat() {
+  if (chatTarget.blocksSend()) throw new Error(`${chatTarget.hostName()} is not connected.`);
+  const session = await chatTarget.createSession("New chat");
+  await chatTarget.refreshSessions();
+  state.activeProjectId = null;
+  state.activeSessionId = session.id;
+  await loadRemoteSession();
+  state.notice = "";
+  state.route = "chat";
+  window.location.hash = "/chat";
+}
+
+/** Reloads the server chat on screen: after a finished turn, a resync or a reconnect. */
+async function reloadRemoteChat() {
+  if (!chatTarget?.isRemote() || chatTarget.blocksSend()) { repaintChatTarget(); return; }
+  try {
+    await chatTarget.refreshSessions();
+    if (isServerChat(state.activeSessionId)) await loadRemoteSession();
+    else await ensureRemoteSession();
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Could not load the server chat", "danger");
+  }
+  const scroll = captureScrollState();
+  render();
+  restoreScrollState(scroll);
+  if (state.ui.messageStreamPinnedToBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
+}
+
+/** Mirrors the server's turn in progress into the chat request the screen renders. */
+function syncRemoteRequest(key, view) {
+  const existing = state.chatRequests.get(key);
+  if (!view?.run) {
+    if (existing?.remote) state.chatRequests.delete(key);
+    return;
+  }
+  const run = view.run;
+  const request = existing?.remote && (existing.requestId === run.runId || !existing.requestId)
+    ? existing : { remote: true, requestId: run.runId, sessionId: key, controller: new AbortController(), cancelled: false, progressTimer: null };
+  request.requestId = run.runId;
+  request.pending = { ...(request.pending ?? {}), requestId: run.runId, sessionId: key, remote: true, input: run.input || request.pending?.input || "",
+    startedAt: request.pending?.startedAt || run.startedAt || new Date().toISOString(), progress: runProgress(run), approval: run.approval };
+  state.chatRequests.set(key, request);
+}
+
+let remoteProgressFrame = 0;
+function handleRemoteUpdate(key, update) {
+  if ("resync" in update) {
+    if (state.activeSessionId === key) void reloadRemoteChat();
+    return;
+  }
+  const view = chatTarget.view(key);
+  if (!view) return;
+  const { effects, terminal } = reduceSessionEvents(view, update.events);
+  if (effects.has("resync")) { void reloadRemoteChat(); return; }
+  syncRemoteRequest(key, view);
+  if (terminal && terminal.status !== "completed") {
+    const messages = { cancelled: "Generation interrupted.", failed: terminal.error || "The answer failed on the server.",
+      interrupted: terminal.error || "The server stopped while answering.", needs_review: "The server stopped during an action. Check what changed before retrying." };
+    pushToast(messages[terminal.status] || "The answer did not finish.", terminal.status === "cancelled" ? "info" : "danger");
+  }
+  if (terminal || effects.has("reload")) { void reloadRemoteChat(); return; }
+  if (state.activeSessionId !== key) return;
+  if (effects.has("render")) { render(); return; }
+  if (effects.has("approval")) {
+    const slot = document.querySelector("[data-chat-approval]");
+    if (slot) slot.innerHTML = renderChatApproval();
+  }
+  if (effects.has("progress") && !remoteProgressFrame) {
+    // Deltas arrive in bursts; patch the pending answer once per frame, never re-render.
+    remoteProgressFrame = requestAnimationFrame(() => {
+      remoteProgressFrame = 0;
+      const pending = state.pendingRequest;
+      if (pending?.remote && pending.sessionId === key) updateChatActivityProgress(pending.progress);
+    });
+  }
+}
+
+async function submitRemoteChat(input, attachments, options = {}) {
+  const key = state.activeSessionId;
+  if (chatTarget.blocksSend()) {
+    pushToast(`${chatTarget.hostName()} is not connected. Nothing was sent; your draft is kept.`, "danger");
+    render();
+    return false;
+  }
+  if (attachments?.length) { pushToast("Attachments are not available for server chats yet.", "danger"); return false; }
+  const request = { remote: true, requestId: null, sessionId: key, controller: new AbortController(), cancelled: false, progressTimer: null };
+  request.pending = { requestId: null, sessionId: key, remote: true, input, startedAt: new Date().toISOString() };
+  state.chatRequests.set(key, request);
+  const draft = state.drafts[key] ?? "";
+  if (!options.fromReview) state.drafts[key] = "";
+  const wasNearBottom = state.ui.messageStreamPinnedToBottom || isMessageStreamNearBottom();
+  render();
+  if (wasNearBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
+  const restore = (message) => {
+    if (state.chatRequests.get(key) === request) state.chatRequests.delete(key);
+    if (!state.drafts[key]) state.drafts[key] = draft;
+    if (message) pushToast(message, "danger");
+    render();
+  };
+  try {
+    window.clearTimeout(state.ui.autosaveTimer);
+    await state.ui.autosavePromise.catch(() => undefined);
+    await persistActiveSessionSetup({ refreshBootstrap: false, sessionId: key });
+    const ack = await chatTarget.send(key, input);
+    if (ack.status === "rejected") {
+      restore(ack.code === "session_busy" ? "This chat is already answering on the server." : "The server did not accept the message.");
+      await reloadRemoteChat();
+      return false;
+    }
+    // Events may have attached the run already; otherwise this is its first sign.
+    const view = chatTarget.view(key);
+    if (view && !view.run) view.run = { runId: ack.runId, input, startedAt: request.pending.startedAt, answer: "" };
+    if (view) syncRemoteRequest(key, view);
+    return true;
+  } catch (error) {
+    // "unknown_outcome": the server may have the message; the chat shows what it received.
+    if (error?.code === "unknown_outcome") { restore(error.message); await reloadRemoteChat(); return false; }
+    restore(error instanceof Error ? error.message : "The message was not sent.");
+    return false;
+  }
+}
+
+async function cancelRemoteRun(active) {
+  if (chatTarget.blocksSend()) { pushToast("The server is not connected. Stop works once it reconnects.", "danger"); render(); return; }
+  if (!active.requestId) return;
+  active.cancelled = true;
+  try { await chatTarget.cancel(active.requestId); }
+  catch (error) { active.cancelled = false; pushToast(error instanceof Error ? error.message : "Could not stop the answer", "danger"); }
+}
+
+/** Status changes repaint the switch, banner and send button only: typing is not interrupted. */
+function repaintChatTarget() {
+  if (state.route !== "chat") return;
+  const actions = document.querySelector(".app-topbar__actions");
+  const existing = actions?.querySelector(".chat-target, .local-indicator");
+  if (existing) {
+    existing.outerHTML = chatTarget?.visible() ? renderTargetSwitch(chatTarget) : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`;
+    bindChatTargetControls();
+  }
+  if (!isServerChat(state.activeSessionId)) {
+    if (chatTarget?.isRemote() && !state.activeSessionId) render();
+    return;
+  }
+  const banner = document.querySelector(".chat-shell [data-chat-target-banner]");
+  if (banner) { banner.innerHTML = renderTargetBanner(chatTarget); bindChatTargetControls(); }
+  const send = document.querySelector("#chat-form button[type='submit']");
+  if (send) send.disabled = Boolean(state.chatSubmitting || state.accessSaving || chatTarget.blocksSend());
+  const slot = document.querySelector("[data-chat-approval]");
+  if (slot && state.pendingRequest?.approval) slot.innerHTML = renderChatApproval();
+}
+
+function bindChatTargetControls() {
+  const menu = document.querySelector("#chat-target-menu");
+  if (menu && !menu.dataset.bound) {
+    menu.dataset.bound = "true";
+    menu.addEventListener("beforetoggle", (event) => {
+      if (event.newState !== "open") return;
+      const trigger = document.querySelector(".chat-target-trigger")?.getBoundingClientRect();
+      if (!trigger) return;
+      const width = Math.min(300, window.innerWidth - 24);
+      menu.style.width = `${width}px`;
+      menu.style.left = `${Math.max(12, Math.min(trigger.right - width, window.innerWidth - width - 12))}px`;
+      menu.style.top = `${trigger.bottom + 6}px`;
+    });
+  }
+  document.querySelectorAll("[data-chat-target]").forEach((button) => {
+    if (button.dataset.bound) return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => {
+      document.querySelector("#chat-target-menu")?.hidePopover?.();
+      void switchChatTarget(button.dataset.chatTarget);
+    });
+  });
+  document.querySelectorAll("[data-chat-target-action='reconnect']").forEach((button) => {
+    if (button.dataset.bound) return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => { void chatTarget.reconnect(); });
+  });
+  document.querySelectorAll("[data-action='remote-turn-draft']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const turn = state.messages.find(message => message.role === "user" && message.runId === button.dataset.runId);
+      if (!turn || !state.activeSessionId) return;
+      state.drafts[state.activeSessionId] = turn.content;
+      const textarea = document.querySelector("#chat-form textarea");
+      if (textarea) { textarea.value = turn.content; textarea.focus(); }
+    });
+  });
+}
+
+/** Model choices follow the provider at once, so the next save cannot mix two providers. */
+function bindRemoteSetupSync(form) {
+  form.querySelector("[data-remote-provider]")?.addEventListener("change", (event) => {
+    const select = form.querySelector("[data-remote-model]");
+    if (!select) return;
+    const choices = remoteModelOptions(chatTarget.cachedModels(), event.target.value);
+    select.innerHTML = `<option value="">${choices.length ? "Server default" : "No models on the server"}</option>${choices.map(choice => `<option value="${escapeAttr(choice.id)}">${escapeHtml(`${choice.label}${choice.loaded ? " · Loaded" : ""}`)}</option>`).join("")}`;
+    select.value = "";
+  });
+}
+
+/** How a server turn ended when it did not complete. */
+function renderRunStatusNote(message) {
+  const notes = { failed: "The answer failed on the server.", cancelled: "Stopped.", interrupted: "Interrupted: the server stopped while answering.",
+    needs_review: "Interrupted during an action on the server. Check what changed before sending again.", running: "Answering…", queued: "Waiting…" };
+  if (!message.runStatus || message.runStatus === "completed" || !notes[message.runStatus]) return "";
+  const retry = ["failed", "interrupted", "needs_review"].includes(message.runStatus)
+    ? `<button type="button" class="ghost-button" data-action="remote-turn-draft" data-run-id="${escapeAttr(message.runId)}">Use as draft</button>` : "";
+  return `<div class="message-run-status is-${escapeAttr(message.runStatus)}" role="note"><span>${escapeHtml(message.runError && message.runStatus === "failed" ? message.runError : notes[message.runStatus])}</span>${retry}</div>`;
 }

@@ -70,7 +70,7 @@ test("empty project selection and last chat removal never create an unrelated co
   let created = 0;
   const state: any = { activeProjectId: "empty", activeSessionId: null, messages: ["old"], sessionSettings: {},
     bootstrap: { sessions: [{ id: "ordinary" }, { id: "elsewhere", projectId: "other" }] } };
-  const context: any = { state, sessionLoadSequence: 0,
+  const context: any = { isServerChat: () => false, chatTarget: null, state, sessionLoadSequence: 0,
     api: { createSession: async () => { created++; return { id: "new" }; } },
     refreshBootstrap: async () => {}, loadActiveSession: async () => {} };
   vm.runInNewContext(appFunction("async function ensureSession()", "async function createChatInProject"), context);
@@ -89,7 +89,7 @@ test("new project chats use explicit project identity and retain other chats' dr
   const state: any = { activeProjectId: "a", activeSessionId: "a-chat", drafts: { "a-chat": "unfinished draft" },
     bootstrap: { appSettings: { ui: { language: "uk" } } } };
   let payload: any;
-  const context: any = { state,
+  const context: any = { isServerChat: () => false, chatTarget: null, state,
     readSessionSetupSnapshot: () => null, sessionSettingsToPatch: (value: unknown) => value,
     persistActiveSessionSetup: async () => {}, refreshBootstrap: async () => {}, loadActiveSession: async () => {},
     window: { location: { hash: "" } }, projectsUi: { revealSession: (projectId: string) => { assert.equal(projectId, "b"); } },

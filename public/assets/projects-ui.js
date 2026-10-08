@@ -48,8 +48,28 @@ export function createProjectsUi(options) {
   </div>`;
   };
 
+  // A server's chats (R4): no projects, no deleting; a spinner where the server is answering.
+  function remoteSidebar(remote) {
+    const state = options.getState();
+    const rows = remote.sessions.map(session => {
+      const running = session.running || state.chatRequests?.has(session.id);
+      return `<div class="session-row ${session.id === state.activeSessionId ? "active" : ""} ${running ? "is-running" : ""}">
+      <button class="session-item ${session.id === state.activeSessionId ? "active" : ""}" data-action="open-session" data-session-id="${escape(session.id)}" title="${escape(session.title)}${session.updatedAt ? ` · ${escape(new Date(session.updatedAt).toLocaleString())}` : ""}" ${session.id === state.activeSessionId ? 'aria-current="page"' : ""}><span class="session-title">${escape(session.title)}</span></button>
+      ${running ? `<span class="session-delete session-working" role="status" aria-label="${escape(session.title)} is working" title="Answering on the server"><span class="button-spinner" aria-hidden="true"></span></span>` : ""}
+    </div>`;
+    }).join("");
+    return `<div class="sidebar-conversations" data-sidebar-scroll="conversations">
+      <section class="sidebar-section sidebar-chats" aria-label="Chats on ${escape(remote.hostName)}">
+        <div class="sidebar-header"><span class="sidebar-section-label">${icon("remote")}<span>Chats on ${escape(remote.hostName)}</span></span><button class="icon-button" type="button" data-action="new-session" data-project-id="" aria-label="New chat on ${escape(remote.hostName)}" title="New chat on ${escape(remote.hostName)}">${icon("plus")}</button></div>
+        <div class="session-list">${rows || `<p class="sidebar-empty">${remote.loaded ? "No chats on this server yet" : "Loading…"}</p>`}</div>
+      </section>
+    </div>`;
+  }
+
   function sidebar() {
     const state = options.getState();
+    const remote = options.remoteSessions?.();
+    if (remote) return remoteSidebar(remote);
     const { recent, byProject } = groupProjectSessions(state.bootstrap?.sessions);
     const projects = state.bootstrap?.projects ?? [];
     return `<div class="sidebar-conversations" data-sidebar-scroll="conversations">

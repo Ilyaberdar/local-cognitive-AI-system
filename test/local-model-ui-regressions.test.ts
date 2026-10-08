@@ -241,7 +241,7 @@ test("choosing a local model cannot copy a switched session during deferred auto
   const state: any = { activeSessionId: "a", sessionSettings: { mode: "chat" }, ui: { autosavePromise: autosave.promise } };
   const writes: any[] = []; let renders = 0;
   const window = { clearTimeout() {}, location: { hash: "#/models" } };
-  const onUse = vm.runInNewContext(`(${modelUseCallback})`, {
+  const onUse = vm.runInNewContext(`(${modelUseCallback})`, { isServerChat: () => false, chatTarget: null, 
     state, window, render: () => { renders++; },
     api: { updateSessionSettings: async (id: string, patch: unknown) => { writes.push({ id, patch }); return { mode: "chat", ...patch as object }; } },
     readSessionSetupSnapshot: () => ({ settings: state.sessionSettings }),
@@ -263,7 +263,7 @@ test("choosing a local model preserves session settings and only opens the still
   const state: any = { activeSessionId: "a", sessionSettings: { mode: "code" }, ui: { autosavePromise: Promise.resolve() } };
   let renders = 0;
   const window = { clearTimeout() {}, location: { hash: "#/models" } };
-  const onUse = vm.runInNewContext(`(${modelUseCallback})`, { state, window, render: () => { renders++; },
+  const onUse = vm.runInNewContext(`(${modelUseCallback})`, { isServerChat: () => false, chatTarget: null, state, window, render: () => { renders++; },
     api: { updateSessionSettings: async (_id: string, patch: object) => { assert.deepEqual(Object.keys(patch), ["defaultTarget"]); written.resolve(); return response.promise; } }
   });
   const pending = onUse({ id: "gguf-chosen" });

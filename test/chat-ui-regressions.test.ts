@@ -16,7 +16,7 @@ test("chat requests have no browser deadline while an explicit Stop remains avai
   const calls: Array<{ url: string; options: { timeoutMs?: number; controller?: AbortController } }> = [];
   const start = source.indexOf("const api = {");
   const end = source.indexOf("\n};", start) + 3;
-  const context: any = {
+  const context: any = { isServerChat: () => false, chatTarget: null, 
     request: (url: string, options: { timeoutMs?: number; controller?: AbortController }) => {
       calls.push({ url, options });
       return Promise.resolve({});
@@ -38,7 +38,7 @@ test("chat submit locks before setup save and old cleanup cannot reset a new req
   let handler!: (event: any) => Promise<void>; let calls = 0; let sentPayload: any;
   const stopped: unknown[] = [];
   const button = { disabled: false };
-  const context = { state, voiceInput: { busy: () => false }, AbortController, FormData: class { get() { return "Explain arrays"; } },
+  const context = { isServerChat: () => false, chatTarget: null, state, voiceInput: { busy: () => false }, AbortController, FormData: class { get() { return "Explain arrays"; } },
     document: { querySelector: (selector: string) => selector.includes("button[type") ? button : ({ addEventListener: (_name: string, callback: typeof handler) => { handler = callback; } }) },
     createUiEntityId: () => "request-a", getActiveDraftAttachments: () => [], getImageAttachmentGuidance: () => ({ blocked: false, message: "" }), persistActiveSessionSetup: () => setup.promise, readSessionSetupSnapshot: () => null, reviewPanel: { isOpen: () => false },
     window: { location: { hash: "" }, clearTimeout() {} }, isSubagentRequest: () => false, isMessageStreamNearBottom: () => false,
@@ -90,7 +90,7 @@ test("late session reads do not replace the selected conversation or clear anoth
   const aMessages = deferred<unknown>(); const aSettings = deferred<unknown>();
   const pending = { sessionId: "a", startedAt: new Date(0).toISOString() };
   const state: any = { activeSessionId: "a", pendingRequest: pending };
-  const context: any = { state, reconcileLocalModelTargets() {}, sessionLoadSequence: 0, api: {
+  const context: any = { isServerChat: () => false, chatTarget: null, state, reconcileLocalModelTargets() {}, sessionLoadSequence: 0, api: {
     getSessionMessages: (id: string) => id === "a" ? aMessages.promise : Promise.resolve([{ role: "assistant", content: "B", createdAt: new Date().toISOString() }]),
     getSessionSettings: (id: string) => id === "a" ? aSettings.promise : Promise.resolve({ name: "B" })
   } };
