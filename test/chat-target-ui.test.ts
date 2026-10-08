@@ -51,7 +51,7 @@ const ops = (app: Harness, name: string) => JSON.parse(JSON.stringify(app.bridge
 
 /** The local chat's requests for one message, recorded before Remote chat existed. */
 const LOCAL_TRACE = ["GET /dashboard/bootstrap", "GET /integrations/available", `GET /sessions/${SESSION_ID}/messages`, `GET /sessions/${SESSION_ID}/settings`,
-  "GET /local/runtime", "GET /local/downloads", `PUT /sessions/${SESSION_ID}/settings`, "POST /chat", "GET /process-runs/chat-<id>",
+  "GET /local/runtime", "GET /local/downloads", "EVENTSOURCE /local/events", `PUT /sessions/${SESSION_ID}/settings`, "POST /chat", "GET /process-runs/chat-<id>",
   "GET /dashboard/bootstrap", "GET /integrations/available", `GET /sessions/${SESSION_ID}/messages`, `GET /sessions/${SESSION_ID}/settings`];
 
 async function sendLocally(app: Harness) {
