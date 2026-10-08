@@ -103,10 +103,11 @@ test("this computer's Models tab makes exactly the same requests with or without
 
 /** fedora, paired and online, with one model in its library and one GPU. Its Models operations
  * answer from `server`; `emitSnapshot` plays the server's model watch. */
-function fedoraWithModels(capabilities = ["chat.runs.start", "events.poll", "models.local.watch", "models.local.snapshot", "system.metrics"]) {
-  let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.2.0", capabilities };
+function fedoraWithModels({ capabilities = ["chat.runs.start", "events.poll", "models.local.watch", "models.local.snapshot", "system.metrics"], name = "fedora", model = {} }:
+  { capabilities?: string[]; name?: string; model?: Record<string, unknown> } = {}) {
+  let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: name, serverVersion: "0.2.0", capabilities };
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
-  const serverModel = { ...libraryModel, id: "srv-llama", libraryId: "srv-llama", displayName: "Llama on fedora" };
+  const serverModel = { ...libraryModel, id: "srv-llama", libraryId: "srv-llama", displayName: "Llama on fedora", ...model };
   const server = { loaded: false, sequence: 1, sessions: [] as Array<{ id: string; title: string }>,
     settings: { llm: { defaultProvider: "llamacpp" }, providers: { llamacpp: { model: "" } }, localModels: { contextSize: 8192, gpuLayers: "auto" } },
     chatSettings: { ...sessionSettings(), defaultTarget: { providerId: "llamacpp", model: "" } } as Record<string, any> };
@@ -134,7 +135,7 @@ function fedoraWithModels(capabilities = ["chat.runs.start", "events.poll", "mod
   const emitSnapshot = () => { server.sequence++; eventListeners.forEach(listener => listener({ streamId: "models.local", sequence: server.sequence, snapshot: snapshot() })); };
   const bridge = {
     status: async () => ok(status),
-    hosts: async () => ok([{ hostId: HOST, name: "fedora", online: true, appVersion: "0.2.0", paired: true, devices: [] }]),
+    hosts: async () => ok([{ hostId: HOST, name, online: true, appVersion: "0.2.0", paired: true, devices: [] }]),
     connect: async () => ok(status), disconnect: async () => ok({ state: "idle" }), hostStatus: async () => ok({}),
     onChange: (listener: (value: unknown) => void) => { statusListeners.push(listener); return () => statusListeners.splice(statusListeners.indexOf(listener), 1); },
     runtime: {
@@ -265,7 +266,7 @@ test("Workflow and Synthesis say they run on this computer while fedora is selec
 });
 
 test("an older fedora without the Models operations is asked nothing and the tab says to update it", async t => {
-  const fedora = fedoraWithModels(["chat.runs.start", "events.poll"]);
+  const fedora = fedoraWithModels({ capabilities: ["chat.runs.start", "events.poll"] });
   const app = await bootApp({ ...localModels(), remote: { bridge: fedora.bridge } });
   t.after(() => app.close());
   await selectFedora(app);
@@ -275,4 +276,28 @@ test("an older fedora without the Models operations is asked nothing and the tab
   await app.tick(5000);
   assert.match(text(app, "#server-model-manager"), /Update Local Cognitive on fedora to manage its models from here\./);
   assert.deepEqual(runtimeCalls(app, callsBefore), []);
+});
+
+test("a server's name is text everywhere on its Models tab", async t => {
+  const name = `<img src=x onerror="globalThis.hacked=1">`;
+  const fedora = fedoraWithModels({ name, model: { compatibility: { ...compatibility, status: "incompatible", canLoad: false, totalMemoryBytes: 32e9, reasons: ["Model is too large for memory"] } } });
+  const app = await bootApp({ ...localModels(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  app.window.location.hash = "#/models";
+  await settle();
+  click(app, '[data-mm-action="tab"][data-mm-id="device"]');
+  await settle();
+  click(app, '[data-mm-action="delete-prompt"]');
+  await settle();
+  fedora.setStatus({ state: "reconnecting" });
+  await settle();
+  await app.tick(5000);
+  const manager = app.document.querySelector("#server-model-manager");
+  assert.equal(manager.querySelector("img"), null, "no markup from the server's name");
+  assert.equal(app.window.hacked, undefined);
+  for (const fragment of ["Models on <img", "Cannot run on <img", "on <img src=x", "Delete from <img", `${name} is reconnecting`]) {
+    assert.ok(manager.textContent.includes(fragment) || manager.innerHTML.includes(fragment.replace(/</g, "&lt;")), `missing ${fragment}`);
+  }
+  assert.equal(app.document.querySelector(".app-topbar img"), null);
 });
