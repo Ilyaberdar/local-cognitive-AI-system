@@ -2,13 +2,15 @@ const os = require("os");
 const { RemoteClient, devicePlatform } = require("../dist/src/remote/client/RemoteClient.js");
 const { RemoteRuntime } = require("../dist/src/remote/client/RemoteRuntime.js");
 const { resolveAccountConfig } = require("../dist/src/account/accountConfig.js");
+const { WATCHES, operationsOfKind } = require("../dist/src/runtime/operationCatalog.js");
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const id = value => { if (typeof value !== "string" || !UUID.test(value)) throw Object.assign(new Error("Invalid id."), { code: "invalid_request" }); return value; };
-// The chat screen may call exactly these server operations (R4); everything else stays local.
-const RUNTIME_REQUESTS = new Set(["sessions.list", "sessions.create", "sessions.messages.list", "sessions.settings.get", "sessions.settings.update",
-  "models.available", "chat.runs.get", "chat.runs.cancel", "chat.approvals.resolve", "host.info", "host.status"]);
-const RUNTIME_COMMANDS = new Set(["chat.runs.start"]);
+// Screens may call exactly the operations in the host's catalog, each the way its kind says:
+// requests directly, commands with a command id, watches only as streams the client follows.
+const RUNTIME_REQUESTS = new Set(operationsOfKind("request"));
+const RUNTIME_COMMANDS = new Set(operationsOfKind("command"));
+const RUNTIME_WATCHES = new Map(Object.entries(WATCHES));
 const MAX_PAYLOAD_BYTES = 256 * 1024;
 const checkedPayload = payload => {
   if (payload !== undefined && (typeof payload !== "object" || payload === null || Array.isArray(payload))) throw Object.assign(new Error("Invalid request."), { code: "invalid_request" });
@@ -29,7 +31,7 @@ function registerRemote({ app, ipcMain, vault, accountService, assertSender, get
   if (!config.cloudUrl) {
     const unavailable = () => ({ state: "unavailable" });
     for (const name of ["status", "pair", "connect", "disconnect", "forget"]) handle(name, unavailable);
-    for (const name of ["hosts", "revoke-device", "host-status", "runtime-request", "runtime-send", "runtime-subscribe", "runtime-unsubscribe"]) handle(name, () => { throw Object.assign(new Error("Remote is not configured in this build."), { code: "not_configured" }); });
+    for (const name of ["hosts", "revoke-device", "host-status", "runtime-request", "runtime-send", "runtime-subscribe", "runtime-unsubscribe", "runtime-watch", "runtime-unwatch"]) handle(name, () => { throw Object.assign(new Error("Remote is not configured in this build."), { code: "not_configured" }); });
     return { dispose() {} };
   }
   const client = new RemoteClient({ cloudUrl: config.cloudUrl, vault, deviceName: os.hostname().replace(/\.local$/, ""), platform: devicePlatform(),
@@ -56,20 +58,27 @@ function registerRemote({ app, ipcMain, vault, accountService, assertSender, get
   handle("forget", hostId => client.forget(id(hostId)));
   handle("revoke-device", (hostId, deviceId) => client.revokeDevice(id(hostId), id(deviceId)));
   handle("host-status", () => client.request("host.status"));
-  // The chat screen's runtime on the selected server (R4).
+  // The selected server's runtime for the app's screens (R4 chat, R5 Models). Every call names
+  // the server the screen shows; after a switch, a late click is refused instead of reaching
+  // the other server.
   const runtime = new RemoteRuntime(client);
   runtime.on("update", update => {
     const window = getWindow();
     if (window && !window.isDestroyed()) window.webContents.send("remote:runtime-event", update);
   });
-  handle("runtime-request", (op, payload) => client.request(allowed(RUNTIME_REQUESTS, op), checkedPayload(payload)));
-  handle("runtime-send", (op, payload) => runtime.send(allowed(RUNTIME_COMMANDS, op), checkedPayload(payload) ?? {}));
-  handle("runtime-subscribe", cursor => {
+  handle("runtime-request", (op, payload, hostId) => runtime.request(allowed(RUNTIME_REQUESTS, op), checkedPayload(payload), { hostId: id(hostId) }));
+  handle("runtime-send", (op, payload, hostId) => runtime.send(allowed(RUNTIME_COMMANDS, op), checkedPayload(payload) ?? {}, { hostId: id(hostId) }));
+  handle("runtime-subscribe", (cursor, hostId) => {
     if (!cursor || typeof cursor.streamId !== "string" || !/^session:.{1,200}$/.test(cursor.streamId) || typeof cursor.epoch !== "string"
       || !Number.isSafeInteger(cursor.after) || cursor.after < 0) throw Object.assign(new Error("Invalid cursor."), { code: "invalid_request" });
-    runtime.subscribe({ streamId: cursor.streamId, epoch: cursor.epoch, after: cursor.after });
+    runtime.subscribe({ streamId: cursor.streamId, epoch: cursor.epoch, after: cursor.after }, { hostId: id(hostId) });
   });
   handle("runtime-unsubscribe", streamId => { if (typeof streamId === "string") runtime.unsubscribe(streamId); });
+  handle("runtime-watch", (streamId, hostId) => {
+    if (typeof streamId !== "string" || !RUNTIME_WATCHES.has(streamId)) throw Object.assign(new Error("This operation is not available remotely."), { code: "unsupported" });
+    runtime.watch(streamId, RUNTIME_WATCHES.get(streamId), { hostId: id(hostId) });
+  });
+  handle("runtime-unwatch", streamId => { if (typeof streamId === "string") runtime.unwatch(streamId); });
   // Reconnect to the server this computer used last, once the account session is known.
   void client.resume().catch(() => {});
   return { dispose: () => { runtime.dispose(); client.dispose(); } };

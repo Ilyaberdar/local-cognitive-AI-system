@@ -64,12 +64,15 @@ contextBridge.exposeInMainWorld("desktopRemote", {
     ipcRenderer.on("remote:changed", listener);
     return () => ipcRenderer.removeListener("remote:changed", listener);
   },
-  // The chat screen on the selected server: allowlisted operations, safe resends, event streams.
+  // Screens on the selected server: allowlisted operations, safe resends, event streams and
+  // state watches. `hostId` is the server the screen shows; a call for another one is refused.
   runtime: {
-    request: (op, payload) => ipcRenderer.invoke("remote:runtime-request", op, payload),
-    send: (op, payload) => ipcRenderer.invoke("remote:runtime-send", op, payload),
-    subscribe: cursor => ipcRenderer.invoke("remote:runtime-subscribe", cursor),
+    request: (op, payload, hostId) => ipcRenderer.invoke("remote:runtime-request", op, payload, hostId),
+    send: (op, payload, hostId) => ipcRenderer.invoke("remote:runtime-send", op, payload, hostId),
+    subscribe: (cursor, hostId) => ipcRenderer.invoke("remote:runtime-subscribe", cursor, hostId),
     unsubscribe: streamId => ipcRenderer.invoke("remote:runtime-unsubscribe", streamId),
+    watch: (streamId, hostId) => ipcRenderer.invoke("remote:runtime-watch", streamId, hostId),
+    unwatch: streamId => ipcRenderer.invoke("remote:runtime-unwatch", streamId),
     onEvent: callback => {
       const listener = (_event, update) => callback(update);
       ipcRenderer.on("remote:runtime-event", listener);

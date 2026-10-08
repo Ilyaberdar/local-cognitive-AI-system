@@ -47,3 +47,7 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
 };
 
 export const operationsOfKind = (kind: OperationKind): string[] => Object.entries(OPERATIONS).filter(([, spec]) => spec.kind === kind).map(([name]) => name);
+
+/** State streams a screen may watch, by stream id, and the long poll that follows each one.
+ * Chat streams are not here: they are followed by cursor through `events.poll`. */
+export const WATCHES: Readonly<Record<string, string>> = { "models.local": "models.local.watch" };
