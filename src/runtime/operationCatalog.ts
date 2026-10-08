@@ -43,7 +43,19 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "models.settings.update": { kind: "request", timeoutMs: 120_000 },
   "models.setDefault": { kind: "request", timeoutMs: 15_000 },
   "system.metrics": { kind: "request", timeoutMs: 15_000 },
-  "models.local.watch": { kind: "watch", timeoutMs: 35_000 }
+  "models.local.watch": { kind: "watch", timeoutMs: 35_000 },
+  // Tasks & workflows (R5-2)
+  "orchestration.snapshot": { kind: "request", timeoutMs: 30_000 },
+  "tasks.create": { kind: "command", timeoutMs: 30_000 },
+  "tasks.update": { kind: "request", timeoutMs: 30_000 },
+  "tasks.delete": { kind: "request", timeoutMs: 15_000 },
+  "tasks.run": { kind: "command", timeoutMs: 30_000 },
+  "tasks.runNext": { kind: "command", timeoutMs: 30_000 },
+  "schedules.create": { kind: "command", timeoutMs: 30_000 },
+  "schedules.update": { kind: "request", timeoutMs: 30_000 },
+  "schedules.delete": { kind: "request", timeoutMs: 15_000 },
+  "workflows.validate": { kind: "request", timeoutMs: 15_000 },
+  "workflows.save": { kind: "command", timeoutMs: 30_000 }
 };
 
 export const operationsOfKind = (kind: OperationKind): string[] => Object.entries(OPERATIONS).filter(([, spec]) => spec.kind === kind).map(([name]) => name);

@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import type { ApprovalOperation, ChatMessage, ProcessProgressEvent } from "../types";
 import type { Logger } from "../utils/Logger";
+import { canonical, sha256 } from "./canonical";
 import type { HostDatabase } from "./db/HostDatabase";
 import type { EventJournal, JournalEvent } from "./EventJournal";
 import { publicError } from "./publicError";
@@ -41,9 +42,6 @@ interface ActiveRun {
 }
 
 export const streamOf = (sessionId: string) => `session:${sessionId}`;
-const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) =>
-  item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
-const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 /** Durable chat turns (spec §7): accepted once per idempotency key, executed independently of
  * any client connection, journaled as they progress, and never re-executed after a crash. */

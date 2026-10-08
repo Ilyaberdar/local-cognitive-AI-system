@@ -64,7 +64,7 @@ export class TaskService {
       const task = await this.taskStore.get(taskId);
       const run = task?.lastRunId ? await this.runStore.getRun(task.lastRunId) : null;
       if (TaskService.active.has(taskId) || (run && ["queued", "running", "waiting", "interrupted"].includes(run.status))) {
-        throw new Error("Cancel or finish this task before deleting it.");
+        throw new TaskValidationError("Cancel or finish this task before deleting it.", 409);
       }
       return this.taskStore.delete(taskId);
     });

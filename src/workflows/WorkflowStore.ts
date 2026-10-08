@@ -5,6 +5,7 @@ import { defaultTaskWorkflow } from "./defaultWorkflows";
 import { validateRunOptions } from "./runOptions";
 import { parsePluginSelection } from "../plugins/PluginSelection";
 import {
+  WorkflowConflictError,
   WorkflowDefinition,
   WorkflowDefinitionRecord,
   WorkflowNode,
@@ -89,6 +90,31 @@ export class WorkflowStore {
         record.workflows.push(next);
       }
 
+      await this.write(record);
+      return next;
+    });
+  }
+
+  /** Saves a workflow edited on another device. `expectedUpdatedAt` is the version the editor
+   * started from (null: a new workflow); a save by someone else in between is a conflict instead
+   * of a silent overwrite. */
+  async save(workflow: WorkflowDefinition, options: { expectedUpdatedAt: string | null }): Promise<WorkflowDefinition> {
+    return withFileLock(this.filePath, async () => {
+      const validation = this.validate(workflow);
+      if (!validation.ok) throw Object.assign(new Error(`Invalid workflow: ${validation.errors.join("; ")}`), { statusCode: 400 });
+      const record = await this.read();
+      const index = record.workflows.findIndex(item => item.id === workflow.id && item.version === workflow.version);
+      const current = index >= 0 ? record.workflows[index] : undefined;
+      if (options.expectedUpdatedAt === null ? current : current?.updatedAt !== options.expectedUpdatedAt) {
+        throw new WorkflowConflictError(current
+          ? "This workflow was changed on the server since you opened it. Reload it, then make your changes again."
+          : "This workflow no longer exists on the server.");
+      }
+      // Strictly later than the version it replaces, so the next save can tell them apart.
+      let updatedAt = new Date().toISOString();
+      if (current && updatedAt <= current.updatedAt) updatedAt = new Date(Date.parse(current.updatedAt) + 1).toISOString();
+      const next = { ...workflow, createdAt: current?.createdAt || workflow.createdAt || updatedAt, updatedAt };
+      if (current) record.workflows[index] = next; else record.workflows.push(next);
       await this.write(record);
       return next;
     });

@@ -14,6 +14,7 @@ import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
 import { createChatOperations } from "../runtime/chatOperations";
 import { createModelOperations } from "../runtime/modelOperations";
+import { createOrchestrationOperations } from "../runtime/orchestrationOperations";
 import { publicError } from "../runtime/publicError";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
@@ -66,7 +67,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     operations: {
       ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore: backend.runtimeManager.getRuntime().sessionIndexStore,
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
-      ...createModelOperations({ runtimeManager: backend.runtimeManager })
+      ...createModelOperations({ runtimeManager: backend.runtimeManager }),
+      ...createOrchestrationOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger,
+        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" })
     },
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();
