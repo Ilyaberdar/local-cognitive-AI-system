@@ -6,7 +6,8 @@ export const createLocalModelRouter = (getService: () => LocalModelService): Rou
   const router = Router();
   const route = (handler: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
     try { await handler(req, res); } catch (error) {
-      res.status(error instanceof LocalModelError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : "Local model operation failed.", code: error instanceof LocalModelError ? error.code : "local_model_error" });
+      res.status(error instanceof LocalModelError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : "Local model operation failed.",
+        code: error instanceof LocalModelError ? error.code : "local_model_error", ...(error instanceof LocalModelError && error.details ? { details: error.details } : {}) });
     }
   };
   const string = (value: unknown, name: string): string => { if (typeof value !== "string" || !value.trim()) throw new LocalModelError(`Field '${name}' must be a nonempty string.`); return value.trim(); };

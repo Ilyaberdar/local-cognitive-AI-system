@@ -1,0 +1,13 @@
+# Override for a host whose ports 80/443 already belong to another stack's Caddy.
+# The API joins that proxy's Docker network under a stable alias; Postgres stays private.
+services:
+  cloud:
+    networks:
+      default: {}
+      edge:
+        aliases: ["local-cognitive-cloud"]
+
+networks:
+  edge:
+    name: ${EDGE_NETWORK:-compose_edge}
+    external: true

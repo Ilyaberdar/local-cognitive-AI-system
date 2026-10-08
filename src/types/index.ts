@@ -150,7 +150,8 @@ export interface SamplingSettings {
 export interface LocalModelSettings {
   modelsDir: string;
   contextSize: number;
-  gpuLayers: number;
+  /** "auto": GPU first, placed per model by free device memory. */
+  gpuLayers: number | "auto";
   loadTimeoutMs: number;
   generationTimeoutMs: number;
   memoryLimitPercent: number;
@@ -667,4 +668,6 @@ export interface SystemMetrics {
   memoryCachedBytes?: number;
   cpuCores: number;
   loadAverage1m: number;
+  /** Discrete NVIDIA GPUs of the host; absent on Apple silicon and without nvidia-smi. */
+  gpus?: Array<{ id: string; index: number; name: string; totalBytes: number; usedBytes: number; freeBytes: number }>;
 }

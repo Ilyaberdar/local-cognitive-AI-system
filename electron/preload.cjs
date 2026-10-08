@@ -35,6 +35,37 @@ contextBridge.exposeInMainWorld("desktopVoice", {
   }
 });
 
+// Account status only; tokens stay in the main process.
+contextBridge.exposeInMainWorld("desktopAccount", {
+  status: () => ipcRenderer.invoke("account:status"),
+  signIn: method => ipcRenderer.invoke("account:sign-in", method),
+  cancelSignIn: () => ipcRenderer.invoke("account:cancel-sign-in"),
+  signOut: () => ipcRenderer.invoke("account:sign-out"),
+  onChange: callback => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on("account:changed", listener);
+    return () => ipcRenderer.removeListener("account:changed", listener);
+  }
+});
+
+// Remote statuses and host summaries; keys, tickets and tokens stay in the main process.
+// Each call resolves with { ok, value } or { ok: false, error: { code, message } }.
+contextBridge.exposeInMainWorld("desktopRemote", {
+  status: () => ipcRenderer.invoke("remote:status"),
+  hosts: () => ipcRenderer.invoke("remote:hosts"),
+  pair: key => ipcRenderer.invoke("remote:pair", key),
+  connect: hostId => ipcRenderer.invoke("remote:connect", hostId),
+  disconnect: () => ipcRenderer.invoke("remote:disconnect"),
+  forget: hostId => ipcRenderer.invoke("remote:forget", hostId),
+  revokeDevice: (hostId, deviceId) => ipcRenderer.invoke("remote:revoke-device", hostId, deviceId),
+  hostStatus: () => ipcRenderer.invoke("remote:host-status"),
+  onChange: callback => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on("remote:changed", listener);
+    return () => ipcRenderer.removeListener("remote:changed", listener);
+  }
+});
+
 // Fixed application actions: the renderer cannot supply a path or command.
 contextBridge.exposeInMainWorld("desktopApp", {
   openDataFolder: () => ipcRenderer.invoke("app:open-data-folder"),

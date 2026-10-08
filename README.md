@@ -12,6 +12,11 @@ Local multi-model AI workspace with:
 
 The goal is simple: one personal system you can use every day for research, coding, note-taking, and orchestration.
 
+Planned account login, headless GPU hosts, Remote Connection, usage reporting,
+bug reports and updates are specified in the [Remote Connection implementation
+plan](architecture/remote-connection-implementation.md). This is a roadmap, not
+a claim that remote access is already available.
+
 ## What You Get
 
 - `Chat Workspace` for normal chat, hypothesis debates, and code mode
@@ -230,7 +235,8 @@ Notes:
 - The built-in provider runs without LM Studio or Ollama. Those optional
   integrations still require their own application and endpoint when selected.
 - Desktop settings are stored in Electron's user data directory, independently
-  of the repository's `.env` and `data/app/settings.json`. Saved provider
+  of the repository's `.env` and `data/app/settings.json`. The desktop app does
+  not read `.env` at all; it is for development and headless runs. Saved provider
   settings take precedence over defaults. If an existing installation still
   aborts generation after 20 seconds, set the local provider timeout to at least
   `300000` ms in Settings; a reasoning model may need minutes for its final answer.
@@ -241,6 +247,24 @@ Notes:
   certificates are configured.
 - macOS builds use Electron's default icon until a project `.icns` asset is
   configured in the `build.mac.icon` field.
+
+### Linux server runtime (NVIDIA)
+
+The headless server (`local-cognitive-server`, see `deploy/server/`) prefers a
+CUDA build of llama.cpp and runs on the CPU when it is absent or no GPU is usable:
+
+```bash
+npm run prepare:llama:server   # linux-x64 and linux-x64-cuda12
+node scripts/verify-packaged-runtime.mjs resources --variant linux-x64 --variant linux-x64-cuda12 --check-libraries
+```
+
+`linux-x64-cuda12` is the upstream `linux-x64` build plus an overlay with
+`libggml-cuda.so` and the NVIDIA CUDA runtime and cuBLAS libraries, pinned in
+`resources/llama/runtime-manifest.json`. The overlay is built by
+`scripts/build-llama-cuda-overlay.mjs` (locally, or by the manual
+`llama-cuda-runtime` workflow). It needs an NVIDIA driver 570 or newer.
+`local-cognitive-server status` shows the selected and the active backend, and
+the reason when models run on the CPU.
 
 ## Fastest Local Setup
 
@@ -510,9 +534,13 @@ adapters. The distributor must register the application once before shipping log
 | Dropbox | App key with PKCE and the adapter's scoped permissions |
 
 End users see Install → browser login, never developer registration forms. Supply
-the release's public/native client registrations in the git-ignored
-`electron/plugin-oauth-clients.json`, following its `.example.json`, or use
-`LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE`. This config is application-wide, while account
+the release's public/native client registrations, following
+`electron/plugin-oauth-clients.example.json`, in one of these places (first match
+wins): `LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE`, `plugin-oauth-clients.json` in the
+app's user data directory, or — in a development checkout only — the git-ignored
+`electron/plugin-oauth-clients.json`. Packaged builds never include this file;
+`npm run verify:package-secrets` checks an unpacked build for credential files and
+credential-like strings. This config is application-wide, while account
 tokens remain profile-local. Do not distribute confidential web-client secrets.
 Scopes are defined in `src/plugins/OAuthConnections.ts`; default callback is
 `http://127.0.0.1:17849/oauth/callback` (Slack/Graph use `localhost`).

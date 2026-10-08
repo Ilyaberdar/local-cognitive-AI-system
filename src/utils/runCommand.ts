@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { childProcessEnv } from "../config/secrets";
 
 export type CommandOutputHandler = (stream: "stdout" | "stderr", text: string) => void;
 
@@ -13,7 +14,7 @@ export const runCommand = (
   new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const grouped = process.platform !== "win32";
-    const child = spawn(executable, args, { cwd, shell: false, env: process.env, detached: grouped });
+    const child = spawn(executable, args, { cwd, shell: false, env: childProcessEnv(), detached: grouped });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

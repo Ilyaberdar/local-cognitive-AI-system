@@ -1,3 +1,4 @@
+import { hasSecretName } from "../../config/secrets";
 import { McpClientError } from "./errors";
 import type {
   McpClientConfiguration, McpClientConfigurationPatch, McpConnectionBinding, McpServerDefinition
@@ -8,9 +9,7 @@ const stdioFields = ["command", "args", "cwd", "env"];
 const bindingFields = ["id", "serverId", "enabled", "name", "accountId", "credentialRef"];
 const reservedIds = new Set(["__proto__", "constructor", "prototype"]);
 // These values belong to the injected credential provider, never ordinary settings.
-const secretName = /(?:^|[_.-])(?:tokens?|secrets?|password|passwd|authorization|credentials?|api[_.-]?key|private[_.-]?key|access[_.-]?key|session[_.-]?key)(?:$|[_.-])/i;
 const secretValue = /^(?:Bearer|Basic)\s|-----BEGIN [A-Z ]*PRIVATE KEY-----|^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\./i;
-const hasSecretName = (value: string): boolean => secretName.test(value.replace(/([a-z0-9])([A-Z])/g, "$1_$2"));
 
 function invalid(): never { throw new McpClientError("invalid_configuration"); }
 

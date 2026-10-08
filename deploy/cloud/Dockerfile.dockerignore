@@ -1,0 +1,8 @@
+# Only the cloud package and the root manifests are sent to the build.
+*
+!package.json
+!package-lock.json
+!apps/cloud/package.json
+!apps/cloud/tsconfig.json
+!apps/cloud/src/**
+!apps/cloud/migrations/**

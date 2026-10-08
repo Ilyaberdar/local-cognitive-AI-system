@@ -1,0 +1,144 @@
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { parseServerArgs } from "../src/server/args";
+import { controlSocketPathFor, initDataRoot, readServerConfig } from "../src/server/dataRoot";
+import { selectInference } from "../src/server/inference";
+import { serverEnvironment } from "../src/server/serverEnv";
+
+const cli = path.resolve(__dirname, "..", "src", "server", "cli.js");
+const mcp = path.resolve(__dirname, "..", "src", "mcp.js");
+const posix = process.platform !== "win32";
+
+test("arguments are validated per command", () => {
+  assert.equal(parseServerArgs(["start", "--data-dir", "/srv/lc", "--inference", "cpu", "--http-port", "0"]).inference, "cpu");
+  assert.equal(parseServerArgs(["status"], { LOCAL_COGNITIVE_DATA_DIR: "/srv/lc" }).dataDir, "/srv/lc");
+  for (const argv of [["start"], ["start", "--data-dir", "/x", "--inference", "gpu"], ["frob"], ["start", "--data-dir", "/x", "--bogus"], ["start", "--data-dir", "/x", "--http-port", "70000"]]) {
+    assert.throws(() => parseServerArgs(argv, {}), (error: { exitCode?: number }) => error.exitCode === 64, argv.join(" "));
+  }
+});
+
+test("init creates a private layout once and server.json carries no secrets", { skip: !posix }, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lcs-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.chmodSync(root, 0o755);
+  const first = initDataRoot(root, { inference: "cpu" });
+  assert.equal(fs.statSync(root).mode & 0o777, 0o700, "an existing loose directory is tightened");
+  for (const name of ["app", "memory", "sessions", "output", "models"]) assert.equal(fs.statSync(path.join(root, name)).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(path.join(root, "server.json")).mode & 0o777, 0o600);
+  const config = fs.readFileSync(path.join(root, "server.json"));
+  assert.deepEqual(initDataRoot(root).created, []);
+  assert.deepEqual(fs.readFileSync(path.join(root, "server.json")), config);
+  assert.equal(first.config.inference, "cpu");
+  fs.writeFileSync(path.join(root, "server.json"), JSON.stringify({ ...first.config, apiKey: "x" }));
+  assert.throws(() => readServerConfig(root), (error: { exitCode?: number }) => error.exitCode === 78);
+  assert.throws(() => controlSocketPathFor(`/${"x".repeat(120)}`), /longer than/);
+});
+
+test("the server environment derives every directory and never serves the UI", () => {
+  const root = "/srv/lc";
+  const { env, overridden } = serverEnvironment({ root, config: { schemaVersion: 1, createdAt: "", createdByVersion: "", inference: "auto", http: { enabled: true, port: 3000 }, drainTimeoutSec: 120 },
+    args: parseServerArgs(["start", "--data-dir", root]), release: "/opt/lc",
+    inference: { preference: "auto", backend: "cpu", runtimeDir: "/opt/lc/resources/llama/linux-x64", runtimeId: "linux-x64", fallbackReason: "CUDA is not used." },
+    base: { APP_DATA_DIR: "/elsewhere", HOST: "0.0.0.0" } });
+  assert.equal(env.APP_DATA_DIR, "/srv/lc/app");
+  assert.equal(env.LOCAL_MODELS_DIR, "/srv/lc/models");
+  assert.equal(env.HOST, "127.0.0.1");
+  assert.equal(env.UI_SERVE, "false");
+  assert.equal(env.LOCAL_COGNITIVE_ENV_FILE, "none");
+  assert.equal(env.LOCAL_INFERENCE, "auto");
+  assert.equal(env.LOCAL_INFERENCE_FALLBACK, "CUDA is not used.");
+  assert.equal(env.CUDA_CACHE_PATH, "/srv/lc/app/runtime/cuda-cache", "writable under ProtectSystem=strict");
+  assert.deepEqual(overridden.sort(), ["APP_DATA_DIR", "HOST"]);
+});
+
+test("the CUDA build is used only when it is prepared for this release", t => {
+  const release = fs.mkdtempSync(path.join(os.tmpdir(), "lcs-release-"));
+  t.after(() => fs.rmSync(release, { recursive: true, force: true }));
+  const llama = path.join(release, "resources", "llama");
+  const prepare = (id: string, runtime?: object) => {
+    fs.mkdirSync(path.join(llama, id), { recursive: true });
+    fs.writeFileSync(path.join(llama, id, "llama-server"), "");
+    if (runtime) fs.writeFileSync(path.join(llama, id, "runtime.json"), JSON.stringify(runtime));
+  };
+  fs.mkdirSync(llama, { recursive: true });
+  fs.writeFileSync(path.join(llama, "runtime-manifest.json"), JSON.stringify({ build: "b10809" }));
+  prepare("linux-x64", { backend: "cpu", build: "b10809" });
+  const select = (preference: "auto" | "cuda" | "cpu", nvidia = true) => selectInference(preference, { release, platform: "linux", arch: "x64", nvidiaDriverPresent: () => nvidia });
+
+  assert.deepEqual({ ...select("auto", false) }, { preference: "auto", backend: "cpu", runtimeDir: path.join(llama, "linux-x64"), runtimeId: "linux-x64" },
+    "a host without an NVIDIA driver needs no explanation");
+  assert.match(select("auto").fallbackReason ?? "", /CUDA runtime is not installed/);
+  assert.throws(() => select("cuda"), (error: { exitCode?: number }) => error.exitCode === 78);
+
+  prepare("linux-x64-cuda12", { id: "linux-x64-cuda12", backend: "cuda", build: "b10000" });
+  assert.match(select("auto", false).fallbackReason ?? "", /llama.cpp b10000, but this release uses b10809/, "a stale build is explained even without a driver");
+  fs.writeFileSync(path.join(llama, "linux-x64-cuda12", "runtime.json"), JSON.stringify({ id: "linux-x64-cuda12", backend: "cuda", build: "b10809" }));
+  assert.deepEqual({ ...select("auto") }, { preference: "auto", backend: "cuda", runtimeDir: path.join(llama, "linux-x64-cuda12"), runtimeId: "linux-x64-cuda12" });
+  assert.equal(select("cpu").runtimeId, "linux-x64", "cpu never uses the CUDA build");
+
+  const custom = path.join(release, "custom");
+  fs.mkdirSync(custom);
+  fs.writeFileSync(path.join(custom, "runtime.json"), JSON.stringify({ backend: "cuda" }));
+  assert.equal(selectInference("auto", { release, override: custom }).backend, "cuda", "an override is labelled by its own runtime.json");
+  assert.throws(() => selectInference("cpu", { release, override: custom }), (error: { exitCode?: number }) => error.exitCode === 78);
+  assert.equal(selectInference("auto", { release, override: path.join(release, "none") }).backend, "cpu");
+});
+
+test("init → start → status → MCP bridge → drain, with a second start refused", { skip: !posix, timeout: 60_000 }, async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "lcs-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "d"), keyFile = path.join(base, "k", "vault.key");
+  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false" };
+  const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { env, encoding: "utf8" });
+
+  const init = run("init", "--data-dir", root, "--vault-key-file", keyFile, "--json");
+  assert.equal(init.status, 0, init.stderr);
+  assert.match(JSON.parse(init.stdout).vaultKeyId, /^[0-9a-f]{16}$/);
+
+  const server = spawn(process.execPath, [cli, "start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none")],
+    { env, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  server.stdout.on("data", chunk => { log += chunk; }); server.stderr.on("data", chunk => { log += chunk; });
+  const exited = new Promise<number | null>(resolve => server.once("exit", resolve));
+  t.after(() => { if (server.exitCode === null) server.kill("SIGKILL"); });
+
+  let status: { running?: boolean; phase?: string; http?: { port: number }; ui?: boolean; scheduler?: boolean; vault?: { configured: boolean } } = {};
+  for (let attempt = 0; attempt < 120 && !status.running; attempt++) {
+    const result = run("status", "--data-dir", root, "--json");
+    if (result.status === 0) status = JSON.parse(result.stdout);
+    else await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  assert.equal(status.running, true, log);
+  assert.equal(status.phase, "running");
+  assert.equal(status.scheduler, true);
+  assert.equal(status.ui, false);
+  assert.equal(status.vault?.configured, true);
+  const health = await fetch(`http://127.0.0.1:${status.http!.port}/health`);
+  assert.equal(health.status, 200);
+  assert.equal((await fetch(`http://127.0.0.1:${status.http!.port}/`)).status, 404, "the server serves no UI");
+
+  const second = run("start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none"));
+  assert.equal(second.status, 75, second.stderr);
+  assert.match(second.stderr, /already used by server/);
+
+  const transport = new StdioClientTransport({ command: process.execPath, args: [mcp], cwd: base, stderr: "pipe",
+    env: { ...env, APP_DATA_DIR: path.join(root, "app"), LOCAL_COGNITIVE_ENV_FILE: "none", MCP_ENABLED: "true" } });
+  const client = new Client({ name: "bridge-test", version: "1.0.0" });
+  await client.connect(transport, { timeout: 10_000 });
+  const tools = (await client.listTools()).tools.map(tool => tool.name);
+  assert.ok(tools.includes("local_ai_runtime_status"), tools.join(","));
+  await client.close();
+
+  const drain = run("drain", "--data-dir", root, "--json");
+  assert.equal(drain.status, 0, drain.stderr);
+  assert.equal(JSON.parse(drain.stdout).drained, true);
+  assert.equal(await exited, 0, log);
+  assert.equal(fs.existsSync(path.join(root, "app", "runtime", "data-root.owner.json")), false, "the lock is released");
+  assert.equal(run("status", "--data-dir", root).status, 3);
+});

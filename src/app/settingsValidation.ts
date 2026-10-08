@@ -58,9 +58,13 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
   if (patch.localModels !== undefined) {
     const localModels = object(patch.localModels, "localModels");
     check(localModels, "localModels", {
-      modelsDir: "string", contextSize: [512, 131072], gpuLayers: [0, 999], memoryLimitPercent: [10, 90],
+      modelsDir: "string", contextSize: [512, 131072], memoryLimitPercent: [10, 90],
       loadTimeoutMs: [10000, 1800000], generationTimeoutMs: [10000, 3600000]
     });
+    const gpuLayers = localModels.gpuLayers;
+    if (gpuLayers !== undefined && gpuLayers !== "auto" && !(typeof gpuLayers === "number" && Number.isInteger(gpuLayers) && gpuLayers >= 0 && gpuLayers <= 999)) {
+      throw new SettingsValidationError("Invalid localModels.gpuLayers.");
+    }
     if (localModels.generation !== undefined) {
       const generation = object(localModels.generation, "localModels.generation");
       if (generation.preset !== undefined && !["server", "precise", "balanced", "creative", "custom"].includes(generation.preset as string)) {

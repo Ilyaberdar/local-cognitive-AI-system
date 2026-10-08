@@ -7,12 +7,14 @@ export interface LocalModelOptions {
   runtimeDir: string;
   executablePath?: string;
   contextSize: number;
-  gpuLayers: number;
+  gpuLayers: number | "auto";
   loadTimeoutMs: number;
   generationTimeoutMs: number;
   memoryLimitPercent: number;
   /** Undefined keeps llama.cpp's own defaults (legacy/test compatible). */
   generation?: LocalGenerationSettings;
+  /** Backend chosen by the headless server (`start --inference`); absent on the desktop. */
+  inference?: { preference: "auto" | "cuda" | "cpu"; fallbackReason?: string };
 }
 
 export interface ModelArtifact {
@@ -157,6 +159,12 @@ export interface LocalRuntimeSnapshot {
   effectiveContextSize?: number;
   memoryLimitPercent: number;
   modelsDir: string;
+  /** Where the loaded model runs; absent while unloaded and on runtimes without placement. */
+  placement?: LocalPlacementSnapshot;
+  /** Prepared runtime directory id (linux-x64, linux-x64-cuda12, ...). */
+  runtimeId?: string;
+  /** Why models run on the CPU although a GPU runtime was wanted. */
+  fallbackReason?: string;
 }
 
 export interface LocalModelStorageSnapshot {
@@ -189,8 +197,20 @@ export interface LocalModelEvent {
   snapshot: LocalModelSnapshot;
 }
 
+export interface LocalPlacementSnapshot {
+  kind: "unified" | "single-gpu" | "multi-gpu" | "partial" | "cpu";
+  label: string;
+  backend: string;
+  devices: Array<{ id: string; index: number; name: string; estimatedBytes: number }>;
+  gpuLayers: number | "all";
+  tensorSplit?: number[];
+  hostEstimatedBytes: number;
+  warnings: string[];
+  retried?: boolean;
+}
+
 export class LocalModelError extends Error {
-  constructor(message: string, readonly statusCode = 400, readonly code = "local_model_error") {
+  constructor(message: string, readonly statusCode = 400, readonly code = "local_model_error", readonly details?: Record<string, unknown>) {
     super(message);
     this.name = "LocalModelError";
   }

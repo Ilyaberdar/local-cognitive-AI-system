@@ -1,0 +1,97 @@
+name: llama.cpp CUDA runtime
+
+# Builds the linux-x64 CUDA overlay (scripts/build-llama-cuda-overlay.mjs). Manual only.
+# Publishing redistributes NVIDIA libraries: it needs the owner's CUDA EULA sign-off, given as
+# the required reviewer of the `cuda-release` environment. Without `publish` nothing leaves CI
+# except a 14-day workflow artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Immutable release tag; bump -rN to rebuild"
+        required: true
+        default: llama-b10809-cuda12.8.1-r1
+      publish:
+        description: "Create a GitHub prerelease (requires CUDA EULA sign-off)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llama-cuda-runtime
+  cancel-in-progress: false
+
+env:
+  # Re-check both digests before the first run.
+  CUDA_DEVEL_IMAGE: nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73b72ec4c4301653a84586e05bfc9a2aa2d58027e97
+  CUDA_ARCHITECTURES: 50-virtual;61-real;70-virtual;75-real;80-real;86-real;89-real;90-real;90-virtual;120a-real
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - name: Validate tag
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: '[[ "$TAG" =~ ^llama-b[0-9]+-cuda12\.8\.1-r[0-9]+$ ]] || { echo "bad tag" >&2; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: pin
+        run: echo "commit=$(node -p "require('./resources/llama/runtime-manifest.json').commit")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ steps.pin.outputs.commit }}
+          path: .llama-src
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - name: Build libggml-cuda.so
+        run: >-
+          node scripts/build-llama-cuda-overlay.mjs module --source .llama-src --out .cuda-build
+          --image "$CUDA_DEVEL_IMAGE" --architectures "$CUDA_ARCHITECTURES" --jobs 3
+      - name: Package overlay and smoke-test with the real prepare and verify scripts
+        env:
+          TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: >-
+          node scripts/build-llama-cuda-overlay.mjs package --module .cuda-build/libggml-cuda.so
+          --toolchain .cuda-build/toolchain.txt --llama-license .llama-src/LICENSE
+          --architectures "$CUDA_ARCHITECTURES" --tag "$TAG" --repository "$REPOSITORY" --out .cuda-dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-cuda-overlay
+          path: .cuda-dist/release/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    environment: cuda-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: llama-cuda-overlay
+          path: release
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          cd release && sha256sum -c SHA256SUMS
+          if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then echo "$TAG exists; bump -rN" >&2; exit 1; fi
+          gh release create "$TAG" --repo "$REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "llama.cpp b10809 CUDA 12.8.1 overlay (linux-x64)" --notes-file RELEASE_NOTES.md \
+            ./*.tar.gz SHA256SUMS manifest-fragment.json

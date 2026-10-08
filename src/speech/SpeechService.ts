@@ -6,6 +6,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
+import { childProcessEnv } from "../config/secrets";
 
 export const SPEECH_MODELS = [
   {
@@ -191,7 +192,7 @@ async function runSpeechProcess(executable: string, args: string[], cancellation
   const signal = AbortSignal.any([cancellation, AbortSignal.timeout(300000)]);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, "../local/RuntimeProcessHost.js"), executable, JSON.stringify(args)], {
-      stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+      stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true, env: { ...childProcessEnv(), ELECTRON_RUN_AS_NODE: "1" }
     });
     // Native output may contain recognized speech. Never forward it to application logs.
     child.stderr?.resume();

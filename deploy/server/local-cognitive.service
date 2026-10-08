@@ -1,0 +1,55 @@
+# Local Cognitive Server (headless). Install:
+#   sudo useradd --system --create-home --home-dir /var/lib/local-cognitive local-cognitive
+#   sudo -u local-cognitive node /opt/local-cognitive/dist/src/server/cli.js init \
+#     --data-dir /srv/local-cognitive --vault-key-file /etc/local-cognitive/vault.key
+#   (create /srv/local-cognitive and /etc/local-cognitive owned by local-cognitive first)
+#   sudo cp local-cognitive.service /etc/systemd/system/ && sudo systemctl enable --now local-cognitive
+# Status: sudo -u local-cognitive node /opt/local-cognitive/dist/src/server/cli.js status --data-dir /srv/local-cognitive
+[Unit]
+Description=Local Cognitive Server
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/local-cognitive
+
+[Service]
+Type=exec
+User=local-cognitive
+Group=local-cognitive
+# Provider keys and options (KEY=value), mode 600. Optional.
+EnvironmentFile=-/etc/local-cognitive/server.env
+Environment=NODE_ENV=production
+Environment=LOCAL_COGNITIVE_VAULT_KEY_FILE=/etc/local-cognitive/vault.key
+ExecStart=/usr/bin/node /opt/local-cognitive/dist/src/server/cli.js start --data-dir /srv/local-cognitive --inference auto
+# SIGTERM drains accepted work. mixed: only the main process gets it, so model processes keep
+# running until the server stops them.
+KillMode=mixed
+TimeoutStopSec=180
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=64 75 78
+UMask=0077
+LimitCORE=0
+
+# Hardening. Not used: PrivateDevices/DevicePolicy (GPU access), MemoryDenyWriteExecute
+# (V8 and CUDA JIT), SystemCallFilter. NoNewPrivileges blocks setuid nvidia-modprobe, so load
+# nvidia-uvm at boot on GPU hosts.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/local-cognitive
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

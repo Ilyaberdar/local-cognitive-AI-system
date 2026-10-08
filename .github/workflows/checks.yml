@@ -1,0 +1,96 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-core:
+    runs-on: ubuntu-24.04
+    env:
+      # Tests read electron/*.cjs but never start Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  cloud:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      CLOUD_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      CLOUD_TEST_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci -w @local-cognitive/cloud --include-workspace-root=false --ignore-scripts
+      - run: npm test -w @local-cognitive/cloud
+
+  # Device -> Cloud relay -> server daemon on one runner (test/remote-e2e.test.ts).
+  remote-e2e:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      CLOUD_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @local-cognitive/cloud
+      - run: npm run build:server && node --test dist/test/remote-e2e.test.js dist/test/remote-channel.test.js
+
+  cloud-image:
+    needs: cloud
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/cloud/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false

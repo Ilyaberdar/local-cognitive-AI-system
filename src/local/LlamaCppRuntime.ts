@@ -7,8 +7,21 @@ import { setTimeout as delay } from "timers/promises";
 import { LLMRequest, LLMResponse } from "../types";
 import { Logger } from "../utils/Logger";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
-import { LocalModelError, LocalModelOptions, LocalRuntimeSnapshot } from "./types";
+import { LocalModelError, LocalModelOptions, LocalPlacementSnapshot, LocalRuntimeSnapshot } from "./types";
 import { fetchLocalInference } from "./fetchLocalInference";
+import { childProcessEnv } from "../config/secrets";
+import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf, runtimeEnv } from "./RuntimeInstall";
+
+export { llamaExecutable };
+
+// Allocation failures reported by llama.cpp and its CUDA/Vulkan backends.
+const OUT_OF_MEMORY = /out of memory|ErrorOutOfDeviceMemory|unable to allocate \S+ buffer|failed to allocate (?:[\w-]+ )?(?:buffer|compute buffers)|failed to allocate buffer for (?:kv|rs) cache/i;
+
+/** Arguments and environment chosen by placement for one model process. */
+export interface RuntimeLaunch { args: string[]; env: Record<string, string>; placement: LocalPlacementSnapshot }
+
+/** GPU layers when no placement plan is given: the previous platform default for "auto". */
+const legacyGpuLayers = (gpuLayers: number | "auto") => gpuLayers === "auto" ? (process.platform === "darwin" ? 99 : 0) : gpuLayers;
 
 export class LlamaCppRuntime {
   private child?: ChildProcess;
@@ -23,12 +36,17 @@ export class LlamaCppRuntime {
   private stopping?: Promise<void>;
   private nativeCleanup: Promise<void> = Promise.resolve();
   private lifetime = new AbortController();
+  private placement?: LocalPlacementSnapshot;
+  private installed?: InstalledRuntime;
 
-  constructor(private options: LocalModelOptions, private readonly logger: Logger, private readonly changed: () => void = () => {}) {}
+  constructor(private options: LocalModelOptions, private readonly logger: Logger, private readonly changed: () => void = () => {}) {
+    this.installed = readInstalledRuntime(runtimeDirOf(options));
+  }
   get currentModelId(): string | undefined { return this.modelId; }
   get status(): LocalRuntimeSnapshot["status"] { return this.state; }
   snapshot(): LocalRuntimeSnapshot {
-    return { status: this.state, version: "b10809", backend: process.platform === "darwin" && this.options.gpuLayers !== 0 ? "Metal" : "CPU",
+    return { status: this.state, version: this.installed?.build ?? "b10809", backend: this.placement?.backend ?? (process.platform === "darwin" && legacyGpuLayers(this.options.gpuLayers) !== 0 ? "Metal" : "CPU"),
+      placement: this.placement,
       platform: process.platform, architecture: process.arch, modelId: this.modelId, error: this.error,
       queueLength: 0, busy: false, contextSize: this.options.contextSize, effectiveContextSize: this.effectiveContextSize,
       memoryLimitPercent: this.options.memoryLimitPercent, modelsDir: this.options.modelsDir };
@@ -38,12 +56,20 @@ export class LlamaCppRuntime {
     try { await fs.access(this.executable(), fs.constants.X_OK); this.setState("stopped"); }
     catch { this.setState("unavailable", "The bundled llama.cpp runtime is missing for this platform. Prepare the runtime or install a complete desktop build."); }
   }
-  async reconfigure(options: LocalModelOptions): Promise<void> { await this.stop(); this.options = options; this.lifetime = new AbortController(); await this.init(); }
+  async reconfigure(options: LocalModelOptions): Promise<void> {
+    await this.stop(); this.options = options; this.installed = readInstalledRuntime(runtimeDirOf(options)); this.lifetime = new AbortController(); await this.init();
+  }
 
-  async load(modelId: string, modelPath: string, signal?: AbortSignal, projectorPath?: string): Promise<void> {
+  isReadyFor(modelId: string, projectorPath?: string): boolean {
+    return this.state === "ready" && this.modelId === modelId && this.projectorPath === projectorPath && Boolean(this.child);
+  }
+  /** Records a failure that happened before a process started (e.g. no memory for any placement). */
+  fail(modelId: string, message: string): void { this.modelId = modelId; this.placement = undefined; this.setState("error", message); }
+
+  async load(modelId: string, modelPath: string, signal?: AbortSignal, projectorPath?: string, launch?: RuntimeLaunch): Promise<void> {
     signal?.throwIfAborted();
     if (!this.options.enabled) throw new LocalModelError("Local models are disabled.", 503);
-    if (this.state === "ready" && this.modelId === modelId && this.projectorPath === projectorPath && this.child) return;
+    if (this.isReadyFor(modelId, projectorPath)) return;
     await this.stop();
     try { await fs.access(this.executable(), fs.constants.X_OK); } catch { await this.init(); throw new LocalModelError(this.error ?? "The llama.cpp runtime is unavailable.", 503); }
     const port = await freePort();
@@ -53,16 +79,20 @@ export class LlamaCppRuntime {
     this.modelId = modelId;
     this.projectorPath = projectorPath;
     this.logTail = "";
+    this.placement = launch?.placement;
     this.setState("loading");
     const args = ["--model", modelPath, "--alias", modelId, "--host", "127.0.0.1", "--port", String(port),
-      "--ctx-size", String(this.options.contextSize), "--n-gpu-layers", String(this.options.gpuLayers), "--parallel", "1", "--slots", "--jinja", "--no-webui", "--no-agent"];
+      "--ctx-size", String(this.options.contextSize), ...(launch ? [] : ["--n-gpu-layers", String(legacyGpuLayers(this.options.gpuLayers))]),
+      "--parallel", "1", "--slots", "--jinja", "--no-webui", "--no-agent", ...(launch?.args ?? [])];
     if (projectorPath) args.push("--mmproj", projectorPath);
     const compiledHost = path.join(__dirname, "RuntimeProcessHost.js");
     const compiled = await fs.access(compiledHost).then(() => true, () => false);
     const hostArgs = compiled ? [compiledHost] : [require.resolve("tsx/cli"), path.join(__dirname, "RuntimeProcessHost.ts")];
+    // The runtime directory is the working directory: ggml also loads backends from there.
+    const directory = runtimeDirOf(this.options);
     const child = spawn(process.execPath, [...hostArgs, this.executable(), JSON.stringify(args)], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true, shell: false,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", LLAMA_API_KEY: this.token, LLAMA_ARG_MCP_SERVERS: "", LLAMA_ARG_TOOLS: "", LLAMA_ARG_AGENT: "0" }
+      stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true, shell: false, cwd: directory,
+      env: { ...runtimeEnv(childProcessEnv(), directory), ...launch?.env, ELECTRON_RUN_AS_NODE: "1", LLAMA_API_KEY: this.token, LLAMA_ARG_MCP_SERVERS: "", LLAMA_ARG_TOOLS: "", LLAMA_ARG_AGENT: "0" }
     });
     this.child = child;
     let nativePid: number | undefined;
@@ -98,9 +128,12 @@ export class LlamaCppRuntime {
       await this.verifyContext(port, deadline);
       deadline.throwIfAborted(); this.setState("ready");
     } catch (error) {
-      const message = signal?.aborted ? "Model loading cancelled." : deadline.aborted ? "Model loading timed out. Choose a smaller model or increase the load timeout." : error instanceof Error ? error.message : "Model loading failed.";
+      // Read the log before stopping: placement retries with another layout on out-of-memory.
+      const outOfMemory = !signal?.aborted && !deadline.aborted && OUT_OF_MEMORY.test(this.logTail);
+      const message = signal?.aborted ? "Model loading cancelled." : deadline.aborted ? "Model loading timed out. Choose a smaller model or increase the load timeout."
+        : outOfMemory ? "Not enough GPU or system memory to load this model." : error instanceof Error ? error.message : "Model loading failed.";
       await this.stop(); this.modelId = modelId; this.setState("error", message);
-      throw new LocalModelError(message, signal?.aborted ? 499 : 503);
+      throw new LocalModelError(message, signal?.aborted ? 499 : 503, outOfMemory ? "out_of_memory" : "local_model_error");
     }
   }
 
@@ -182,9 +215,10 @@ export class LlamaCppRuntime {
     }
     await this.nativeCleanup;
     this.child = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined; this.projectorPath = undefined; this.effectiveContextSize = undefined;
+    this.placement = undefined;
     this.setState("stopped");
   }
-  private executable(): string { return this.options.executablePath || path.join(this.options.runtimeDir, process.platform === "win32" ? "llama-server.exe" : "llama-server"); }
+  private executable(): string { return llamaExecutable(this.options); }
   private async verifyContext(port: number, signal: AbortSignal): Promise<void> {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/props`, {

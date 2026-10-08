@@ -31,6 +31,8 @@ export interface IntegrationAdapter {
 }
 export interface CredentialVault {
   available(): boolean;
+  /** Why storage is unavailable, for the UI; undefined when available or unknown. */
+  unavailableReason?(): string | undefined;
   read(key: string): Promise<string | undefined>;
   write(key: string, value: string): Promise<void>;
   remove(key: string): Promise<void>;

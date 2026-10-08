@@ -22,3 +22,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+NVIDIA CUDA components
+The linux-x64-cuda12 runtime adds the NVIDIA CUDA Runtime and cuBLAS libraries, redistributed
+under the NVIDIA CUDA Toolkit End User License Agreement. Their notice and license are in
+llama/linux-x64-cuda12/CUDA_NOTICE.txt and llama/linux-x64-cuda12/licenses/.

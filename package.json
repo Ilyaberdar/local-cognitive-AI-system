@@ -5,6 +5,12 @@
   "description": "Local Cognitive AI System headless engine",
   "author": "Local Cognitive AI System",
   "main": "electron/main.cjs",
+  "bin": {
+    "local-cognitive-server": "dist/src/server/cli.js"
+  },
+  "workspaces": [
+    "apps/cloud"
+  ],
   "scripts": {
     "dev": "npm run build:ui && concurrently -k -n server,workflow \"npm:dev:server\" \"npm:dev:ui\"",
     "dev:server": "tsx watch src/index.ts",
@@ -14,6 +20,7 @@
     "build:ui": "node scripts/build-markdown.mjs && vite build",
     "start": "node dist/src/index.js",
     "mcp:stdio": "node dist/src/mcp.js",
+    "server": "node dist/src/server/cli.js",
     "test:mcp-model": "npm run build:server && node scripts/test-mcp-local-model.cjs",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "electron": "npm run build && electron .",
@@ -22,13 +29,21 @@
     "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg --x64",
     "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run prepare:speech -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64",
     "prepare:llama": "node scripts/prepare-llama-runtime.mjs",
+    "prepare:llama:server": "node scripts/prepare-llama-runtime.mjs --platform linux --arch x64 && node scripts/prepare-llama-runtime.mjs --variant linux-x64-cuda12",
     "verify:llama": "node scripts/verify-packaged-runtime.mjs",
+    "verify:package-secrets": "node scripts/verify-package-secrets.mjs",
+    "cloud:build": "npm run build -w @local-cognitive/cloud",
+    "cloud:test": "npm test -w @local-cognitive/cloud",
+    "cloud:dev": "npm run dev -w @local-cognitive/cloud",
+    "cloud:migrate": "npm run migrate -w @local-cognitive/cloud",
+    "cloud:db:up": "docker compose -f deploy/cloud/compose.dev.yml up -d --wait",
+    "cloud:db:down": "docker compose -f deploy/cloud/compose.dev.yml down",
     "test:llama": "npm run build && node --test dist/test/llamaCpp.integration.test.js",
     "prepare:speech": "node scripts/prepare-speech-runtime.mjs",
     "verify:speech": "node scripts/verify-speech-runtime.mjs"
   },
   "engines": {
-    "node": ">=18.18.0"
+    "node": ">=22.16.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -46,6 +61,7 @@
     "quickjs-emscripten": "0.32.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "ws": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -53,6 +69,7 @@
     "@types/node": "^22.13.10",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^10.0.3",
     "electron": "^35.0.0",
@@ -65,16 +82,26 @@
   },
   "build": {
     "appId": "com.localcognitiveai.system",
+    "protocols": [
+      {
+        "name": "Local Cognitive",
+        "schemes": [
+          "localcognitive"
+        ]
+      }
+    ],
     "productName": "Local Cognitive AI System",
     "asar": false,
     "directories": {
       "output": "release"
     },
     "files": [
-      "electron/**/*",
+      "electron/*.cjs",
       "dist/src/**/*",
       "public/**/*",
-      "package.json"
+      "package.json",
+      "!**/.env",
+      "!**/.env.*"
     ],
     "mac": {
       "category": "public.app-category.productivity",

@@ -28,6 +28,8 @@ export class WorkflowRunner {
   private static readonly steps = new Map<string, Promise<WorkflowRun>>();
   private static readonly loops = new Map<string, Promise<WorkflowRun>>();
   private static readonly controllers = new Map<string, AbortController>();
+  /** Runs with an active step or loop in this process. */
+  static activeRunIds(): string[] { return [...new Set([...WorkflowRunner.steps.keys(), ...WorkflowRunner.loops.keys()])]; }
   constructor(
     private readonly taskStore: TaskStore,
     private readonly workflowStore: WorkflowStore,

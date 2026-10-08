@@ -207,7 +207,7 @@ export const createDashboardBootstrapController =
         loadedModels,
         allManagedModels,
         localModels: runtime.localModelService.snapshot(),
-        systemMetrics: getSystemMetricsSnapshot()
+        systemMetrics: getSystemMetricsSnapshot(runtime.localModelService.gpuMetrics())
       });
     } catch (error) {
       next(error);
@@ -215,9 +215,11 @@ export const createDashboardBootstrapController =
   };
 
 export const createSystemMetricsController =
-  () =>
+  (runtimeManager?: RuntimeManager) =>
   async (_req: Request, res: Response): Promise<void> => {
-    res.status(200).json(getSystemMetricsSnapshot());
+    let gpus: SystemMetrics["gpus"];
+    try { gpus = runtimeManager?.getRuntime().localModelService.gpuMetrics(); } catch { gpus = undefined; }
+    res.status(200).json(getSystemMetricsSnapshot(gpus));
   };
 
 export const createModelsController =
@@ -867,7 +869,7 @@ const isSubagentRunSummary = (value: unknown): value is SubagentRunSummary => {
   );
 };
 
-const getSystemMetricsSnapshot = (): SystemMetrics => {
+const getSystemMetricsSnapshot = (gpus?: SystemMetrics["gpus"]): SystemMetrics => {
   const cpuCores = Math.max(1, os.cpus().length);
   const loadAverage1m = os.loadavg()[0] ?? 0;
   const cpuPercent = Math.max(0, Math.min(100, (loadAverage1m / cpuCores) * 100));
@@ -885,6 +887,7 @@ const getSystemMetricsSnapshot = (): SystemMetrics => {
     memoryTotalBytes,
     memoryCachedBytes,
     cpuCores,
-    loadAverage1m
+    loadAverage1m,
+    ...(gpus?.length ? { gpus } : {})
   };
 };

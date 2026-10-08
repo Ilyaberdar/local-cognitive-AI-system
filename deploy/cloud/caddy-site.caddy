@@ -1,0 +1,8 @@
+# Site block for an existing Caddy that shares a Docker network with the Cloud API
+# (compose.edge.yml). Long-lived relay WebSockets get time to close on config reloads.
+api.local-cognitive.com {
+	encode zstd gzip
+	reverse_proxy local-cognitive-cloud:8080 {
+		stream_close_delay 5m
+	}
+}

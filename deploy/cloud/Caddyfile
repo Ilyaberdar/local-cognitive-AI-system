@@ -1,0 +1,8 @@
+# TLS certificates are issued automatically for CLOUD_DOMAIN. WebSocket upgrades for the
+# relay pass through reverse_proxy; long-lived streams get time to close on reload.
+{$CLOUD_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy cloud:8080 {
+		stream_close_delay 5m
+	}
+}

@@ -28,7 +28,52 @@ export function localProfileView(settings) {
   const avatarDataUrl = typeof candidateAvatar === 'string' && candidateAvatar.length <= 1_500_000 && /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i.test(candidateAvatar)
     ? candidateAvatar
     : undefined;
-  return { id: settings?.memory?.localProfileId, name, avatarDataUrl, kind: 'local', authentication: 'unavailable' };
+  return { id: settings?.memory?.localProfileId, name, avatarDataUrl, kind: 'local' };
+}
+
+const accountStates = ['signed-out', 'signing-in', 'signed-in', 'error'];
+const accountText = (value, max) => typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined;
+
+// Allowlist only: tokens or any other bridge fields can never reach markup.
+export function accountView(status) {
+  const raw = status?.profile && typeof status.profile === 'object' ? status.profile : undefined;
+  const accountId = accountText(raw?.accountId, 200);
+  const profile = accountId ? { accountId, email: accountText(raw.email, 320), emailVerified: raw.emailVerified === true, name: accountText(raw.name, 120) } : undefined;
+  let state = accountStates.includes(status?.state) ? status.state : 'error';
+  if (state === 'signed-in' && !profile) state = 'error';
+  const error = state === 'error'
+    ? { code: accountText(status?.error?.code, 80) || 'unknown', message: accountText(status?.error?.message, 300) || 'Sign-in could not be completed. Try again.' }
+    : undefined;
+  return { state, profile: state === 'signed-in' ? profile : undefined, error, cloudReachable: status?.cloudReachable !== false };
+}
+
+// Account state for the renderer. Change events from the desktop bridge are the source
+// of truth; a call result older than a later event is ignored.
+export function createAccountState(bridge) {
+  let view = { state: bridge ? 'loading' : 'unavailable', cloudReachable: true };
+  let generation = 0;
+  const listeners = new Set();
+  const publish = status => { view = accountView(status); listeners.forEach(listener => listener(view)); return view; };
+  const failed = () => ({ state: 'error', error: { code: 'bridge_error', message: 'Sign-in could not start. Try again.' } });
+  if (bridge) {
+    bridge.onChange?.(status => { generation++; publish(status); });
+    const start = generation;
+    bridge.status().then(status => { if (generation === start) publish(status); }, () => { if (generation === start) publish(failed()); });
+  }
+  async function call(method, ...args) {
+    if (!bridge) return view;
+    const start = ++generation;
+    try { const status = await bridge[method](...args); return generation === start ? publish(status) : view; }
+    catch { return generation === start || view.state === 'signing-in' ? publish(failed()) : view; }
+  }
+  return {
+    get: () => view,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    signIn: method => ['google', 'email', 'signup'].includes(method) ? call('signIn', method) : Promise.resolve(view),
+    cancelSignIn: () => call('cancelSignIn'),
+    signOut: () => call('signOut'),
+    refresh: () => call('status')
+  };
 }
 
 // Counts the entries actually shown in MCP settings, not connected accounts.

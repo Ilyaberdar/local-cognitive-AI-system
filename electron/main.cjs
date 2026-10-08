@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeTheme, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
+const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
@@ -12,6 +13,18 @@ let applicationOrigin;
 if (process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.resolve(process.env.LOCAL_COGNITIVE_TEST_DATA_DIR));
 const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) app.quit();
+let account;
+let remote;
+const pendingDeepLinks = [];
+// Deep links can arrive before the window and account service exist (cold start on macOS).
+const deliverDeepLink = raw => {
+  if (account && mainWindow) account.handleDeepLink(raw);
+  else if (pendingDeepLinks.length < 4) pendingDeepLinks.push(raw);
+};
+if (hasInstanceLock) {
+  require("./account.cjs").registerProtocol(app);
+  app.on("open-url", (event, url) => { event.preventDefault(); deliverDeepLink(url); });
+}
 
 const findFreePort = () =>
   new Promise((resolve, reject) => {
@@ -70,18 +83,36 @@ const configureRuntimeEnvironment = async () => {
   };
 };
 
-const startBackend = async (appRoot) => {
-  const entry = path.join(appRoot, "dist", "src", "index.js");
+// One protected vault for plugin credentials and the account session (separate key namespaces).
+const createVault = (appRoot) => {
   const { EncryptedCredentialVault } = require(path.join(appRoot, "dist", "src", "plugins", "EncryptedCredentialVault.js"));
-  const vault = new EncryptedCredentialVault(path.join(process.env.APP_DATA_DIR, "integrations", "vault"), {
+  return new EncryptedCredentialVault(path.join(process.env.APP_DATA_DIR, "integrations", "vault"), {
     available: () => safeStorage.isEncryptionAvailable() && (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
     encrypt: value => safeStorage.encryptString(value), decrypt: value => safeStorage.decryptString(value)
   });
+};
+
+const focusWindow = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (process.platform === "darwin") app.focus({ steal: true });
+};
+
+const startBackend = async (appRoot, vault) => {
+  const entry = path.join(appRoot, "dist", "src", "index.js");
   const { loadOAuthClientRegistrations } = require(path.join(appRoot, "dist", "src", "plugins", "OAuthConnections.js"));
+  // Registrations are never packaged: a release reads them from user data, while a
+  // development checkout may keep the git-ignored copy next to this file.
+  const userDataClients = path.join(app.getPath("userData"), "plugin-oauth-clients.json");
+  const oauthClientsFile = process.env.LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE ||
+    [userDataClients, ...(app.isPackaged ? [] : [path.join(appRoot, "electron", "plugin-oauth-clients.json")])].find(file => fs.existsSync(file)) ||
+    userDataClients;
   let oauthClients = {};
-  try { oauthClients = await loadOAuthClientRegistrations(process.env.LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE || path.join(appRoot, "electron", "plugin-oauth-clients.json")); }
+  try { oauthClients = await loadOAuthClientRegistrations(oauthClientsFile); }
   catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
-  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) });
+  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop" });
 };
 
 const createWindow = async (url) => {
@@ -155,13 +186,21 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     const runtime = await configureRuntimeEnvironment();
     applicationDataRoot = runtime.dataRoot;
     applicationOrigin = runtime.url;
+    const vault = createVault(runtime.appRoot);
+    account = require("./account.cjs").registerAccount({ app, ipcMain, shell, vault, assertSender: assertAppSender,
+      getWindow: () => mainWindow, focusWindow });
+    await account.init();
+    remote = require("./remote.cjs").registerRemote({ app, ipcMain, vault, accountService: account.service, assertSender: assertAppSender,
+      getWindow: () => mainWindow });
     voiceInput = require("./voice-input.cjs").registerVoiceInput({ app, ipcMain, systemPreferences, shell, powerMonitor,
       getWindow: () => mainWindow, origin: runtime.url,
       root: path.join(runtime.dataRoot, "speech"),
       runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
-    backendHandle = await startBackend(runtime.appRoot);
+    backendHandle = await startBackend(runtime.appRoot, vault);
     await waitForServer(runtime.url);
     await createWindow(runtime.url);
+    const { isDeepLinkArgument } = require("./account.cjs");
+    for (const link of [...pendingDeepLinks.splice(0), ...process.argv.filter(isDeepLinkArgument)]) account.handleDeepLink(link);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown startup error";
     dialog.showErrorBox("Startup failed", message);
@@ -183,12 +222,16 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("second-instance", () => {
+app.on("second-instance", (_event, argv) => {
   if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+  const link = argv.find(argument => require("./account.cjs").isDeepLinkArgument(argument));
+  if (link) deliverDeepLink(link);
 });
 app.on("before-quit", (event) => {
   if (shutdownComplete || !backendHandle) return;
   event.preventDefault();
+  account?.dispose();
+  remote?.dispose();
   void Promise.all([backendHandle.dispose(), voiceInput?.dispose()]).catch(error => console.error("Shutdown failed", error)).finally(() => {
     shutdownComplete = true;
     app.quit();

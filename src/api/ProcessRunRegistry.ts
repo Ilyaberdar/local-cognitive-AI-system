@@ -101,6 +101,17 @@ export class ProcessRunRegistry {
     return true;
   }
 
+  activeCount(): number {
+    return [...this.runs.values()].filter(run => run.status === "running").length;
+  }
+
+  /** Cancels every running request (server shutdown after the drain deadline). */
+  cancelAll(): number {
+    const running = [...this.runs.values()].filter(run => run.status === "running");
+    for (const run of running) this.cancel(run.id);
+    return running.length;
+  }
+
   get(id: string): Omit<ProcessRunState, "controller"> | undefined {
     const run = this.runs.get(id);
     if (!run) {

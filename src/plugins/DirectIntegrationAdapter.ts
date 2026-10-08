@@ -15,7 +15,7 @@ export class DirectIntegrationAdapter implements IntegrationAdapter, McpCredenti
   private readonly config: McpClientConfiguration = { servers: {}, bindings: {} };
   private closed = false;
   constructor(vault: CredentialVault, ownerId: string, private readonly mcp: McpClientManager, registrations: OAuthClientRegistrations = {}) { this.oauth = new OAuthConnections(vault, ownerId, registrations); }
-  async ready() { return { ready: this.oauth.available(), message: this.oauth.available() ? undefined : "Account connections require the desktop app's protected credential storage." }; }
+  async ready() { return { ready: this.oauth.available(), message: this.oauth.available() ? undefined : this.oauth.unavailableReason() ?? "Account connections require the desktop app's protected credential storage." }; }
   async connect(plugin: CatalogPlugin, ownerId: string, id: string) {
     if (ownerId !== this.oauth.ownerId || this.closed) throw new PluginError("Profile changed. Reload Plugins.", 409);
     return this.oauth.begin(plugin, id);

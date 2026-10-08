@@ -13,7 +13,7 @@ const MODEL_SETTINGS_TABS = [
   { id: "generation", label: "Generation" }
 ];
 const MODEL_SETTINGS_FIELDS = {
-  gpuLayers: { key: "gpuLayers", label: "GPU layers", min: 0, max: 999, description: "Layers offloaded to the GPU. 99 is the usual Metal setting on Apple silicon." },
+  gpuLayers: { key: "gpuLayers", label: "GPU layers", min: 0, max: 999, allowAuto: true, description: "auto places each model on the GPU first and puts only what does not fit on the CPU. A number fixes the offloaded layers; 0 runs on the CPU." },
   memoryLimitPercent: { key: "memoryLimitPercent", label: "Memory warning threshold (%)", min: 10, max: 90, description: "Warn when a model estimate reaches this percentage of available memory." },
   loadTimeoutMs: { key: "loadTimeoutMs", label: "Load timeout (ms)", min: 10000, max: 1800000, description: "Maximum time allowed while loading a local model." },
   generationTimeoutMs: { key: "generationTimeoutMs", label: "Generation timeout (ms)", min: 10000, max: 3600000, description: "Maximum time allowed for one local model response." }
@@ -112,9 +112,10 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const label = status === "ready" && runtime?.busy ? "Running inference" : { ready: "Runtime ready", running: "Runtime ready", idle: "Ready when needed", stopped: "Ready when needed", loading: "Loading model", stopping: "Stopping runtime", starting: "Starting runtime", unavailable: "Runtime unavailable", missing: "Runtime not installed", error: "Runtime needs attention", unsupported: "Unsupported platform" }[status] || status;
     const contextSize = runtime?.effectiveContextSize;
     return `<div class="mm-runtime-strip" data-mm-runtime>
-      <div class="mm-runtime-status"><span class="mm-status-dot ${missing ? "is-warning" : "is-success"}"></span><span>${escape(label)}</span>${runtime?.backend ? `<span class="mm-runtime-backend">${escape(runtime.backend)}</span>` : ""}${runtime?.queueLength ? `<span>${runtime.queueLength} waiting</span>` : ""}</div>
+      <div class="mm-runtime-status"><span class="mm-status-dot ${missing ? "is-warning" : "is-success"}"></span><span>${escape(label)}</span>${runtime?.backend ? `<span class="mm-runtime-backend">${escape(runtime.backend)}</span>` : ""}${runtime?.fallbackReason ? `<span class="mm-runtime-backend is-warning" title="${escape(runtime.fallbackReason)}">CPU fallback</span>` : ""}${runtime?.queueLength ? `<span>${runtime.queueLength} waiting</span>` : ""}</div>
       <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
       ${missing && (runtime?.message || runtime?.error) ? renderModelError(runtime.message || runtime.error) : ""}
+      ${runtime?.fallbackReason ? `<p class="mm-runtime-message">${escape(runtime.fallbackReason)}</p>` : ""}
     </div>`;
   }
 
@@ -145,7 +146,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   }
 
   function renderAdvancedField(field) {
-    return `<label class="mm-settings-field" for="mm-${field.key}"><span>${escape(field.label)}</span><span class="mm-settings-input-row"><input id="mm-${field.key}" name="${field.key}" data-mm-local-setting="${field.key}" type="number" min="${field.min}" max="${field.max}" step="1" required value="${escape(settingValue(field.key))}" aria-label="${escape(field.label)}" ${state.advancedSaving ? "disabled" : ""} /><button id="mm-${field.key}-save" class="ghost-button mm-settings-save" type="submit" ${state.advancedSaving ? "disabled" : ""}>${state.advancedSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>`;
+    return `<label class="mm-settings-field" for="mm-${field.key}"><span>${escape(field.label)}</span><span class="mm-settings-input-row"><input id="mm-${field.key}" name="${field.key}" data-mm-local-setting="${field.key}" ${field.allowAuto ? 'type="text" inputmode="numeric" placeholder="auto"' : `type="number" min="${field.min}" max="${field.max}" step="1" required`} value="${escape(settingValue(field.key))}" aria-label="${escape(field.label)}" ${state.advancedSaving ? "disabled" : ""} /><button id="mm-${field.key}-save" class="ghost-button mm-settings-save" type="submit" ${state.advancedSaving ? "disabled" : ""}>${state.advancedSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button></span></label>`;
   }
 
   function renderAdvancedSettings(tab) {
@@ -222,9 +223,10 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (state.advancedSaving) return;
     const field = MODEL_SETTINGS_FIELDS[tab];
     if (!field) return;
-    const value = Number(settingValue(field.key));
-    if (!Number.isInteger(value) || value < field.min || value > field.max) {
-      state.advancedError = `Enter a whole number between ${field.min.toLocaleString()} and ${field.max.toLocaleString()} for ${field.label}.`;
+    const raw = String(settingValue(field.key)).trim();
+    const value = field.allowAuto && (raw === "" || raw.toLowerCase() === "auto") ? "auto" : Number(raw);
+    if (value !== "auto" && (!Number.isInteger(value) || value < field.min || value > field.max)) {
+      state.advancedError = `Enter ${field.allowAuto ? "auto or " : ""}a whole number between ${field.min.toLocaleString()} and ${field.max.toLocaleString()} for ${field.label}.`;
       state.advancedSaved = false; repaint(); return;
     }
     state.advancedSaving = true; state.advancedError = ""; state.advancedSaved = false; repaint();
@@ -306,6 +308,15 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     </div>`;
   }
 
+  // Where a loaded model runs (GPU, several GPUs, partly CPU) and why it may be slow.
+  function renderPlacement(id) {
+    const runtime = state.runtime || getContext().runtime;
+    const placement = (runtime?.instances || []).find(instance => instance.modelId === id)?.placement;
+    if (!placement) return "";
+    const warnings = (placement.warnings || []).map(warning => `<div class="subtle mm-placement-warning">${escape(warning)}</div>`).join("");
+    return `<div class="subtle mm-placement">Runs on: <strong>${escape(placement.label)}</strong>${placement.retried ? " · placed again after running out of memory" : ""}</div>${warnings}`;
+  }
+
   function renderLibraryCard(model) {
     const id = idOf(model);
     const status = modelState(model);
@@ -321,6 +332,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       ${fit.messages.length ? `<details class="mm-memory-details"><summary>Compatibility details</summary>${renderCompatibility(model, true)}</details>` : ""}
       ${model.projector ? `<div class="subtle mm-projector-note">Vision adapter: ${escape(model.projector.path)} · ${bytes(model.projector.sizeBytes)}</div>` : ""}
       ${loaded && window.desktopModels?.importProjector ? '<div class="subtle mm-projector-note">Changing the vision adapter unloads this model. It loads again with the next request.</div>' : ""}
+      ${loaded ? renderPlacement(id) : ""}
       ${model.error ? renderModelError(model.error) : ""}</div>
       <div class="mm-library-actions">${actionButton(loaded ? "unload" : "load", id, status === "loading" || state.actions.has(`load:${id}`) ? "Loading…" : status === "unloading" ? "Unloading…" : loaded ? "Unload" : "Load model", { spinning: busy, primary: !loaded, disabled: busy || used || (!loaded && fit.loadBlocked), symbol: loaded ? "stop" : "play", title: loaded ? "Free memory and keep the downloaded files" : fit.loadBlocked ? fit.messages.join(" ") : "Load this model into memory" })}${actionButton("use", id, isCurrent(model) ? "Open chat" : "Use in chat", { disabled: busy || (!loaded && fit.loadBlocked), symbol: "chat" })}</div>
       <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? "Ready for chat, agents and workflows" : fit.loadBlocked ? "Downloaded · Cannot run on this device" : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${window.desktopModels?.importProjector ? actionButton("projector", id, model.projector ? "Change vision adapter" : "Add vision adapter", { disabled: busy || used, title: "Choose the matching mmproj GGUF file for this model" }) : ""}${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: "Delete from device" })}</div></div>
