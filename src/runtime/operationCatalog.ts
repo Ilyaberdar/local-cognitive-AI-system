@@ -55,7 +55,14 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "schedules.update": { kind: "request", timeoutMs: 30_000 },
   "schedules.delete": { kind: "request", timeoutMs: 15_000 },
   "workflows.validate": { kind: "request", timeoutMs: 15_000 },
-  "workflows.save": { kind: "command", timeoutMs: 30_000 }
+  "workflows.save": { kind: "command", timeoutMs: 30_000 },
+  "workflows.runs.start": { kind: "command", timeoutMs: 30_000 },
+  "workflows.runs.get": { kind: "request", timeoutMs: 30_000 },
+  "workflows.runs.events": { kind: "request", timeoutMs: 30_000 },
+  "workflows.runs.cancel": { kind: "request", timeoutMs: 15_000 },
+  "workflows.runs.review": { kind: "command", timeoutMs: 30_000 },
+  "workflows.runs.resume": { kind: "command", timeoutMs: 30_000 },
+  "workflows.runs.agentTrace.get": { kind: "request", timeoutMs: 30_000 }
 };
 
 export const operationsOfKind = (kind: OperationKind): string[] => Object.entries(OPERATIONS).filter(([, spec]) => spec.kind === kind).map(([name]) => name);

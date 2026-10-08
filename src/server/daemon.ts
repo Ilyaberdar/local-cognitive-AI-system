@@ -1,3 +1,4 @@
+import path from "path";
 import type net from "net";
 import { config } from "../config/config";
 import { startBackend } from "../index";
@@ -12,9 +13,10 @@ import { CliError, ExitCode } from "./exitCodes";
 import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
-import { createChatOperations } from "../runtime/chatOperations";
+import { createChatOperations, requireRemoteSession } from "../runtime/chatOperations";
+import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
-import { createOrchestrationOperations } from "../runtime/orchestrationOperations";
+import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
 import { publicError } from "../runtime/publicError";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
@@ -63,12 +65,17 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       active: active.backend, fallbackReason: active.fallbackReason ?? options.inference.fallbackReason };
   };
   const host = backend.host!;
+  const sessionIndexStore = backend.runtimeManager.getRuntime().sessionIndexStore;
+  // Run outputs and events a device receives name no folder of this server.
+  const orchestration = { runtimeManager: backend.runtimeManager, journalEpoch: () => host.journal.epoch, hostDirectories: [path.dirname(config.appDataDir)] };
   const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
     operations: {
-      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore: backend.runtimeManager.getRuntime().sessionIndexStore,
+      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore,
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
+      ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId),
+        sources: [createWorkflowRunStreams(orchestration)] }),
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
-      ...createOrchestrationOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger,
+      ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" })
     },
     status: () => {
