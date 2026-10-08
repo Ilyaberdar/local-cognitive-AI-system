@@ -12,6 +12,7 @@ import { CliError, ExitCode } from "./exitCodes";
 import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
+import { createChatOperations } from "../runtime/chatOperations";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
  * environment: the configuration is read when its module loads. */
@@ -58,7 +59,10 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     return { preference: options.inference.preference, runtimeId: options.inference.runtimeId, backend: options.inference.backend,
       active: active.backend, fallbackReason: active.fallbackReason ?? options.inference.fallbackReason };
   };
-  const remote = await startRemote({ appDataDir: config.appDataDir, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
+  const host = backend.host!;
+  const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
+    operations: createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore: backend.runtimeManager.getRuntime().sessionIndexStore,
+      runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();
       let loadedModels: string[] = [];

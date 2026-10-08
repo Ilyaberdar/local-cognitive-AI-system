@@ -18,10 +18,21 @@ import { appVersion } from "./utils/appVersion";
 import { createDrainGate } from "./api/drainGate";
 import { processRunRegistry } from "./api/ProcessRunRegistry";
 import { WorkflowRunner } from "./workflows/WorkflowRunner";
+import { HostDatabase } from "./runtime/db/HostDatabase";
+import { hostMigrations } from "./runtime/db/hostSchema";
+import { EventJournal } from "./runtime/EventJournal";
+import { RunService } from "./runtime/RunService";
+import { processRuntimeInput } from "./transports/shared/runtimeActions";
+import { loadSessionMessages } from "./conversations/sessionHistory";
 
 const logger = new Logger();
 
-export interface ActiveWork { processRuns: number; workflowRuns: number; inferenceBusy: boolean; inferenceQueued: number; scheduleTick: boolean; total: number }
+export interface ActiveWork { processRuns: number; workflowRuns: number; inferenceBusy: boolean; inferenceQueued: number; scheduleTick: boolean; total: number;
+  /** Durable chat turns (headless server). */
+  chatRuns?: number }
+
+/** The host's durable store and the services on it (headless server only in R4). */
+export interface HostServices { database: HostDatabase; journal: EventJournal; runService: RunService }
 
 export interface BackendStatus {
   phase: "running" | "draining";
@@ -42,6 +53,7 @@ export interface BackendHandle {
   /** Cancels running chat requests after the drain deadline. */
   interruptActiveWork(): number;
   dispose(): Promise<void>;
+  host?: HostServices;
 }
 
 export interface BackendOptions { runtimeKind?: RuntimeKind }
@@ -58,6 +70,12 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   catch (error) { lock.release(); throw error; }
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = runtime.sessionIndexStore;
+  // The server keeps chat turns durable across disconnects and restarts (R4); the desktop does not yet.
+  let host: HostServices | undefined;
+  if (options.runtimeKind === "server") {
+    try { host = openHostServices(config, runtimeManager, sessionIndexStore); }
+    catch (error) { await runtimeManager.dispose(); lock.release(); throw error; }
+  }
 
   let server: Server | undefined;
   let scheduler: ScheduleRunner | undefined;
@@ -69,7 +87,9 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     telegram?.stop();
     // Stop listening before the runtime goes away, then drop remaining connections.
     const closed = server ? new Promise<void>((resolve) => server!.close(() => resolve())) : Promise.resolve();
+    await host?.runService.dispose();
     await runtimeManager.dispose();
+    host?.database.close();
     server?.closeAllConnections();
     await closed;
     lock.release();
@@ -78,8 +98,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     let inference = { busy: false, queued: 0 };
     try { inference = runtimeManager.getRuntime().localModelService.activity(); } catch { /* Runtime not built. */ }
     const work = { processRuns: processRunRegistry.activeCount(), workflowRuns: WorkflowRunner.activeRunIds().length, inferenceBusy: inference.busy,
-      inferenceQueued: inference.queued, scheduleTick: scheduler?.busy ?? false };
-    return { ...work, total: work.processRuns + work.workflowRuns + (work.inferenceBusy ? 1 : 0) + work.inferenceQueued + (work.scheduleTick ? 1 : 0) };
+      inferenceQueued: inference.queued, scheduleTick: scheduler?.busy ?? false, chatRuns: host?.runService.activeCount() ?? 0 };
+    return { ...work, total: work.processRuns + work.workflowRuns + (work.inferenceBusy ? 1 : 0) + work.inferenceQueued + (work.scheduleTick ? 1 : 0) + work.chatRuns };
   };
 
   try {
@@ -168,9 +188,36 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     return { phase: draining ? "draining" : "running", http: address && typeof address === "object" ? { host: address.address, port: address.port } : undefined,
       ui: Boolean(server) && config.ui.serve !== false, scheduler: scheduler?.running ?? false, telegram: Boolean(telegram), activeWork: activeWork() };
   };
-  const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); };
-  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork: () => processRunRegistry.cancelAll(), dispose };
+  const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting(); };
+  const interruptActiveWork = () => processRunRegistry.cancelAll() + (host?.runService.interruptAll() ?? 0);
+  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}) };
   } catch (error) { await dispose(); throw error; }
+};
+
+/** Opens host.db, interrupts turns a crash left running, and wires chat runs to the shared engine. */
+const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore): HostServices => {
+  const database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations);
+  try {
+    const journal = new EventJournal(database);
+    const runService = new RunService({
+      host: database, journal, logger,
+      sessionExists: async sessionId => Boolean(await sessionIndexStore.get(sessionId)),
+      legacyBusy: sessionId => processRunRegistry.hasActiveSession(sessionId),
+      // The same entry, channel and profile as the local chat: one history per session.
+      execute: async (run, hooks) => {
+        const settings = await runtimeManager.getSettings();
+        const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId,
+          metadata: { chatRunId: run.runId }, signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
+        return { ...(result.result.error ? { error: result.result.error } : {}) };
+      },
+      completedTurn: async (sessionId, runId) => (await loadSessionMessages(runtimeManager, sessionId, 4)).messages.filter(message => message.runId === runId)
+    });
+    const recovered = runService.recover();
+    if (recovered) logger.warn("Chat turns were interrupted by the previous shutdown", { count: recovered });
+    journal.compact();
+    setInterval(() => { try { journal.compact(); } catch (error) { logger.warn("Event journal compaction failed", { message: error instanceof Error ? error.message : String(error) }); } }, 3_600_000).unref();
+    return { database, journal, runService };
+  } catch (error) { database.close(); throw error; }
 };
 
 if (require.main === module) void (async () => {

@@ -22,7 +22,8 @@ export interface StreamOpen {
   /** Epoch ms: the session ends here and the device reconnects with a new ticket. */
   authExpiresAt: number;
 }
-export interface OperationContext { accountId: string; deviceId: string }
+/** Who asks, verified by the session; `signal` aborts when the device disconnects (long polls). */
+export interface OperationContext { accountId: string; deviceId: string; signal: AbortSignal }
 export type RemoteOperation = (payload: unknown, context: OperationContext) => unknown;
 export class RemoteOperationError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 
@@ -139,11 +140,17 @@ export class RemoteHost extends EventEmitter {
     set.add(channel);
     const expiry = setTimeout(() => shut(channel, "auth_expired"), Math.max(0, open.authExpiresAt - this.now()));
     expiry.unref?.();
-    channel.once("close", () => { clearTimeout(expiry); set!.delete(channel); if (!set!.size) this.sessions.delete(grant.deviceId); });
+    const closed = new AbortController();
+    channel.once("close", () => { closed.abort(); clearTimeout(expiry); set!.delete(channel); if (!set!.size) this.sessions.delete(grant.deviceId); });
     channel.send({ type: "welcome", protocol: PROTOCOL_VERSION, hostId, hostName: this.options.hostName, serverVersion: this.options.serverVersion,
       capabilities: Object.keys(this.options.operations), authExpiresAt: open.authExpiresAt });
     let inFlight = 0;
-    const context: OperationContext = { accountId: grant.accountId, deviceId: grant.deviceId };
+    const context: OperationContext = { accountId: grant.accountId, deviceId: grant.deviceId, signal: closed.signal };
+    // A result that cannot be framed is an error for this request, not a crash of the host.
+    const reply = (message: object, id: number) => {
+      try { channel.send(message); }
+      catch { channel.send({ type: "error", id, code: "response_too_large", message: "The answer is too large to send." }); }
+    };
     channel.on("message", (message: unknown) => {
       const request = requestMessage.safeParse(message);
       if (!request.success) { channel.destroy(); return; }
@@ -153,13 +160,14 @@ export class RemoteHost extends EventEmitter {
       if (!operation) { channel.send({ type: "error", id, code: "unknown_operation", message: `The server does not support ${op}.` }); return; }
       inFlight++;
       void Promise.resolve().then(() => operation(payload, context)).then(
-        result => { channel.send({ type: "response", id, result }); },
+        result => reply({ type: "response", id, result }, id),
         (error: unknown) => {
           const known = error instanceof RemoteOperationError;
           if (!known) this.options.logger?.warn("Remote operation failed", { op, error: error instanceof Error ? error.message : String(error) });
-          channel.send({ type: "error", id, code: known ? error.code : "operation_failed", message: known ? error.message : "The operation failed on the server." });
+          reply({ type: "error", id, code: known ? error.code : "operation_failed", message: known ? error.message : "The operation failed on the server." }, id);
         }
-      ).finally(() => { inFlight--; });
+      ).catch(error => this.options.logger?.warn("Remote reply failed", { op, error: error instanceof Error ? error.message : String(error) }))
+        .finally(() => { inFlight--; });
     });
   }
 }
