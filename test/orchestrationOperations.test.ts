@@ -249,11 +249,17 @@ test("nothing a device sends runs without approvals: host full access stays the 
     expectedUpdatedAt: (await f.workflowStore.get("review-flow"))!.updatedAt }));
   const own = await f.call("tasks.create", { commandId: "cmd-full-5", title: "Mine", workflowId: "review-flow" });
   await refused(f.call("tasks.update", { taskId: own.id, patch: { workflowId: "unattended" } }));
-  // Moving the task between columns and pausing the schedule stay possible.
-  assert.equal((await f.call("tasks.update", { taskId: fullTask.id, patch: { status: "done" } })).status, "done");
+  // Not even its column: back in the queue, the host could start it.
+  await refused(f.call("tasks.update", { taskId: fullTask.id, patch: { status: "todo" } }));
+  // A task keeps the version it ran with: an older version that never asks counts too.
+  await f.workflowStore.create(reviewWorkflow({ id: "two-versions", nodes: [node("entry", "entry"), node("review", "human_review", { approval: "never" }), node("done", "terminal")] }));
+  await f.workflowStore.create(reviewWorkflow({ id: "two-versions", version: 2 }));
+  await refused(f.call("tasks.update", { taskId: own.id, patch: { workflowId: "two-versions" } }));
+  await refused(f.call("schedules.create", { commandId: "cmd-full-7", title: "x", workflowId: "two-versions", time: "09:00", timezone: "UTC" }));
+  await assert.rejects(f.call("tasks.create", { commandId: "cmd-full-8", title: "x", workflowId: "not-yet" }), code("not_found"), "only existing workflows");
+  // Pausing the schedule and deleting stay possible.
   assert.equal((await f.call("schedules.update", { scheduleId: fullSchedule.id, patch: { enabled: false } })).enabled, false);
   // Run next starts the device's own task, not a full-access one queued before it.
-  await f.taskService.update(fullTask.id, { status: "todo" });
   const next = await f.call("tasks.runNext", { commandId: "cmd-full-6" });
   assert.equal(next.task.id, own.id);
   await until(() => f.workflowRunStore.getRun(next.runId), run => run?.status === "waiting");

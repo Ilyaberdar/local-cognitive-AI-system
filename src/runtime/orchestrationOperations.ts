@@ -120,9 +120,13 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
   const draining = () => new RemoteOperationError("The server is shutting down. Try again when it is back.", "host_draining");
   const mutable = () => { if (deps.isDraining()) throw draining(); };
   const workflowOf = (workflowId: string, version?: number) => runtime().workflowStore.get(workflowId, version);
-  /** A task or schedule a device creates or retargets may not point at a workflow that skips approvals. */
+  /** A task or schedule a device creates or retargets must point at an existing workflow none of
+   * whose versions skips approvals: a task keeps the version it last ran with, so checking only
+   * the latest one would not cover what runs. */
   const allowedWorkflow = async (workflowId: string) => {
-    if (skipsApproval(await workflowOf(workflowId))) throw unsupported(FULL_ON_HOST);
+    const versions = (await runtime().workflowStore.list()).filter(workflow => workflow.id === workflowId);
+    if (!versions.length) throw notFound("workflow");
+    if (versions.some(workflow => skipsApproval(workflow))) throw unsupported(FULL_ON_HOST);
   };
   const taskSkipsApproval = async (task: Task) => skipsApproval(await workflowOf(task.workflowId, task.workflowVersion), task.accessMode);
   const command = <T>(context: OperationContext, operation: string, input: { commandId: string }, execute: () => Promise<T>,
@@ -159,7 +163,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       mutable();
       const current = await runtime().taskService.get(taskId);
       if (!current) throw notFound("task");
-      if (Object.keys(patch).some(key => key !== "status") && await taskSkipsApproval(current)) throw unsupported(FULL_ON_HOST);
+      // Not even its column: a full-access task moved back to the queue could be started on the host.
+      if (await taskSkipsApproval(current)) throw unsupported(FULL_ON_HOST);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       const task = await runtime().taskService.update(taskId, { ...patch, ...(patch.description === undefined ? {} : { description: patch.description.trim() }) });
       if (!task) throw notFound("task");
