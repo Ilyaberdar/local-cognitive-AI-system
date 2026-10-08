@@ -66,6 +66,8 @@ const LATER = {
 };
 // Full access configured on the host stays the host's: a device can neither start nor change it.
 const FULL_ON_HOST = "This runs with full access on the server, so it can only be started or changed there.";
+// Likewise a folder or project chosen on the host: a device does not change what runs there.
+const FOLDER_ON_HOST = "This workflow runs in a folder or project chosen on the server, so it can only be changed there.";
 const unsupported = (message: string) => new RemoteOperationError(message, "unsupported");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -347,11 +349,9 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         // What a device saves would run with the full access of the host's tasks and schedules that use it.
         const [tasks, schedules] = await Promise.all([runtime().taskService.list(), runtime().scheduleService.list()]);
         if ([...tasks, ...schedules].some(item => item.workflowId === definition.id && item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
-        // The device never saw the folder chosen on the host for this workflow's runs: it stays.
         const stored = await runtime().workflowStore.get(definition.id, definition.version);
-        const rootPath = stored?.runDefaults?.rootPath;
-        const merged = rootPath === undefined ? definition : { ...definition, runDefaults: { ...definition.runDefaults, rootPath } };
-        return safeWorkflow(await runtime().workflowStore.save(merged, { expectedUpdatedAt: input.expectedUpdatedAt }));
+        if (stored?.runDefaults?.rootPath !== undefined || stored?.runDefaults?.projectId !== undefined) throw unsupported(FOLDER_ON_HOST);
+        return safeWorkflow(await runtime().workflowStore.save(definition, { expectedUpdatedAt: input.expectedUpdatedAt }));
       });
     })
   };

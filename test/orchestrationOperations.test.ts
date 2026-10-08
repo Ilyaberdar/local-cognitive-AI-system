@@ -379,16 +379,16 @@ test("a run start accepted before a restart answers with the reserved run if it 
   assert.equal((await f.workflowRunStore.listRuns()).length, 1, "nothing was started a second time");
 });
 
-test("the folder chosen on the host for a workflow's runs does not reach a device, and a device's save keeps it", async t => {
+test("the folder chosen on the host for a workflow's runs does not reach a device, which cannot change that workflow", async t => {
   const f = await setup(t);
   const folder = path.join(f.root, "chosen-on-the-host");
   await fs.mkdir(folder);
   await f.workflowStore.create(reviewWorkflow({ id: "foldered", runDefaults: { rootPath: folder, description: "In the folder" } }));
   const listed = (await f.call("orchestration.snapshot", {})).workflows.find((item: { id: string }) => item.id === "foldered");
   assert.deepEqual(listed.runDefaults, { description: "In the folder" });
-  const saved = await f.call("workflows.save", { commandId: "cmd-folder-1", workflow: { ...listed, name: "Renamed" }, expectedUpdatedAt: listed.updatedAt });
-  assert.equal(saved.runDefaults.rootPath, undefined);
+  await assert.rejects(f.call("workflows.save", { commandId: "cmd-folder-1", workflow: { ...listed, name: "Renamed" }, expectedUpdatedAt: listed.updatedAt }),
+    (error: unknown) => code("unsupported")(error) && /folder or project chosen on the server/.test((error as Error).message));
   const stored = (await f.workflowStore.get("foldered"))!;
-  assert.equal(stored.name, "Renamed");
-  assert.equal(stored.runDefaults?.rootPath, folder, "the host keeps its folder");
+  assert.equal(stored.name, "Review flow", "the host's workflow is unchanged");
+  assert.equal(stored.runDefaults?.rootPath, folder);
 });
