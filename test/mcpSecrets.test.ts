@@ -122,3 +122,25 @@ test("Settings set, replace and remove a server's secret: the server gets the va
   await f.manager.updateSettings({ mcp: { client: { servers: { fixture: null } } } } as never);
   assert.equal(f.values.size, 0);
 });
+
+test("an import preview shows secrets by name only; importing stores them in the vault and adds the servers once", { timeout: 30_000 }, async t => {
+  const f = await fixture(t);
+  const importUrl = f.base.replace(/servers\/fixture\/secrets$/, "import");
+  // Disabled, so the test starts no process.
+  const snippet = JSON.stringify({ mcpServers: { blender: { command: "uvx", args: ["blender-mcp"], disabled: true, env: { BLENDER_PORT: "9876", SKETCHFAB_API_KEY: "sk-sketch-abcdef123" } } } });
+  const preview = await f.call("POST", `${importUrl}/preview`, { source: "text", text: snippet });
+  assert.equal(preview.status, 200);
+  assert.equal(JSON.stringify(preview.body).includes("sk-sketch"), false, "no value in the preview");
+  assert.deepEqual(preview.body.servers[0].secrets, [{ kind: "env", name: "SKETCHFAB_API_KEY", found: true }]);
+  assert.equal((await f.call("POST", `${importUrl}/preview`, { source: "../../etc/passwd" })).status, 400, "no path from a request");
+  const applied = await f.call("POST", `${importUrl}/apply`, { token: preview.body.token, keys: ["blender"] });
+  assert.deepEqual(applied.body, { added: ["blender"], missing: [] });
+  const settings = await fs.readFile(f.settingsFile, "utf8");
+  assert.equal(settings.includes("sk-sketch"), false);
+  assert.match(settings, /SKETCHFAB_API_KEY/);
+  assert.deepEqual([...f.values.values()], ["sk-sketch-abcdef123"]);
+  assert.equal((await f.call("POST", `${importUrl}/apply`, { token: preview.body.token, keys: ["blender"] })).status, 409, "a preview is used once");
+  const again = await f.call("POST", `${importUrl}/preview`, { source: "text", text: snippet });
+  assert.equal(again.body.servers[0].alreadyAdded, "blender");
+  await f.manager.updateSettings({ mcp: { client: { servers: { blender: null } } } } as never);
+});

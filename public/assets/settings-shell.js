@@ -51,7 +51,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   menu.id = 'profile-menu'; menu.className = 'profile-menu liquid-glass'; menu.setAttribute('popover', 'auto'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Local profile');
   document.body.append(menu);
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
-  let mcpSecretsView, mcpSecretsRequest;
+  let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
   const drafts = new Map(), statuses = new Map(), results = new Map();
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations, accountPending, accountNotice;
   const context = () => getContext() || {};
@@ -129,7 +129,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   };
   function titleFor(route) {
     const [name, id] = route.split('/');
-    if (id) return name === 'providers' ? providerNames[id] || id : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : externalMcpServers()[id]?.name || id : id;
+    if (id) return name === 'providers' ? providerNames[id] || id : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : id === 'import' ? 'Import MCP servers' : externalMcpServers()[id]?.name || id : id;
     return groups.flatMap(([, items]) => items).find(([key]) => key === name)?.[1] || 'Page not found';
   }
   const dirty = key => { if (!drafts.has(key)) drafts.set(key, {}); return drafts.get(key); };
@@ -299,18 +299,76 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   function externalMcpList() {
     const servers = Object.values(externalMcpServers());
-    return `<section class="mcp-card" aria-labelledby="mcp-external-title"><div class="mcp-card-heading"><div><h2 id="mcp-external-title">External MCP servers <span class="mcp-count" aria-label="${servers.length} servers">${servers.length}</span></h2><p>Tools connected to this app</p></div><a class="primary-button mcp-add-button" href="#/settings/mcp/new">${icon('plus')}<span>Add MCP server</span></a></div>`
+    return `<section class="mcp-card" aria-labelledby="mcp-external-title"><div class="mcp-card-heading"><div><h2 id="mcp-external-title">External MCP servers <span class="mcp-count" aria-label="${servers.length} servers">${servers.length}</span></h2><p>Tools connected to this app</p></div><span class="mcp-card-actions"><a class="ghost-button" href="#/settings/mcp/import">Import…</a><a class="primary-button mcp-add-button" href="#/settings/mcp/new">${icon('plus')}<span>Add MCP server</span></a></span></div>`
       + (servers.length ? `<div class="mcp-server-list">${servers.map(server => link(`mcp/${server.id}`, server.name || server.id,
         `${server.transport === 'streamable-http' ? 'Streamable HTTP' : 'stdio'} · ${externalMcpState(server)}`)).join('')}</div>`
         : `<div class="mcp-empty-state"><span class="mcp-empty-icon">${icon('plugins')}</span><div><strong>No external servers yet</strong><p>Add your first server to discover its tools.</p></div></div>`) + '</section>';
   }
   function newMcpId(name) {
-    const stem = String(name || 'external-mcp').toLowerCase().trim().replace(/[^a-z0-9._-]+/g, '-').replace(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, '').slice(0, 116) || 'external-mcp';
-    const reserved = new Set(['local-cognitive', 'new']);
+    const stem = String(name || 'external-mcp').toLowerCase().trim().replace(/[^a-z0-9._-]+/g, '-').replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '').slice(0, 116) || 'external-mcp';
+    const reserved = new Set(['local-cognitive', 'new', 'import']);
     const existing = new Set([...Object.keys(externalMcpServers()), ...Object.keys(clientSettings().mcp?.client?.bindings || {})]);
     let id = stem, suffix = 2;
     while (reserved.has(id) || existing.has(id)) id = `${stem.slice(0, 120)}-${suffix++}`;
     return id;
+  }
+  /** Import servers from Codex, Claude Desktop, Cursor or a pasted snippet: a preview to choose
+   * from, then one save. Secret values found go to protected storage; none is shown. */
+  function mcpImportPage() {
+    if (!mcpImport.sources && !mcpImport.loading && data.mcpImportSources) {
+      mcpImport.loading = true;
+      void data.mcpImportSources().then(result => { mcpImport.sources = result.sources; })
+        .catch(error => { mcpImport.sources = []; mcpImport.error = error.message; })
+        .finally(() => { mcpImport.loading = false; if (active && page === 'mcp/import') render(); });
+    }
+    const sources = (mcpImport.sources || []).map(item => `<button type="button" class="ghost-button" data-mcp-import-source="${escape(item.source)}" ${item.available ? '' : 'disabled'}>${escape(item.label)}${item.available ? '' : ' (not found)'}</button>`).join('');
+    const preview = mcpImport.preview;
+    const summary = server => server.transport === 'stdio' ? [server.command, ...(server.args || [])].join(' ') : server.endpoint;
+    const rows = preview ? preview.servers.map(item => {
+      const blocked = item.unsupported || item.alreadyAdded;
+      const secrets = item.secrets.map(secret => `<li>${escape(secret.kind === 'bearer' ? 'Bearer token' : secret.name)}: ${secret.found ? (preview.vault ? 'value found, stored in protected storage' : 'value found, but protected storage is unavailable: set it later') : 'no value found, set it later in the server\'s Settings'}</li>`).join('');
+      return `<li class="mcp-import-item"><label><input type="checkbox" data-mcp-import-key="${escape(item.key)}" ${item.unsupported ? 'disabled' : blocked ? '' : 'checked'} /> <strong>${escape(item.server.name || item.key)}</strong> <code>${escape(item.id)}</code></label>
+        <p><code>${escape(summary(item.server))}</code></p>
+        ${item.unsupported ? `<p class="is-error">${escape(item.unsupported)}</p>` : ''}
+        ${item.alreadyAdded ? `<p class="settings-description">Already added as <code>${escape(item.alreadyAdded)}</code>.</p>` : ''}
+        ${secrets ? `<ul class="mcp-import-secrets">${secrets}</ul>` : ''}
+        ${item.ignored.length ? `<p class="settings-description">Not imported: ${item.ignored.map(field => `<code>${escape(field)}</code>`).join(', ')}</p>` : ''}</li>`;
+    }).join('') : '';
+    return `<p class="settings-description">Add MCP servers you set up in another app. Nothing is saved until you import; secret values go to this computer's protected storage.</p>
+      <section class="mcp-import"><h3>From an app on this computer</h3><div class="mcp-import-sources">${mcpImport.loading && !mcpImport.sources ? 'Looking…' : sources}</div>
+      <h3>Or paste a snippet</h3><p class="settings-description">A Codex <code>[mcp_servers.name]</code> table, or JSON with <code>mcpServers</code> as in Claude Desktop, Cursor and most READMEs.</p>
+      <textarea data-mcp-import-text rows="6" spellcheck="false" placeholder='{"mcpServers": {"blender": {"command": "uvx", "args": ["blender-mcp"]}}}'></textarea>
+      <div class="settings-form-actions"><button type="button" class="ghost-button" data-mcp-import-paste>Preview</button></div>
+      ${preview ? (preview.servers.length ? `<h3>Servers found</h3><ul class="mcp-import-list">${rows}</ul><div class="settings-form-actions"><button type="button" class="primary-button" data-mcp-import-apply>Import selected</button></div>` : '<p class="settings-description">No MCP servers were found there.</p>') : ''}
+      <span role="status" aria-live="polite" class="settings-save-status ${mcpImport.error ? 'is-error' : ''}" data-mcp-import-status>${escape(mcpImport.error || mcpImport.status || '')}</span></section>`;
+  }
+  function bindMcpImport() {
+    const section = root.querySelector('.mcp-import');
+    if (!section) return;
+    const show = (body) => {
+      mcpImport.error = ''; mcpImport.status = 'Reading…'; render();
+      void data.previewMcpImport(body).then(preview => { mcpImport.preview = preview; mcpImport.status = ''; })
+        .catch(error => { mcpImport.preview = undefined; mcpImport.error = error.message || 'Could not read that configuration.'; })
+        .finally(() => { if (active && page === 'mcp/import') render(); });
+    };
+    section.querySelectorAll('[data-mcp-import-source]').forEach(button => button.addEventListener('click', () => show({ source: button.dataset.mcpImportSource })));
+    section.querySelector('[data-mcp-import-paste]')?.addEventListener('click', () => {
+      const text = section.querySelector('[data-mcp-import-text]').value;
+      if (!text.trim()) { mcpImport.error = 'Paste a configuration first.'; render(); return; }
+      show({ source: 'text', text });
+    });
+    section.querySelector('[data-mcp-import-apply]')?.addEventListener('click', event => {
+      const keys = [...section.querySelectorAll('[data-mcp-import-key]:checked')].map(box => box.dataset.mcpImportKey);
+      if (!keys.length) { mcpImport.error = 'Choose at least one server.'; render(); return; }
+      event.currentTarget.disabled = true; mcpImport.error = ''; mcpImport.status = 'Importing…';
+      const slot = section.querySelector('[data-mcp-import-status]'); if (slot) slot.textContent = 'Importing…';
+      void data.applyMcpImport({ token: mcpImport.preview.token, keys }).then(result => {
+        const missing = result.missing.length ? ` Set ${result.missing.map(item => `${item.name} (${item.id})`).join(', ')} in each server's Settings.` : '';
+        mcpImport = { status: `Imported ${result.added.length} server${result.added.length === 1 ? '' : 's'}.${missing}` };
+        mcpSnapshot = undefined; mcpRequest = undefined;
+        location.hash = '#/settings/mcp';
+      }).catch(error => { mcpImport.error = error.message || 'Could not import.'; render(); });
+    });
   }
   /** A server's secrets: names with set/not set, a value field to set one; values never come back. */
   function mcpSecretsSection(server) {
@@ -423,6 +481,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         + '</div></section></div>';
     }
     if (name === 'mcp' && id === 'local-cognitive') return `<p class="settings-description">Incoming MCP server for Local Cognitive. Other applications connect to this runtime over stdio; these controls do not manage outgoing connections.</p>` + form(specs, '<div class="settings-row"><span>Transport</span><span>stdio</span></div>') + `<p class="settings-footnote">Changes apply when the stdio server is next started.</p><pre class="config-snippet">npm run --silent mcp:stdio</pre>`;
+    if (name === 'mcp' && id === 'import') return mcpImportPage();
     if (name === 'mcp' && id) return mcpEditor(id);
     if (name === 'appearance') return `<section class="appearance-section"><div class="appearance-section-heading"><div><h2>Visual style</h2><p>Set a consistent app theme, then refine its colors if you want a personal palette.</p></div><button type="button" class="ghost-button" data-reset-appearance>Reset colors</button></div>${form(specs)}</section>`;
     if (specs.length) return form(specs);
@@ -497,7 +556,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (server) return;
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
-    if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
+    if (name === 'mcp' && id === 'import') bindMcpImport();
+    else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
     if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(clientSettings()) });
     root.querySelector('[data-open-data]')?.addEventListener('click', openDataFolder);

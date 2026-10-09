@@ -21,6 +21,9 @@ export function createSettingsData({ request, onSaved }) {
     // A server's secrets: only whether each is set comes back, never a value.
     mcpSecrets: id => request(`/mcp/clients/servers/${encodeURIComponent(id)}/secrets`),
     setMcpSecret: (id, secret) => request(`/mcp/clients/servers/${encodeURIComponent(id)}/secrets`, { method: 'PUT', body: JSON.stringify(secret), timeoutMs: 30000 }),
+    mcpImportSources: () => request('/mcp/clients/import/sources'),
+    previewMcpImport: body => request('/mcp/clients/import/preview', { method: 'POST', body: JSON.stringify(body), timeoutMs: 30000 }),
+    applyMcpImport: body => request('/mcp/clients/import/apply', { method: 'POST', body: JSON.stringify(body), timeoutMs: 60000 }),
     removeMcpSecret: (id, kind, name) => request(`/mcp/clients/servers/${encodeURIComponent(id)}/secrets/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, { method: 'DELETE', timeoutMs: 30000 })
   };
 }
