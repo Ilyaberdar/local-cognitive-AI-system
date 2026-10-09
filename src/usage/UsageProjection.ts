@@ -67,3 +67,40 @@ export const sumDays = (days: UsageDay[]): UsageTotals => days.reduce((total, da
 /** The calendar date `days` days before a date. */
 export const dateBefore = (date: string, days: number): string =>
   new Date(Date.parse(`${date}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);
+
+const partFormatters = new Map<string, Intl.DateTimeFormat>();
+/** The zone's offset from UTC, in minutes, at an instant. */
+export const offsetAt = (instant: number, timeZone: string): number => {
+  let format = partFormatters.get(timeZone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    if (partFormatters.size < 50) partFormatters.set(timeZone, format);
+  }
+  const parts = Object.fromEntries(format.formatToParts(new Date(instant)).map(part => [part.type, part.value]));
+  const local = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute), Number(parts.second));
+  return Math.round((local - Math.floor(instant / 1000) * 1000) / 60_000);
+};
+
+/** The instant a calendar date begins in a zone. */
+export const zoneMidnight = (date: string, timeZone: string): number => {
+  const utc = Date.parse(`${date}T00:00:00Z`);
+  const guess = utc - offsetAt(utc, timeZone) * 60_000;
+  return utc - offsetAt(guess, timeZone) * 60_000;
+};
+
+/** The zone over [from, to] (calendar dates) as UTC offsets from the instants they start, with the
+ * exact minute of each change (daylight saving time). The Cloud groups by these, so it needs to
+ * know no zone names: its database may lack names this platform uses (Europe/Kiev, say). */
+export const zoneSegments = (timeZone: string, from: string, to: string): { segments: Array<{ start: number; offsetMinutes: number }>; end: number } => {
+  const STEP = 6 * 3_600_000;
+  const start = zoneMidnight(from, timeZone), end = zoneMidnight(dateBefore(to, -1), timeZone);
+  const segments = [{ start, offsetMinutes: offsetAt(start, timeZone) }];
+  for (let at = start; at < end; at += STEP) {
+    const current = segments.at(-1)!.offsetMinutes, next = Math.min(at + STEP, end);
+    if (offsetAt(next, timeZone) === current) continue;
+    let low = at, high = next;
+    while (high - low > 60_000) { const middle = low + Math.floor((high - low) / 120_000) * 60_000; if (offsetAt(middle, timeZone) === current) low = middle; else high = middle; }
+    segments.push({ start: high, offsetMinutes: offsetAt(high, timeZone) });
+  }
+  return { segments, end };
+};

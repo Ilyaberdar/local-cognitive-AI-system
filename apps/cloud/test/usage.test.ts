@@ -119,17 +119,25 @@ test("totals: lifetime, a period, by runtime; days and Monday weeks in the viewe
   const before = await c.api("GET", `/v1/usage/summary?from=2026-03-05T00:00:00.000Z&to=2026-03-10T00:00:00.000Z&asOf=${encodeURIComponent("2020-01-01T00:00:00.000Z")}`, undefined, me.bearer);
   assert.equal(before.body.lifetime.totalTokens, 0);
 
-  const days = async (tz: string, granularity = "day") =>
-    (await c.api("GET", `/v1/usage/activity?tz=${encodeURIComponent(tz)}&from=2026-03-02&to=2026-03-15&granularity=${granularity}`, undefined, me.bearer)).body;
-  const york = await days("America/New_York");
+  // The app sends its zone as offsets from instants (it computes them; the database needs no zone names).
+  const zones = {
+    york: { zone: "2026-03-02T05:00:00.000Z~-300,2026-03-08T07:00:00.000Z~-240", end: "2026-03-16T04:00:00.000Z" },
+    kolkata: { zone: "2026-03-01T18:30:00.000Z~330", end: "2026-03-15T18:30:00.000Z" }
+  };
+  const days = async (which: keyof typeof zones, granularity = "day") =>
+    (await c.api("GET", `/v1/usage/activity?zone=${encodeURIComponent(zones[which].zone)}&end=${encodeURIComponent(zones[which].end)}&granularity=${granularity}`, undefined, me.bearer)).body;
+  const york = await days("york");
   assert.deepEqual(york.buckets.map((bucket: any) => [bucket.start, bucket.totalTokens]), [["2026-03-08", 150], ["2026-03-09", 0]]);
   assert.equal(york.before.totalTokens, 1000, "the cumulative line starts with what came before");
-  const kolkata = await days("Asia/Kolkata");
+  const kolkata = await days("kolkata");
   assert.deepEqual(kolkata.buckets.map((bucket: any) => [bucket.start, bucket.totalTokens]), [["2026-03-08", 120], ["2026-03-09", 30]]);
-  const weeks = await days("Asia/Kolkata", "week");
+  const weeks = await days("kolkata", "week");
   assert.deepEqual(weeks.buckets.map((bucket: any) => [bucket.start, bucket.totalTokens]), [["2026-03-02", 120], ["2026-03-09", 30]], "weeks start on Monday");
-  assert.equal((await c.api("GET", "/v1/usage/activity?tz=Mars%2FOlympus&from=2026-03-02&to=2026-03-15", undefined, me.bearer)).body.error, "unknown_time_zone");
-  assert.equal((await c.api("GET", "/v1/usage/activity?tz=UTC&from=2020-01-01&to=2026-03-15", undefined, me.bearer)).status, 400, "a bounded range");
+  const bad = async (zone: string, end = "2026-03-15T18:30:00.000Z") =>
+    (await c.api("GET", `/v1/usage/activity?zone=${encodeURIComponent(zone)}&end=${encodeURIComponent(end)}`, undefined, me.bearer)).status;
+  assert.equal(await bad("2026-03-01T18:30:00.000Z~2000"), 400, "an offset no zone has");
+  assert.equal(await bad("2026-03-05T00:00:00.000Z~0,2026-03-01T00:00:00.000Z~60"), 400, "segments out of order");
+  assert.equal(await bad("2020-01-01T00:00:00.000Z~0"), 400, "a bounded range");
   // Another account sees none of it.
   const stranger = await c.user("auth0|stranger");
   assert.equal((await c.api("GET", "/v1/usage/summary?from=2026-03-05T00:00:00.000Z&to=2026-03-10T00:00:00.000Z", undefined, stranger.bearer)).body.lifetime.requests, 0);

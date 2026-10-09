@@ -15,10 +15,21 @@ const events = z.array(z.unknown()).min(1).max(MAX_BATCH_EVENTS);
 const hostBatch = z.object({ payload: base64url, signature: base64url });
 const hostPayload = z.object({ hostId: z.uuid(), batchId: z.uuid(), issuedAt: z.iso.datetime({ offset: true }), events });
 const localBatch = z.object({ runtimeId: z.uuid(), events });
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)));
 const instant = z.iso.datetime({ offset: true }).transform(value => new Date(value));
 const summaryQuery = z.object({ from: instant, to: instant, asOf: instant.optional() });
-const activityQuery = z.object({ tz: z.string().min(1).max(64), from: day, to: day, granularity: z.enum(["day", "week"]).default("day"), asOf: instant.optional() });
+/** The viewer's zone as UTC offsets from given instants ("<ISO>~<minutes>,…"), computed by the app:
+ * it knows every zone name its platform does, and the database need not know any. */
+const zone = z.string().max(4000).transform((value, context) => {
+  const segments = value.split(",").map(part => {
+    const [start, offset] = part.split("~");
+    return { start: new Date(start ?? ""), offsetMinutes: Number(offset) };
+  });
+  const valid = segments.length >= 1 && segments.length <= 64 && segments.every((segment, index) => Number.isFinite(segment.start.getTime())
+    && Number.isInteger(segment.offsetMinutes) && Math.abs(segment.offsetMinutes) <= 16 * 60 && (index === 0 || segment.start > segments[index - 1]!.start));
+  if (!valid) { context.addIssue({ code: "custom", message: "invalid zone" }); return z.NEVER; }
+  return segments;
+});
+const activityQuery = z.object({ zone, end: instant, granularity: z.enum(["day", "week"]).default("day"), asOf: instant.optional() });
 const DAY_MS = 86_400_000;
 const MAX_DAYS = { day: 400, week: 3 * 366 } as const;
 
@@ -100,13 +111,12 @@ export const createUsageRouter = (deps: UsageRouteDependencies) => {
     if (!reads.take(req.account!.id)) { res.status(429).json({ error: "rate_limited" }); return; }
     const query = activityQuery.safeParse(req.query);
     if (!query.success) { invalid(res); return; }
-    const { tz, from, to, granularity } = query.data;
-    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS;
-    if (days < 0 || days > MAX_DAYS[granularity]) { invalid(res); return; }
-    if (!await deps.repo.validTimeZone(tz)) { res.status(400).json({ error: "unknown_time_zone" }); return; }
+    const { zone: segments, end, granularity } = query.data;
+    const days = (end.getTime() - segments[0]!.start.getTime()) / DAY_MS;
+    if (end <= segments.at(-1)!.start || days > MAX_DAYS[granularity] + 2) { invalid(res); return; }
     const asOf = query.data.asOf ?? await deps.repo.now();
-    const activity = await deps.repo.activity(req.account!.id, tz, from, to, granularity, asOf);
-    res.set("Cache-Control", "no-store").json({ asOf: asOf.toISOString(), timeZone: tz, granularity, ...activity });
+    const activity = await deps.repo.activity(req.account!.id, segments, end, granularity, asOf);
+    res.set("Cache-Control", "no-store").json({ asOf: asOf.toISOString(), granularity, ...activity });
   }));
 
   return router;
