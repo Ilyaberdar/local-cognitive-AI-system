@@ -1,6 +1,6 @@
 import { createRemoteRequest, SYNTHESIS_ROUTES } from "./runtime-routes.js";
 
-const MAX_EVENTS = 2000;
+const MAX_EVENTS = 2000, MAX_RUNS = 20;
 
 /** The Synthesis screen on the selected server (R5-5): its requests become the server's
  * operations, answers are put back in the shape the screen reads from this computer, a run's
@@ -37,7 +37,10 @@ function createTransport({ target, runtime }) {
     const known = runs.get(id);
     const detail = await call(`/runs/${encodeURIComponent(id)}${known ? `?after=${known.lastSequence}` : ""}`, options);
     const events = [...(known?.events ?? []), ...detail.events].slice(-MAX_EVENTS);
+    // The runs read most recently are kept; an older one is read whole again when selected.
+    runs.delete(id);
     runs.set(id, { events, lastSequence: detail.lastSequence });
+    if (runs.size > MAX_RUNS) runs.delete(runs.keys().next().value);
     const { lastSequence: _lastSequence, truncated: _truncated, ...run } = detail;
     return { ...run, events };
   };

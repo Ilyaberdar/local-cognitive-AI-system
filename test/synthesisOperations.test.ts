@@ -23,7 +23,7 @@ const until = async <T>(read: () => Promise<T>, done: (value: T) => boolean) => 
   throw new Error("condition not reached");
 };
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, llm = workingProvider()) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "synthesis-ops-")));
   const data = path.join(base, "data"), app = path.join(data, "app");
   await fs.mkdir(app, { recursive: true });
@@ -34,18 +34,20 @@ async function setup(t: TestContext) {
   await fs.mkdir(path.join(base, "elsewhere"));
   const calls: string[] = [];
   const synthesis = new SynthesisService(app, { projects: projectStore, models: { listAllModels: async () => [localModel("qwen2.5-1.5b", 950_000_000)] },
-    loadModel: async () => undefined, llm: workingProvider(calls) });
+    loadModel: async () => undefined, llm });
   await synthesis.init();
   t.after(async () => { await synthesis.dispose(); host.close(); await fs.rm(base, { recursive: true, force: true }); });
   const runtimeManager = { getRuntime: () => ({ synthesis, projectStore }) } as unknown as RuntimeManager;
   const state = { draining: false };
   const projects = createProjectAccess({ runtimeManager, folders });
-  const ops = createSynthesisOperations({ runtimeManager, ledger: new CommandLedger(host), projects, scopeOf: () => "remote:account:mac",
-    isDraining: () => state.draining, hostDirectories: [data] });
-  const call = <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
+  const caller = (ledger: CommandLedger) => {
+    const ops = createSynthesisOperations({ runtimeManager, ledger, projects, scopeOf: () => "remote:account:mac", isDraining: () => state.draining, hostDirectories: [data] });
+    return <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
+  };
+  const call = caller(new CommandLedger(host));
   const device = await projectStore.create({ name: "Calc", rootPath: path.join(data, "projects", "calc"), origin: "device" });
   const hostOwned = await projectStore.create({ name: "Host", rootPath: path.join(base, "elsewhere") });
-  return { base, data, synthesis, projectStore, call, state, device, hostOwned, calls };
+  return { base, data, host, synthesis, projectStore, call, caller, state, device, hostOwned, calls };
 }
 
 test("every synthesis operation is in the catalog; what makes work or writes files is a command", () => {
@@ -114,4 +116,95 @@ test("while the server drains, new modules and runs are refused; reading still a
   await assert.rejects(f.call("synthesis.modules.create", { commandId: "cmd-module-d", projectId: f.device.id, template: "calculator" }), code("host_draining"));
   await assert.rejects(f.call("synthesis.runs.start", { commandId: "cmd-start-d", projectId: f.device.id, moduleId: "Calculator" }), code("host_draining"));
   assert.ok(await f.call("synthesis.modules.list", { projectId: f.device.id }));
+});
+
+/** A model that answers only when its run is stopped: the run stays running until then. */
+const waitingProvider = () => {
+  const until = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) => {
+    if (signal?.aborted) reject(signal.reason);
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+  return { generateObject: (request: { signal?: AbortSignal }) => until(request.signal), generateText: (request: { signal?: AbortSignal }) => until(request.signal) } as unknown as ReturnType<typeof workingProvider>;
+};
+
+test("a device's run stops once its project is archived; a run a device started may be stopped also when its project is no longer shared", async t => {
+  const f = await setup(t, waitingProvider());
+  f.synthesis.guardIntervalMs = 20;
+  // The guard's timer does not hold a process open; this test's does.
+  const alive = setInterval(() => undefined, 50); t.after(() => clearInterval(alive));
+  await f.call("synthesis.modules.create", { commandId: "cmd-module-g", projectId: f.device.id, template: "calculator" });
+  const started = await f.call("synthesis.runs.start", { commandId: "cmd-start-g", projectId: f.device.id, moduleId: "Calculator" });
+  await until(() => f.call("synthesis.runs.get", { runId: started.id }), run => run.status === "running");
+  await f.projectStore.update(f.device.id, { archived: true });
+  const stopped = await f.synthesis.wait(started.id);
+  assert.equal(stopped.status, "cancelled");
+  assert.equal(stopped.startedBy, "device");
+  assert.match(stopped.error ?? "", /archived/i);
+
+  // A run on the host is the host's: a device stops neither it nor anything it cannot see.
+  await f.synthesis.createModule(f.hostOwned.id, "Calculator", { template: "calculator" });
+  const hostRun = await f.synthesis.start(f.hostOwned.id, "Calculator");
+  await assert.rejects(f.call("synthesis.runs.cancel", { runId: hostRun.id }), code("unsupported"));
+  assert.notEqual((await f.synthesis.get(hostRun.id)).status, "cancelled");
+  // A run a device started there (its folder since unshared) is still the device's to stop.
+  const deviceRun = await f.synthesis.start(f.hostOwned.id, "Calculator", { device: { guard: async () => undefined } });
+  const cancelled = await f.call("synthesis.runs.cancel", { runId: deviceRun.id });
+  assert.equal(cancelled.status, "cancelled");
+  await assert.rejects(f.call("synthesis.runs.get", { runId: deviceRun.id }), code("unsupported"), "reading it stays closed");
+  await f.synthesis.cancel(hostRun.id);
+});
+
+test("events a device reads name no folder outside the project; a failure is its first line", async t => {
+  const f = await setup(t);
+  await f.call("synthesis.modules.create", { commandId: "cmd-module-e", projectId: f.device.id, template: "calculator" });
+  const started = await f.call("synthesis.runs.start", { commandId: "cmd-start-e", projectId: f.device.id, moduleId: "Calculator" });
+  await f.synthesis.wait(started.id);
+  // A model's process error as the service records it.
+  const file = path.join(f.data, "app", "synthesis", "runs", `${started.id}.json`);
+  const record = JSON.parse(await fs.readFile(file, "utf8"));
+  const sequence = record.events.at(-1).sequence;
+  record.events.push({ sequence: sequence + 1, at: record.updatedAt, step: "agent.generate", status: "failed", iteration: 1,
+    message: "calculator.js: llama-server exited: /opt/models/secret/qwen.gguf missing\nlog line two /var/log/x/y", detail: "see /Users/someone/notes/plan.md and Source/Abilities/Dash.cpp" },
+  { sequence: sequence + 2, at: record.updatedAt, step: "apply", status: "ok", iteration: 1, message: "3 candidate files applied to Source/Abilities/Dash." });
+  await fs.writeFile(file, JSON.stringify(record));
+  const events = (await f.call("synthesis.runs.get", { runId: started.id, after: sequence })).events;
+  assert.equal(events[0].message, "calculator.js: llama-server exited: <path> missing");
+  assert.equal(events[0].detail, "see <path> and Source/Abilities/Dash.cpp");
+  assert.equal(events[1].message, "3 candidate files applied to Source/Abilities/Dash.", "a path in the project is kept");
+});
+
+test("an Apply a restart interrupted is reported by what the project's files hold", async t => {
+  const f = await setup(t);
+  await f.call("synthesis.modules.create", { commandId: "cmd-module-r", projectId: f.device.id, template: "calculator" });
+  // Three accepted runs of one module, all checked out before any Apply; each one's Apply is
+  // accepted by a first process that stops before it answers.
+  const lost = [];
+  for (const key of ["none", "all", "some"]) {
+    const started = await f.call("synthesis.runs.start", { commandId: `cmd-start-${key}`, projectId: f.device.id, moduleId: "Calculator" });
+    assert.equal((await f.synthesis.wait(started.id)).status, "accepted");
+    void new CommandLedger(f.host).run({ scope: "remote:account:mac", key: `cmd-apply-${key}`, operation: "synthesis.runs.apply", payload: { runId: started.id }, target: started.id },
+      () => new Promise<never>(() => undefined));
+    lost.push({ id: started.id, resend: { commandId: `cmd-apply-${key}`, runId: started.id } });
+  }
+  const [none, all, some] = lost as [typeof lost[0], typeof lost[0], typeof lost[0]];
+  const call = f.caller(new CommandLedger(f.host));
+
+  // Nothing written: it did not start.
+  await assert.rejects(call("synthesis.runs.apply", none.resend), code("not_started"));
+
+  // Every file written before the answer: it is reported applied, and the run says so.
+  await f.synthesis.apply(all.id);
+  const recordFile = path.join(f.data, "app", "synthesis", "runs", `${all.id}.json`);
+  const record = JSON.parse(await fs.readFile(recordFile, "utf8")); delete record.appliedAt;
+  await fs.writeFile(recordFile, JSON.stringify(record));
+  assert.equal((await call("synthesis.runs.apply", all.resend)).ok, true);
+  assert.ok((await f.synthesis.get(all.id)).appliedAt);
+
+  // Some written (one file is not there): neither, and said so for every resend.
+  const written = (await fs.readdir(path.join(f.data, "projects", "calc"), { recursive: true })).map(String).filter(name => name.endsWith(".css"));
+  assert.equal(written.length, 1);
+  await fs.rm(path.join(f.data, "projects", "calc", written[0]!));
+  await assert.rejects(call("synthesis.runs.apply", some.resend), code("unknown_outcome"));
+  await assert.rejects(call("synthesis.runs.apply", some.resend), code("unknown_outcome"), "the answer is kept");
+  assert.equal((await f.synthesis.get(some.id)).appliedAt, undefined);
 });

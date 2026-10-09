@@ -55,10 +55,15 @@ function publicRun(record: RunRecord): SynthesisRun {
   return run;
 }
 
+/** How a run is started: an id the caller reserved, and whether a paired device starts it. */
+export interface LaunchOptions { runId?: string; device?: {guard: () => Promise<string | undefined>} }
+
 /** Project source is read-only until Apply. Runs contain frozen sources and an isolated artifact tree. */
 export class SynthesisService {
   private readonly directory: string;
   private readonly active = new Map<string, {controller: AbortController; done: Promise<void>; interruption: boolean}>();
+  /** How often a run a paired device started asks whether the device may still use its project. */
+  guardIntervalMs = 5_000;
   private accepting = true;
   private readonly pendingStarts = new Set<Promise<SynthesisRun>>();
   private reservations = 0;
@@ -148,20 +153,21 @@ export class SynthesisService {
     await fs.access(target); return target;
   }
   /** `runId`: an id reserved by the caller (a paired device's command), so a resend or a restart
-   * finds the run it made instead of making another. */
-  async start(projectId: string, id: string, options: {runId?: string} = {}): Promise<SynthesisRun> {
+   * finds the run it made instead of making another. `device`: a paired device starts the run; it
+   * stops (cancelled) once `guard` names why the device may no longer use the project. */
+  async start(projectId: string, id: string, options: LaunchOptions = {}): Promise<SynthesisRun> {
     const existing = options.runId ? await this.existing(options.runId) : undefined;
     if (existing) return existing;
     const module = await this.module(projectId, id);
     if (!module.valid) throw new SynthesisError(module.diagnostics.map(item => `${item.line}:${item.column} ${item.message}`).join("\n"));
-    return this.launch(projectId, id, module.specSource!, module.flowSource!, undefined, options.runId);
+    return this.launch(projectId, id, module.specSource!, module.flowSource!, undefined, options);
   }
-  async restart(id: string, options: {runId?: string} = {}): Promise<SynthesisRun> {
+  async restart(id: string, options: LaunchOptions = {}): Promise<SynthesisRun> {
     const existing = options.runId ? await this.existing(options.runId) : undefined;
     if (existing) return existing;
     const record = await this.read(id);
     if (activeStatus(record.status) || record.status === "accepted") throw new SynthesisError("Only unsuccessful or interrupted runs may be restarted.", 409);
-    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, options.runId);
+    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, options);
   }
   /** A run, if one with this id exists. */
   async existing(id: string): Promise<SynthesisRun | undefined> {
@@ -171,18 +177,18 @@ export class SynthesisService {
   activeCount(): number { return this.active.size + this.reservations; }
   /** The server is draining: no new run starts; running ones finish. */
   stopAccepting(): void { this.accepting = false; }
-  private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string, reservedId?: string): Promise<SynthesisRun> {
+  private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, options: LaunchOptions): Promise<SynthesisRun> {
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     if (!this.accepting) throw new SynthesisError("The server is shutting down. Try again when it is back.", 409);
     if (this.active.size + this.reservations >= 2) throw new SynthesisError("At most two Synthesis runs may execute concurrently.", 409);
     this.reservations++;
-    const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom, reservedId).finally(() => {
+    const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom, options).finally(() => {
       this.reservations--; this.pendingStarts.delete(pending);
     });
     this.pendingStarts.add(pending);
     return pending;
   }
-  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string, reservedId?: string): Promise<SynthesisRun> {
+  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, {runId: reservedId, device}: LaunchOptions): Promise<SynthesisRun> {
     const project = await this.project(projectId);
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     const compiled = compileProgram(specSource, flowSource);
@@ -198,7 +204,7 @@ export class SynthesisService {
     const record: RunRecord = {
       version: 1, id: reservedId ? runId(reservedId) : randomUUID(), projectId, moduleId: id, moduleName: compiled.spec.module,
       rootPath: project.rootPath, specSource, flowSource, specHash: hash(specSource), spec: compiled.spec, flow: compiled.flow,
-      status: "queued", phase: "queued", iteration: 0, createdAt: stamp(), updatedAt: stamp(), restartedFrom,
+      status: "queued", phase: "queued", iteration: 0, createdAt: stamp(), updatedAt: stamp(), restartedFrom, ...(device ? {startedBy: "device" as const} : {}),
       files: {}, baseline: {}, events: [], models: [], usage: {inputTokens: 0, outputTokens: 0, calls: 0}
     };
     await this.save(record);
@@ -208,7 +214,7 @@ export class SynthesisService {
     }
     const item = {controller: new AbortController(), done: Promise.resolve(), interruption: false};
     this.active.set(record.id, item);
-    item.done = this.execute(record, item).finally(() => { this.active.delete(record.id); });
+    item.done = this.execute(record, item, device?.guard).finally(() => { this.active.delete(record.id); });
     return publicRun(record);
   }
   async get(id: string): Promise<SynthesisRun> { return publicRun(await this.read(id)); }
@@ -229,10 +235,12 @@ export class SynthesisService {
   /** Useful for CLI/tests; HTTP execution remains non-blocking. */
   async wait(id: string): Promise<SynthesisRun> { await this.active.get(runId(id))?.done; return this.get(id); }
 
-  private async execute(record: RunRecord, item: {controller: AbortController; interruption: boolean}): Promise<void> {
+  private async execute(record: RunRecord, item: {controller: AbortController; interruption: boolean}, guard?: () => Promise<string | undefined>): Promise<void> {
     const signal = item.controller.signal;
     const timer = setTimeout(() => item.controller.abort(new BudgetExhausted("Wall-clock time budget exhausted.")), record.flow.limits.timeMs);
     timer.unref();
+    const watch = guard ? setInterval(() => void guard().then(reason => { if (reason && !signal.aborted) item.controller.abort(new Error(reason)); }, () => undefined), this.guardIntervalMs) : undefined;
+    watch?.unref();
     const candidate = Object.freeze({kind: "candidate", id: record.id, runId: record.id,
       get path() { return record.outputPath ?? ""; }, get hash() { return filesHash(record.files); }});
     const spec = Object.freeze({kind: "spec", hash: record.specHash});
@@ -394,7 +402,7 @@ export class SynthesisService {
       record.error = errorText(signal.aborted ? signal.reason : error);
       record.status = item.interruption ? "interrupted" : signal.aborted && !(signal.reason instanceof BudgetExhausted) ? "cancelled" : error instanceof BudgetExhausted || signal.reason instanceof BudgetExhausted ? "unresolved" : "blocked";
     } finally {
-      clearTimeout(timer);
+      clearTimeout(timer); clearInterval(watch);
       await this.event(record, "finished", record.error ?? record.status, record.status === "accepted" ? "ok" : "failed");
     }
   }
@@ -501,6 +509,29 @@ export class SynthesisService {
         throw error;
       }
       record.appliedAt = stamp(); await this.event(record, "apply", `${targets.length} candidate files applied to ${record.outputPath}.`, "ok");
+    });
+  }
+  /** After a restart during Apply: "applied" when every changed file holds the candidate (the run
+   * is then marked applied), "none" when every one still holds what was checked out, "partial"
+   * otherwise (some files written, or edited since). */
+  async applyOutcome(id: string): Promise<"applied" | "none" | "partial"> {
+    const first = await this.read(id);
+    if (first.appliedAt) return "applied";
+    if (!first.outputPath) return "none";
+    return withFileLock(path.join(first.rootPath, ".synthesis-apply-lock"), async () => {
+      const record = await this.read(id);
+      if (record.appliedAt) return "applied";
+      let changed = 0, written = 0, untouched = 0;
+      for (const [file, after] of Object.entries(record.files)) {
+        if (record.baseline[file] === after) continue;
+        changed++;
+        const now = await readOptional(await containedPath(record.rootPath, `${record.outputPath}/${file}`));
+        if (now === after) written++; else if (now === record.baseline[file]) untouched++;
+      }
+      if (untouched === changed) return "none";
+      if (written < changed) return "partial";
+      record.appliedAt = stamp(); await this.event(record, "apply", `${changed} candidate files applied to ${record.outputPath} (found after a restart).`, "ok");
+      return "applied";
     });
   }
   /** The candidate's page as one self-contained document (its styles and scripts inlined): it loads

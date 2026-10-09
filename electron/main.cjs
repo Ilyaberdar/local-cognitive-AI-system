@@ -148,6 +148,12 @@ const createWindow = async (url) => {
   });
 
   voiceInput?.attach(mainWindow);
+  // The window's only frames are Synthesis previews: they stay on the application's own pages.
+  mainWindow.webContents.on("will-frame-navigate", event => {
+    if (event.isMainFrame || ["about:blank", "about:srcdoc"].includes(event.url)) return;
+    try { if (new URL(event.url).origin === applicationOrigin) return; } catch { /* Not a URL: refused. */ }
+    event.preventDefault();
+  });
   await mainWindow.loadURL(url);
   if (isMac) mainWindow.setWindowButtonVisibility(true);
   if (liquidGlass) {

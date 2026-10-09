@@ -20,6 +20,8 @@ export interface SynthesisRun {
   id: string; projectId: string; moduleId: string; moduleName: string; status: RunStatus;
   phase: string; iteration: number; createdAt: string; updatedAt: string;
   error?: string; appliedAt?: string; restartedFrom?: string; models: ManagedModel[];
+  /** A paired device started it (R5-5): it stops once the device may no longer use the project. */
+  startedBy?: "device";
   events: ActivityEvent[]; evidence?: Evidence;
   usage: {inputTokens: number; outputTokens: number; calls: number};
 }

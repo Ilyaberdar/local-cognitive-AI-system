@@ -48,8 +48,14 @@ export function previewDocument(files: Record<string, string>, page = "index.htm
         tree.insertBefore(parent as never, style, node as never);
       }
       tree.detachNode(node as never);
-    } else if (["iframe", "object", "embed", "base", "frame", "frameset"].includes(node.tagName ?? "")) {
+    } else if (["iframe", "object", "embed", "base", "frame", "frameset", "link", "portal"].includes(node.tagName ?? "")) {
+      // Other links (prefetch, preconnect, icons) would reach out past the policy; so would a frame.
       tree.detachNode(node as never);
+    } else if (node.tagName === "meta" && attribute(node, "http-equiv") !== undefined) {
+      // A refresh would take the frame elsewhere; the page's own policy is replaced by the preview's.
+      tree.detachNode(node as never);
+    } else if (node.attrs?.some(item => item.name === "ping")) {
+      node.attrs = node.attrs.filter(item => item.name !== "ping");
     }
   }
   if (head) {

@@ -43,3 +43,22 @@ test("a server's Synthesis transport follows a run's events with a cursor, lists
   assert.ok(f.calls.every(call => call[2] === HOST), "every call names the server");
   assert.equal(synthesis.unsupported(), false);
 });
+
+test("the transport keeps the events of the runs read most recently; an older run is read whole again", async () => {
+  const { createServerSynthesis } = await importModule(pathToFileURL(path.resolve("public/assets/server-synthesis.js")).href);
+  const f = server();
+  const transport = createServerSynthesis({ target: f.target, bridge: { runtime: f.runtime } }).transport();
+  for (let index = 0; index <= 20; index++) await transport.request(`/runs/run-${index}`);
+  await transport.request("/runs/run-20");
+  await transport.request("/runs/run-0");
+  const reads = f.calls.filter(call => call[0] === "synthesis.runs.get").map(call => call[1]);
+  assert.deepEqual(reads.slice(-2), [{ runId: "run-20", after: 1 }, { runId: "run-0" }]);
+});
+
+test("a module made at the project's root asks for the root, not the server's default folder", async () => {
+  const { SYNTHESIS_ROUTES } = await importModule(pathToFileURL(path.resolve("public/assets/runtime-routes.js")).href);
+  const route = SYNTHESIS_ROUTES.find((item: any) => item.op === "synthesis.modules.create");
+  const payload = (body: unknown) => route.payload(route.pattern.exec("/projects/p1/modules"), new URLSearchParams(), body);
+  assert.deepEqual(payload({ name: "Dash", template: "empty", directory: "" }), { projectId: "p1", name: "Dash", template: "empty", directory: "" });
+  assert.deepEqual(payload({ name: "Dash", template: "empty" }), { projectId: "p1", name: "Dash", template: "empty" });
+});

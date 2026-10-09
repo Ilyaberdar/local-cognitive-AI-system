@@ -86,11 +86,15 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   }, [modules, hiddenModules, projectId]);
 
   useEffect(() => {
-    if (!availableProjects.some(item => item.id === projectId)) setProjectId(availableProjects[0]?.id ?? "");
+    // Projects a server sends arrive after the screen: the saved choice is still the first pick.
+    if (!availableProjects.some(item => item.id === projectId)) {
+      const saved = storedProject(storageKey);
+      setProjectId(availableProjects.some(item => item.id === saved) ? saved : availableProjects[0]?.id ?? "");
+    }
   }, [projects, projectId]);
   useEffect(() => { if (selectedProjectId) setProjectId(selectedProjectId); }, [selectedProjectId]);
   useEffect(() => {
-    try { localStorage.setItem(projectKey(storageKey), projectId); } catch { /* Storage may be unavailable. */ }
+    try { if (projectId) localStorage.setItem(projectKey(storageKey), projectId); } catch { /* Storage may be unavailable. */ }
     setModules([]); setModuleId(""); setModule(null); setRuns([]); setRunId(""); setRun(null); setDiff(null); setError(""); setNotice("");
     setCreatingModule(false);
   }, [projectId]);
