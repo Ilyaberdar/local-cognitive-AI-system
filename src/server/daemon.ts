@@ -70,9 +70,12 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   const sessionIndexStore = backend.runtimeManager.getRuntime().sessionIndexStore;
   // Run outputs and events a device receives name no folder of this server.
   const orchestration = { runtimeManager: backend.runtimeManager, journalEpoch: () => host.journal.epoch, hostDirectories: [path.dirname(config.appDataDir)] };
+  // Attachments devices send for their next turn; expired ones are dropped even when none arrive.
+  const uploads = new UploadStore();
+  setInterval(() => uploads.sweep(), 60 * 60 * 1000).unref();
   const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
     operations: {
-      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads: new UploadStore(),
+      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads,
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
       ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId),
         sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),

@@ -23,6 +23,7 @@ import { hostMigrations } from "./runtime/db/hostSchema";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
 import { createChatScrubber, withoutAttachmentData } from "./runtime/chatOperations";
+import type { ChatAttachment } from "./types";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
 import { loadSessionMessages } from "./conversations/sessionHistory";
@@ -197,6 +198,13 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   } catch (error) { await dispose(); throw error; }
 };
 
+/** What the engine is told about a paired device's turn: it is a device's (never full access), its
+ * attachments, and no plugins of this host (plugins for devices come later; without a selection the
+ * engine would offer every enabled plugin, and `@plugin` in the message would choose one). */
+export const deviceRunMetadata = (run: { runId: string; attachments?: ChatAttachment[] }) => ({
+  chatRunId: run.runId, deviceRun: true, pluginIds: [] as string[], ...(run.attachments?.length ? { attachments: run.attachments } : {})
+});
+
 /** Opens host.db, interrupts turns a crash left running, and wires chat runs to the shared engine. */
 const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore): HostServices => {
   const database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations);
@@ -215,7 +223,7 @@ const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, ses
         const title = (await sessionIndexStore.get(run.sessionId))?.title;
         const sessionTitle = title && title !== "New chat" ? title : undefined;
         const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId, sessionTitle,
-          metadata: { chatRunId: run.runId, deviceRun: true, ...(run.attachments?.length ? { attachments: run.attachments } : {}) }, signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
+          metadata: deviceRunMetadata(run), signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
         return { ...(result.result.error ? { error: result.result.error } : {}) };
       },
       // The finished turn as a device receives it: attachment contents stay on the host.

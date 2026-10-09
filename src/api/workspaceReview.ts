@@ -48,6 +48,28 @@ export async function resolveReviewPath(manager: RuntimeManager, requestedPath: 
   throw new ReviewError(403, "This file is outside the workspace and has no completed file action for this owner.");
 }
 
+/** A file of a chat a paired device may open: inside the chat's own folders (its workspace, or the
+ * chat output folder), or one a file action of this chat completed. Unlike Review here, the folders
+ * the host lets file tools use are not readable as a whole from a device. Throws when it is not. */
+export async function resolveChatFileForDevice(manager: RuntimeManager, requestedPath: string, sessionId: string, ownFolders: string[]): Promise<string> {
+  const runtime = manager.getRuntime();
+  const workspace = await runtime.workspaceResolver?.forSession(sessionId, { allowArchived: true });
+  if (workspace) await runtime.workspaceResolver.validate(workspace);
+  const target = await fs.realpath(path.resolve(requestedPath));
+  const folders = [...(workspace ? [workspace.rootPath] : []), ...ownFolders];
+  const real = await Promise.all(folders.map(folder => fs.realpath(folder).catch(() => folder)));
+  if (await isWorkspacePath(target, real)) return target;
+  const settings = await manager.getSettings();
+  const entries = await runtime.memoryService.recent({
+    actor: { sessionId, userId: settings.memory.localProfileId, channel: "http", memoryScope: workspace?.memoryScope }, limit: 500
+  });
+  for (const entry of entries) {
+    const tools = entry.metadata?.tools;
+    if (Array.isArray(tools) && tools.some(tool => completedFileAction(tool, target))) return target;
+  }
+  throw new ReviewError(403, "This file is not one this chat can open.");
+}
+
 function completedFileAction(value: unknown, target: string): boolean {
   if (!value || typeof value !== "object") return false;
   const tool = value as { tool?: string; ok?: boolean; metadata?: { files?: unknown[]; filePath?: string; path?: string } };

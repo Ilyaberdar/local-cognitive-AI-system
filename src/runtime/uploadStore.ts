@@ -7,8 +7,11 @@ import { AttachmentError, validateAttachments } from "../utils/attachments";
 export const CHUNK_CHARS = 128 * 1024;
 /** An image as a data URL (at most 1 MiB once prepared on the device) or extracted text. */
 export const MAX_CONTENT_CHARS = 2 * 1024 * 1024;
+/** Per kind, as the attachment validator takes them: text is never split into chunks. */
+const MAX_CHARS = { image: MAX_CONTENT_CHARS, text: 20_000 };
 const MAX_UPLOADS_PER_DEVICE = 20;
 const MAX_CHARS_PER_DEVICE = 32 * 1024 * 1024;
+const MAX_CHARS_IN_ALL = 128 * 1024 * 1024;
 const TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface UploadMeta {
@@ -36,7 +39,7 @@ export class UploadStore {
   /** Starts an upload, or answers which chunks arrived for the same one begun before (resume). */
   begin(owner: string, uploadId: string, sessionId: string, meta: UploadMeta): { uploadId: string; chunkChars: number; received: number[] } {
     this.sweep();
-    if (meta.length < 1 || meta.length > MAX_CONTENT_CHARS) throw refuse("The attachment is too large to send.");
+    if (meta.length < 1 || meta.length > MAX_CHARS[meta.kind]) throw refuse("The attachment is too large to send.");
     const signature = JSON.stringify([sessionId, meta.name, meta.mimeType, meta.kind, meta.sizeBytes, meta.length, meta.sha256, meta.truncated ?? false, meta.warning ?? ""]);
     const existing = this.uploads.get(uploadId);
     if (existing) {
@@ -46,10 +49,16 @@ export class UploadStore {
         : existing.chunks.flatMap((chunk, index) => chunk === undefined ? [] : [index]);
       return { uploadId, chunkChars: CHUNK_CHARS, received };
     }
-    const mine = [...this.uploads.values()].filter(upload => upload.owner === owner);
-    if (mine.length >= MAX_UPLOADS_PER_DEVICE || mine.reduce((total, upload) => total + upload.meta.length, 0) + meta.length > MAX_CHARS_PER_DEVICE) {
-      throw refuse("Too many attachments are waiting on the server. Send or remove some first.", "quota_exceeded");
+    // A device's oldest waiting uploads make room (a send that failed and was never retried), so
+    // a device is never locked out; all devices together are capped too.
+    const total = () => [...this.uploads.values()].reduce((sum, upload) => sum + upload.meta.length, 0);
+    for (;;) {
+      const mine = [...this.uploads.entries()].filter(([, upload]) => upload.owner === owner).sort((a, b) => a[1].at - b[1].at);
+      const used = mine.reduce((sum, [, upload]) => sum + upload.meta.length, 0);
+      if (mine.length < MAX_UPLOADS_PER_DEVICE && used + meta.length <= MAX_CHARS_PER_DEVICE) break;
+      this.uploads.delete(mine[0]![0]);
     }
+    if (total() + meta.length > MAX_CHARS_IN_ALL) throw refuse("The server has too many attachments waiting. Try again later.", "quota_exceeded");
     this.uploads.set(uploadId, { owner, sessionId, meta, signature, chunks: new Array(Math.ceil(meta.length / CHUNK_CHARS)).fill(undefined), at: this.now() });
     return { uploadId, chunkChars: CHUNK_CHARS, received: [] };
   }
@@ -116,6 +125,11 @@ export class UploadStore {
   /** A turn took these attachments: from now on they live in the chat's history. */
   remove(ids: string[]): void { for (const id of ids) this.uploads.delete(id); }
 
+  /** A deleted chat's waiting attachments go with it. */
+  dropSession(sessionId: string): void {
+    for (const [id, upload] of this.uploads) if (upload.sessionId === sessionId) this.uploads.delete(id);
+  }
+
   private own(owner: string, uploadId: string): Upload {
     this.sweep();
     const upload = this.uploads.get(uploadId);
@@ -123,7 +137,8 @@ export class UploadStore {
     return upload;
   }
 
-  private sweep(): void {
+  /** Expired uploads go (also run on a timer, so memory is freed without new uploads). */
+  sweep(): void {
     const oldest = this.now() - TTL_MS;
     for (const [id, upload] of this.uploads) if (upload.at < oldest) this.uploads.delete(id);
   }

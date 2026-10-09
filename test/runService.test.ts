@@ -235,3 +235,24 @@ test("a turn whose scrubber cannot be built fails instead of writing what a devi
   await until(() => f.service.get(ack.runId!)?.status === "failed");
   assert.equal(f.script.calls.length, 0, "the engine never ran");
 });
+
+test("a device's turn is marked as one, carries its attachments and uses no plugin of the host", async () => {
+  const { deviceRunMetadata } = await import("../src/index");
+  const { parsePluginSelection } = await import("../src/plugins/PluginSelection");
+  const metadata = deviceRunMetadata({ runId: "r1" });
+  assert.deepEqual(metadata, { chatRunId: "r1", deviceRun: true, pluginIds: [] });
+  assert.deepEqual(parsePluginSelection(metadata.pluginIds), [], "an empty selection, not automatic discovery");
+  const file = { id: "a", name: "a.txt", mimeType: "text/plain", sizeBytes: 1, kind: "text" as const, textContent: "a" };
+  assert.deepEqual(deviceRunMetadata({ runId: "r2", attachments: [file] }).attachments, [file]);
+});
+
+test("a resend that loses the race for its attachments gets the first attempt's answer", async t => {
+  const f = setup(t);
+  let taken = false;
+  const admit = async () => { if (taken) throw new RunServiceError("An attachment is no longer on the server.", "attachment_unknown"); taken = true; return { attachments: [] }; };
+  const request = { commandId: "c1", sessionId: "s1", input: "with a file", attachmentIds: ["4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d11"] };
+  const first = await f.service.start("remote:a:d1", request, admit);
+  const again = await f.service.start("remote:a:d1", request, admit);
+  assert.equal(again.runId, first.runId);
+  assert.equal(again.replayed, true);
+});
