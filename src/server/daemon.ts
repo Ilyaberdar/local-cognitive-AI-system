@@ -13,7 +13,7 @@ import { CliError, ExitCode } from "./exitCodes";
 import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
-import { createChatOperations, requireRemoteSession } from "../runtime/chatOperations";
+import { createChatOperations, createChatScrubber, requireRemoteSession } from "../runtime/chatOperations";
 import { UploadStore } from "../runtime/uploadStore";
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
@@ -75,7 +75,7 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads: new UploadStore(),
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
       ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId),
-        sources: [createWorkflowRunStreams(orchestration)] }),
+        sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),

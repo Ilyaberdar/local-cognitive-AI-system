@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test";
 import type { RuntimeManager } from "../src/app/RuntimeManager";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
 import { createChatOperations, createChatScrubber } from "../src/runtime/chatOperations";
+import { createEventStreamOperations } from "../src/runtime/eventStreams";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
 import { RunServiceError, type RunService } from "../src/runtime/RunService";
 import type { EventJournal } from "../src/runtime/EventJournal";
@@ -134,6 +135,16 @@ test("the server's folders are replaced in what a device receives about a chat",
   assert.deepEqual(scrub(value), { details: "Write <output>/report.md\nWorking directory: <folder>/repo", text: "Log in <server>/app/logs and /etc/hosts" });
 
   assert.deepEqual(scrub({ near: `${output}box/a and ${data}2/b`, quoted: `"${output}"` }), { near: `${output}box/a and ${data}2/b`, quoted: '"<output>"' }, "only whole folders");
+  assert.deepEqual(scrub({ lines: `Saved:\n${output}/a\t${data}/b`, [`${output}/key`]: 1 }), { lines: "Saved:\n<output>/a\t<server>/b", "<output>/key": 1 },
+    "a folder after an escaped character in JSON is still replaced");
+
+  // Events from before chats were scrubbed as written: scrubbed as read, and a streamed part that would change sends the device to reload.
+  const legacy = [{ seq: 1, type: "approval.requested", payload: { details: `Delete ${output}/a.txt` } }, { seq: 2, type: "message.delta", payload: { offset: 0, text: "ok" } }];
+  const journal = (events: unknown[]) => ({ read: () => ({ events, head: 2, epoch: "e" }), wait: async () => undefined }) as unknown as EventJournal;
+  const poll = (events: unknown[]) => createEventStreamOperations({ journal: journal(events), requireSession: async () => undefined, scrubSession: async () => scrub })["events.poll"]!(
+    { streams: [{ streamId: "session:chat", epoch: "e", after: 0 }], waitMs: 0 }, context) as Promise<any>;
+  assert.equal((await poll(legacy)).streams[0].events[0].payload.details, "Delete <output>/a.txt");
+  assert.equal((await poll([{ seq: 1, type: "message.delta", payload: { offset: 0, text: `in ${output}/a` } }])).streams[0].resync, "redacted");
 });
 
 test("a device renames a server chat, and deletes one with its settings, memory, turns and events", async t => {

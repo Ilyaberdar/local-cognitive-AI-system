@@ -251,7 +251,8 @@ export class RunService {
         return [this.deps.journal.append(db, streamOf(sessionId), { type: "run.started", runId, payload: { runId, assistantMessageId: run.assistantMessageId } })];
       });
       this.deps.journal.publish(started);
-      run.scrub = await this.deps.scrubber?.().catch(() => undefined);
+      // Without its scrubber a turn does not run: nothing unscrubbed is written for a device.
+      run.scrub = await this.deps.scrubber?.();
       run.controller.signal.throwIfAborted();
       const result = await this.deps.execute({ runId, sessionId, input, ...(run.attachments ? { attachments: run.attachments } : {}) }, {
         signal: run.controller.signal,

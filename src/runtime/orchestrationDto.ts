@@ -63,22 +63,27 @@ export const orchestrationLists = (input: { tasks: Task[]; schedules: Schedule[]
   return { ...lists, ...(truncated ? { truncated: true } : {}) };
 };
 
-export type Scrubber = (<T>(value: T) => T) & { readonly dirs: readonly string[] };
+export type Scrubber = (<T>(value: T) => T) & { readonly dirs: readonly string[]; readonly pairs: ReadonlyArray<readonly [string, string]> };
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Replaces each folder by its label in a whole value (longest folder first, so a folder inside
- * another is replaced by its own label). Only whole folders: `/srv/out` is not part of `/srv/outbox`. */
+ * another is replaced by its own label). Only whole folders: `/srv/out` is not part of `/srv/outbox`.
+ * Applied to each string (and key) as it reads, never to JSON text, whose escapes would hide a
+ * folder's boundaries (`\n/srv/out` is "n/srv/out" there). */
 export const pathScrubber = (pairs: Array<[string, string]>): Scrubber => {
   const sorted = pairs.map(([dir, label]) => [dir.replace(/(.)[\\/]+$/, "$1"), label] as [string, string]).filter(([dir]) => dir.length > 1)
     .sort((a, b) => b[0].length - a[0].length);
-  const patterns = sorted.map(([dir, label]) => [new RegExp(`(?<![\\w./-])${escapeRegExp(JSON.stringify(dir).slice(1, -1))}(?![\\w.-])`, "g"), label] as [RegExp, string]);
+  const patterns = sorted.map(([dir, label]) => [new RegExp(`(?<![\\w./-])${escapeRegExp(dir)}(?![\\w.-])`, "g"), label] as [RegExp, string]);
+  const text = (value: string) => patterns.reduce((result, [pattern, label]) => result.replace(pattern, () => label), value);
+  const walk = (value: unknown): unknown => typeof value === "string" ? text(value)
+    : Array.isArray(value) ? value.map(walk)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [text(key), walk(item)])) : value;
   const scrub = <T>(value: T): T => {
     if (!patterns.length || value === undefined) return value;
-    let json = JSON.stringify(value);
-    for (const [pattern, label] of patterns) json = json.replace(pattern, () => label);
-    return JSON.parse(json) as T;
+    // Plain data first (dates become strings, as they would be sent).
+    return walk(JSON.parse(JSON.stringify(value))) as T;
   };
-  return Object.assign(scrub, { dirs: sorted.map(([dir]) => dir) });
+  return Object.assign(scrub, { dirs: sorted.map(([dir]) => dir), pairs: sorted });
 };
 
 /** Replaces folders of the host in what a device receives about a run: the run's workspace and
