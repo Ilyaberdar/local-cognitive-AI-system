@@ -8,7 +8,7 @@ import { RemoteOperationError, type OperationContext } from "../src/remote/host/
 import { createChatOperations, createChatScrubber } from "../src/runtime/chatOperations";
 import { createEventStreamOperations } from "../src/runtime/eventStreams";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
-import type { RunService } from "../src/runtime/RunService";
+import { RunServiceError, type RunService } from "../src/runtime/RunService";
 import type { EventJournal } from "../src/runtime/EventJournal";
 import type { SessionIndexStore } from "../src/session/SessionIndexStore";
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
@@ -21,24 +21,31 @@ async function setup(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "chat-ops-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new SessionSettingsStore({ baseDir: root }, { providerId: "llamacpp", model: "qwen" }, { llamacpp: "qwen", openai: "gpt-4o-mini" });
-  const runtime = { sessionSettingsStore: store, providerDescriptors: ["llamacpp", "ollama", "openai", "anthropic"].map(id => ({ id, name: id, configured: true, defaultModel: "" })) };
-  const sessions: Record<string, { id: string; projectId?: string }> = { chat: { id: "chat" }, full: { id: "full" } };
+  const forgotten: string[] = [];
+  const runtime = { sessionSettingsStore: store, memoryService: { deleteSession: async (id: string) => { forgotten.push(`memory ${id}`); } }, providerDescriptors: ["llamacpp", "ollama", "openai", "anthropic"].map(id => ({ id, name: id, configured: true, defaultModel: "" })) };
+  const sessions: Record<string, { id: string; title?: string; updatedAt?: string; projectId?: string }> = { chat: { id: "chat" }, full: { id: "full" }, busy: { id: "busy" } };
   const calls: string[] = [];
   const runService = {
     start: async (_scope: string, request: { sessionId: string }) => { calls.push(`start ${request.sessionId}`); return { runId: RUN, status: "accepted" }; },
     get: (runId: string) => runId === RUN ? { runId, sessionId: "full", status: "waiting_approval" } : undefined,
     cancel: (runId: string) => { calls.push(`cancel ${runId}`); return { cancelled: true }; },
-    resolveApproval: (_runId: string, _approvalId: string, approved: boolean) => { calls.push(`approval ${approved}`); return { accepted: true }; }
+    resolveApproval: (_runId: string, _approvalId: string, approved: boolean) => { calls.push(`approval ${approved}`); return { accepted: true }; },
+    forgetSession: (sessionId: string) => {
+      if (sessionId === "busy") throw new RunServiceError("The chat is answering. Stop the answer first, then delete it.", "session_busy");
+      forgotten.push(`turns ${sessionId}`);
+    }
   };
   const ops = createChatOperations({
     runtimeManager: { getRuntime: () => runtime, getSettings: async () => ({ ui: {} }) } as unknown as RuntimeManager,
-    sessionIndexStore: { get: async (id: string) => sessions[id], list: async () => Object.values(sessions) } as unknown as SessionIndexStore,
+    sessionIndexStore: { get: async (id: string) => sessions[id], list: async () => Object.values(sessions),
+      rename: async (id: string, title: string) => sessions[id] ? Object.assign(sessions[id]!, { title, updatedAt: "now" }) : undefined,
+      delete: async (id: string) => { const existed = Boolean(sessions[id]); delete sessions[id]; return existed; } } as unknown as SessionIndexStore,
     runService: runService as unknown as RunService, journal: {} as EventJournal, scopeOf: () => "device"
   });
   // The host gave this chat full access (its own HTTP API, Telegram or MCP).
   await store.update("full", { defaultAccessMode: "full" });
   const call = <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
-  return { root, store, call, calls, file: (id: string) => path.join(root, `${id}.json`) };
+  return { root, store, call, calls, forgotten, sessions, file: (id: string) => path.join(root, `${id}.json`) };
 }
 
 test("every chat operation is in the catalog", async t => {
@@ -124,4 +131,19 @@ test("the server's folders are replaced in what a device receives about a chat",
   const poll = createEventStreamOperations({ journal, requireSession: async () => undefined, scrubSession: async () => scrub })["events.poll"]!;
   const result = await poll({ streams: [{ streamId: "session:chat", epoch: "e", after: 0 }], waitMs: 0 }, context) as any;
   assert.equal(result.streams[0].events[0].payload.details, "Delete <output>/a.txt");
+});
+
+test("a device renames a server chat, and deletes one with its settings, memory, turns and events", async t => {
+  const f = await setup(t);
+  assert.deepEqual(await f.call("sessions.rename", { sessionId: "chat", title: "  Plans  " }), { id: "chat", title: "Plans", updatedAt: "now" });
+  for (const title of ["", "   ", "a\nb", "x".repeat(201)]) await assert.rejects(f.call("sessions.rename", { sessionId: "chat", title }), code("invalid_request"), JSON.stringify(title));
+  await assert.rejects(f.call("sessions.rename", { sessionId: "full", title: "Mine" }), code("unsupported"), "a chat that is the server's alone is renamed there");
+
+  await assert.rejects(f.call("sessions.delete", { sessionId: "busy" }), code("session_busy"));
+  assert.ok(f.sessions.busy, "a chat that is answering is kept");
+  assert.deepEqual(await f.call("sessions.delete", { sessionId: "full" }), { deleted: true }, "a device may always delete");
+  assert.deepEqual(f.forgotten, ["turns full", "memory full"]);
+  assert.equal(f.sessions.full, undefined);
+  await assert.rejects(fs.access(f.file("full")), "its settings are gone");
+  await assert.rejects(f.call("sessions.delete", { sessionId: "full" }), code("session_unknown"));
 });

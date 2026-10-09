@@ -24,6 +24,7 @@ const agentFields = { id: z.string().trim().min(1).max(100), name: z.string().tr
 const schemas = {
   sessionsCreate: z.object({ title: z.string().max(200).optional() }).strict().optional(),
   session: z.object({ sessionId: id }).strict(),
+  rename: z.object({ sessionId: id, title: z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f\u007f]/.test(value)) }).strict(),
   settingsUpdate: z.object({ sessionId: id, patch: z.object({
     defaultTarget: target.optional(),
     mode: z.enum(["auto", "general", "code", "hypothesis"]).optional(),
@@ -149,6 +150,28 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       while (merged.length > 2 && JSON.stringify(merged).length > MAX_HISTORY_BYTES) merged = merged.slice(2);
       return { messages: merged, ...(activeRun ? { activeRun: scrub(activeRun) } : {}), cursor: { streamId, epoch, after: head } };
     },
+
+    "sessions.rename": async payload => {
+      const { sessionId, title } = parse(schemas.rename, payload);
+      await requireSession(sessionId);
+      await requireUsable(sessionId);
+      const session = await deps.sessionIndexStore.rename(sessionId, title);
+      if (!session) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+      return { id: session.id, title: session.title, updatedAt: session.updatedAt };
+    },
+
+    /** Deletes a chat with its settings, memory, turns and events; allowed for a chat that is the
+     * host's alone too (a device may always delete), refused while it answers. */
+    "sessions.delete": payload => known(async () => {
+      const { sessionId } = parse(schemas.session, payload);
+      await requireSession(sessionId);
+      deps.runService.forgetSession(sessionId);
+      if (!await deps.sessionIndexStore.delete(sessionId)) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+      const current = runtime();
+      await current.sessionSettingsStore.delete(sessionId);
+      await current.memoryService.deleteSession(sessionId);
+      return { deleted: true };
+    }),
 
     "sessions.settings.get": async payload => {
       const { sessionId } = parse(schemas.session, payload);

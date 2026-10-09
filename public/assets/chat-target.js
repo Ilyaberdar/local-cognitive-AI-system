@@ -202,6 +202,21 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       sessionsLoaded = true;
       return sessions;
     },
+    /** Renames a server chat; the list shows the new title at once. */
+    async rename(key, title) {
+      const session = await call("sessions.rename", { sessionId: serverId(key), title }, hostOf(key));
+      const listed = sessions.find(item => item.id === key);
+      if (listed) Object.assign(listed, { title: session.title, updatedAt: session.updatedAt });
+      return { ...session, id: key, serverId: session.id };
+    },
+    /** Deletes a server chat there, for every device; what this window kept of it goes too. */
+    async remove(key) {
+      await call("sessions.delete", { sessionId: serverId(key) }, hostOf(key));
+      sessions = sessions.filter(item => item.id !== key);
+      settings.delete(key); setups.delete(key); views.delete(key);
+      if (subscribed?.key === key) api.release();
+      for (const [host, last] of lastSession) if (last === key) lastSession.delete(host);
+    },
     async createSession(title = "New chat") {
       const session = await call("sessions.create", { title });
       return { ...session, id: keyFor(session.id), serverId: session.id };
@@ -363,7 +378,7 @@ function renderRemoteAgents({ mode, settings, providers, models, hostName }) {
 
 /** Session setup for a server chat: chat type, language, the server's model and, on a server that
  * offers them (`agents`), its subagents or debate agents. `hostOnly`: why only the server may change it. */
-export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, models, collapsed, autosaveLabel, reviewTabs = "", agents = false, hostOnly = "" }) {
+export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, models, collapsed, autosaveLabel, reviewTabs = "", agents = false, hostOnly = "", renamable = false }) {
   const option = (value, current, label = value) => `<option value="${escape(value)}" ${String(value) === String(current ?? "") ? "selected" : ""}>${escape(label)}</option>`;
   const mode = settings.debate?.enabled || settings.mode === "hypothesis" ? "hypothesis" : settings.mode === "code" ? "code" : "general";
   const providers = (models?.providers ?? []).filter(provider => provider.id !== "local");
@@ -379,7 +394,9 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
         <fieldset class="remote-setup-fields" ${hostOnly ? "disabled" : ""}>
         <div class="chat-type-bar">${["general", "code", "hypothesis"].map(type => `<button class="chat-type-button ${mode === type ? "active" : ""}" type="button" data-action="set-chat-type" data-chat-type="${type}">${escape(type[0].toUpperCase() + type.slice(1))}</button>`).join("")}</div>
         <div class="chat-settings__grid compact session-metadata-grid">
-          <div class="field session-title-field"><label>Title</label><input value="${escape(title)}" readonly aria-readonly="true" title="Renaming server chats arrives in a later update" /></div>
+          <div class="field session-title-field"><label>Title</label>${renamable
+            ? `<input name="remoteTitle" value="${escape(title)}" maxlength="200" data-remote-title />`
+            : `<input value="${escape(title)}" readonly aria-readonly="true" title="Update Local Cognitive on ${escape(hostName)} to rename its chats here" />`}</div>
           <div class="field"><label>Language</label><select name="language">${["auto", "ru", "en"].map(value => option(value, settings.language)).join("")}</select></div>
           <input type="hidden" name="mode" value="${escape(mode)}" />
         </div>

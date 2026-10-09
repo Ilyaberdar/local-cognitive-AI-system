@@ -21,6 +21,8 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "sessions.messages.list": { kind: "request", timeoutMs: 30_000 },
   "sessions.settings.get": { kind: "request", timeoutMs: 15_000 },
   "sessions.setup.get": { kind: "request", timeoutMs: 15_000 },
+  "sessions.rename": { kind: "request", timeoutMs: 15_000 },
+  "sessions.delete": { kind: "request", timeoutMs: 60_000 },
   "sessions.settings.update": { kind: "request", timeoutMs: 30_000 },
   "models.available": { kind: "request", timeoutMs: 45_000 },
   "chat.runs.start": { kind: "command", timeoutMs: 30_000 },

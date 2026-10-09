@@ -78,4 +78,24 @@ test("a server chat's subagents and debate agents are set from a device; a chat 
   assert.equal(await failure(runtime.send("chat.runs.start", { sessionId: session.id, input: "Delete everything" })), "unsupported");
   assert.equal(await failure(runtime.request("sessions.settings.update", { sessionId: session.id, patch: { language: "en" } })), "unsupported");
   assert.equal(model.state.requests, requestsBefore, "nothing ran");
+
+  // Rename and delete: refused while answering; a follower learns the chat is gone.
+  const other = await runtime.request<{ id: string }>("sessions.create", { title: "Scratch" });
+  assert.equal((await runtime.request<{ title: string }>("sessions.rename", { sessionId: other.id, title: "Renamed" })).title, "Renamed");
+  model.hold();
+  updates.length = 0;
+  runtime.subscribe((await runtime.request<Snapshot>("sessions.messages.list", { sessionId: other.id })).cursor);
+  const busy = await runtime.send<{ runId: string }>("chat.runs.start", { sessionId: other.id, input: "Take your time" });
+  await until(() => model.state.waiting.length, count => count > 0);
+  assert.equal(await failure(runtime.request("sessions.delete", { sessionId: other.id })), "session_busy");
+  model.release();
+  await until(async () => (await runtime.request<Snapshot>("sessions.messages.list", { sessionId: other.id })).activeRun, run => !run);
+  assert.ok(busy.runId);
+  updates.length = 0;
+  assert.deepEqual(await runtime.request("sessions.delete", { sessionId: other.id }), { deleted: true });
+  await until(() => updates.some(update => "resync" in update), Boolean);
+  assert.equal(await failure(runtime.request("sessions.messages.list", { sessionId: other.id })), "session_unknown");
+  assert.equal((await runtime.request<Array<{ id: string }>>("sessions.list", {})).some(item => item.id === other.id), false);
+  // The chat the server keeps for itself can still be deleted from here.
+  assert.deepEqual(await runtime.request("sessions.delete", { sessionId: session.id }), { deleted: true });
 });

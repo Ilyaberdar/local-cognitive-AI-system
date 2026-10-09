@@ -37,6 +37,9 @@ export class EventJournal {
     for (const streamId of new Set(appended.map(entry => entry.streamId))) this.emitter.emit(streamId);
   }
 
+  /** Wakes the stream's followers without an event (the stream was removed). */
+  wake(streamId: string): void { this.emitter.emit(streamId); }
+
   head(streamId: string): { epoch: string; head: number } {
     const row = this.host.db.prepare("SELECT last_sequence FROM event_streams WHERE stream_id = ?").get(streamId);
     return { epoch: this.epoch, head: Number(row?.last_sequence ?? 0) };

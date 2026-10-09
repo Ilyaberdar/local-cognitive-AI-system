@@ -140,6 +140,20 @@ export class RunService {
     return { ...view, partialText: live?.text ?? "", ...(live?.progress ? { progress: live.progress } : {}), ...(live?.approval ? { pendingApproval: live.approval.view } : {}) };
   }
 
+  /** A deleted chat's turns and journal go with it; refused while the chat is answering, here or on
+   * the host's own screen. Followers find the stream gone and reload (and learn it no longer exists). */
+  forgetSession(sessionId: string): void {
+    if (this.activeRun(sessionId) || this.deps.legacyBusy?.(sessionId)) throw new RunServiceError("The chat is answering. Stop the answer first, then delete it.", "session_busy");
+    const streamId = streamOf(sessionId);
+    this.deps.host.transaction(db => {
+      db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
+      db.prepare("DELETE FROM runs WHERE session_id = ? AND kind = 'chat'").run(sessionId);
+      db.prepare("DELETE FROM events WHERE stream_id = ?").run(streamId);
+      db.prepare("DELETE FROM event_streams WHERE stream_id = ?").run(streamId);
+    });
+    this.deps.journal.wake(streamId);
+  }
+
   /** Turns that history from memory does not contain: unfinished, failed, cancelled or interrupted. */
   unfinishedTurns(sessionId: string, limit = 20): ChatMessage[] {
     const rows = this.deps.host.db.prepare(`SELECT r.run_id, r.status, r.error_code, m.message_id, m.role, m.status AS message_status, m.content_json, m.created_at

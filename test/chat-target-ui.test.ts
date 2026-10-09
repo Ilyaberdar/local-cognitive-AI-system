@@ -7,14 +7,17 @@ const RUN = "0b6a3f0e-7f1d-4b9e-8a52-1f2c3d4e5f60";
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 40)); await flush(10); };
 
 /** A paired server behind the desktop bridge, with one chat; `agents`: a server that offers agent setup (R5-4). */
-function fakeServer({ agents = false, hostOnly = "" } = {}) {
+function fakeServer({ agents = false, hostOnly = "", manage = false } = {}) {
   let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0",
-    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : [])] };
+    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : [])] };
+  const chats = [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }, ...(manage ? [{ id: "srv-3", title: "Older chat", updatedAt: "2026-10-07T10:00:00.000Z" }] : [])];
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
   const server = { messages: [] as unknown[], settings: { ...sessionSettings(), defaultTarget: { providerId: "llamacpp", model: "qwen" } }, head: 0 };
   const ok = (value: unknown) => ({ ok: true, value });
   const handlers: Record<string, (payload: any) => unknown> = {
-    "sessions.list": () => [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }],
+    "sessions.list": () => chats,
+    "sessions.rename": payload => Object.assign(chats.find(chat => chat.id === payload.sessionId)!, { title: payload.title }),
+    "sessions.delete": payload => { chats.splice(chats.findIndex(chat => chat.id === payload.sessionId), 1); return { deleted: true }; },
     "sessions.create": () => ({ id: "srv-2", title: "New chat" }),
     "sessions.messages.list": () => ({ messages: server.messages, cursor: { streamId: "session:srv-1", epoch: "e1", after: server.head } }),
     "sessions.settings.get": () => server.settings,
@@ -252,4 +255,37 @@ test("a server chat's access is ask or approve-for-me, saved on the server", asy
   await settle();
   assert.deepEqual(settingsUpdates(app), [{ defaultAccessMode: "ask" }]);
   assert.equal(paired.server.settings.defaultAccessMode, "ask");
+});
+
+test("a server chat is renamed and deleted on the server", async t => {
+  const paired = fakeServer({ manage: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const localBefore = app.requests.length;
+  const title = app.document.querySelector("#session-settings-form [data-remote-title]");
+  title.value = "Weekly plan";
+  title.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+  await settle();
+  assert.match(app.document.querySelector(".sidebar-chats").textContent, /Weekly plan/);
+  assert.equal(app.document.querySelector(".app-topbar h1").textContent, "Weekly plan");
+
+  const remove = app.document.querySelector(".sidebar-chats [data-action='delete-session-quick'][data-session-id]");
+  assert.match(remove.getAttribute("aria-label"), /Delete Weekly plan on fedora/);
+  remove.click();
+  await settle();
+  assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /Weekly plan/);
+  assert.equal(app.document.querySelector(".app-topbar h1").textContent, "Older chat", "another chat of the server opens");
+  const calls = ops(app, "request").filter(([op]: [string]) => ["sessions.rename", "sessions.delete"].includes(op));
+  assert.deepEqual(calls, [["sessions.rename", { sessionId: "srv-1", title: "Weekly plan" }, HOST], ["sessions.delete", { sessionId: "srv-1" }, HOST]]);
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => /^(PATCH|DELETE|PUT|POST) /.test(entry)), [], "nothing changed on this computer");
+});
+
+test("a server without rename and delete keeps its chats' titles read-only and offers no delete", async t => {
+  const paired = fakeServer();
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  assert.equal(app.document.querySelector("#session-settings-form [data-remote-title]"), null);
+  assert.equal(app.document.querySelector(".sidebar-chats [data-action='delete-session-quick']"), null);
 });

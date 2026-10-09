@@ -48,14 +48,15 @@ export function createProjectsUi(options) {
   </div>`;
   };
 
-  // A server's chats (R4): no projects, no deleting; a spinner where the server is answering.
+  // A server's chats: no projects; deleting where the server offers it; a spinner where it is answering.
   function remoteSidebar(remote) {
     const state = options.getState();
     const rows = remote.sessions.map(session => {
       const running = session.running || state.chatRequests?.has(session.id);
       return `<div class="session-row ${session.id === state.activeSessionId ? "active" : ""} ${running ? "is-running" : ""}">
       <button class="session-item ${session.id === state.activeSessionId ? "active" : ""}" data-action="open-session" data-session-id="${escape(session.id)}" title="${escape(session.title)}${session.updatedAt ? ` · ${escape(new Date(session.updatedAt).toLocaleString())}` : ""}" ${session.id === state.activeSessionId ? 'aria-current="page"' : ""}><span class="session-title">${escape(session.title)}</span></button>
-      ${running ? `<span class="session-delete session-working" role="status" aria-label="${escape(session.title)} is working" title="Answering on the server"><span class="button-spinner" aria-hidden="true"></span></span>` : ""}
+      ${running ? `<span class="session-delete session-working" role="status" aria-label="${escape(session.title)} is working" title="Answering on the server"><span class="button-spinner" aria-hidden="true"></span></span>`
+        : remote.canDelete ? `<button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${escape(session.id)}" aria-label="Delete ${escape(session.title)} on ${escape(remote.hostName)}" title="Delete chat on ${escape(remote.hostName)}">${icon("close")}</button>` : ""}
     </div>`;
     }).join("");
     return `<div class="sidebar-conversations" data-sidebar-scroll="conversations">
