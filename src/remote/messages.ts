@@ -26,6 +26,7 @@ export const MAX_REQUESTS_IN_FLIGHT = 16;
 export const SIGNATURE_CONTEXT = {
   register: "lc-host-register/v1",
   relayAuth: "lc-relay-host-auth/v1",
+  usageBatch: "lc-usage-batch/v1",
   claim: "lc-claim-receipt/v1",
   revoke: "lc-host-revoke/v1"
 } as const;
