@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { parseMcpConfiguration } from "./configuration";
+import { connectTimeoutMs, MAX_CALL_MS, parseMcpConfiguration, requestTimeoutMs } from "./configuration";
 import { McpClientError, safeMcpError } from "./errors";
 import { mcpOperation } from "./operation";
 import { compileToolArguments, snapshotArguments } from "./schema";
@@ -11,9 +11,14 @@ import {
   McpInvocationResult, McpLifecycleEvent, McpOperationOptions, McpServerDefinition
 } from "./types";
 
-export interface McpClientManagerOptions { connector?: McpConnector; credentialProvider?: McpCredentialProvider }
+export interface McpClientManagerOptions {
+  connector?: McpConnector;
+  credentialProvider?: McpCredentialProvider;
+  /** How often a failed server is tried again on use (default REVIVE_INTERVAL_MS). */
+  reviveIntervalMs?: number;
+}
 interface AvailableTool { tool: McpDiscoveredTool; validate: (args: unknown) => boolean }
-interface ToolSnapshot { available: Map<string, AvailableTool>; revision: number }
+interface ToolSnapshot { available: Map<string, AvailableTool>; revision: number; skipped: string[] }
 interface Entry {
   server: McpServerDefinition;
   binding: McpConnectionBinding;
@@ -32,7 +37,12 @@ interface Entry {
   discovering?: Promise<McpDiscoveredTool[]>;
   retiring?: Promise<void>;
   retryTimer?: ReturnType<typeof setTimeout>;
+  /** When a connection was last attempted (revive waits between attempts). */
+  attemptedAt?: number;
 }
+
+/** A server that failed is tried again on use at most this often. */
+const REVIVE_INTERVAL_MS = 10_000;
 
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -139,7 +149,7 @@ export class McpClientManager implements McpClientService {
     if (entry.status.state === "connected") return this.status(bindingId);
     if (entry.connecting) {
       // Cancelling a duplicate waiter does not cancel another caller's shared connection attempt.
-      return mcpOperation(options, entry.server.connectTimeoutMs ?? 10_000, async () => entry.connecting!);
+      return mcpOperation(options, connectTimeoutMs(entry.server), async () => entry.connecting!);
     }
     entry.wanted = true;
     this.clearRetry(entry);
@@ -156,12 +166,12 @@ export class McpClientManager implements McpClientService {
     this.assertAlive();
     if (options.signal?.aborted) throw new McpClientError("cancelled");
     const entry = this.connectedEntry(bindingId);
-    if (entry.discovering) return mcpOperation(options, entry.server.requestTimeoutMs ?? 30_000, async () => entry.discovering!);
+    if (entry.discovering) return mcpOperation(options, requestTimeoutMs(entry.server), async () => entry.discovering!);
     const generation = entry.generation;
     const connection = entry.connection!;
     const signal = this.operationSignal(entry, options.signal);
     let succeeded = false;
-    const pending = mcpOperation({ ...options, signal }, entry.server.requestTimeoutMs ?? 30_000, async (signal, timeoutMs) => {
+    const pending = mcpOperation({ ...options, signal }, requestTimeoutMs(entry.server), async (signal, timeoutMs) => {
       for (let refresh = 0; refresh < 10; refresh++) {
         const snapshot = await this.fetchTools(entry, connection, { signal, timeoutMs });
         if (!this.current(entry, generation)) throw new McpClientError("cancelled");
@@ -170,6 +180,7 @@ export class McpClientManager implements McpClientService {
         entry.available = snapshot.available;
         entry.publishedToolRevision = snapshot.revision;
         succeeded = true;
+        this.skipped(entry, snapshot.skipped);
         this.emitTools(entry);
         return this.tools(bindingId);
       }
@@ -212,8 +223,10 @@ export class McpClientManager implements McpClientService {
       const args = snapshotArguments(request.arguments === undefined ? {} : request.arguments);
       if (!available.validate(args)) throw new McpClientError("invalid_arguments");
       const connection = entry.connection!;
-      const result = await mcpOperation({ ...options, signal: this.operationSignal(entry, options.signal) },
-        entry.server.requestTimeoutMs ?? 30_000, (signal, timeoutMs) => connection.callTool(request.toolName, args, { signal, timeoutMs }));
+      // Progress the server reports keeps a long call (a render, a compile) going, up to MAX_CALL_MS.
+      const result = await mcpOperation({ ...options, signal: this.operationSignal(entry, options.signal) }, requestTimeoutMs(entry.server),
+        (signal, timeoutMs, progressed) => connection.callTool(request.toolName, args, { signal, timeoutMs,
+          onProgress: () => { progressed(); options.onProgress?.(); } }), MAX_CALL_MS);
       const outcome = result.isError ? "tool-error" : "success";
       const durationMs = Math.max(0, performance.now() - started);
       this.emit({ type: "invocation", callId, bindingId: request.bindingId, toolId, outcome, durationMs,
@@ -247,12 +260,32 @@ export class McpClientManager implements McpClientService {
     return this.disposing;
   }
 
+  /** Reconnects enabled servers that failed or dropped, each at most once per REVIVE_INTERVAL_MS (an
+   * editor opened after the app, or restarted), and waits for them up to `waitMs`. A server the user
+   * disconnected, or one that needs authentication, is left as it is. */
+  async revive(waitMs = 15_000): Promise<void> {
+    if (this.disposed) return;
+    const now = Date.now();
+    const attempts = [...this.entries.values()].filter(entry => entry.wanted && entry.status.enabled && entry.status.state === "error" &&
+      !entry.connecting && now - (entry.attemptedAt ?? 0) >= (this.options.reviveIntervalMs ?? REVIVE_INTERVAL_MS)).map(entry => {
+      this.clearRetry(entry);
+      entry.status.reconnectAttempt = 0;
+      return this.startConnect(entry).catch(() => undefined);
+    });
+    if (!attempts.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.allSettled(attempts), new Promise(resolve => { timer = setTimeout(resolve, waitMs); })]);
+    clearTimeout(timer);
+  }
+
   private startConnect(entry: Entry, options: McpOperationOptions = {}): Promise<McpConnectionStatus> {
     const generation = ++entry.generation;
     const controller = new AbortController();
     entry.controller = controller;
+    entry.attemptedAt = Date.now();
     entry.status.state = "connecting";
     delete entry.status.error;
+    delete entry.status.diagnostic;
     this.emitStatus(entry);
     let connection: McpConnection | undefined;
     let connectionError: McpClientError | undefined;
@@ -272,7 +305,7 @@ export class McpClientManager implements McpClientService {
     };
     const pending = (async () => {
       try {
-        await mcpOperation({ signal: controller.signal, timeoutMs: options.timeoutMs }, entry.server.connectTimeoutMs ?? 10_000,
+        await mcpOperation({ signal: controller.signal, timeoutMs: options.timeoutMs }, connectTimeoutMs(entry.server),
           (signal, timeoutMs) => {
             const initializing = (async () => {
               if (signal.aborted || !this.current(entry, generation)) throw new McpClientError("cancelled");
@@ -280,7 +313,7 @@ export class McpClientManager implements McpClientService {
               if (signal.aborted || !this.current(entry, generation)) throw new McpClientError("cancelled");
               connection = await this.connector.open(structuredClone(entry.server), structuredClone(entry.binding), {
                 signal, timeoutMs, credentialProvider: this.options.credentialProvider,
-                onClose: () => onFailure(new McpClientError("transport_error")), onError: onFailure,
+                onClose: error => onFailure(error ?? new McpClientError("transport_error")), onError: onFailure,
                 onToolsChanged: () => {
                   if (!this.current(entry, generation)) return;
                   this.invalidateTools(entry);
@@ -302,6 +335,7 @@ export class McpClientManager implements McpClientService {
                 entry.refreshRequested = false;
                 entry.status.state = "connected";
                 entry.status.reconnectAttempt = 0;
+                if (snapshot.skipped.length) entry.status.skippedTools = snapshot.skipped; else delete entry.status.skippedTools;
                 this.emitStatus(entry);
                 this.emitTools(entry);
                 return;
@@ -326,6 +360,7 @@ export class McpClientManager implements McpClientService {
           entry.status.state = safe.code === "authentication_required" ? "authentication-required" :
             safe.code === "cancelled" ? "disconnected" : "error";
           entry.status.error = safe.toJSON();
+          if (safe.detail) entry.status.diagnostic = safe.detail;
           this.emitStatus(entry);
           entry.retiring = entry.initializing?.then(() => {}, () => {});
           if (connection) await this.close(connection);
@@ -342,11 +377,12 @@ export class McpClientManager implements McpClientService {
   }
 
   private fetchTools(entry: Entry, connection: McpConnection, options: McpOperationOptions): Promise<ToolSnapshot> {
-    return mcpOperation(options, entry.server.requestTimeoutMs ?? 30_000, async (signal, timeoutMs) => {
+    return mcpOperation(options, requestTimeoutMs(entry.server), async (signal, timeoutMs) => {
       // A notification invalidates in-flight discovery. Restart its snapshot within the same deadline.
       for (let refresh = 0; refresh < 10; refresh++) {
         const revision = entry.toolRevision;
         const available = new Map<string, AvailableTool>();
+        const skipped: string[] = [];
         const cursors = new Set<string>();
         let cursor: string | undefined;
         for (let page = 0; ; page++) {
@@ -354,11 +390,15 @@ export class McpClientManager implements McpClientService {
           if (page >= 100) throw new McpClientError("protocol_error");
           const result = await connection.listTools(cursor, { signal, timeoutMs });
           for (const definition of result.tools) {
-            if (available.has(definition.name)) throw new McpClientError("protocol_error");
+            if (available.has(definition.name) || skipped.includes(definition.name)) throw new McpClientError("protocol_error");
+            // One tool whose schema cannot be used is left out; the server's other tools still work.
+            let validate: AvailableTool["validate"];
+            try { validate = compileToolArguments(definition.inputSchema); }
+            catch { skipped.push(definition.name); continue; }
             available.set(definition.name, {
               tool: { id: mcpToolId(entry.binding.id, definition.name), bindingId: entry.binding.id,
                 serverId: entry.server.id, definition: structuredClone(definition) },
-              validate: compileToolArguments(definition.inputSchema)
+              validate
             });
           }
           cursor = result.nextCursor;
@@ -366,7 +406,7 @@ export class McpClientManager implements McpClientService {
           if (cursors.has(cursor)) throw new McpClientError("protocol_error");
           cursors.add(cursor);
         }
-        if (revision === entry.toolRevision) return { available, revision };
+        if (revision === entry.toolRevision) return { available, revision, skipped };
       }
       throw new McpClientError("protocol_error");
     });
@@ -380,6 +420,7 @@ export class McpClientManager implements McpClientService {
     this.invalidateTools(entry);
     entry.status.state = error.code === "authentication_required" ? "authentication-required" : "error";
     entry.status.error = error.toJSON();
+    if (error.detail) entry.status.diagnostic = error.detail; else delete entry.status.diagnostic;
     this.emitStatus(entry);
     entry.retiring = connection ? this.close(connection) : undefined;
     if (error.retryable) this.scheduleRetry(entry);
@@ -409,6 +450,7 @@ export class McpClientManager implements McpClientService {
     entry.status.state = "disconnected";
     entry.status.reconnectAttempt = 0;
     delete entry.status.error;
+    delete entry.status.diagnostic;
     this.emitStatus(entry);
     return this.trackCleanup(Promise.allSettled([
       connection ? this.close(connection) : Promise.resolve(), entry.connecting, entry.initializing, entry.discovering, entry.retiring
@@ -435,6 +477,11 @@ export class McpClientManager implements McpClientService {
   }
   private owned(entry: Entry, generation: number): boolean {
     return !this.disposed && entry.generation === generation && this.entries.get(entry.binding.id) === entry;
+  }
+  private skipped(entry: Entry, tools: string[]): void {
+    if (String(entry.status.skippedTools ?? []) === String(tools)) return;
+    if (tools.length) entry.status.skippedTools = tools; else delete entry.status.skippedTools;
+    this.emitStatus(entry);
   }
   private clearRetry(entry: Entry): void { if (entry.retryTimer) clearTimeout(entry.retryTimer); entry.retryTimer = undefined; }
   private invalidateTools(entry: Entry): void { entry.toolRevision++; entry.available.clear(); this.emitTools(entry); }

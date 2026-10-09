@@ -74,7 +74,10 @@ test("SDK adapter sends cancellation and rejects an already cancelled call befor
 
 test("SDK adapter classifies startup failure, protocol failure and missing credentials without private diagnostics", async t => {
   const connector = new SdkMcpConnector();
-  await assert.rejects(connector.open({ ...definition(), transport: "stdio", command: path.join(os.tmpdir(), "missing-mcp-executable-private"), args: [] }, binding, openOptions()), errorCode("transport_error"));
+  // A missing command is named for the host's Settings (detail), never in the error's text or JSON.
+  await assert.rejects(connector.open({ ...definition(), transport: "stdio", command: path.join(os.tmpdir(), "missing-mcp-executable-private"), args: [] }, binding, openOptions()),
+    (error: unknown) => error instanceof McpClientError && error.code === "command_not_found" && !/private/.test(error.message + JSON.stringify(error)) &&
+      /missing-mcp-executable-private/.test(error.detail ?? ""));
   await assert.rejects(connector.open(definition(), { ...binding, credentialRef: "private-secret-reference" }, openOptions()), errorCode("authentication_required"));
   const connection = await connector.open(definition(), binding, openOptions());
   t.after(() => connection.close());

@@ -1,36 +1,14 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CallToolResultSchema, ListToolsResultSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { connectTimeoutMs, MAX_CALL_MS, requestTimeoutMs } from "./configuration";
 import { McpClientError, safeMcpError } from "./errors";
 import { mcpOperation } from "./operation";
+import { LocalStdioTransport } from "./stdioTransport";
 import { McpConnection, McpConnectionBinding, McpConnector, McpServerDefinition } from "./types";
 
 const HTTP_CLOSE_TIMEOUT_MS = 1_000;
-
-/** The SDK can call close without awaiting it when initialization fails. */
-class OwnedStdioTransport extends StdioClientTransport {
-  private closing?: Promise<void>;
-  override close(): Promise<void> {
-    return this.closing ??= this.closeOwnedProcess();
-  }
-
-  private async closeOwnedProcess(): Promise<void> {
-    if (!this.pid) return super.close();
-    const onclose = this.onclose;
-    let didClose!: () => void;
-    const closed = new Promise<void>(resolve => { didClose = resolve; });
-    this.onclose = () => { didClose(); onclose?.(); };
-    await super.close();
-    // SDK 1.x returns immediately after SIGKILL. Await the final child close event
-    // so application exit does not outrun process reaping, with a bounded fallback.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([closed, new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000); })]);
-    } finally { if (timer) clearTimeout(timer); }
-  }
-}
 
 class OwnedHttpTransport extends StreamableHTTPClientTransport {
   private closing?: Promise<void>;
@@ -66,7 +44,7 @@ export class SdkMcpConnector implements McpConnector {
     binding: McpConnectionBinding,
     options: Parameters<McpConnector["open"]>[2]
   ): Promise<McpConnection> {
-    let transport: OwnedStdioTransport | OwnedHttpTransport | undefined;
+    let transport: LocalStdioTransport | OwnedHttpTransport | undefined;
     let closing = false;
     let closed = false;
     let closePromise: Promise<void> | undefined;
@@ -83,27 +61,22 @@ export class SdkMcpConnector implements McpConnector {
     client.onclose = () => {
       if (closed) return;
       closed = true;
-      options.onClose();
+      options.onClose(transport instanceof LocalStdioTransport ? transport.failure() : undefined);
     };
     client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
       if (!closing && !closed && client.getServerCapabilities()?.tools?.listChanged) options.onToolsChanged();
     });
 
     try {
-      return await mcpOperation(options, server.connectTimeoutMs ?? 10_000, async (signal, timeoutMs) => {
+      return await mcpOperation(options, connectTimeoutMs(server), async (signal, timeoutMs) => {
         const credentials = await options.credentialProvider?.resolve({ server, binding, signal });
         signal.throwIfAborted();
         if (binding.credentialRef && !credentials) throw new McpClientError("authentication_required");
 
         transport = server.transport === "stdio"
-          ? new OwnedStdioTransport({
-              command: server.command,
-              args: server.args,
-              cwd: server.cwd,
-              env: { ...server.env, ...credentials?.env },
-              // A subprocess may print credentials in diagnostics. Do not expose its stderr.
-              stderr: "ignore"
-            })
+          // A subprocess may print credentials: its output reaches only the host's Settings, with them hidden.
+          ? new LocalStdioTransport({ command: server.command, args: server.args, cwd: server.cwd, env: { ...server.env, ...credentials?.env } },
+              Object.values(credentials?.env ?? {}))
           : new OwnedHttpTransport(new URL(server.endpoint), {
               requestInit: { headers: { ...credentials?.headers }, redirect: "error" },
               // SDK standalone GET streams do not spread requestInit, so enforce
@@ -124,15 +97,19 @@ export class SdkMcpConnector implements McpConnector {
         transport.onerror = error => {
           if (!closing && !closed) options.onError(adapterError(error));
         };
-        await client.connect(transport, { signal, timeout: timeoutMs });
+        try { await client.connect(transport, { signal, timeout: timeoutMs }); }
+        catch (error) {
+          // A process that exits while starting says why in its output.
+          if (transport instanceof LocalStdioTransport && !(error instanceof McpClientError) && !signal.aborted) throw transport.failure();
+          throw error;
+        }
         signal.throwIfAborted();
         if (closed || closing) throw new McpClientError("disconnected");
 
-        const requestTimeoutMs = server.requestTimeoutMs ?? 60_000;
         const request: McpConnection["listTools"] = async (cursor, requestOptions) => {
           try {
             if (closed || closing) throw new McpClientError("disconnected");
-            return await mcpOperation(requestOptions, requestTimeoutMs, (requestSignal, requestTimeout) =>
+            return await mcpOperation(requestOptions, requestTimeoutMs(server), (requestSignal, requestTimeout) =>
               // The manager owns pagination and schema validation. SDK listTools caches
               // output validators for only its most recently fetched page.
               client.getServerCapabilities()?.tools
@@ -146,9 +123,12 @@ export class SdkMcpConnector implements McpConnector {
           callTool: async (name, args, requestOptions) => {
             try {
               if (closed || closing) throw new McpClientError("disconnected");
-              return await mcpOperation(requestOptions, requestTimeoutMs, (requestSignal, requestTimeout) =>
-                client.request({ method: "tools/call", params: { name, arguments: args } },
-                  CallToolResultSchema, { signal: requestSignal, timeout: requestTimeout }));
+              // A server reporting progress (a render, a compile) keeps its call alive up to MAX_CALL_MS.
+              return await mcpOperation(requestOptions, requestTimeoutMs(server), (requestSignal, requestTimeout, progressed) =>
+                client.request({ method: "tools/call", params: { name, arguments: args } }, CallToolResultSchema, {
+                  signal: requestSignal, timeout: requestTimeout, resetTimeoutOnProgress: true, maxTotalTimeout: MAX_CALL_MS,
+                  onprogress: () => { progressed(); requestOptions.onProgress?.(); }
+                }), MAX_CALL_MS);
             } catch (error) { throw adapterError(error); }
           },
           close

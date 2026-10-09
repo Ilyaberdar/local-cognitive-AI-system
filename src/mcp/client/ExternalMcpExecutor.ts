@@ -26,6 +26,8 @@ interface Invocation {
 
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const failure = (text: string): ToolExecutionResult => ({ tool: "mcp", ok: false, output: text });
+/** Servers the user added. Plugin accounts share the connection pool but are reached only as plugins. */
+const userBinding = (bindingId: string) => !bindingId.startsWith("plugin-");
 
 /**
  * Presents configured outbound MCP tools to the agent loop. Every invocation is
@@ -37,7 +39,14 @@ export class ExternalMcpExecutor {
 
   constructor(private readonly baseDir: string, private readonly clients: McpClientService) {}
 
-  async hasAvailable(): Promise<boolean> { return (await this.available()).length > 0; }
+  /** MCP is offered while a server the user added is enabled, also one that dropped: a search tries it again. */
+  async hasAvailable(): Promise<boolean> { return this.clients.list().some(status => status.enabled && userBinding(status.bindingId)); }
+
+  /** Enabled servers that are not connected now, and why (the generic text; details stay in Settings). */
+  private unavailable(): Array<Record<string, string>> {
+    return this.clients.list().filter(status => status.enabled && userBinding(status.bindingId) && status.state !== "connected")
+      .map(status => ({ serverId: status.serverId, state: status.state, ...(status.error ? { problem: status.error.message } : {}) }));
+  }
 
   async search(query: string): Promise<Array<Record<string, unknown>>> {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -58,7 +67,11 @@ export class ExternalMcpExecutor {
   async execute(input: OperationInput): Promise<Outcome> {
     input.signal?.throwIfAborted();
     if (input.tool === "mcp.search") {
-      return { result: { tool: "mcp", ok: true, output: JSON.stringify(await this.search(String(input.arguments.query ?? ""))) } };
+      // An editor opened after the app, or restarted: its server is tried again before answering.
+      await this.clients.revive?.();
+      const tools = await this.search(String(input.arguments.query ?? ""));
+      const unavailable = this.unavailable();
+      return { result: { tool: "mcp", ok: true, output: JSON.stringify(unavailable.length ? { tools, unavailableServers: unavailable } : tools) } };
     }
     if (input.tool !== "mcp.call") throw new Error("Unknown MCP operation.");
     if (input.readOnly) return { result: failure("This agent has read-only access and cannot invoke external MCP tools.") };
@@ -79,6 +92,7 @@ export class ExternalMcpExecutor {
       if (saved?.status === "executing" || saved?.status === "unknown") return { result: this.unknown(input.id) };
 
       let tool = (await this.available()).find(item => item.id === toolId);
+      if (!tool) { await this.clients.revive?.(); tool = (await this.available()).find(item => item.id === toolId); }
       if (!tool) return { result: failure("This MCP tool is unavailable. Check that its server is enabled and connected.") };
       if (!compileToolArguments(tool.definition.inputSchema)(args)) {
         return { result: failure("Arguments do not match the current MCP tool schema. Search tools again before calling it.") };
@@ -154,7 +168,7 @@ export class ExternalMcpExecutor {
   }
 
   private async available(): Promise<AvailableTool[]> {
-    const statuses = new Map(this.clients.list().filter(status => status.enabled && status.state === "connected")
+    const statuses = new Map(this.clients.list().filter(status => status.enabled && status.state === "connected" && userBinding(status.bindingId))
       .map(status => [status.bindingId, status]));
     return this.clients.tools().flatMap((tool: McpDiscoveredTool) => {
       if (!statuses.has(tool.bindingId)) return [];
