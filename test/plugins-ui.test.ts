@@ -183,3 +183,31 @@ test("MCP settings set timeouts in seconds and choose which tools agents get, wi
   assert.deepEqual(server.disabledTools, ['execute_blender_code']);
   assert.equal('approval' in server, false, "an untouched default is not sent");
 });
+
+test("MCP settings set a server's secret without ever showing its value", async t => {
+  const ui = harness(true); t.after(ui.close);
+  await until(() => !!ui.root.querySelector('[data-plugin-search]'));
+  ui.dom.window.eval(`${shellBundle}\nwindow.SettingsShell = SettingsShell;`);
+  const appSettings: any = { mcp: { server: { enabled: true }, client: {
+    servers: { blender: { id: 'blender', name: 'Blender', enabled: true, transport: 'stdio', command: 'uvx' } },
+    bindings: { blender: { id: 'blender', serverId: 'blender', enabled: true } } } } };
+  const sent: any[] = [];
+  let view: any = { available: true, secrets: [] };
+  const data: any = {
+    integrations: [], loadMcp: async () => ({ connections: [], tools: [] }), save: async () => appSettings, connectMcp: async () => ({}), disconnectMcp: async () => ({}),
+    mcpSecrets: async () => view,
+    setMcpSecret: async (id: string, secret: any) => { sent.push([id, secret]); view = { available: true, secrets: [{ kind: 'env', name: secret.name, set: true }] }; return view; },
+    removeMcpSecret: async () => view
+  };
+  const shell = ui.dom.window.SettingsShell.createSettingsShell({ app: ui.root, getContext: () => ({ appSettings }), data, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
+  shell.route('#/settings/mcp/blender');
+  const content = ui.dom.window.document.querySelector('#settings-root');
+  await until(() => !!content.querySelector('[data-mcp-secret-save]'));
+  content.querySelector('[data-mcp-secret-name]').value = 'BLENDERMCP_SKETCHFAB_API_KEY';
+  content.querySelector('[data-mcp-secret-value]').value = 'sk-very-secret-value';
+  content.querySelector('[data-mcp-secret-save]').click();
+  await until(() => /Set/.test(content.querySelector('.mcp-secret-list')?.textContent ?? ''));
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [['blender', { kind: 'env', name: 'BLENDERMCP_SKETCHFAB_API_KEY', value: 'sk-very-secret-value' }]]);
+  assert.equal(content.innerHTML.includes('sk-very-secret-value'), false, "the value is not on the page");
+  assert.equal(content.querySelector('[data-mcp-secret-value]').value, '');
+});

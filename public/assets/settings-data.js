@@ -17,7 +17,11 @@ export function createSettingsData({ request, onSaved }) {
     }),
     loadMcp: () => request('/mcp/clients'),
     connectMcp: id => request(`/mcp/clients/${encodeURIComponent(id)}/connect`, { method: 'POST', timeoutMs: 30000 }),
-    disconnectMcp: id => request(`/mcp/clients/${encodeURIComponent(id)}/disconnect`, { method: 'POST', timeoutMs: 30000 })
+    disconnectMcp: id => request(`/mcp/clients/${encodeURIComponent(id)}/disconnect`, { method: 'POST', timeoutMs: 30000 }),
+    // A server's secrets: only whether each is set comes back, never a value.
+    mcpSecrets: id => request(`/mcp/clients/servers/${encodeURIComponent(id)}/secrets`),
+    setMcpSecret: (id, secret) => request(`/mcp/clients/servers/${encodeURIComponent(id)}/secrets`, { method: 'PUT', body: JSON.stringify(secret), timeoutMs: 30000 }),
+    removeMcpSecret: (id, kind, name) => request(`/mcp/clients/servers/${encodeURIComponent(id)}/secrets/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, { method: 'DELETE', timeoutMs: 30000 })
   };
 }
 

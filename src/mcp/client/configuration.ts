@@ -5,7 +5,12 @@ import type {
 } from "./types";
 
 const commonServerFields = ["id", "name", "enabled", "approval", "enabledTools", "disabledTools", "connectTimeoutMs", "requestTimeoutMs", "reconnect"];
-const stdioFields = ["command", "args", "cwd", "env"];
+const stdioFields = ["command", "args", "cwd", "env", "secretEnv"];
+const httpFields = ["endpoint", "headers", "secretHeaders", "bearerToken"];
+const envName = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const headerName = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
+// Set by the transport or the protocol, or carrying credentials: never a plain header.
+const reservedHeaders = new Set(["authorization", "proxy-authorization", "cookie", "host", "content-length", "content-type", "accept", "mcp-session-id", "mcp-protocol-version"]);
 const bindingFields = ["id", "serverId", "enabled", "name", "accountId", "credentialRef"];
 const reservedIds = new Set(["__proto__", "constructor", "prototype"]);
 // These values belong to the injected credential provider, never ordinary settings.
@@ -63,7 +68,7 @@ function integer(value: unknown, minimum: number, maximum: number): number {
 function serverDefinition(key: string, input: unknown): McpServerDefinition {
   identity(key);
   const value = record(input);
-  fields(value, [...commonServerFields, "transport", ...(value.transport === "stdio" ? stdioFields : ["endpoint"])]);
+  fields(value, [...commonServerFields, "transport", ...(value.transport === "stdio" ? stdioFields : httpFields)]);
   if (identity(value.id) !== key) invalid();
   const shared = {
     id: key,
@@ -104,11 +109,17 @@ function serverDefinition(key: string, input: unknown): McpServerDefinition {
         return [name, content];
       }));
     }
+    let secretEnv: string[] | undefined;
+    if (value.secretEnv !== undefined) {
+      secretEnv = names(value.secretEnv, 64, name => envName.test(name));
+      if (secretEnv.some(name => env && Object.hasOwn(env, name))) invalid();
+    }
     return {
       ...base, transport: "stdio", command: text(value.command, 4096),
       ...(args === undefined ? {} : { args }),
       ...(value.cwd === undefined ? {} : { cwd: text(value.cwd, 8192) }),
-      ...(env === undefined ? {} : { env })
+      ...(env === undefined ? {} : { env }),
+      ...(secretEnv === undefined ? {} : { secretEnv })
     };
   }
   if (value.transport !== "streamable-http") return invalid();
@@ -117,7 +128,35 @@ function serverDefinition(key: string, input: unknown): McpServerDefinition {
   try { url = new URL(endpoint); } catch { return invalid(); }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) invalid();
   if ([...url.searchParams].some(([name, value]) => hasSecretName(name) || /^(?:key|auth)$/i.test(name) || secretValue.test(value))) invalid();
-  return { ...base, transport: "streamable-http", endpoint };
+  let headers: Record<string, string> | undefined;
+  if (value.headers !== undefined) {
+    const entries = Object.entries(record(value.headers));
+    if (entries.length > 64) invalid();
+    headers = Object.fromEntries(entries.map(([name, entry]) => {
+      if (!headerName.test(name) || reservedHeaders.has(name.toLowerCase()) || hasSecretName(name)) invalid();
+      const content = text(entry, 8192, true);
+      if (/[\r\n]/.test(content) || secretValue.test(content)) invalid();
+      return [name, content];
+    }));
+  }
+  let secretHeaders: string[] | undefined;
+  if (value.secretHeaders !== undefined) {
+    secretHeaders = names(value.secretHeaders, 32, name => headerName.test(name) && !["host", "content-length", "content-type", "accept", "mcp-session-id", "mcp-protocol-version"].includes(name.toLowerCase()));
+    if (secretHeaders.some(name => headers && Object.keys(headers).some(plain => plain.toLowerCase() === name.toLowerCase()))) invalid();
+    if (new Set(secretHeaders.map(name => name.toLowerCase())).size !== secretHeaders.length) invalid();
+  }
+  const bearerToken = value.bearerToken === undefined ? undefined : boolean(value.bearerToken);
+  if (bearerToken && secretHeaders?.some(name => name.toLowerCase() === "authorization")) invalid();
+  return { ...base, transport: "streamable-http", endpoint, ...(headers === undefined ? {} : { headers }),
+    ...(secretHeaders === undefined ? {} : { secretHeaders }), ...(bearerToken ? { bearerToken } : {}) };
+}
+
+/** Names of secrets (values live in the vault): unique, valid, bounded. */
+function names(value: unknown, maximum: number, valid: (name: string) => boolean): string[] {
+  if (!Array.isArray(value) || value.length > maximum) return invalid();
+  const list = value.map(name => text(name, 128));
+  if (list.some(name => !valid(name)) || new Set(list).size !== list.length) invalid();
+  return list;
 }
 
 function connectionBinding(key: string, input: unknown): McpConnectionBinding {
@@ -166,7 +205,7 @@ export function applyMcpConfigurationPatch(current: McpClientConfiguration, patc
     for (const [field, value] of Object.entries(update)) if (value === null) { delete previous[field]; delete update[field]; }
     // Switching transport discards only the old transport's fields; explicit invalid fields still fail validation.
     if (update.transport !== undefined && update.transport !== previous.transport) {
-      for (const field of [...stdioFields, "endpoint"]) delete previous[field];
+      for (const field of [...stdioFields, ...httpFields]) delete previous[field];
     }
     result.servers[id] = serverDefinition(id, { id, ...previous, ...update });
   }

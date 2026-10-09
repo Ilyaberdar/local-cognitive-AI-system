@@ -78,7 +78,7 @@ export class SdkMcpConnector implements McpConnector {
           ? new LocalStdioTransport({ command: server.command, args: server.args, cwd: server.cwd, env: { ...server.env, ...credentials?.env } },
               Object.values(credentials?.env ?? {}))
           : new OwnedHttpTransport(new URL(server.endpoint), {
-              requestInit: { headers: { ...credentials?.headers }, redirect: "error" },
+              requestInit: { headers: { ...server.headers, ...credentials?.headers }, redirect: "error" },
               // SDK standalone GET streams do not spread requestInit, so enforce
               // this on every request before any transient headers can be redirected.
               fetch: (url, init) => fetch(url, { ...init, redirect: "error" }),
