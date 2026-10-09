@@ -6,9 +6,10 @@ const HOST = "6f1c2c3e-58a4-4c55-9a0e-3c7f5b1d2e90";
 const RUN = "0b6a3f0e-7f1d-4b9e-8a52-1f2c3d4e5f60";
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 40)); await flush(10); };
 
-/** A paired server behind the desktop bridge, with one chat. */
-function fakeServer() {
-  let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0", capabilities: ["chat.runs.start", "events.poll"] };
+/** A paired server behind the desktop bridge, with one chat; `agents`: a server that offers agent setup (R5-4). */
+function fakeServer({ agents = false, hostOnly = "" } = {}) {
+  let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0",
+    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : [])] };
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
   const server = { messages: [] as unknown[], settings: { ...sessionSettings(), defaultTarget: { providerId: "llamacpp", model: "qwen" } }, head: 0 };
   const ok = (value: unknown) => ({ ok: true, value });
@@ -17,8 +18,9 @@ function fakeServer() {
     "sessions.create": () => ({ id: "srv-2", title: "New chat" }),
     "sessions.messages.list": () => ({ messages: server.messages, cursor: { streamId: "session:srv-1", epoch: "e1", after: server.head } }),
     "sessions.settings.get": () => server.settings,
-    "sessions.settings.update": payload => (server.settings = { ...server.settings, ...payload.patch }),
-    "models.available": () => ({ providers: [{ id: "llamacpp", name: "Local models" }], availableModels: [], loadedModels: [],
+    "sessions.setup.get": () => ({ settings: server.settings, access: { modes: ["ask", "default"], ...(hostOnly ? { hostOnly } : {}) }, limits: { subagents: 4, advisors: 5 } }),
+    "sessions.settings.update": payload => (server.settings = { ...server.settings, ...payload.patch, debate: { ...server.settings.debate, ...payload.patch.debate } }),
+    "models.available": () => ({ providers: [{ id: "llamacpp", name: "Local models" }, { id: "openai", name: "OpenAI" }], availableModels: [{ providerId: "openai", id: "gpt-4.1" }], loadedModels: [],
       allManagedModels: [{ providerId: "llamacpp", id: "qwen", libraryId: "qwen", displayName: "Qwen", filesAvailable: true, compatibility: { canLoad: true }, loaded: true }],
       appSettings: { llm: { defaultProvider: "llamacpp" }, providers: {} } }),
     "chat.runs.cancel": payload => ({ runId: payload.runId, status: "running" })
@@ -162,4 +164,70 @@ test("settings of a server chat are saved on the server, only the changed ones",
   const updates = ops(app, "request").filter(([op]: [string]) => op === "sessions.settings.update");
   assert.deepEqual(updates, [["sessions.settings.update", { sessionId: "srv-1", patch: { language: "en" } }, HOST]]);
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => entry.startsWith("PUT")), [], "no local settings write");
+});
+
+const autosave = async () => { await new Promise(resolve => setTimeout(resolve, 800)); await settle(); };
+const settingsUpdates = (app: Harness) => ops(app, "request").filter(([op]: [string]) => op === "sessions.settings.update").map(([, payload]: [string, any]) => payload.patch);
+const field = (app: Harness, name: string) => app.document.querySelector(`#session-settings-form [name="${name}"]`);
+const pick = (app: Harness, name: string, value: string) => { const element = field(app, name); element.value = value; element.dispatchEvent(new app.window.Event("change", { bubbles: true })); };
+
+test("a server chat sets up subagents and debate agents with the server's own models", async t => {
+  const paired = fakeServer({ agents: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const localBefore = app.requests.length;
+  assert.ok(ops(app, "request").some(([op]: [string]) => op === "sessions.setup.get"));
+  assert.match(app.document.querySelector("#session-settings-form").textContent, /Subagents · on fedora[\s\S]*No configured subagents/);
+
+  app.document.querySelector("[data-action='add-code-agent']").click();
+  await autosave();
+  const card = app.document.querySelector(".code-agent-card[data-code-agent-index='0']");
+  assert.ok(card, "a subagent card is added");
+  assert.match(field(app, "codeAgentModel:0").textContent, /Qwen · Loaded/, "the server's library, not this computer's");
+  pick(app, "codeAgentProvider:0", "openai");
+  assert.match(field(app, "codeAgentModel:0").textContent, /gpt-4\.1/, "the model list follows the provider at once");
+  pick(app, "codeAgentModel:0", "gpt-4.1");
+  await autosave();
+  const name = String(field(app, "codeAgentName:0").value);
+  const [added, changed] = settingsUpdates(app);
+  assert.deepEqual(added, { codeAgents: [{ id: added.codeAgents[0].id, name, providerId: "llamacpp", model: "qwen" }] }, "only the agents, with no access mode");
+  assert.deepEqual(changed, { codeAgents: [{ id: added.codeAgents[0].id, name, providerId: "openai", model: "gpt-4.1" }] });
+
+  app.document.querySelector("[data-action='set-chat-type'][data-chat-type='hypothesis']").click();
+  await autosave();
+  assert.match(app.document.querySelector("#session-settings-form").textContent, /Hypothesis models · on fedora/);
+  assert.deepEqual([...app.document.querySelectorAll(".hypothesis-agent-card [name^='hypothesisAgentName:']")].map((input: any) => input.value), ["Support", "Attack", "Judge"]);
+  pick(app, "debateProfile", "security");
+  app.document.querySelector("[data-action='add-hypothesis-agent']").click();
+  await autosave();
+  const latest = settingsUpdates(app).slice(2);
+  assert.ok(latest.some((patch: any) => patch.mode === "hypothesis"), "the chat type is saved");
+  const last = Object.assign({}, ...latest);
+  assert.equal(last.debate.profile, "security");
+  assert.equal("enabled" in last.debate, false, "whether it debates follows the chat type on the server");
+  assert.deepEqual(last.hypothesisAgents.map((agent: any) => agent.role), ["support", "attack", "judge", "advisor"]);
+  assert.deepEqual(last.hypothesisAgents[2], { id: "hypothesis-judge", name: "Judge", role: "judge", providerId: "local" });
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => /^(PUT|POST) /.test(entry)), [], "nothing was saved on this computer");
+});
+
+test("a server too old for agent setup says so and sends no agents", async t => {
+  const paired = fakeServer();
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  assert.equal(app.document.querySelector("[data-action='add-code-agent']"), null);
+  assert.match(app.document.querySelector(".remote-setup-note").textContent, /Update Local Cognitive on fedora to add subagents/);
+  app.document.querySelector("[data-action='set-chat-type'][data-chat-type='hypothesis']").click();
+  await autosave();
+  assert.deepEqual(settingsUpdates(app), [{ mode: "hypothesis" }]);
+});
+
+test("a chat with full access on the server shows why and cannot be changed here", async t => {
+  const paired = fakeServer({ agents: true, hostOnly: "This chat has full access on the server, so it can only be used or changed there." });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  assert.match(app.document.querySelector(".remote-setup-note--host").textContent, /full access on the server/);
+  assert.equal(app.document.querySelector("#session-settings-form fieldset.remote-setup-fields").disabled, true);
 });

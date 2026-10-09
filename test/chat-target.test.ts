@@ -25,6 +25,22 @@ test("server chats save only the supported settings that changed", () => {
   assert.deepEqual(plain(remoteSettingsPatch({ defaultTarget: { providerId: "" } }, current)), {});
 });
 
+test("a server that offers agent setup gets the agents and debate that changed, without access modes", () => {
+  const { remoteSettingsPatch } = load();
+  const current = { mode: "code", defaultTarget: { providerId: "llamacpp", model: "qwen" }, defaultAccessMode: "default",
+    codeAgents: [{ id: "a1", name: "Nova", providerId: "llamacpp", model: "qwen", accessMode: "default" }],
+    hypothesisAgents: [{ id: "s", name: "Support", role: "support", providerId: "llamacpp", model: "qwen" }],
+    debate: { enabled: false, profile: "general", support: { providerId: "llamacpp", model: "qwen" }, attack: { providerId: "llamacpp" }, judge: { providerId: "local" } } };
+  const same = { ...current, subagents: current.codeAgents, debate: { ...current.debate, enabled: true } };
+  assert.deepEqual(plain(remoteSettingsPatch(same, current, { agents: true })), {}, "the alias and debate.enabled are never sent; nothing changed");
+  const next = { ...current, codeAgents: [{ ...current.codeAgents[0], accessMode: "full", providerId: "openai", model: "gpt-4.1" }],
+    debate: { ...current.debate, profile: "security", judge: { providerId: "local", model: "ignored" } } };
+  assert.deepEqual(plain(remoteSettingsPatch(next, current, { agents: true })), {
+    codeAgents: [{ id: "a1", name: "Nova", providerId: "openai", model: "gpt-4.1" }], debate: { profile: "security", support: { providerId: "llamacpp", model: "qwen" },
+      attack: { providerId: "llamacpp" }, judge: { providerId: "local" } } });
+  assert.deepEqual(plain(remoteSettingsPatch(next, current)), {}, "an older server is sent no agents");
+});
+
 test("stream events rebuild the answer at offsets, ignore replays and ask for a resync on a gap", () => {
   const { reduceSessionEvents, runProgress } = load();
   const view: any = { lastSeq: 4, run: { runId: "r1", input: "hi", answer: "" } };

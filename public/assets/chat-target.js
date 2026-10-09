@@ -2,11 +2,37 @@ import { icon } from "./ui-primitives.js";
 
 const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 const ALLOWED_SETTINGS = ["mode", "language", "outputStyle", "reasoningEffort", "defaultTarget"];
+// Agents and debate, for a server that offers them (R5-4: `sessions.setup.get`).
+const AGENT_SETTINGS = ["codeAgents", "hypothesisAgents", "debate"];
+const DEBATE_PROFILES = ["general", "technical", "product", "research", "security"];
+const MAX_SUBAGENTS = 4, MAX_HYPOTHESIS_AGENTS = 8;
+const remoteTarget = value => value?.providerId ? { providerId: value.providerId, ...(value.model && value.providerId !== "local" ? { model: value.model } : {}) } : undefined;
+/** An agent as a server takes it: no access mode (agents use the chat's), no empty model. */
+const remoteAgent = (agent, withRole) => ({ id: String(agent.id ?? ""), name: String(agent.name ?? "").trim(), ...(withRole ? { role: agent.role } : {}), ...remoteTarget(agent) });
+const remoteAgentSetting = (key, value) => {
+  if (key === "codeAgents") return Array.isArray(value) ? value.map(agent => remoteAgent(agent, false)) : undefined;
+  if (key === "hypothesisAgents") return Array.isArray(value) ? value.map(agent => remoteAgent(agent, true)) : undefined;
+  if (!value || typeof value !== "object") return undefined;
+  // Whether a chat debates follows its type (`mode`): `enabled` is never sent.
+  const debate = { ...(value.profile ? { profile: value.profile } : {}) };
+  for (const role of ["support", "attack", "judge"]) if (remoteTarget(value[role])) debate[role] = remoteTarget(value[role]);
+  return debate;
+};
 const TERMINAL = { "run.completed": "completed", "run.failed": "failed", "run.cancelled": "cancelled", "run.interrupted": "interrupted", "run.needs_review": "needs_review" };
 
-/** The settings a server chat may change (R4), and only those that differ from the server's copy. */
-export function remoteSettingsPatch(patch, current) {
+/** The settings a server chat may change, and only those that differ from the server's copy.
+ * Agents and debate go only to a server that offers them (`agents`). */
+export function remoteSettingsPatch(patch, current, { agents = false } = {}) {
   const result = {};
+  if (agents) {
+    for (const key of AGENT_SETTINGS) {
+      const value = remoteAgentSetting(key, patch?.[key]);
+      if (value === undefined) continue;
+      const before = remoteAgentSetting(key, current?.[key]);
+      const same = key === "debate" ? Object.entries(value).every(([name, item]) => JSON.stringify(item) === JSON.stringify(before?.[name])) : JSON.stringify(value) === JSON.stringify(before);
+      if (!same) result[key] = value;
+    }
+  }
   for (const key of ALLOWED_SETTINGS) {
     const value = patch?.[key];
     if (value === undefined || value === null) continue;
@@ -85,7 +111,7 @@ export function remoteModelOptions(models, providerId) {
 export function createChatTarget({ bridge = window.desktopRemote, account, onChange = () => {}, onEvent = () => {} } = {}) {
   const runtime = bridge?.runtime;
   let target = "local", status = { state: runtime ? "idle" : "unavailable" }, hosts = [], sessions = [], sessionsLoaded = false, models;
-  const refs = new Map(), keysByRef = new Map(), settings = new Map(), views = new Map(), lastSession = new Map();
+  const refs = new Map(), keysByRef = new Map(), settings = new Map(), setups = new Map(), views = new Map(), lastSession = new Map();
   let subscribed, generation = 0, modelsStale = false;
 
   // Every call names its server (the selected one, or the one a chat lives on): the main process
@@ -97,6 +123,8 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
   };
   const serverId = key => refs.get(key)?.sessionId;
   const hostOf = key => refs.get(key)?.hostId;
+  /** Whether the server a chat lives on offers agents and debate (and says when a chat is its own). */
+  const agentsOn = host => status.hostId === host && (status.capabilities ?? []).includes("sessions.setup.get");
   /** A screen key for a server chat: one key per server and chat, in the alphabet voice input accepts. */
   const keyFor = (sessionId, hostId = target) => {
     const ref = `${hostId}:${sessionId}`;
@@ -178,9 +206,12 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     },
     /** History, the turn in progress and the cursor to follow the chat from. */
     async load(key) {
-      const sessionId = serverId(key);
-      const [snapshot, sessionSettings] = await Promise.all([call("sessions.messages.list", { sessionId }, hostOf(key)), call("sessions.settings.get", { sessionId }, hostOf(key))]);
+      const sessionId = serverId(key), host = hostOf(key), agents = agentsOn(host);
+      const [snapshot, setup] = await Promise.all([call("sessions.messages.list", { sessionId }, host),
+        agents ? call("sessions.setup.get", { sessionId }, host) : call("sessions.settings.get", { sessionId }, host).then(value => ({ settings: value }))]);
+      const sessionSettings = setup.settings;
       settings.set(key, sessionSettings);
+      setups.set(key, { agents, hostOnly: setup.access?.hostOnly, modes: setup.access?.modes ?? [], limits: setup.limits });
       const run = snapshot.activeRun;
       const runMessages = run ? snapshot.messages.filter(message => message.runId === run.runId) : [];
       const view = { lastSeq: snapshot.cursor.after, run: run ? { runId: run.runId, input: runMessages.find(message => message.role === "user")?.content ?? "",
@@ -191,9 +222,11 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       return { messages: run ? snapshot.messages.filter(message => message.runId !== run.runId) : snapshot.messages, settings: sessionSettings, view, cursor: snapshot.cursor };
     },
     view: key => views.get(key),
+    /** What a server chat's setup offers: agents (`agents`), and why it is the server's alone (`hostOnly`). */
+    setup: key => setups.get(key) ?? { agents: false, modes: [] },
     async updateSettings(key, patch) {
       const current = settings.get(key);
-      const changes = remoteSettingsPatch(patch, current);
+      const changes = remoteSettingsPatch(patch, current, { agents: Boolean(setups.get(key)?.agents) });
       if (!Object.keys(changes).length && current) return current;
       const saved = await call("sessions.settings.update", { sessionId: serverId(key), patch: changes }, hostOf(key));
       settings.set(key, saved);
@@ -269,19 +302,76 @@ export function renderTargetBanner(target) {
     <button type="button" class="primary-button" data-chat-target="local">Use This computer</button></div></section>`;
 }
 
-/** Session setup for a server chat: chat type, language and the server's model (R4 scope). */
-export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, models, collapsed, autosaveLabel, reviewTabs = "" }) {
+/** A model choice of the server for one provider, the saved one kept when the server no longer lists it. */
+export function remoteModelSelect(name, providerId, model, models) {
+  const option = (value, current, label = value) => `<option value="${escape(value)}" ${String(value) === String(current ?? "") ? "selected" : ""}>${escape(label)}</option>`;
+  if (providerId === "local") return `<select name="${escape(name)}" data-remote-model disabled><option value="">Built-in judge</option></select>`;
+  const choices = remoteModelOptions(models, providerId);
+  const unknown = model && !choices.some(choice => choice.id === model);
+  return `<select name="${escape(name)}" data-remote-model>
+    <option value="">${models ? (choices.length ? "Server default" : "No models on the server") : "Loading models…"}</option>
+    ${unknown ? `<option value="${escape(model)}" selected>${escape(model)}</option>` : ""}
+    ${choices.map(choice => option(choice.id, model, `${choice.label}${choice.loaded ? " · Loaded" : ""}`)).join("")}
+  </select>`;
+}
+
+/** The subagents or debate agents of a server chat, in the markup of this computer's setup so the
+ * same handlers add, delete and save them; every model choice is the server's. */
+function renderRemoteAgents({ mode, settings, providers, models, hostName }) {
+  const option = (value, current, label = value) => `<option value="${escape(value)}" ${String(value) === String(current ?? "") ? "selected" : ""}>${escape(label)}</option>`;
+  const providerSelect = (name, modelName, current, list) => `<select name="${escape(name)}" data-remote-provider="${escape(modelName)}">${list.map(provider => option(provider.id, current, provider.name)).join("")}${current && !list.some(provider => provider.id === current) ? option(current, current) : ""}</select>`;
+  if (mode !== "hypothesis") {
+    const agents = settings.codeAgents ?? [];
+    const cards = agents.map((agent, index) => `<div class="code-agent-card" data-code-agent-index="${index}" data-setup-agent-id="${escape(agent.id)}">
+        <input type="hidden" name="codeAgentId:${index}" value="${escape(agent.id)}" />
+        <div class="field"><label>Name</label><input name="codeAgentName:${index}" value="${escape(agent.name)}" maxlength="60" /></div>
+        <div class="field"><label>Provider</label>${providerSelect(`codeAgentProvider:${index}`, `codeAgentModel:${index}`, agent.providerId, providers)}</div>
+        <div class="field code-agent-model-field" data-code-agent-model-index="${index}"><label>Model</label>${remoteModelSelect(`codeAgentModel:${index}`, agent.providerId, agent.model ?? "", models)}</div>
+        <div class="field code-agent-delete"><label>&nbsp;</label><button class="ghost-button" type="button" data-action="delete-code-agent" data-code-agent-index="${index}">Delete</button></div>
+      </div>`).join("");
+    return `<section class="setup-section">
+        <div class="row-between"><div><div class="section-label">Subagents · on ${escape(hostName)}</div><div class="subtle">Use @name in chat or ask to spawn a subagent. Max ${MAX_SUBAGENTS} active.</div></div>
+          <button class="ghost-button" type="button" data-action="add-code-agent" aria-label="Add subagent" title="Add subagent" ${agents.length >= MAX_SUBAGENTS ? "disabled" : ""}>${icon("plus")}</button></div>
+        <div class="code-agents">${cards || `<div class="empty compact-empty">No configured subagents. Spawn uses the main model.</div>`}</div>
+      </section>`;
+  }
+  // A chat saved before it had debate agents debates with its three debate targets.
+  const agents = settings.hypothesisAgents?.length ? settings.hypothesisAgents : ["support", "attack", "judge"].map(role => ({ id: `hypothesis-${role}`,
+    name: role[0].toUpperCase() + role.slice(1), role, ...remoteTarget(settings.debate?.[role] ?? { providerId: role === "judge" ? "local" : settings.defaultTarget?.providerId }) }));
+  const judges = [...providers, { id: "local", name: "local" }];
+  const cards = agents.map((agent, index) => `<div class="code-agent-card hypothesis-agent-card" data-hypothesis-agent-index="${index}" data-setup-agent-id="${escape(agent.id)}">
+      <input type="hidden" name="hypothesisAgentId:${index}" value="${escape(agent.id)}" />
+      <div class="field"><label>Name</label><input name="hypothesisAgentName:${index}" value="${escape(agent.name)}" maxlength="60" /></div>
+      <div class="field"><label>Role</label><select name="hypothesisAgentRole:${index}" ${index < 3 ? "disabled" : ""}>${["support", "attack", "judge", "advisor"].map(value => option(value, agent.role)).join("")}</select>
+        ${index < 3 ? `<input type="hidden" name="hypothesisAgentRole:${index}" value="${escape(agent.role)}" />` : ""}</div>
+      <div class="field"><label>Provider</label>${providerSelect(`hypothesisAgentProvider:${index}`, `hypothesisAgentModel:${index}`, agent.providerId, agent.role === "judge" ? judges : providers)}</div>
+      <div class="field hypothesis-agent-model-field" data-hypothesis-agent-model-index="${index}"><label>Model</label>${remoteModelSelect(`hypothesisAgentModel:${index}`, agent.providerId, agent.model ?? "", models)}</div>
+      ${index >= 3 ? `<div class="field code-agent-delete"><label>&nbsp;</label><button class="ghost-button" type="button" data-action="delete-hypothesis-agent" data-hypothesis-agent-index="${index}" data-hypothesis-agent-id="${escape(agent.id)}">Delete</button></div>` : ""}
+    </div>`).join("");
+  return `<section class="setup-section">
+      <div class="chat-settings__grid compact"><div class="field"><label>Profile</label><select name="debateProfile">${DEBATE_PROFILES.map(value => option(value, settings.debate?.profile)).join("")}</select></div></div>
+      <div class="row-between"><div><div class="section-label">Hypothesis models · on ${escape(hostName)}</div><div class="subtle">Support, attack, and judge are used now. Add up to 5 advisors for expanded debate flow.</div></div>
+        <button class="ghost-button" type="button" data-action="add-hypothesis-agent" aria-label="Add advisor" title="Add advisor" ${agents.length >= MAX_HYPOTHESIS_AGENTS ? "disabled" : ""}>${icon("plus")}</button></div>
+      <div class="code-agents hypothesis-agents">${cards}</div>
+    </section>`;
+}
+
+/** Session setup for a server chat: chat type, language, the server's model and, on a server that
+ * offers them (`agents`), its subagents or debate agents. `hostOnly`: why only the server may change it. */
+export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, models, collapsed, autosaveLabel, reviewTabs = "", agents = false, hostOnly = "" }) {
   const option = (value, current, label = value) => `<option value="${escape(value)}" ${String(value) === String(current ?? "") ? "selected" : ""}>${escape(label)}</option>`;
   const mode = settings.debate?.enabled || settings.mode === "hypothesis" ? "hypothesis" : settings.mode === "code" ? "code" : "general";
   const providers = (models?.providers ?? []).filter(provider => provider.id !== "local");
   const providerId = settings.defaultTarget?.providerId;
-  const choices = remoteModelOptions(models, providerId);
   const model = settings.defaultTarget?.model ?? "";
-  const unknown = model && !choices.some(choice => choice.id === model);
+  const note = hostOnly || (agents ? "Attachments and access modes for server chats arrive in a later update."
+    : `Update Local Cognitive on ${hostName} to add subagents and debate agents to its chats.`);
   return `<form class="panel chat-settings form-grid ${collapsed ? "chat-settings--collapsed" : ""}" id="session-settings-form" data-session-id="${escape(sessionKey)}" data-remote-setup="true" data-setup-mode="${escape(mode)}">
       <div class="session-resize-handle" data-action="resize-right-panel" title="Resize panel"></div>
       ${reviewTabs}
       <div id="session-setup-body" class="chat-settings__body">
+        ${hostOnly ? `<p class="subtle remote-setup-note remote-setup-note--host" role="note">${escape(hostOnly)}</p>` : ""}
+        <fieldset class="remote-setup-fields" ${hostOnly ? "disabled" : ""}>
         <div class="chat-type-bar">${["general", "code", "hypothesis"].map(type => `<button class="chat-type-button ${mode === type ? "active" : ""}" type="button" data-action="set-chat-type" data-chat-type="${type}">${escape(type[0].toUpperCase() + type.slice(1))}</button>`).join("")}</div>
         <div class="chat-settings__grid compact session-metadata-grid">
           <div class="field session-title-field"><label>Title</label><input value="${escape(title)}" readonly aria-readonly="true" title="Renaming server chats arrives in a later update" /></div>
@@ -291,15 +381,13 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
         <section class="setup-section">
           <div class="section-label">Main model · on ${escape(hostName)}</div>
           <div class="chat-settings__grid compact">
-            <div class="field"><label>Provider</label><select name="defaultProvider" data-remote-provider>${providers.map(provider => option(provider.id, providerId, provider.name)).join("")}${providerId && !providers.some(provider => provider.id === providerId) ? option(providerId, providerId) : ""}</select></div>
-            <div class="field"><label>Model</label><select name="defaultModel" data-remote-model>
-              <option value="">${models ? (choices.length ? "Server default" : "No models on the server") : "Loading models…"}</option>
-              ${unknown ? `<option value="${escape(model)}" selected>${escape(model)}</option>` : ""}
-              ${choices.map(choice => option(choice.id, model, `${choice.label}${choice.loaded ? " · Loaded" : ""}`)).join("")}
-            </select></div>
+            <div class="field"><label>Provider</label><select name="defaultProvider" data-remote-provider="defaultModel">${providers.map(provider => option(provider.id, providerId, provider.name)).join("")}${providerId && !providers.some(provider => provider.id === providerId) ? option(providerId, providerId) : ""}</select></div>
+            <div class="field"><label>Model</label>${remoteModelSelect("defaultModel", providerId, model, models)}</div>
           </div>
         </section>
-        <p class="subtle remote-setup-note">Subagents, debate agents, attachments and access modes for server chats arrive in a later update.</p>
+        ${agents ? renderRemoteAgents({ mode, settings, providers, models, hostName }) : ""}
+        </fieldset>
+        ${hostOnly ? "" : `<p class="subtle remote-setup-note">${escape(note)}</p>`}
         <div class="subtle setup-save-status" data-autosave-status aria-live="polite">${escape(autosaveLabel)}</div>
       </div>
     </form>`;
@@ -308,9 +396,34 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
 /** Reads the server chat's setup form; nothing is resolved against this computer's models. */
 export function readRemoteSetup(form, settings) {
   const data = new FormData(form);
+  const text = name => String(data.get(name) ?? "").trim();
   const providerId = String(data.get("defaultProvider") || settings.defaultTarget?.providerId || "");
   const model = String(data.get("defaultModel") || "");
   const mode = String(data.get("mode") || settings.mode || "general");
-  return { ...settings, mode, language: String(data.get("language") || settings.language), debate: { ...settings.debate, enabled: mode === "hypothesis" },
+  const targetOf = (prefix, index, fallback) => {
+    const provider = text(`${prefix}Provider:${index}`) || fallback?.providerId || providerId;
+    const chosen = provider === "local" ? "" : text(`${prefix}Model:${index}`);
+    return { providerId: provider, ...(chosen ? { model: chosen } : {}) };
+  };
+  const result = { ...settings, mode, language: String(data.get("language") || settings.language), debate: { ...settings.debate, enabled: mode === "hypothesis" },
     defaultTarget: { providerId, ...(model ? { model } : {}) } };
+  if (form.querySelector(".code-agents:not(.hypothesis-agents)")) {
+    result.codeAgents = [...form.querySelectorAll(".code-agent-card[data-code-agent-index]")].slice(0, MAX_SUBAGENTS).map((card, position) => {
+      const index = card.dataset.codeAgentIndex, existing = settings.codeAgents?.[position];
+      return { id: text(`codeAgentId:${index}`) || existing?.id || `agent-${position + 1}`, name: text(`codeAgentName:${index}`) || existing?.name || `Agent${position + 1}`,
+        accessMode: settings.defaultAccessMode || "default", ...targetOf("codeAgent", index, existing) };
+    });
+  }
+  if (form.querySelector(".hypothesis-agents")) {
+    result.hypothesisAgents = [...form.querySelectorAll(".hypothesis-agent-card[data-hypothesis-agent-index]")].slice(0, MAX_HYPOTHESIS_AGENTS).map((card, position) => {
+      const index = card.dataset.hypothesisAgentIndex, existing = settings.hypothesisAgents?.[position];
+      const role = text(`hypothesisAgentRole:${index}`) || existing?.role || "advisor";
+      return { id: text(`hypothesisAgentId:${index}`) || existing?.id || `hypothesis-${position + 1}`, name: text(`hypothesisAgentName:${index}`) || existing?.name || `Advisor${position}`,
+        role: ["support", "attack", "judge", "advisor"].includes(role) ? role : "advisor", ...targetOf("hypothesisAgent", index, existing) };
+    });
+    const byRole = role => result.hypothesisAgents.find(agent => agent.role === role);
+    result.debate = { ...result.debate, profile: text("debateProfile") || settings.debate?.profile || "general" };
+    for (const role of ["support", "attack", "judge"]) if (byRole(role)) result.debate[role] = { providerId: byRole(role).providerId, ...(byRole(role).model ? { model: byRole(role).model } : {}) };
+  }
+  return result;
 }

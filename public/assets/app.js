@@ -6,7 +6,7 @@ import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
-import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelOptions, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
+import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
 import { createServerModels } from "./server-models.js";
 import { createServerOrchestration } from "./server-orchestration.js";
 import { createServerSettings } from "./server-settings.js";
@@ -1511,8 +1511,10 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
 
 function renderChatRightPanel(settings, currentSession, providerOptions) {
   if (isServerChat(state.activeSessionId)) {
+    const setup = chatTarget.setup(state.activeSessionId);
     return renderRemoteSetupPanel({ settings, sessionKey: state.activeSessionId, title: currentSession?.title ?? "", hostName: chatTarget.hostName(),
-      models: chatTarget.cachedModels(), collapsed: state.ui.sessionSetupCollapsed, autosaveLabel: autosaveStatusLabel(state.ui.autosaveStatus) });
+      models: chatTarget.cachedModels(), collapsed: state.ui.sessionSetupCollapsed, autosaveLabel: autosaveStatusLabel(state.ui.autosaveStatus),
+      agents: setup.agents, hostOnly: setup.hostOnly });
   }
   return reviewPanel.render() || renderSessionSetupPanel(settings, currentSession, providerOptions);
 }
@@ -6847,15 +6849,14 @@ function bindChatTargetControls() {
   });
 }
 
-/** Model choices follow the provider at once, so the next save cannot mix two providers. */
+/** Model choices follow each provider at once (the main model and every agent's), so the next
+ * save cannot mix two providers. */
 function bindRemoteSetupSync(form) {
-  form.querySelector("[data-remote-provider]")?.addEventListener("change", (event) => {
-    const select = form.querySelector("[data-remote-model]");
-    if (!select) return;
-    const choices = remoteModelOptions(chatTarget.cachedModels(), event.target.value);
-    select.innerHTML = `<option value="">${choices.length ? "Server default" : "No models on the server"}</option>${choices.map(choice => `<option value="${escapeAttr(choice.id)}">${escapeHtml(`${choice.label}${choice.loaded ? " · Loaded" : ""}`)}</option>`).join("")}`;
-    select.value = "";
-  });
+  form.querySelectorAll("[data-remote-provider]").forEach((provider) => provider.addEventListener("change", (event) => {
+    const name = event.target.dataset.remoteProvider;
+    const select = [...form.querySelectorAll("[data-remote-model]")].find((item) => item.name === name);
+    if (select) select.outerHTML = remoteModelSelect(name, event.target.value, "", chatTarget.cachedModels());
+  }));
 }
 
 /** How a server turn ended when it did not complete. */
