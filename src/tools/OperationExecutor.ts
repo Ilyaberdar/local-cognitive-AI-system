@@ -12,7 +12,7 @@ import { WorkspaceFileService } from "./WorkspaceFileService";
 import type { PluginManager } from "../plugins/PluginManager";
 import type { McpClientService } from "../mcp/client/types";
 import { ExternalMcpExecutor } from "../mcp/client/ExternalMcpExecutor";
-import type { McpApprovalMode } from "../mcp/client/types";
+import type { McpServerPolicy } from "../mcp/client/types";
 
 export interface OperationInput {
   onProgress?: (event: ProcessProgressEvent) => void;
@@ -29,9 +29,9 @@ export class OperationExecutor {
   readonly store: OperationStore;
   private readonly files = new WorkspaceFileService();
   readonly mcp?: ExternalMcpExecutor;
-  constructor(baseDir:string, readonly plugins?: PluginManager, mcpClients?: McpClientService, mcpApproval?: (serverId: string) => McpApprovalMode) {
+  constructor(baseDir:string, readonly plugins?: PluginManager, mcpClients?: McpClientService, mcpPolicy?: (serverId: string) => McpServerPolicy) {
     this.store=new OperationStore(baseDir);
-    this.mcp = mcpClients ? new ExternalMcpExecutor(baseDir, mcpClients, mcpApproval) : undefined;
+    this.mcp = mcpClients ? new ExternalMcpExecutor(baseDir, mcpClients, mcpPolicy) : undefined;
   }
   async hasExternalMcp(): Promise<boolean> { return this.mcp?.hasAvailable() ?? false; }
   async execute(input:OperationInput):Promise<{result?:ToolExecutionResult;pendingApproval?:PendingApproval}> {

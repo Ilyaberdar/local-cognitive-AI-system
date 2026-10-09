@@ -152,3 +152,34 @@ test("MCP settings add a Streamable HTTP server with a binding and show discover
     'unreal-engine': { id: 'unreal-engine', name: 'Unreal Engine', enabled: true, transport: 'streamable-http', endpoint: 'http://127.0.0.1:8000/mcp' }
   }, bindings: { 'unreal-engine': { id: 'unreal-engine', serverId: 'unreal-engine', enabled: true } } } } });
 });
+
+test("MCP settings set timeouts in seconds and choose which tools agents get, without touching other fields", async t => {
+  const ui = harness(true); t.after(ui.close);
+  await until(() => !!ui.root.querySelector('[data-plugin-search]'));
+  ui.dom.window.eval(`${shellBundle}\nwindow.SettingsShell = SettingsShell;`);
+  const appSettings: any = { mcp: { server: { enabled: true }, client: {
+    servers: { blender: { id: 'blender', name: 'Blender', enabled: true, transport: 'stdio', command: 'uvx', args: ['blender-mcp'], requestTimeoutMs: 120000 } },
+    bindings: { blender: { id: 'blender', serverId: 'blender', enabled: true } } } } };
+  const saved: any[] = [];
+  const data: any = {
+    integrations: [],
+    loadMcp: async () => ({ connections: [{ bindingId: 'blender', serverId: 'blender', enabled: true, state: 'connected', reconnectAttempt: 0 }],
+      tools: ['look', 'execute_blender_code'].map(name => ({ id: `mcp:blender:${name}`, bindingId: 'blender', serverId: 'blender', name })) }),
+    save: async (patch: any) => { saved.push(patch); return appSettings; }, connectMcp: async () => ({}), disconnectMcp: async () => ({})
+  };
+  const shell = ui.dom.window.SettingsShell.createSettingsShell({ app: ui.root, getContext: () => ({ appSettings }), data, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
+  shell.route('#/settings/mcp/blender');
+  const content = ui.dom.window.document.querySelector('#settings-root');
+  await until(() => !!content.querySelector('[data-mcp-tool="execute_blender_code"]'));
+  assert.equal(content.querySelector('[data-mcp-field="toolSeconds"]').value, '120');
+  content.querySelector('[data-mcp-field="startupSeconds"]').value = '90';
+  content.querySelector('[data-mcp-field="toolSeconds"]').value = '';
+  content.querySelector('[data-mcp-tool="execute_blender_code"]').checked = false;
+  content.querySelector('#external-mcp-form').dispatchEvent(new ui.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => saved.length === 1);
+  const server = JSON.parse(JSON.stringify(saved[0])).mcp.client.servers.blender;
+  assert.equal(server.connectTimeoutMs, 90000);
+  assert.equal(server.requestTimeoutMs, null, "a cleared field is removed");
+  assert.deepEqual(server.disabledTools, ['execute_blender_code']);
+  assert.equal('approval' in server, false, "an untouched default is not sent");
+});

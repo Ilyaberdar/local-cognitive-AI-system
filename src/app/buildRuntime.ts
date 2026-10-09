@@ -507,8 +507,11 @@ export const buildRuntime = async (
   const pluginManager = sharedPlugins ?? new PluginManager(config.appDataDir, `local:${config.appDataDir}`);
   const mcpClients = sharedMcpClients ?? new McpClientManager();
   if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
-  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager, mcpClients,
-    serverId => config.mcp.client?.servers[serverId]?.approval ?? "ask");
+  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager, mcpClients, serverId => {
+    const server = config.mcp.client?.servers[serverId];
+    return { approval: server?.approval ?? "ask", ...(server?.enabledTools ? { enabledTools: server.enabledTools } : {}),
+      ...(server?.disabledTools ? { disabledTools: server.disabledTools } : {}) };
+  });
 
   const providerRegistry = new LLMRegistry();
   // RuntimeManager supplies the long-lived owner. Direct test/headless builders remain supported.

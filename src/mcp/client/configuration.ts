@@ -4,7 +4,7 @@ import type {
   McpApprovalMode, McpClientConfiguration, McpClientConfigurationPatch, McpConnectionBinding, McpServerDefinition
 } from "./types";
 
-const commonServerFields = ["id", "name", "enabled", "approval", "connectTimeoutMs", "requestTimeoutMs", "reconnect"];
+const commonServerFields = ["id", "name", "enabled", "approval", "enabledTools", "disabledTools", "connectTimeoutMs", "requestTimeoutMs", "reconnect"];
 const stdioFields = ["command", "args", "cwd", "env"];
 const bindingFields = ["id", "serverId", "enabled", "name", "accountId", "credentialRef"];
 const reservedIds = new Set(["__proto__", "constructor", "prototype"]);
@@ -47,6 +47,14 @@ function boolean(value: unknown): boolean {
   return value;
 }
 
+/** A list of tool names: unique, at most 512. */
+function toolNames(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 512) return invalid();
+  const names = value.map(name => text(name, 256));
+  if (new Set(names).size !== names.length) invalid();
+  return names;
+}
+
 function integer(value: unknown, minimum: number, maximum: number): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) return invalid();
   return value;
@@ -62,6 +70,8 @@ function serverDefinition(key: string, input: unknown): McpServerDefinition {
     enabled: boolean(value.enabled),
     ...(value.name === undefined ? {} : { name: text(value.name, 256) }),
     ...(value.approval === undefined ? {} : { approval: ["ask", "read-only", "trust"].includes(value.approval as string) ? value.approval as McpApprovalMode : invalid() }),
+    ...(value.enabledTools === undefined ? {} : { enabledTools: toolNames(value.enabledTools) }),
+    ...(value.disabledTools === undefined ? {} : { disabledTools: toolNames(value.disabledTools) }),
     ...(value.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: integer(value.connectTimeoutMs, 1, 3600000) }),
     ...(value.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: integer(value.requestTimeoutMs, 1, 3600000) })
   };

@@ -311,6 +311,17 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     while (reserved.has(id) || existing.has(id)) id = `${stem.slice(0, 120)}-${suffix++}`;
     return id;
   }
+  /** The server's discovered tools as "offered to agents" checkboxes (its disabledTools). */
+  function mcpToolChoices(server, binding) {
+    if (!server) return '';
+    const tools = (mcpSnapshot?.tools || []).filter(tool => tool.bindingId === binding?.id);
+    const disabled = new Set(server.disabledTools || []);
+    const only = server.enabledTools ? `<p class="settings-description">Only these tools are offered (imported): ${server.enabledTools.map(name => `<code>${escape(name)}</code>`).join(', ')}. <button type="button" class="ghost-button" data-mcp-action="clear-enabled-tools">Offer all</button></p>` : '';
+    const list = tools.length
+      ? `<div class="mcp-tool-choices">${tools.map(tool => `<label title="${escape(tool.description || '')}"><input type="checkbox" data-mcp-tool="${escape(tool.name)}" ${disabled.has(tool.name) ? '' : 'checked'} /> <code>${escape(tool.name)}</code></label>`).join('')}</div>`
+      : `<p class="settings-description">${disabled.size ? `Not offered: ${[...disabled].map(name => `<code>${escape(name)}</code>`).join(', ')}. ` : ''}Connect the server to choose its tools.</p>`;
+    return `<div class="settings-row"><div><label>Tools offered to agents</label><p>Unchecked tools are hidden from agents; the server keeps running.</p></div><div class="settings-control">${only}${list}</div></div>`;
+  }
   function mcpEditor(id) {
     const isNew = id === 'new';
     const server = isNew ? undefined : externalMcpServers()[id];
@@ -336,6 +347,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-args">Arguments (JSON array)</label><p>For example: ["-y", "your-mcp-server"]. Do not put credentials here.</p></div><div class="settings-control"><textarea id="external-mcp-args" data-mcp-field="args" rows="3" ${http ? 'disabled' : ''} placeholder='["-y", "your-mcp-server"]'>${escape(args)}</textarea></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-cwd">Working directory</label><p>Optional absolute path used only when starting the command.</p></div><div class="settings-control"><input id="external-mcp-cwd" data-mcp-field="cwd" ${http ? 'disabled' : ''} value="${escape(server?.transport === 'stdio' ? server.cwd || '' : '')}" /></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-env">Environment (JSON object)</label><p>Optional non-secret variables. Keys and values containing credentials are rejected.</p></div><div class="settings-control"><textarea id="external-mcp-env" data-mcp-field="env" rows="3" ${http ? 'disabled' : ''} placeholder='{"LOG_LEVEL":"info"}'>${escape(env)}</textarea></div></div>
+        <div class="settings-row"><div><label for="external-mcp-startup">Startup timeout (seconds)</label><p>How long the server may take to start. A first uvx or npx run downloads packages.</p></div><div class="settings-control"><input id="external-mcp-startup" data-mcp-field="startupSeconds" type="number" min="1" max="600" step="1" inputmode="numeric" value="${server?.connectTimeoutMs ? escape(String(Math.round(server.connectTimeoutMs / 1000))) : ''}" placeholder="${http ? 15 : 60}" /></div></div>
+        <div class="settings-row"><div><label for="external-mcp-tool-timeout">Tool timeout (seconds)</label><p>How long a call may go without an answer or progress. A call that reports progress (a render, a build) may run up to 30 minutes.</p></div><div class="settings-control"><input id="external-mcp-tool-timeout" data-mcp-field="toolSeconds" type="number" min="1" max="3600" step="1" inputmode="numeric" value="${server?.requestTimeoutMs ? escape(String(Math.round(server.requestTimeoutMs / 1000))) : ''}" placeholder="60" /></div></div>
+        ${mcpToolChoices(server, binding)}
         <div class="settings-row"><div><label for="external-mcp-approval">Approval</label><p>When a tool call waits for your confirmation. A chat set to ask first always asks.</p></div><div class="settings-control"><select id="external-mcp-approval" data-mcp-field="approval">${[['ask', 'Ask for every call'], ['read-only', 'Ask unless the tool is read-only'], ['trust', 'Trust this server (never ask)']].map(([value, label]) => `<option value="${value}" ${(server?.approval || 'ask') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
         <div class="settings-row"><div><label for="external-mcp-enabled">Enabled</label><p>When on, the app connects and discovers tools. Turning it off stops all bindings for this server.</p></div><div class="settings-control"><input id="external-mcp-enabled" data-mcp-field="enabled" type="checkbox" role="switch" ${server?.enabled !== false ? 'checked' : ''} /></div></div>
       </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>`;
@@ -515,10 +529,26 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (!name) throw new Error('Enter a name for this MCP server.');
     const id = previous?.id || newMcpId(name);
     const approval = form.querySelector('[data-mcp-field="approval"]').value;
+    const seconds = (field, max) => {
+      const raw = form.querySelector(`[data-mcp-field="${field}"]`)?.value.trim();
+      if (!raw) return undefined;
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`Enter a whole number of seconds from 1 to ${max}.`);
+      return value * 1000;
+    };
+    const startup = seconds('startupSeconds', 600), toolTimeout = seconds('toolSeconds', 3600);
+    const toolBoxes = [...form.querySelectorAll('[data-mcp-tool]')];
     const server = { ...(previous || {}), id, name, enabled, transport };
     // Saving merges into the stored server: a field it had and the form cleared is sent as null (removed).
     const clear = field => { if (previous?.[field] !== undefined) server[field] = null; else delete server[field]; };
     if (approval === 'ask') clear('approval'); else server.approval = approval;
+    if (startup) server.connectTimeoutMs = startup; else clear('connectTimeoutMs');
+    if (toolTimeout) server.requestTimeoutMs = toolTimeout; else clear('requestTimeoutMs');
+    // Only when the list was shown (a connected server): otherwise the stored choice stays.
+    if (toolBoxes.length) {
+      const unchecked = toolBoxes.filter(box => !box.checked).map(box => box.dataset.mcpTool);
+      if (unchecked.length) server.disabledTools = unchecked; else clear('disabledTools');
+    }
     if (transport === 'streamable-http') {
       const endpoint = form.querySelector('[data-mcp-field="endpoint"]').value.trim();
       if (!endpoint) throw new Error('Enter an MCP endpoint.');
@@ -571,6 +601,13 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       void data.save({ mcp: { client: { servers: { [id]: null } } } }).then(() => {
         mcpSnapshot = undefined; mcpRequest = undefined; location.hash = '#/settings/mcp';
       }).catch(error => setMcpFormStatus(form, error.message || 'Could not remove MCP server.', true));
+    });
+    form.querySelector('[data-mcp-action="clear-enabled-tools"]')?.addEventListener('click', () => {
+      const id = form.dataset.mcpServerId;
+      setMcpFormStatus(form, 'Saving…');
+      void data.save({ mcp: { client: { servers: { [id]: { enabledTools: null } } } } }).then(() => {
+        mcpSnapshot = undefined; mcpRequest = undefined; render();
+      }).catch(error => setMcpFormStatus(form, error.message || 'Could not save MCP server.', true));
     });
     form.querySelector('[data-mcp-action="connect"], [data-mcp-action="disconnect"]')?.addEventListener('click', event => {
       const button = event.currentTarget, bindingId = button.dataset.mcpBinding;

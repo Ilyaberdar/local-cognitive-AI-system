@@ -6,7 +6,7 @@ import type { PendingApproval, ToolExecutionResult } from "../../types";
 import type { OperationInput } from "../../tools/OperationExecutor";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../../utils/fileStore";
 import { compileToolArgumentErrors, parseArgumentsJson, snapshotArguments } from "./schema";
-import type { McpApprovalMode, McpClientService, McpDiscoveredTool } from "./types";
+import type { McpClientService, McpDiscoveredTool, McpServerPolicy } from "./types";
 
 type Outcome = { result?: ToolExecutionResult; pendingApproval?: PendingApproval };
 interface AvailableTool { id: string; bindingId: string; serverId: string; definition: Tool; fingerprint: string }
@@ -50,11 +50,11 @@ export class ExternalMcpExecutor {
   private readonly calls = new Map<string, Promise<void>>();
 
   constructor(private readonly baseDir: string, private readonly clients: McpClientService,
-    private readonly approvalMode: (serverId: string) => McpApprovalMode = () => "ask") {}
+    private readonly policy: (serverId: string) => McpServerPolicy = () => ({ approval: "ask" })) {}
 
   private requiresApproval(tool: AvailableTool, input: Pick<OperationInput, "accessMode" | "requireApproval">): boolean {
     if (input.requireApproval || input.accessMode === "ask") return true;
-    const mode = this.approvalMode(tool.serverId);
+    const mode = this.policy(tool.serverId).approval;
     return mode === "ask" || (mode === "read-only" && tool.definition.annotations?.readOnlyHint !== true);
   }
 
@@ -238,6 +238,9 @@ export class ExternalMcpExecutor {
       .map(status => [status.bindingId, status]));
     return this.clients.tools().flatMap((tool: McpDiscoveredTool) => {
       if (!statuses.has(tool.bindingId)) return [];
+      // The server's tool filter (Settings, or imported from Codex): a tool left out is not offered.
+      const { enabledTools, disabledTools } = this.policy(tool.serverId);
+      if (enabledTools && !enabledTools.includes(tool.definition.name) || disabledTools?.includes(tool.definition.name)) return [];
       return [{ id: tool.id, bindingId: tool.bindingId, serverId: tool.serverId, definition: tool.definition,
         fingerprint: digest({ bindingId: tool.bindingId, serverId: tool.serverId, definition: tool.definition }) }];
     });

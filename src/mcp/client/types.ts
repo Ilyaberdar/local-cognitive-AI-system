@@ -4,6 +4,8 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
  * tools not marked read-only (`readOnlyHint`); or none — the user trusts this server. A chat whose
  * access mode is "ask" always asks. */
 export type McpApprovalMode = "ask" | "read-only" | "trust";
+/** What decides how agents may use a server's tools; it never changes the connection. */
+export interface McpServerPolicy { approval: McpApprovalMode; enabledTools?: string[]; disabledTools?: string[] }
 
 /** Persisted definitions contain configuration only, never credentials or connection state. */
 interface McpServerBase {
@@ -11,6 +13,10 @@ interface McpServerBase {
   name?: string;
   enabled: boolean;
   approval?: McpApprovalMode;
+  /** Only these tools are offered to agents (as Codex's `enabled_tools`). */
+  enabledTools?: string[];
+  /** These tools are not offered to agents (applied after `enabledTools`). */
+  disabledTools?: string[];
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
   reconnect?: { maxAttempts: number; initialDelayMs: number; maxDelayMs: number };
