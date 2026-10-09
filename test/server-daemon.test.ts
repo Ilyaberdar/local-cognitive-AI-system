@@ -94,7 +94,9 @@ test("init → start → status → MCP bridge → drain, with a second start re
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "lcs-"));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, "d"), keyFile = path.join(base, "k", "vault.key");
-  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false" };
+  // Remote off: with a vault the server would otherwise register itself with the real Cloud.
+  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false",
+    LOCAL_COGNITIVE_REMOTE: "off" };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { env, encoding: "utf8" });
 
   const init = run("init", "--data-dir", root, "--vault-key-file", keyFile, "--json");
