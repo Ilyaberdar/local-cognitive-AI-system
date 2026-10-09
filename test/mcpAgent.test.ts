@@ -60,7 +60,7 @@ test("a server's approval mode decides which calls wait; a chat that asks first 
     ["trust", "default", "execute_blender_code", false], ["trust", "ask", "execute_blender_code", true]
   ] as Array<[McpApprovalMode, "ask" | "default", string, boolean]>) {
     const f = clients();
-    const executor = new OperationExecutor(path.join(root, `${mode}-${access}-${tool}`), undefined, f.service, () => mode);
+    const executor = new OperationExecutor(path.join(root, `${mode}-${access}-${tool}`), undefined, f.service, () => ({ approval: mode }));
     const args = tool === "look" ? {} : { code: "print(1)" };
     const found = JSON.parse((await executor.execute(operation(root, "mcp.search", { query: tool }, { accessMode: access }))).result!.output);
     assert.equal(found.find((item: { name: string }) => item.name === tool).approvalRequired, waits, `${mode}/${access}/${tool} in search`);
@@ -72,7 +72,7 @@ test("a server's approval mode decides which calls wait; a chat that asks first 
 
 test("wrong arguments come back with what is wrong, so the model can correct them", async t => {
   const root = await folder(t);
-  const executor = new OperationExecutor(root, undefined, clients().service, () => "trust");
+  const executor = new OperationExecutor(root, undefined, clients().service, () => ({ approval: "trust" }));
   const output = (await executor.execute(operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: '{"script":"print(1)"}' }))).result!.output;
   assert.match(output, /must have required property 'code'/);
   assert.match(output, /must NOT have additional properties "script"/);
@@ -81,7 +81,7 @@ test("wrong arguments come back with what is wrong, so the model can correct the
 
 test("an image a tool returns is kept in a file, not as base64 in the result", async t => {
   const root = await folder(t);
-  const executor = new OperationExecutor(root, undefined, clients().service, () => "trust");
+  const executor = new OperationExecutor(root, undefined, clients().service, () => ({ approval: "trust" }));
   const result = (await executor.execute(operation(root, "mcp.call", { toolId: "mcp:blender:look", argumentsJson: "{}" }))).result!;
   assert.equal(result.output.includes(PNG.slice(0, 40)), false);
   assert.deepEqual(JSON.parse(result.output).content[1], { type: "image", mimeType: "image/png", bytes: Buffer.from(PNG, "base64").length, image: 1 });
@@ -96,7 +96,7 @@ async function agent(t: test.TestContext, options: { vision?: boolean; deviceRun
     activeTarget: settings.defaultTarget, sessionSettings: settings, ...(options.deviceRun ? { requestMetadata: { deviceRun: true } } : {}),
     workspace: { version: 1, kind: "project", projectId: "p", rootPath: root, outputDir: root, allowedDirectories: [root], memoryScope: "project:p" } };
   const f = clients();
-  const operations = new OperationExecutor(root, undefined, f.service, () => "trust");
+  const operations = new OperationExecutor(root, undefined, f.service, () => ({ approval: "trust" }));
   const requests: LLMRequest[] = [];
   let turns: Array<Record<string, unknown>> = [];
   const llm = { generateObject: async (request: LLMRequest) => {
@@ -174,7 +174,7 @@ test("arguments with raw line breaks in a string, or text after the object, are 
   const f = clients();
   const calls: unknown[] = [];
   const service = { ...f.service, callTool: async (request: Parameters<McpClientService["callTool"]>[0]) => { calls.push(request.arguments); return f.service.callTool(request); } };
-  const executor = new OperationExecutor(root, undefined, service, () => "trust");
+  const executor = new OperationExecutor(root, undefined, service, () => ({ approval: "trust" }));
   const code = "import bpy\nfor o in bpy.data.objects:\n\tprint(o.name)";
   const raw = `{"code":"${code}"}`;
   assert.equal((await executor.execute(operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: raw }))).result!.ok, true);
@@ -184,4 +184,27 @@ test("arguments with raw line breaks in a string, or text after the object, are 
   assert.deepEqual(calls, [{ code }, { code: "x" }, { code: String.raw`re.match(r'\d+\.blend', n)` }]);
   assert.match((await executor.execute({ ...operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: '{"code": ' }), id: "op-cut" })).result!.output,
     /argumentsJson must be one serialized JSON object/, "an unfinished object is still refused");
+});
+
+test("a server's tool filter hides tools from agents, and changing it or the call timeout keeps the server running", async t => {
+  const root = await folder(t);
+  const executor = new OperationExecutor(root, undefined, clients().service, () => ({ approval: "trust", disabledTools: ["execute_blender_code"] }));
+  const found = JSON.parse((await executor.execute(operation(root, "mcp.search", { query: "" }))).result!.output);
+  assert.deepEqual(found.map((tool: { name: string }) => tool.name), ["look"]);
+  assert.match((await executor.execute(operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: '{"code":"x"}' }))).result!.output, /unavailable/);
+  const only = new OperationExecutor(path.join(root, "only"), undefined, clients().service, () => ({ approval: "trust", enabledTools: ["execute_blender_code"] }));
+  assert.deepEqual(JSON.parse((await only.execute(operation(root, "mcp.search", { query: "" }))).result!.output).map((tool: { name: string }) => tool.name), ["execute_blender_code"]);
+
+  const base = parseMcpConfiguration({ servers: { blender: { id: "blender", enabled: true, transport: "stdio", command: "uvx" } },
+    bindings: { blender: { id: "blender", serverId: "blender", enabled: true } } });
+  assert.throws(() => applyMcpConfigurationPatch(base, { servers: { blender: { disabledTools: ["look", "look"] } } }), "a tool named twice");
+  let opens = 0;
+  const connector: McpConnector = { open: async () => { opens++; return { listTools: async () => ({ tools: [] }), callTool: async () => ({ content: [] }), close: async () => {} }; } };
+  const manager = new McpClientManager({ connector });
+  t.after(() => manager.dispose());
+  await manager.reconcile(base);
+  await manager.reconcile(applyMcpConfigurationPatch(base, { servers: { blender: { disabledTools: ["look"], requestTimeoutMs: 120000 } } }));
+  assert.equal(opens, 1, "filters and the call timeout do not restart it");
+  await manager.reconcile(applyMcpConfigurationPatch(base, { servers: { blender: { connectTimeoutMs: 90000 } } }));
+  assert.equal(opens, 2, "a new startup timeout starts it again");
 });
