@@ -326,7 +326,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const summary = server => server.transport === 'stdio' ? [server.command, ...(server.args || [])].join(' ') : server.endpoint;
     const rows = preview ? preview.servers.map(item => {
       const blocked = item.unsupported || item.alreadyAdded;
-      const secrets = item.secrets.map(secret => `<li>${escape(secret.kind === 'bearer' ? 'Bearer token' : secret.name)}: ${secret.found ? (preview.vault ? 'value found, stored in protected storage' : 'value found, but protected storage is unavailable: set it later') : 'no value found, set it later in the server\'s Settings'}</li>`).join('');
+      const secrets = item.secrets.map(secret => `<li>${escape(secret.kind === 'bearer' ? 'Bearer token' : secret.name)}: ${secret.found ? `${secret.from ? `value from this computer's ${escape(secret.from)} variable` : 'value found'}${preview.vault ? ', stored in protected storage' : ', but protected storage is unavailable: set it later'}` : 'no value found, set it later in the server\'s Settings'}</li>`).join('');
       return `<li class="mcp-import-item"><label><input type="checkbox" data-mcp-import-key="${escape(item.key)}" ${item.unsupported ? 'disabled' : blocked ? '' : 'checked'} /> <strong>${escape(item.server.name || item.key)}</strong> <code>${escape(item.id)}</code></label>
         <p><code>${escape(summary(item.server))}</code></p>
         ${item.unsupported ? `<p class="is-error">${escape(item.unsupported)}</p>` : ''}

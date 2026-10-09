@@ -133,6 +133,12 @@ test("an import preview shows secrets by name only; importing stores them in the
   assert.equal(JSON.stringify(preview.body).includes("sk-sketch"), false, "no value in the preview");
   assert.deepEqual(preview.body.servers[0].secrets, [{ kind: "env", name: "SKETCHFAB_API_KEY", found: true }]);
   assert.equal((await f.call("POST", `${importUrl}/preview`, { source: "../../etc/passwd" })).status, 400, "no path from a request");
+  // A pasted snippet takes nothing from this computer's environment.
+  process.env.IMPORT_TEST_TOKEN = "tok-from-env-123";
+  try {
+    const pasted = await f.call("POST", `${importUrl}/preview`, { source: "text", text: JSON.stringify({ mcpServers: { x: { url: "https://collector.example/mcp", bearer_token_env_var: "IMPORT_TEST_TOKEN" } } }) });
+    assert.deepEqual(pasted.body.servers[0].secrets, [{ kind: "bearer", name: "Authorization", found: false }]);
+  } finally { delete process.env.IMPORT_TEST_TOKEN; }
   const applied = await f.call("POST", `${importUrl}/apply`, { token: preview.body.token, keys: ["blender"] });
   assert.deepEqual(applied.body, { added: ["blender"], missing: [] });
   const settings = await fs.readFile(f.settingsFile, "utf8");

@@ -1,5 +1,5 @@
 import { parse as parseToml } from "smol-toml";
-import { hasSecretName } from "../../config/secrets";
+import { hasSecretName, SECRET_ENV_KEYS } from "../../config/secrets";
 import type { McpSecretKind } from "./credentials";
 import type { McpApprovalMode, McpServerDefinition } from "./types";
 
@@ -7,7 +7,8 @@ import type { McpApprovalMode, McpServerDefinition } from "./types";
  * `~/.codex/config.toml`, Claude Desktop's and Cursor's JSON, or a snippet from a README. */
 export type McpImportSource = "codex" | "claude-desktop" | "cursor" | "text";
 
-export interface McpImportSecret { kind: McpSecretKind; name: string; value?: string }
+/** `from`: the environment variable a value was taken from (shown in the preview). */
+export interface McpImportSecret { kind: McpSecretKind; name: string; value?: string; from?: string }
 export interface McpImportCandidate {
   /** The server's name in the source. */
   key: string;
@@ -62,9 +63,14 @@ export function readMcpImport(source: McpImportSource, text: string): Record<str
 
 /** One source entry as a server here. `env` is this process's environment, for Codex's
  * `env_vars` and `bearer_token_env_var` (the values are taken, never kept in settings). */
-export function importCandidate(key: string, input: unknown, taken: Set<string>, env: Record<string, string | undefined> = {}): McpImportCandidate | undefined {
+export function importCandidate(key: string, input: unknown, taken: Set<string>, environment: Record<string, string | undefined> = {}): McpImportCandidate | undefined {
   const entry = record(input);
   if (!entry) return undefined;
+  // This app's own credentials and settings are never handed to an imported server: a config
+  // naming ANTHROPIC_API_KEY as a server's token would send it to that server's address.
+  const own = new Set<string>(SECRET_ENV_KEYS);
+  const env = new Proxy(environment, { get: (target, name) => typeof name === "string" && !own.has(name.toUpperCase()) && !/^(?:LOCAL_COGNITIVE|LCAI)_/i.test(name) ? target[name] : undefined });
+  const fromEnv = (variable: string) => env[variable] !== undefined ? { value: env[variable]!, from: variable } : {};
   const id = importedId(key, taken);
   const ignored: string[] = [];
   const secrets: McpImportSecret[] = [];
@@ -106,10 +112,10 @@ export function importCandidate(key: string, input: unknown, taken: Set<string>,
       else headers[name] = value;
     }
     for (const [name, variable] of Object.entries(record(entry.env_http_headers) ?? {})) {
-      if (typeof variable === "string") secrets.push({ kind: "header", name, ...(env[variable] ? { value: env[variable] } : {}) });
+      if (typeof variable === "string") secrets.push({ kind: "header", name, ...fromEnv(variable) });
     }
     const tokenVariable = typeof entry.bearer_token_env_var === "string" ? entry.bearer_token_env_var : undefined;
-    if (tokenVariable) secrets.push({ kind: "bearer", name: "Authorization", ...(env[tokenVariable] ? { value: env[tokenVariable] } : {}) });
+    if (tokenVariable) secrets.push({ kind: "bearer", name: "Authorization", ...fromEnv(tokenVariable) });
     if (typeof entry.bearer_token === "string") secrets.push({ kind: "bearer", name: "Authorization", value: entry.bearer_token });
     take("http_headers", "headers", "env_http_headers", "bearer_token_env_var", "bearer_token");
     const secretHeaders = [...new Set(secrets.filter(item => item.kind === "header").map(item => item.name))];
@@ -124,14 +130,14 @@ export function importCandidate(key: string, input: unknown, taken: Set<string>,
       if (typeof value !== "string") continue;
       // Cursor's ${env:NAME}: taken from this process's environment when it has it.
       const reference = /^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-      const resolved = reference ? env[reference[1]!] : value;
-      if (reference || hasSecretName(name) || secretValue.test(value)) secrets.push({ kind: "env", name, ...(resolved ? { value: resolved } : {}) });
+      if (reference) secrets.push({ kind: "env", name, ...fromEnv(reference[1]!) });
+      else if (hasSecretName(name) || secretValue.test(value)) secrets.push({ kind: "env", name, value });
       else plain[name] = value;
     }
     for (const item of Array.isArray(entry.env_vars) ? entry.env_vars : []) {
       const name = typeof item === "string" ? item : typeof record(item)?.name === "string" && record(item)!.source !== "remote" ? record(item)!.name as string : undefined;
       if (!name) { ignored.push("env_vars with source = remote"); continue; }
-      if (hasSecretName(name)) secrets.push({ kind: "env", name, ...(env[name] ? { value: env[name] } : {}) });
+      if (hasSecretName(name)) secrets.push({ kind: "env", name, ...fromEnv(name) });
       else if (env[name] !== undefined) plain[name] = env[name]!;
       else ignored.push(`env_vars ${name} (not set for this app)`);
     }
