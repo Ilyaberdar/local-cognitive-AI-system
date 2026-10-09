@@ -5,7 +5,7 @@ import { Logger } from "../src/utils/Logger";
 
 const provider = () => new OpenAICompatibleProvider({ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-6-astra", timeoutMs: 600000, apiKey: "test-key" }, new Logger());
 
-test("Responses passes reasoning and the caller's exact output budget", async (t) => {
+test("Responses passes reasoning and an output cap with room for the reasoning", async (t) => {
   let body: Record<string, unknown> = {};
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
     body = JSON.parse(String(init.body));
@@ -13,7 +13,8 @@ test("Responses passes reasoning and the caller's exact output budget", async (t
   });
   const response = await provider().generateText({ prompt: "hi", maxTokens: 1200, temperature: 0.5, reasoningEffort: "high", responseFormat: { type: "json_object" } });
   assert.deepEqual(body.reasoning, { effort: "high" });
-  assert.equal(body.max_output_tokens, 1200);
+  // The cap counts reasoning tokens too: 1200 would leave a reasoning model no answer.
+  assert.equal(body.max_output_tokens, 16000);
   assert.equal(body.temperature, undefined);
   assert.equal(response.text, "Final answer");
   assert.deepEqual(body.text, { format: { type: "json_object" } });

@@ -39,7 +39,7 @@ export const buildComposedPrompt = (request: LLMRequest): string =>
 
 /** Downgrade only an explicitly unsupported protocol, never auth, quota, timeout or execution failures. */
 export function unsupportedFeature(status: number, detail: string, request: LLMRequest): LLMResponse["unsupportedFeature"] {
-  if (![400, 404, 422, 501].includes(status) || !/not support|unsupported|not available|not implemented|unknown (?:field|parameter)|unrecognized|extra inputs/i.test(detail)) return;
+  if (![400, 404, 422, 501].includes(status) || !/not support|unsupported|not available|not implemented|not permitted|unknown (?:field|parameter|name)|unrecognized|extra inputs|invalid json payload/i.test(detail)) return;
   if (request.tools?.length && /tool|function/i.test(detail)) return "tools";
   if (request.responseFormat && /schema|format|structured|json|grammar/i.test(detail)) return request.responseFormat.type === "json_schema" ? "schema" : "json";
 }
@@ -188,3 +188,43 @@ export const readUsage = (payload: unknown): TokenUsage | undefined => {
     totalTokens
   };
 };
+
+const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
+const retryAfterMs = (headers: Headers): number | undefined => {
+  const exact = Number(headers.get("retry-after-ms"));
+  if (headers.has("retry-after-ms") && Number.isFinite(exact) && exact >= 0) return exact;
+  const value = headers.get("retry-after");
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+};
+const pause = (ms: number, signal?: AbortSignal | null) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) { reject(signal.reason); return; }
+  const timer = setTimeout(() => { signal?.removeEventListener("abort", stop); resolve(); }, ms);
+  const stop = () => { clearTimeout(timer); reject(signal!.reason); };
+  signal?.addEventListener("abort", stop, { once: true });
+});
+
+/** A cloud model request, retried as the providers' own SDKs do: up to twice on an overload,
+ * a server error, a timeout status, a dropped connection, or a rate limit that says when to try
+ * again (a 429 without that is usually a spending limit, which waiting does not fix). Waits
+ * follow retry-after (at most 30 s) and end when the request is cancelled or times out. */
+export async function fetchWithRetries(fetchImpl: typeof fetch, url: string, init: RequestInit, retries = 2): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    let response: Response;
+    try { response = await fetchImpl(url, init); }
+    catch (error) {
+      if (init.signal?.aborted || attempt >= retries || !(error instanceof TypeError)) throw error;
+      await pause(500 * 2 ** attempt, init.signal);
+      continue;
+    }
+    if (attempt >= retries || !RETRYABLE.has(response.status)) return response;
+    const after = retryAfterMs(response.headers);
+    if (response.status === 429 && after === undefined) return response;
+    if (after !== undefined && after > 30_000) return response;
+    await response.body?.cancel().catch(() => undefined);
+    await pause(after ?? 500 * 2 ** attempt + Math.floor(Math.random() * 250), init.signal);
+  }
+}

@@ -61,7 +61,7 @@ test("cloud APIs get an effort they take; a model that refuses one is asked with
   };
   const openai = new OpenAICompatibleProvider({ id: "openai", name: "OpenAI", model: "gpt", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", timeoutMs: 1000 }, new Logger(), transport);
   await openai.generateText({ prompt: "x", reasoningEffort: "max" });
-  assert.deepEqual(calls.at(-1)!.body.reasoning, { effort: "high" }, "max asks for the most the API offers");
+  assert.deepEqual(calls.at(-1)!.body.reasoning, { effort: "max" }, "OpenAI's reasoning models take max");
   refuse = 1;
   assert.equal((await openai.generateText({ prompt: "y", reasoningEffort: "low" })).text, "ok");
   assert.deepEqual(calls.slice(-2).map(call => call.body.reasoning), [{ effort: "low" }, undefined], "asked again without it");
