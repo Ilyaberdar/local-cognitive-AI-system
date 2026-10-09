@@ -92,16 +92,16 @@ definition → call sites.
 
 | UI | Route | Notes | Class | Operation |
 |---|---|---|---|---|
-| A:4766 | GET /tasks R:133→TC:22 | polled 1 s while runs are active | HOST-API | `tasks.list` |
-| A:232→3653 | POST /tasks R:134→TC:33 | attachments inline | HOST-API | `tasks.create` |
+| A:4766 | GET /tasks R:133→TC:22 | polled 1 s while runs are active | HOST-API | `orchestration.snapshot` (R5-2: one revisioned snapshot of tasks, schedules, workflows and runs; 2 s / 15 s poll) |
+| A:232→3653 | POST /tasks R:134→TC:33 | attachments inline | HOST-API | `tasks.create` (command; attachments and projects deferred) |
 | A:237→1847,3785,5510,5528 | PATCH /tasks/:id R:143→TC:91 | | HOST-API | `tasks.update` |
 | A:242→3950 | DELETE /tasks/:id R:144→TC:145 | 204 | HOST-API | `tasks.delete` |
-| A:246→3934 | POST /tasks/:id/queue R:145→TC:163 | | HOST-API | `tasks.queue` |
-| A:250→4006 | POST /tasks/:id/run R:146→TC:181 | 900 s | HOST-API | `tasks.run` |
-| A:256→4018 | POST /tasks/run-next R:135→TC:195 | 900 s | HOST-API | `tasks.runNext` |
-| A:154→1850,1859 | GET /tasks/:id/workspace R:137→TC:134 | | HOST-API | `tasks.workspace.get` |
-| A:155→1869 | POST /tasks/:id/workspace/reveal R:138 (inline) | | ADAPT | `tasks.workspace.reveal` |
-| A:262→3713 | POST /schedules R:149→SC:21 | | HOST-API | `schedules.create` |
+| A:246→3934 (dead) | POST /tasks/:id/queue R:145→TC:163 | no template renders the button | drop | — |
+| A:250→4006 | POST /tasks/:id/run R:146→TC:181 | 900 s | HOST-API | `tasks.run` (command, accept-and-observe) |
+| A:256→4018 | POST /tasks/run-next R:135→TC:195 | 900 s | HOST-API | `tasks.runNext` (command, accept-and-observe) |
+| A:154→1850,1859 | GET /tasks/:id/workspace R:137→TC:134 | absolute rootPath | DEFER (R5 step 4) | `tasks.workspace.get` |
+| A:155→1869 | POST /tasks/:id/workspace/reveal R:138 (inline) | | DEFER (R5 step 4) | `tasks.workspace.reveal` |
+| A:262→3713 | POST /schedules R:149→SC:21 | | HOST-API | `schedules.create` (command) |
 | A:267→1848,3972 | PATCH /schedules/:id R:150→SC:67 | | HOST-API | `schedules.update` |
 | A:272→3989 | DELETE /schedules/:id R:151→SC:120 | | HOST-API | `schedules.delete` |
 
@@ -109,16 +109,15 @@ definition → call sites.
 
 | UI | Route | Notes | Class | Operation |
 |---|---|---|---|---|
-| A:286→3898 | POST /workflows R:154→WC:93 | | HOST-API | `workflows.create` |
-| A:291→3898 | PUT /workflows/:id R:156→WC:110 | needs a revision for concurrent editors | HOST-API | `workflows.update` |
+| A:286→3898, A:291→3898 | POST /workflows R:154→WC:93, PUT /workflows/:id R:156→WC:110 | one save with the version it was edited from (`expectedUpdatedAt`) | HOST-API | `workflows.save` (command; `workflow_conflict`) |
 | A:296→3890 | POST /workflows/:id/validate R:157→WC:130 | | HOST-API | `workflows.validate` |
-| A:4766 | GET /workflow-runs R:158→WC:139 | polled 1 s | HOST-API | `workflows.runs.list` |
-| A:2197 | POST /workflow-runs R:159→WC:6 | `options.rootPath` may come from the picker | HOST-API | `workflows.runs.start` |
+| A:4766 | GET /workflow-runs R:158→WC:139 | polled 1 s | HOST-API | in `orchestration.snapshot` |
+| A:2197 | POST /workflow-runs R:159→WC:6 | `options.rootPath` may come from the picker | HOST-API | `workflows.runs.start` (command, reserved run id; folders deferred) |
 | A:275→(9 sites); WL:42 | GET /workflow-runs/:id R:160→WC:150 | | HOST-API | `workflows.runs.get` |
-| WL:49 | GET /workflow-runs/:id/events R:161→WC:18 | **SSE** `history`/`update`, `id`=sequence, Last-Event-ID/`?after`, 15 s heartbeat; `EventSourceClass` is injectable | HOST-API (subscribe) | `workflows.runs.events` |
-| A:2217 | POST /workflow-runs/:id/review R:163→WC:190 | 900 s | HOST-API | `workflows.runs.review` |
+| WL:49 | GET /workflow-runs/:id/events R:161→WC:18 | **SSE** `history`/`update`, `id`=sequence, Last-Event-ID/`?after`, 15 s heartbeat; `EventSourceClass` is injectable | HOST-API (subscribe) | `workflows.runs.events` (history + cursor), then `events.poll` on `workflow-run:<id>` |
+| A:2217 | POST /workflow-runs/:id/review R:163→WC:190 | 900 s | HOST-API | `workflows.runs.review` (command) |
 | A:282→2215 | POST /workflow-runs/:id/cancel R:164→WC:179 | | HOST-API | `workflows.runs.cancel` |
-| A:2216 | POST /workflow-runs/:id/resume R:165→WC:209 | | HOST-API | `workflows.runs.resume` |
+| A:2216 | POST /workflow-runs/:id/resume R:165→WC:209 | | HOST-API | `workflows.runs.resume` (command) |
 | A:6288 | GET /workflow-runs/:runId/agent-runs/:agentRunId R:166 (inline) | | HOST-API | `workflows.runs.agentTrace.get` |
 | A:276 (dead) | POST /workflow-runs/:id/step R:162→WC:168 | no callers | drop | — |
 
