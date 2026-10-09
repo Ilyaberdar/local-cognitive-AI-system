@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { RemoteClient } from "../src/remote/client/RemoteClient";
 import { RemoteRuntime, type StreamCursor, type StreamUpdate } from "../src/remote/client/RemoteRuntime";
@@ -139,4 +141,21 @@ test("a server chat's attachment arrives in chunks across a dropped connection a
   assert.deepEqual(asked.attachments?.map(item => [item.name, item.kind, "textContent" in item]), [["plan.txt", "text", false]], "history shows the file, not its contents");
   assert.equal(JSON.stringify(updates).includes("ship the release on Friday"), false, "no event carried the contents");
   assert.equal(await failure(runtime.send("chat.runs.start", { sessionId: session.id, input: "Again", attachmentIds: [uploadId] })), "attachment_unknown", "a turn takes an upload once");
+
+  // A file in a folder the server lets its chats use: read for Review and copied, under the label the device sees.
+  const shared = path.join(server.root, "shared");
+  fs.mkdirSync(shared, { recursive: true });
+  fs.writeFileSync(path.join(shared, "notes.md"), "# Notes\nFriday.\n");
+  fs.writeFileSync(path.join(server.root, "private.txt"), "not for chats");
+  const port = (JSON.parse(server.run("status", "--json").stdout) as { http: { port: number } }).http.port;
+  const saved = await fetch(`http://127.0.0.1:${port}/app/settings`, { method: "PUT", headers: { "content-type": "application/json", "x-local-cognitive": "1" },
+    body: JSON.stringify({ filesystem: { allowedDirectories: [shared] } }) });
+  assert.equal(saved.status, 200, await saved.text());
+  const review = await runtime.request<{ path: string; content: string }>("files.read", { sessionId: session.id, path: "<folder>/notes.md", as: "text" });
+  assert.deepEqual([review.path, review.content], ["<folder>/notes.md", "# Notes\nFriday.\n"]);
+  const stat = await runtime.request<{ sha256: string; sizeBytes: number }>("files.stat", { sessionId: session.id, path: "<folder>/notes.md" });
+  const part = await runtime.request<{ data: string; eof: boolean }>("files.read", { sessionId: session.id, path: "<folder>/notes.md", as: "base64" });
+  assert.equal(createHash("sha256").update(Buffer.from(part.data, "base64")).digest("hex"), stat.sha256);
+  assert.equal(await failure(runtime.request("files.read", { sessionId: session.id, path: "<server>/private.txt", as: "text" })), "forbidden");
+  assert.equal(await failure(runtime.request("files.read", { sessionId: session.id, path: "<folder>/../private.txt", as: "text" })), "forbidden");
 });

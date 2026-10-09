@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -186,4 +187,45 @@ test("chat settings saved at the same time keep both changes, and no partial fil
   const settings = await f.store.get("chat");
   assert.deepEqual([settings.language, settings.outputStyle, settings.mode], ["ru", "detailed", "code"]);
   assert.deepEqual((await fs.readdir(f.root)).filter(name => name.endsWith(".tmp")), [], "no temporary file is left");
+});
+
+test("a device reads a chat's files by the paths it was shown: those the chat wrote, inside the folders it may use", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "chat-files-")));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "out"), shared = path.join(root, "shared"), elsewhere = path.join(root, "elsewhere");
+  for (const dir of [output, shared, elsewhere]) await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(output, "report.md"), "# Report\n");
+  await fs.writeFile(path.join(output, "other.md"), "not written by this chat");
+  await fs.writeFile(path.join(shared, "notes.txt"), "shared notes");
+  await fs.writeFile(path.join(elsewhere, "secret.txt"), "secret");
+  await fs.writeFile(path.join(output, "image.bin"), Buffer.from([1, 0, 2, 3]));
+  const big = Buffer.alloc(600 * 1024, 7);
+  await fs.writeFile(path.join(output, "big.bin"), big);
+  const written = ["report.md", "image.bin", "big.bin"].map(name => ({ tool: "file.write", ok: true, metadata: { filePath: path.join(output, name) } }));
+  const store = new SessionSettingsStore({ baseDir: path.join(root, "settings") }, { providerId: "openai" }, {});
+  const runtime = { sessionSettingsStore: store, providerDescriptors: [], config: { filesystem: { allowedDirectories: [shared] } },
+    memoryService: { recent: async ({ actor }: any) => actor.sessionId === "chat" ? [{ metadata: { tools: written } }] : [] } };
+  const ops = createChatOperations({
+    runtimeManager: { getRuntime: () => runtime, getSettings: async () => ({ memory: { localProfileId: "me" }, filesystem: { outputDir: output, allowedDirectories: [shared] } }) } as unknown as RuntimeManager,
+    sessionIndexStore: { get: async (id: string) => ({ id }) } as unknown as SessionIndexStore,
+    runService: {} as RunService, journal: {} as EventJournal, scopeOf: () => "device", hostDirectories: [root]
+  });
+  const call = <T = any>(op: string, payload: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
+
+  const report = await call("files.read", { sessionId: "chat", path: "<output>/report.md", as: "text" });
+  assert.deepEqual({ ...report, version: typeof report.version }, { path: "<output>/report.md", name: "report.md", sizeBytes: 9, content: "# Report\n", version: "string" });
+  assert.equal((await call("files.read", { sessionId: "chat", path: "<folder>/notes.txt", as: "text" })).content, "shared notes", "inside a folder chats may use");
+  for (const [sessionId, ref, expected] of [["chat", "<output>/other.md", "forbidden"], ["other", "<output>/report.md", "forbidden"], ["chat", `${elsewhere}/secret.txt`, "forbidden"],
+    ["chat", "<output>/../elsewhere/secret.txt", "forbidden"], ["chat", "report.md", "forbidden"], ["chat", "<output>/gone.md", "not_found"], ["chat", "<output>", "forbidden"]]) {
+    await assert.rejects(call("files.read", { sessionId, path: ref, as: "text" }), code(expected!), `${sessionId} ${ref}`);
+  }
+  await assert.rejects(call("files.read", { sessionId: "chat", path: "<output>/image.bin", as: "text" }), code("binary_file"));
+
+  const stat = await call("files.stat", { sessionId: "chat", path: "<output>/big.bin" });
+  assert.deepEqual([stat.path, stat.sizeBytes, stat.sha256], ["<output>/big.bin", big.length, createHash("sha256").update(big).digest("hex")]);
+  const first = await call("files.read", { sessionId: "chat", path: "<output>/big.bin", as: "base64" });
+  const second = await call("files.read", { sessionId: "chat", path: "<output>/big.bin", as: "base64", offset: 512 * 1024 });
+  assert.deepEqual([first.eof, second.eof], [false, true]);
+  assert.ok(Buffer.concat([Buffer.from(first.data, "base64"), Buffer.from(second.data, "base64")]).equals(big));
+  assert.equal(JSON.stringify([report, stat, first]).includes(root), false, "no folder of the server in an answer");
 });

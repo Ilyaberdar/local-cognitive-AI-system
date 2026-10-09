@@ -64,7 +64,7 @@ export function createReviewPanel(host) {
         <div class="review-toolbar__actions">
           ${file ? `<button type="button" class="ghost-button" data-review-action="refresh" aria-label="Reload file from disk" title="Reload file from disk">${host.icon("refresh")}</button>
           <button type="button" class="ghost-button" data-review-action="copy" aria-label="Copy file" title="Copy file">${host.icon("copy")}</button>
-          <button type="button" class="ghost-button" data-review-action="editor">Open in editor ${host.icon("externalLink")}</button>` : ""}
+          <button type="button" class="ghost-button" data-review-action="editor">${escape(host.editorLabel?.() ?? "Open in editor")} ${host.icon("externalLink")}</button>` : ""}
         </div>
       </div>
       ${file ? `<div class="review-files" aria-label="Open review files">${view.tabs.map((tab) => `<span class="review-file ${tab.path === view.active ? "active" : ""}">
