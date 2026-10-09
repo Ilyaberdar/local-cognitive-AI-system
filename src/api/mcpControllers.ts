@@ -1,9 +1,39 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Router, RequestHandler } from "express";
 import { RuntimeManager } from "../app/RuntimeManager";
-import { emptyMcpConfiguration } from "../mcp/client/configuration";
+import { emptyMcpConfiguration, parseMcpConfiguration } from "../mcp/client/configuration";
 import { MCP_CREDENTIAL_PREFIX, mcpSecretNames, type McpSecretKind } from "../mcp/client/credentials";
 import { McpClientError } from "../mcp/client/errors";
+import { importCandidate, readMcpImport, type McpImportCandidate, type McpImportSource } from "../mcp/client/importConfig";
+
+/** Where other clients keep their MCP servers (fixed paths: a request never names a file). */
+const importFiles = (): Record<Exclude<McpImportSource, "text">, { label: string; file: string }> => {
+  const home = os.homedir();
+  return {
+    codex: { label: "Codex", file: path.join(process.env.CODEX_HOME || path.join(home, ".codex"), "config.toml") },
+    "claude-desktop": { label: "Claude Desktop", file: process.platform === "win32" ? path.join(process.env.APPDATA ?? path.join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json")
+      : process.platform === "darwin" ? path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json") : path.join(home, ".config", "Claude", "claude_desktop_config.json") },
+    cursor: { label: "Cursor", file: path.join(home, ".cursor", "mcp.json") }
+  };
+};
+const MAX_IMPORT_BYTES = 256 * 1024;
+/** A regular file of at most 256 KB, after following links; its content is never logged. */
+const readImportFile = async (file: string): Promise<string | undefined> => {
+  try {
+    const real = await fs.realpath(file);
+    const stat = await fs.stat(real);
+    if (!stat.isFile() || stat.size > MAX_IMPORT_BYTES) return undefined;
+    return await fs.readFile(real, "utf8");
+  } catch { return undefined; }
+};
+const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+  : value && typeof value === "object" ? `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`
+  : JSON.stringify(value);
+/** A server's connection, without what only names or presents it. */
+const connectionOf = (server: object) => { const { id: _id, name: _name, ...rest } = server as Record<string, unknown>; return canonical(rest); };
 
 /** Local-only status and lifecycle controls for already-saved outbound MCP definitions. */
 export function createMcpRouter(runtime: RuntimeManager): Router {
@@ -112,6 +142,82 @@ export function createMcpRouter(runtime: RuntimeManager): Router {
     // The settings no longer name it, so its value leaves the vault (RuntimeManager prunes).
     await runtime.updateSettings({ mcp: { client: { servers: { [serverId]: serverPatch } } } } as never);
     return view(serverId);
+  }));
+  // Import from Codex, Claude Desktop, Cursor or a pasted snippet (M3c). The preview carries no
+  // secret value: those wait here, by a one-time token, until Import (at most 10 minutes).
+  const previews = new Map<string, { candidates: McpImportCandidate[]; expires: number }>();
+  router.get("/import/sources", secretRoute(async () => ({ sources: await Promise.all(Object.entries(importFiles()).map(async ([source, { label, file }]) =>
+    ({ source, label, available: (await readImportFile(file)) !== undefined }))) })));
+  router.post("/import/preview", secretRoute(async req => {
+    const source = String(req.body?.source ?? "") as McpImportSource;
+    let text: string | undefined;
+    if (source === "text") {
+      text = typeof req.body?.text === "string" ? req.body.text : undefined;
+      if (!text?.trim() || text.length > MAX_IMPORT_BYTES) throw fail(400, "Paste a configuration of at most 256 KB.");
+    } else {
+      const known = importFiles()[source as Exclude<McpImportSource, "text">];
+      if (!known) throw fail(400, "Choose Codex, Claude Desktop, Cursor or paste a snippet.");
+      text = await readImportFile(known.file);
+      if (text === undefined) throw fail(404, `No ${known.label} configuration was found on this computer.`);
+    }
+    const servers = readMcpImport(source, text);
+    const client = (await runtime.getSettings()).mcp?.client ?? emptyMcpConfiguration();
+    const taken = new Set([...Object.keys(client.servers), ...Object.keys(client.bindings)]);
+    const existing = new Map(Object.values(client.servers).map(server => [connectionOf(server), server.id]));
+    const candidates: McpImportCandidate[] = [];
+    for (const [key, value] of Object.entries(servers).slice(0, 64)) {
+      const candidate = importCandidate(key, value, taken, process.env);
+      if (!candidate) continue;
+      // Checked as Settings would check it, so one unusable server does not stop the others.
+      if (!candidate.unsupported) {
+        try { parseMcpConfiguration({ servers: { [candidate.id]: candidate.server }, bindings: {} }); }
+        catch { candidate.unsupported = "Some of its settings cannot be used here (for example a credential in a plain field or an invalid address)."; }
+      }
+      taken.add(candidate.id);
+      candidates.push(candidate);
+    }
+    const now = Date.now();
+    for (const [token, preview] of previews) if (preview.expires < now) previews.delete(token);
+    const token = randomUUID();
+    previews.set(token, { candidates, expires: now + 10 * 60_000 });
+    return { token, vault: Boolean(runtime.integrations.vault?.available()), servers: candidates.map(candidate => ({
+      key: candidate.key, id: candidate.id, server: candidate.server, ignored: candidate.ignored,
+      ...(candidate.unsupported ? { unsupported: candidate.unsupported } : {}),
+      ...(existing.has(connectionOf(candidate.server)) ? { alreadyAdded: existing.get(connectionOf(candidate.server)) } : {}),
+      secrets: candidate.secrets.map(({ kind, name, value }) => ({ kind, name, found: value !== undefined }))
+    })) };
+  }));
+  router.post("/import/apply", secretRoute(async req => {
+    const preview = previews.get(String(req.body?.token ?? ""));
+    if (!preview || preview.expires < Date.now()) throw fail(409, "This preview has expired. Preview the import again.");
+    const keys = new Set(Array.isArray(req.body?.keys) ? req.body.keys.map(String) : []);
+    const chosen = preview.candidates.filter(candidate => keys.has(candidate.key) && !candidate.unsupported);
+    if (!chosen.length) throw fail(400, "Choose at least one server to import.");
+    previews.delete(String(req.body.token));
+    const vault = runtime.integrations.vault;
+    const storing = Boolean(vault?.available());
+    const written: Array<{ ref: string; server: McpImportCandidate["server"]; kind: McpImportCandidate["secrets"][number]["kind"]; name: string }> = [];
+    const servers: Record<string, unknown> = {}, bindings: Record<string, unknown> = {};
+    const missing: Array<{ id: string; name: string }> = [];
+    try {
+      for (const candidate of chosen) {
+        const ref = candidate.secrets.length ? randomUUID() : undefined;
+        for (const secret of candidate.secrets) {
+          if (secret.value !== undefined && storing && ref) {
+            await runtime.mcpSecrets.write(ref, candidate.server, secret.kind, secret.name, secret.value);
+            written.push({ ref, server: candidate.server, kind: secret.kind, name: secret.name });
+          } else missing.push({ id: candidate.id, name: secret.kind === "bearer" ? "Bearer token" : secret.name });
+        }
+        servers[candidate.id] = candidate.server;
+        bindings[candidate.id] = { id: candidate.id, serverId: candidate.id, enabled: candidate.server.enabled, ...(ref ? { credentialRef: `${MCP_CREDENTIAL_PREFIX}${ref}` } : {}) };
+      }
+      await runtime.updateSettings({ mcp: { client: { servers, bindings } } } as never);
+    } catch (error) {
+      // Nothing was added: the values stored for it leave the vault.
+      for (const item of written) await runtime.mcpSecrets.remove(item.ref, item.kind, item.name).catch(() => undefined);
+      throw error;
+    }
+    return { added: chosen.map(candidate => candidate.id), missing };
   }));
   return router;
 }

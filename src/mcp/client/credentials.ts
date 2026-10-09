@@ -61,6 +61,10 @@ export class VaultMcpCredentialProvider implements McpCredentialProvider {
     await this.vault.write(mcpSecretKey(ref, kind, name), stored);
   }
 
+  async remove(ref: string, kind: McpSecretKind, name: string): Promise<void> {
+    await this.vault.remove(mcpSecretKey(ref, kind, name));
+  }
+
   async isSet(ref: string, kind: McpSecretKind, name: string): Promise<boolean> {
     return (await this.vault.read(mcpSecretKey(ref, kind, name))) !== undefined;
   }

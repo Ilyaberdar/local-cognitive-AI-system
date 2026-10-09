@@ -211,3 +211,33 @@ test("MCP settings set a server's secret without ever showing its value", async 
   assert.equal(content.innerHTML.includes('sk-very-secret-value'), false, "the value is not on the page");
   assert.equal(content.querySelector('[data-mcp-secret-value]').value, '');
 });
+
+test("MCP settings import servers from a pasted snippet after a preview", async t => {
+  const ui = harness(true); t.after(ui.close);
+  await until(() => !!ui.root.querySelector('[data-plugin-search]'));
+  ui.dom.window.eval(`${shellBundle}\nwindow.SettingsShell = SettingsShell;`);
+  const appSettings: any = { mcp: { server: { enabled: true }, client: { servers: {}, bindings: {} } } };
+  const calls: any[] = [];
+  const data: any = {
+    integrations: [], loadMcp: async () => ({ connections: [], tools: [] }), save: async () => appSettings,
+    mcpImportSources: async () => ({ sources: [{ source: 'codex', label: 'Codex', available: true }, { source: 'cursor', label: 'Cursor', available: false }] }),
+    previewMcpImport: async (body: any) => { calls.push(['preview', body]); return { token: 't1', vault: true, servers: [
+      { key: 'blender', id: 'blender', server: { id: 'blender', name: 'blender', enabled: true, transport: 'stdio', command: 'uvx', args: ['blender-mcp'] }, ignored: [],
+        secrets: [{ kind: 'env', name: 'SKETCHFAB_API_KEY', found: true }] },
+      { key: 'old', id: 'old', server: { id: 'old', name: 'old', enabled: true, transport: 'streamable-http', endpoint: 'http://localhost:9000/sse' }, ignored: [], secrets: [], unsupported: 'It uses the older SSE transport.' }] }; },
+    applyMcpImport: async (body: any) => { calls.push(['apply', body]); return { added: ['blender'], missing: [] }; }
+  };
+  const shell = ui.dom.window.SettingsShell.createSettingsShell({ app: ui.root, getContext: () => ({ appSettings }), data, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
+  shell.route('#/settings/mcp/import');
+  const content = ui.dom.window.document.querySelector('#settings-root');
+  await until(() => !!content.querySelector('[data-mcp-import-source="codex"]'));
+  assert.equal(content.querySelector('[data-mcp-import-source="cursor"]').disabled, true);
+  content.querySelector('[data-mcp-import-text]').value = '{"mcpServers":{}}';
+  content.querySelector('[data-mcp-import-paste]').click();
+  await until(() => !!content.querySelector('[data-mcp-import-apply]'));
+  assert.match(content.textContent, /value found, stored in protected storage/);
+  assert.equal(content.querySelector('[data-mcp-import-key="old"]').disabled, true, "an unsupported server cannot be chosen");
+  content.querySelector('[data-mcp-import-apply]').click();
+  await until(() => calls.length === 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['preview', { source: 'text', text: '{"mcpServers":{}}' }], ['apply', { token: 't1', keys: ['blender'] }]]);
+});
