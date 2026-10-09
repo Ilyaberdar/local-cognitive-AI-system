@@ -214,28 +214,44 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
 
   /** The GPUs a CUDA build sees; the GPU tab is shown only with more than one. */
   function runtimeGpus() { return (state.runtime || getContext().runtime)?.gpus ?? []; }
-  function settingsTabs() { return runtimeGpus().length > 1 ? [...MODEL_SETTINGS_TABS, { id: "gpus", label: "GPUs" }] : MODEL_SETTINGS_TABS; }
+  // Always shown: with fewer than two GPUs it says why it is inactive and how it works.
+  function settingsTabs() { return [...MODEL_SETTINGS_TABS, { id: "gpus", label: "GPUs" }]; }
+  /** Why splitting models across GPUs does not apply here, or "" when it does. */
+  function gpuInactiveReason() {
+    const runtime = state.runtime || getContext().runtime || {}, gpus = runtimeGpus(), backend = String(runtime.backend || "");
+    if (gpus.length > 1) return "";
+    if (/metal/i.test(backend) || runtime.platform === "darwin") return "Macs with Apple silicon have one memory shared by the CPU and GPU: every model already uses all of it, so there is nothing to split.";
+    if (gpus.length === 1) return `One GPU was found (${gpus[0].name}). Splitting needs two or more NVIDIA GPUs.`;
+    if (/cpu/i.test(backend) || runtime.fallbackReason) return "This computer runs models on the CPU: no NVIDIA GPU is available to the runtime.";
+    return "No NVIDIA GPUs were found yet. They are detected when the model runtime starts.";
+  }
   function gpuSettings() { return state.gpuDraft ?? getContext().settings?.localModels?.multiGpu ?? {}; }
 
   /** How models use several GPUs: split or not, by layers or rows, and which GPUs. */
   function renderGpuSettings() {
     const settings = gpuSettings(), gpus = runtimeGpus(), chosen = settings.devices ?? [];
     const split = settings.split ?? "auto", mode = settings.mode ?? "layer";
+    const inactive = gpuInactiveReason(), off = inactive || state.gpuSaving ? "disabled" : "";
     return `<form class="mm-settings-form" id="mm-gpus-form" data-mm-gpu-form>
-      <div class="mm-settings-copy"><h3>Several GPUs</h3><p class="subtle">How a model uses more than one GPU. It applies to the next model you load; loaded models keep their place.</p><p class="subtle">Not yet checked on real multi-GPU hardware.</p></div>
-      <label class="mm-settings-field"><span>Split a model across GPUs</span><select data-mm-gpu="split" ${state.gpuSaving ? "disabled" : ""}>
+      <div class="mm-settings-copy"><h3>Several GPUs</h3>
+        ${inactive ? `<p class="mm-gpu-inactive" role="status"><strong>Not active on this computer.</strong> ${escape(inactive)}</p>` : ""}
+        <p class="subtle">On a computer with several NVIDIA GPUs, a model is placed on the GPUs with room: a model that fits one GPU runs there, and different models run on different GPUs at the same time. A model too large for one GPU can be split across several, so it runs fully on GPUs instead of partly on the CPU.</p>
+        <p class="subtle">Split by layers works with any GPUs: each GPU holds whole layers. Split by rows (NVIDIA) divides every layer, which can be faster with a fast link between the GPUs (NVLink); the main GPU also keeps the context.</p>
+        <p class="subtle">Changes apply to the next model you load; loaded models keep their place until you rebalance them. Models are never unloaded on their own.</p>
+        <p class="subtle">Not yet checked on real multi-GPU hardware.</p></div>
+      <label class="mm-settings-field"><span>Split a model across GPUs</span><select data-mm-gpu="split" ${off}>
         <option value="auto" ${split === "auto" ? "selected" : ""}>Only when it does not fit one GPU</option>
         <option value="always" ${split === "always" ? "selected" : ""}>Always, over every chosen GPU with room</option>
         <option value="never" ${split === "never" ? "selected" : ""}>Never (one GPU; the rest on the CPU)</option></select></label>
-      <label class="mm-settings-field"><span>Split by</span><select data-mm-gpu="mode" ${state.gpuSaving ? "disabled" : ""}>
+      <label class="mm-settings-field"><span>Split by</span><select data-mm-gpu="mode" ${off}>
         <option value="layer" ${mode === "layer" ? "selected" : ""}>Layers (any GPU)</option>
         <option value="row" ${mode === "row" ? "selected" : ""}>Rows (NVIDIA; the main GPU also holds the context)</option></select></label>
-      <fieldset class="mm-settings-field"><legend>GPUs models may use</legend>${gpus.map((gpu) => `<label class="mm-gpu-choice"><input type="checkbox" data-mm-gpu-device="${escape(gpu.id)}" ${!chosen.length || chosen.includes(gpu.id) ? "checked" : ""} ${state.gpuSaving ? "disabled" : ""} /> GPU ${escape(gpu.index)} · ${escape(gpu.name)} · ${bytes(gpu.totalBytes)}</label>`).join("")}</fieldset>
-      <button class="ghost-button mm-settings-save" type="submit" ${state.gpuSaving ? "disabled" : ""}>${state.gpuSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button>
+      <fieldset class="mm-settings-field"><legend>GPUs models may use</legend>${gpus.length ? gpus.map((gpu) => `<label class="mm-gpu-choice"><input type="checkbox" data-mm-gpu-device="${escape(gpu.id)}" ${!chosen.length || chosen.includes(gpu.id) ? "checked" : ""} ${off} /> GPU ${escape(gpu.index)} · ${escape(gpu.name)} · ${bytes(gpu.totalBytes)}</label>`).join("") : '<span class="subtle">No NVIDIA GPUs found.</span>'}</fieldset>
+      <button class="ghost-button mm-settings-save" type="submit" ${off}>${state.gpuSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button>
       ${state.gpuError ? renderModelError(state.gpuError) : state.gpuSaved ? '<div class="subtle mm-context-feedback" role="status">Saved. The next model you load follows it.</div>' : ""}
     </form>
     <div class="mm-settings-copy"><h3>Rebalance</h3><p class="subtle">Load the loaded models again by these settings, the largest first, once their running requests finish. They are briefly unavailable.</p>
-      <button type="button" class="ghost-button" data-mm-rebalance ${state.rebalancing ? "disabled" : ""}>${state.rebalancing ? '<span class="button-spinner" aria-hidden="true"></span>Rebalancing…' : "Rebalance loaded models"}</button>
+      <button type="button" class="ghost-button" data-mm-rebalance ${state.rebalancing || inactive ? "disabled" : ""}>${state.rebalancing ? '<span class="button-spinner" aria-hidden="true"></span>Rebalancing…' : "Rebalance loaded models"}</button>
       ${state.rebalanceMessage ? `<div class="subtle mm-context-feedback" role="status">${escape(state.rebalanceMessage)}</div>` : ""}</div>`;
   }
 
