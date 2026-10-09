@@ -17,9 +17,10 @@
 .mm-settings-close { display: grid; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
 .mm-settings-close:hover { background: var(--highlight); color: var(--text); }
 .mm-settings-body { display: grid; gap: 12px; padding: 18px 22px; }
-.mm-settings-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+/* Tabs wrap to a second line: a hidden scroll left the last tab (GPUs) unseen. */
+.mm-settings-tabs { display: flex; flex-wrap: wrap; gap: 4px 4px; border-bottom: 1px solid var(--line); }
 .mm-settings-tabs::-webkit-scrollbar { display: none; }
-.mm-settings-tabs button { flex: 0 0 auto; padding: 0 10px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 500; }
+.mm-settings-tabs button { flex: 0 0 auto; padding: 6px 10px 8px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 500; }
 .mm-settings-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text); }
 .mm-settings-tabs button:hover { color: var(--text); background: transparent; }
 .mm-settings-tabs button:focus-visible { outline: none; border-color: transparent; box-shadow: none; }
