@@ -116,6 +116,10 @@ export const createApiRouter = (
   router.get("/local/models/all", createGetAllLocalModelsController(runtimeManager));
   router.post("/local/models/load", createLoadLocalModelController(runtimeManager));
   router.post("/local/models/unload", createUnloadLocalModelController(runtimeManager));
+  // Loads the loaded models again by the current GPU settings (Settings → Local models → GPUs).
+  router.post("/local/models/rebalance", async (_req, res, next) => {
+    try { res.json(await runtimeManager.getRuntime().localModelService.rebalance()); } catch (error) { next(error); }
+  });
   router.use(createLocalModelRouter(() => runtimeManager.getRuntime().localModelService));
 
   router.get("/sessions", createListSessionsController(sessionIndexStore));

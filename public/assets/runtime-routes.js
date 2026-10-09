@@ -25,6 +25,7 @@ export const MODEL_ROUTES = [
     payload: match => ({ downloadId: decodeURIComponent(match[1]) }) },
   { method: "POST", pattern: /^\/local\/models\/load$/, op: "models.load", payload: (_match, _query, body) => ({ modelId: body?.modelId }) },
   { method: "POST", pattern: /^\/local\/models\/unload$/, op: "models.unload", payload: (_match, _query, body) => ({ modelId: body?.modelIdOrInstanceId }) },
+  { method: "POST", pattern: /^\/local\/models\/rebalance$/, op: "models.local.rebalance" },
   { method: "DELETE", pattern: /^\/local\/models\/([^/]+)$/, op: "models.local.delete", payload: match => ({ modelId: decodeURIComponent(match[1]) }) },
   { method: "GET", pattern: /^\/system\/metrics$/, op: "system.metrics" }
 ];

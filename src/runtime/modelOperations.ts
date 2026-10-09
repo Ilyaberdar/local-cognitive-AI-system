@@ -91,6 +91,15 @@ export const createModelOperations = (deps: { runtimeManager: RuntimeManager; lo
       await deps.runtimeManager.getRuntime().localModelManager.unloadModel("llamacpp", modelId);
       return { modelId, status: "unloaded" };
     }),
+    /** Loads the server's loaded models again by its GPU settings; answers when done or after a
+     * short wait (it goes on on the server, and the models' state shows the outcome). */
+    "models.local.rebalance": () => known(async () => {
+      const work = service().rebalance();
+      work.catch(() => undefined);
+      const wait = new Promise<"rebalancing">(resolve => setTimeout(() => resolve("rebalancing"), deps.loadWaitMs ?? 25_000).unref?.());
+      const result = await Promise.race([work, wait]);
+      return result === "rebalancing" ? { status: "rebalancing" } : { status: "done", ...result };
+    }),
     "models.local.delete": payload => known(async () => {
       const { modelId } = parse(schemas.libraryModel, payload);
       await service().deleteModel(modelId);

@@ -448,3 +448,25 @@ test("the runtime strip explains a CPU fallback without rendering the reason as 
   state.runtime = { status: "stopped", backend: "CUDA" };
   assert.doesNotMatch(context.renderRuntime(), /CPU fallback/);
 });
+
+test("the GPUs tab appears only when a CUDA build sees more than one GPU", () => {
+  const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8")
+    .replace(/^import .*\n/, "").replace("export function", "function")
+    .replace("return { render, bind, start, refresh, repaint, updateLiveView, dispose()", "return { test: { state, settingsTabs, renderGpuSettings }, render, bind, start, refresh, repaint, updateLiveView, dispose()");
+  let runtime: any = { gpus: [{ id: "GPU-a", index: 0, name: "RTX A", totalBytes: 24 * 1024 ** 3, freeBytes: 20 * 1024 ** 3 }] };
+  const settings = { localModels: { contextSize: 4096, multiGpu: { split: "always", mode: "row", devices: ["GPU-b"] } } };
+  const context: any = { icon: () => "", window: { setTimeout: () => 1, clearTimeout() {} }, setTimeout,
+    getContext: () => ({ settings, runtime }), onContextChange: async () => {}, onLibraryChange() {}, notify() {}, isVisible: () => false, onLocalSettingsChange: async () => {} };
+  vm.runInNewContext(managerSource, context);
+  const manager = context.createModelManager({ request: async () => ({}), ...context });
+  assert.equal(manager.test.settingsTabs().some((tab: { id: string }) => tab.id === "gpus"), false, "one GPU: no tab");
+  runtime = { gpus: [...runtime.gpus, { id: "GPU-b", index: 1, name: "RTX B", totalBytes: 24 * 1024 ** 3, freeBytes: 20 * 1024 ** 3 }] };
+  assert.equal(manager.test.settingsTabs().at(-1).id, "gpus");
+  const html = manager.test.renderGpuSettings();
+  assert.match(html, /<option value="always" selected>/);
+  assert.match(html, /<option value="row" selected>/);
+  assert.match(html, /data-mm-gpu-device="GPU-a"  /, "GPU-a is not chosen");
+  assert.match(html, /data-mm-gpu-device="GPU-b" checked/);
+  assert.match(html, /Rebalance loaded models/);
+  assert.match(html, /Not yet checked on real multi-GPU hardware/);
+});

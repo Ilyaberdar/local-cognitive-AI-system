@@ -72,6 +72,7 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "models.load": { kind: "request", timeoutMs: 40_000 },
   "models.unload": { kind: "request", timeoutMs: 60_000 },
   "models.local.delete": { kind: "request", timeoutMs: 60_000 },
+  "models.local.rebalance": { kind: "request", timeoutMs: 45_000 },
   "models.settings.get": { kind: "request", timeoutMs: 15_000 },
   "models.settings.update": { kind: "request", timeoutMs: 120_000 },
   "models.setDefault": { kind: "request", timeoutMs: 15_000 },
