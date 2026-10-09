@@ -434,7 +434,7 @@ test("work in a project or shared folder a device may use is started from a devi
   const shared = path.join(f.root, "shared");
   await fs.mkdir(path.join(shared, "repo"), { recursive: true });
   const work = addAdminFolder(path.join(f.root, "data"), shared, { label: "Work" });
-  const project = await f.projectStore.create({ name: "Repo", rootPath: path.join(shared, "repo") });
+  const project = await f.projectStore.create({ name: "Repo", rootPath: path.join(shared, "repo"), origin: "device" });
   const hostProject = await f.projectStore.create({ name: "Host", rootPath: path.join(f.root, "elsewhere-project") }).catch(async () => {
     await fs.mkdir(path.join(f.root, "elsewhere-project")); return f.projectStore.create({ name: "Host", rootPath: path.join(f.root, "elsewhere-project") }); });
 

@@ -61,8 +61,10 @@ export function createProjectsUi(options) {
         : remote.canDelete ? `<button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${escape(session.id)}" aria-label="Delete ${escape(session.title)} on ${host}" title="Delete chat on ${host}">${icon("close")}</button>` : ""}
     </div>`;
     };
-    const { recent, byProject } = groupProjectSessions(remote.sessions);
-    const chats = remote.projects ? recent : remote.sessions;
+    const { byProject } = groupProjectSessions(remote.sessions);
+    // A chat whose project is archived (or not listed) stays reachable among the chats.
+    const listedProjects = new Set((remote.projects ?? []).filter(project => !project.archived).map(project => project.id));
+    const chats = remote.projects ? remote.sessions.filter(session => !session.projectId || !listedProjects.has(session.projectId)) : remote.sessions;
     const projectGroup = project => {
       const sessions = byProject.get(project.id) ?? [];
       const isOpen = !collapsed.has(project.id);

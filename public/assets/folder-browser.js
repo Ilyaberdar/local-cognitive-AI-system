@@ -14,6 +14,8 @@ export function chooseServerFolder({ call, hostName, title = "Choose a folder" }
     dialog.className = "project-dialog folder-browser";
     dialog.setAttribute("aria-labelledby", "folder-browser-title");
     let roots = [], root = null, path = [], entries = [], truncated = false, error = "", busy = true, settled = false;
+    // The place last shown: a folder that fails to open leaves the browser where it was.
+    let shown = { root: null, path: [] };
     // Answered once: by a choice, the close button or Escape.
     const finish = value => {
       if (settled) return;
@@ -43,7 +45,11 @@ export function chooseServerFolder({ call, hostName, title = "Choose a folder" }
       try {
         if (!root) roots = await call("fs.roots", {});
         else ({ entries, truncated } = await call("fs.browse", { rootId: root.rootId, path }));
-      } catch (failure) { error = failure?.message || "The server did not answer."; entries = []; }
+        shown = { root, path: [...path] };
+      } catch (failure) {
+        error = failure?.message || "The server did not answer.";
+        root = shown.root; path = [...shown.path];
+      }
       busy = false; render();
     };
     const bind = () => {

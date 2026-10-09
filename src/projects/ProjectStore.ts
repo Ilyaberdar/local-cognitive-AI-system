@@ -24,12 +24,13 @@ export class ProjectStore {
       const name = projectName(input.name);
       const color = projectColor(input.color);
       const rootPath = await projectDirectory(input.rootPath);
+      if (input.expectedRoot !== undefined && rootPath !== input.expectedRoot) throw new ProjectError(409, "The folder changed while the project was being made. Try again.");
       const record = await this.read();
       if (record.projects.some(project => project.rootPath === rootPath)) {
         throw new ProjectError(409, "This folder already belongs to a project. Restore the existing project if it is archived.");
       }
       const now = new Date().toISOString();
-      const project: Project = { id: randomUUID(), name, rootPath, ...(color ? { color } : {}), createdAt: now, updatedAt: now };
+      const project: Project = { id: randomUUID(), name, rootPath, ...(color ? { color } : {}), ...(input.origin === "device" ? { origin: "device" as const } : {}), createdAt: now, updatedAt: now };
       record.projects.push(project);
       await writeJsonAtomically(this.filePath, record);
       return project;
