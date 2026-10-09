@@ -3,7 +3,7 @@ import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { anthropicAgentResponse, anthropicContinuation } from "./NativeToolTransport";
-import { unsupportedFeature } from "./provider-utils";
+import { fetchWithRetries, unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -99,7 +99,7 @@ export class AnthropicProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
-      const response = await fetch(`${this.options.baseUrl}/v1/messages`, {
+      const response = await fetchWithRetries(fetch, `${this.options.baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -131,6 +131,12 @@ export class AnthropicProvider implements LLMProvider {
 
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 1500);
+        // Models that think by default accept their earlier thinking back only while the whole
+        // conversation before it is unchanged; the agent's continuation is not, so it goes on with
+        // the JSON protocol instead of failing at its second step.
+        if (response.status === 400 && request.inputItems?.length && /thinking/i.test(detail) && /signature|no longer match/i.test(detail)) {
+          return { provider: this.id, model, text: "", error: detail, unsupportedFeature: "tools" };
+        }
         const unsupported = unsupportedFeature(response.status, detail, request);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         throw new Error(`Anthropic request failed with status ${response.status}: ${detail}`);
@@ -154,7 +160,7 @@ export class AnthropicProvider implements LLMProvider {
         model,
         text,
         ...(tools?.length ? anthropicAgentResponse(payload, tools) : {}),
-        ...(["max_tokens", "refusal"].includes(payload.stop_reason ?? "") ? { error: `Anthropic response stopped: ${payload.stop_reason}.` } : {}),
+        ...(["max_tokens", "refusal", "model_context_window_exceeded"].includes(payload.stop_reason ?? "") ? { error: `Anthropic response stopped: ${payload.stop_reason}.` } : {}),
         raw: payload,
         responseId: payload.id,
         usage: readUsage(payload),

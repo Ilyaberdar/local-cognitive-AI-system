@@ -3,7 +3,7 @@ import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { geminiAgentResponse, geminiContinuation } from "./NativeToolTransport";
-import { unsupportedFeature } from "./provider-utils";
+import { fetchWithRetries, unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -100,13 +100,13 @@ export class GeminiProvider implements LLMProvider {
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {
     const model = request.model ?? this.options.model;
-    const endpoint = `${this.options.baseUrl}/v1beta/models/${model}:generateContent`;
+    const endpoint = `${this.options.baseUrl}/v1beta/models/${model.split("/").map(encodeURIComponent).join("/")}:generateContent`;
     const timeoutMs = resolveRequestTimeoutMs(this.options.timeoutMs, request.timeoutMs);
 
     try {
       const images = validateImages(request.images);
       const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
-      const response = await fetch(endpoint, {
+      const response = await fetchWithRetries(fetch, endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -132,7 +132,8 @@ export class GeminiProvider implements LLMProvider {
           ],
           generationConfig: {
             temperature: request.temperature,
-            maxOutputTokens: request.maxTokens,
+            // Thinking models (2.5 and later) spend this on thinking too: a small cap would leave no answer.
+            maxOutputTokens: request.maxTokens === undefined ? undefined : Math.max(request.maxTokens, 8192),
             ...(!tools?.length && request.responseFormat ? { responseMimeType: "application/json",
               ...(request.responseFormat.type === "json_schema" ? { responseJsonSchema: request.responseFormat.schema } : {}) } : {})
           }

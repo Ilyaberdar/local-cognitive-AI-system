@@ -13,13 +13,18 @@ import {
   readResponseError,
   resolveAbortSignal,
   resolveRequestTimeoutMs,
-  readUsage
+  readUsage,
+  fetchWithRetries
 } from "./provider-utils";
 import { unsupportedFeature } from "./provider-utils";
 
 export class OpenAICompatibleProvider implements LLMProvider {
   /** Models that refused a reasoning effort (not reasoning models): asked without one from then on. */
   private readonly withoutEffort = new Set<string>();
+  /** Models that refused xhigh/max: asked for high instead. */
+  private readonly effortCap = new Set<string>();
+  /** Models that refused encrypted reasoning items (not reasoning models). */
+  private readonly withoutEncrypted = new Set<string>();
   readonly id: string;
   readonly name: string;
   readonly defaultModel: string;
@@ -83,9 +88,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
-      // These APIs take low, medium or high: the app's higher levels ask for the most they offer.
+      // OpenAI's reasoning models take levels up to max (one that does not says so, and is asked for
+      // high from then on); LM Studio's take low, medium or high.
       const requested = this.id === "llamacpp" || this.withoutEffort.has(model) ? undefined : request.reasoningEffort ?? this.options.reasoningEffort;
-      const effort = requested === "xhigh" || requested === "max" ? "high" : requested;
+      const effort = (this.id !== "openai" || this.effortCap.has(model)) && (requested === "xhigh" || requested === "max") ? "high" : requested;
       const localSampling = this.id === "llamacpp" ? request.sampling : undefined;
       const localTemperature = request.temperature ?? localSampling?.temperature;
       const stream = this.id === "llamacpp" && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
@@ -94,7 +100,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
         Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
         (this.id !== "openai" && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
       const nativeTools = this.id === "openai" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
-      const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`, {
+      const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
+      // OpenAI is retried on overload and rate limits as its SDK does; a local server is not.
+      const send = (init: RequestInit) => this.id === "openai" ? fetchWithRetries(this.fetchImpl ?? fetch, url, init) : (this.fetchImpl ?? fetch)(url, init);
+      const response = await send({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -139,14 +148,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(effort ? { reasoning: { effort } } : {}),
           ...(typeof request.maxTokens === "number"
             ? {
-                max_output_tokens: request.maxTokens
+                // A reasoning model's limit counts its reasoning too: a small cap (a judge's 1200)
+                // would leave no answer. It is a cap; only what is generated is billed.
+                max_output_tokens: this.id === "openai" ? Math.max(request.maxTokens, 16_000) : request.maxTokens
               }
             : {}),
           ...(nativeTools ? {
-            tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters, strict: true })),
+            tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters: strictSchema(parameters), strict: true })),
             parallel_tool_calls: false,
             store: false,
-            include: ["reasoning.encrypted_content"]
+            ...(this.withoutEncrypted.has(model) ? {} : { include: ["reasoning.encrypted_content"] })
           } : {}),
           ...(!nativeTools && request.responseFormat
             ? {
@@ -163,8 +174,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const body = await response.text();
         let detail = body.slice(0, 1500);
         try { detail = readResponseError(JSON.parse(body)) ?? detail; } catch { /* Keep plain HTTP error details. */ }
-        if (effort && response.status === 400 && /reasoning/i.test(detail)) {
-          this.withoutEffort.add(model);
+        let param = "";
+        try { param = String(JSON.parse(body)?.error?.param ?? ""); } catch { /* No structured error. */ }
+        // A model that does not take this effort (or any): asked again without it, and from then on.
+        if (effort && response.status === 400 && (/^reasoning[._]effort$/.test(param) || /reasoning[._]effort/i.test(detail))) {
+          if ((effort === "xhigh" || effort === "max") && !/not supported with this model|unsupported parameter/i.test(detail)) this.effortCap.add(model);
+          else this.withoutEffort.add(model);
+          return this.generateText(request);
+        }
+        if (nativeTools && !this.withoutEncrypted.has(model) && response.status === 400 && (/^include/.test(param) || /encrypted/i.test(detail))) {
+          this.withoutEncrypted.add(model);
           return this.generateText(request);
         }
         const unsupported = unsupportedFeature(response.status, detail, request);
@@ -222,4 +241,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
       );
     }
   }
+}
+
+/** A tool schema as OpenAI's strict mode takes it: string length limits are not supported there
+ * (the arguments are still checked here against the full schema). */
+function strictSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(strictSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== "minLength" && key !== "maxLength").map(([key, value]) => [key, strictSchema(value)]));
 }

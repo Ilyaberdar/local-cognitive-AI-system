@@ -223,7 +223,8 @@ const localValue = (key: string, environment: string): string | undefined =>
 const inferenceFromServer = (preference?: string, fallbackReason?: string): Pick<LocalModelOptions, "inference"> =>
   preference === "auto" || preference === "cuda" || preference === "cpu" ? { inference: { preference, ...(fallbackReason ? { fallbackReason } : {}) } } : {};
 
-const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 60000);
+// Cloud models with reasoning, or writing a long file, take minutes: 60 s cut whole agent runs short.
+const defaultTimeoutMs = Number(process.env.PROVIDER_TIMEOUT_MS ?? 300000);
 const defaultLocalTimeoutMs = Number(process.env.LOCAL_PROVIDER_TIMEOUT_MS ?? 300000);
 
 export const config: AppConfig = {
@@ -297,7 +298,7 @@ export const config: AppConfig = {
       timeoutMs: Number(process.env.ANTHROPIC_TIMEOUT_MS ?? defaultTimeoutMs),
       apiKey: toOptional(process.env.ANTHROPIC_API_KEY),
       version: process.env.ANTHROPIC_VERSION ?? "2023-06-01",
-      maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS ?? 4096)
+      maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS ?? 16000)
     },
     gemini: {
       baseUrl: process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com",
