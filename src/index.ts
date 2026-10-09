@@ -22,7 +22,7 @@ import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
-import { withoutAttachmentData } from "./runtime/chatOperations";
+import { createChatScrubber, withoutAttachmentData } from "./runtime/chatOperations";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
 import { loadSessionMessages } from "./conversations/sessionHistory";
@@ -109,7 +109,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     const app = express();
     app.use(express.json({ limit: "8mb" }));
     app.use(createDrainGate(() => draining));
-    app.use("/", createApiRouter(runtimeManager, sessionIndexStore));
+    app.use("/", createApiRouter(runtimeManager, sessionIndexStore, host ? {
+      forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted) } : undefined));
     // The headless server has no UI: clients bring their own (desktop app).
     if (config.ui.serve !== false) {
       app.use(express.static(config.ui.publicDir));
@@ -205,10 +206,15 @@ const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, ses
       host: database, journal, logger,
       sessionExists: async sessionId => Boolean(await sessionIndexStore.get(sessionId)),
       legacyBusy: sessionId => processRunRegistry.hasActiveSession(sessionId),
+      // Events are written as a device may see them: no folder of this server.
+      scrubber: createChatScrubber({ runtimeManager, hostDirectories: [path.dirname(config.appDataDir)] }),
       // The same entry, channel and profile as the local chat: one history per session.
       execute: async (run, hooks) => {
         const settings = await runtimeManager.getSettings();
-        const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId,
+        // The first message names a new chat; a chat that has a name (renamed on a device) keeps it.
+        const title = (await sessionIndexStore.get(run.sessionId))?.title;
+        const sessionTitle = title && title !== "New chat" ? title : undefined;
+        const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId, sessionTitle,
           metadata: { chatRunId: run.runId, deviceRun: true, ...(run.attachments?.length ? { attachments: run.attachments } : {}) }, signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
         return { ...(result.result.error ? { error: result.result.error } : {}) };
       },

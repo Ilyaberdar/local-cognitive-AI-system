@@ -520,25 +520,42 @@ export const createRenameSessionController =
     }
   };
 
-export const createDeleteSessionController =
-  (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const sessionId = String(req.params.sessionId);
-      const runtime = runtimeManager.getRuntime();
-      const deleted = await sessionIndexStore.delete(sessionId);
+/** On a server, a chat's device turns (RunService): refused while one runs, removed with the chat. */
+export interface SessionDeletionHooks {
+  forgetSession(sessionId: string): void;
+  forgotSession(sessionId: string, deleted: boolean): void;
+}
 
-      if (!deleted) {
+export const createDeleteSessionController =
+  (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore, chatRuns?: SessionDeletionHooks) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const sessionId = String(req.params.sessionId);
+    let forgetting = false, deleted = false;
+    try {
+      const runtime = runtimeManager.getRuntime();
+      if (!await sessionIndexStore.get(sessionId)) {
         res.status(404).json({ error: "Session not found." });
         return;
+      }
+      if (chatRuns) {
+        try { chatRuns.forgetSession(sessionId); forgetting = true; }
+        catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : "The chat is answering." }); return; }
       }
 
       await runtime.sessionSettingsStore.delete(sessionId);
       await runtime.memoryService.deleteSession(sessionId);
+      // The index goes last: a failed step above can be retried.
+      if (!await sessionIndexStore.delete(sessionId)) {
+        res.status(404).json({ error: "Session not found." });
+        return;
+      }
+      deleted = true;
 
       res.status(200).json({ ok: true, sessionId });
     } catch (error) {
       next(error);
+    } finally {
+      if (forgetting) chatRuns!.forgotSession(sessionId, deleted);
     }
   };
 

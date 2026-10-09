@@ -7,6 +7,7 @@ import { EventJournal, type JournalEvent } from "../src/runtime/EventJournal";
 import { RunService, RunServiceError, streamOf, type ExecuteHooks } from "../src/runtime/RunService";
 import { HostDatabase } from "../src/runtime/db/HostDatabase";
 import { hostMigrations } from "../src/runtime/db/hostSchema";
+import { pathScrubber, type Scrubber } from "../src/runtime/orchestrationDto";
 
 const at = () => new Date().toISOString();
 const until = async (check: () => boolean) => { for (let index = 0; index < 200 && !check(); index++) await new Promise(resolve => setTimeout(resolve, 5)); assert.ok(check(), "condition not reached"); };
@@ -23,12 +24,12 @@ function engine() {
   return { calls, execute, finish: (runId: string, result: { error?: string } = {}) => gates.get(runId)?.(result) };
 }
 
-function setup(t: TestContext, file?: string) {
+function setup(t: TestContext, file?: string, scrubber?: () => Promise<Scrubber>) {
   const directory = file ? path.dirname(file) : fs.mkdtempSync(path.join(os.tmpdir(), "run-service-"));
   if (!file) t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const host = HostDatabase.open(file ?? path.join(directory, "host.db"), hostMigrations);
   const journal = new EventJournal(host), script = engine();
-  const service = new RunService({ host, journal, execute: script.execute, sessionExists: async id => id.startsWith("s"),
+  const service = new RunService({ host, journal, execute: script.execute, sessionExists: async id => id.startsWith("s"), ...(scrubber ? { scrubber } : {}),
     completedTurn: async (_sessionId, runId) => [{ id: `${runId}:user`, role: "user", content: "hi", createdAt: at() }] });
   t.after(async () => { await service.dispose(); host.close(); });
   const events = (sessionId: string) => {
@@ -190,4 +191,40 @@ test("devices see a short error without server paths; the host log keeps the ful
   const visible = JSON.stringify([f.service.get(ack.runId!), f.service.unfinishedTurns("s1"), f.events("s1")]);
   assert.equal(visible.includes("/srv/"), false);
   assert.equal(f.service.get(ack.runId!)?.error, "Local runtime exited (1).");
+});
+
+test("a device sees the answer without the server's folders, with offsets that add up, even when a folder is split between updates", async t => {
+  const f = setup(t, undefined, async () => pathScrubber([["/srv/lc/output", "<output>"], ["/srv/lc", "<server>"]]));
+  const ack = await f.service.start("remote:a:d1", { commandId: "c1", sessionId: "s1", input: "where?" });
+  await until(() => f.script.calls.length === 1);
+  const { hooks } = f.script.calls[0]!;
+  for (const answer of ["Saved to /srv/l", "Saved to /srv/lc/out", "Saved to /srv/lc/output/report.md and /srv/lc/outbox/x.", "Saved to /srv/lc/output/report.md and /srv/lc/outbox/x. Done."]) {
+    hooks.onProgress({ phase: "generating", label: "Writing", answer, at: at() });
+    await new Promise(resolve => setTimeout(resolve, 350));
+  }
+  void hooks.requestApproval({ tool: "file", operation: "write", summary: "Write the report", details: "Write /srv/lc/output/report.md" }).catch(() => undefined);
+  await until(() => Boolean(f.service.activeRun("s1")?.pendingApproval));
+  assert.equal(f.service.activeRun("s1")!.pendingApproval!.details, "Write <output>/report.md");
+  f.script.finish(ack.runId!, { error: "Disk full at /srv/lc/output" });
+  await until(() => f.service.get(ack.runId!)?.status === "failed");
+  const events = f.events("s1");
+  assert.equal(text(events), "Saved to <output>/report.md and <server>/outbox/x. Done.", "the deltas rebuild the scrubbed answer");
+  assert.equal(JSON.stringify(events).includes("/srv/lc"), false, "no part of a folder went out");
+  assert.equal(f.service.get(ack.runId!)!.error, "Disk full at <output>");
+});
+
+test("deleting a chat refuses new turns while it goes, and removes its turns, commands and journal", async t => {
+  const f = setup(t);
+  const ack = await f.service.start("remote:a:d1", { commandId: "c1", sessionId: "s1", input: "secret input" });
+  await until(() => f.script.calls.length === 1);
+  assert.throws(() => f.service.forgetSession("s1"), (error: unknown) => (error as RunServiceError).code === "session_busy");
+  f.script.finish(ack.runId!);
+  await until(() => f.service.get(ack.runId!)?.status === "completed");
+  f.service.forgetSession("s1");
+  await assert.rejects(f.service.start("remote:a:d1", { commandId: "c2", sessionId: "s1", input: "again" }), (error: unknown) => (error as RunServiceError).code === "session_unknown");
+  for (const table of ["messages", "runs", "commands", "events", "event_streams"]) {
+    assert.equal(JSON.stringify(f.host.db.prepare(`SELECT * FROM ${table}`).all()).includes("s1"), false, `${table} keeps nothing of the chat`);
+  }
+  f.service.forgotSession("s1", false);
+  assert.equal((await f.service.start("remote:a:d1", { commandId: "c3", sessionId: "s1", input: "kept" })).status, "accepted", "a delete that failed leaves the chat usable");
 });

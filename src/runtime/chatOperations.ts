@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import type { RuntimeManager } from "../app/RuntimeManager";
 import { loadSessionMessages } from "../conversations/sessionHistory";
@@ -89,7 +90,7 @@ export interface ChatOperationDependencies {
 export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostDirectories?: string[] }) => async () => {
   const filesystem = (await deps.runtimeManager.getSettings()).filesystem;
   const real = (dir: string) => { try { return fs.realpathSync(dir); } catch { return dir; } };
-  const both = (dir: string | undefined) => dir ? [...new Set([dir, real(dir)])] : [];
+  const both = (dir: string | undefined) => dir ? [...new Set([dir, path.resolve(dir), real(path.resolve(dir))])] : [];
   return pathScrubber([
     ...both(filesystem?.outputDir).map(dir => [dir, "<output>"] as [string, string]),
     ...(filesystem?.allowedDirectories ?? []).flatMap(both).map(dir => [dir, "<folder>"] as [string, string]),
@@ -167,9 +168,10 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
   });
 
   return {
-    "sessions.list": async () => (await deps.sessionIndexStore.list()).filter(session => !session.projectId).map(session => ({
+    // A title is the start of a message, which may name a folder of the host.
+    "sessions.list": async () => (await scrubber())((await deps.sessionIndexStore.list()).filter(session => !session.projectId).map(session => ({
       id: session.id, title: session.title, updatedAt: session.updatedAt, ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {})
-    })),
+    }))),
 
     "sessions.create": async payload => {
       const { title } = parse(schemas.sessionsCreate, payload) ?? {};
@@ -208,11 +210,16 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "sessions.delete": payload => known(async () => {
       const { sessionId } = parse(schemas.session, payload);
       await requireSession(sessionId);
+      // Turns are refused from here on; the index goes last, so a failed step can be retried.
       deps.runService.forgetSession(sessionId);
-      if (!await deps.sessionIndexStore.delete(sessionId)) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
-      const current = runtime();
-      await current.sessionSettingsStore.delete(sessionId);
-      await current.memoryService.deleteSession(sessionId);
+      let deleted = false;
+      try {
+        const current = runtime();
+        await current.sessionSettingsStore.delete(sessionId);
+        await current.memoryService.deleteSession(sessionId);
+        if (!await deps.sessionIndexStore.delete(sessionId)) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+        deleted = true;
+      } finally { deps.runService.forgotSession(sessionId, deleted); }
       return { deleted: true };
     }),
 

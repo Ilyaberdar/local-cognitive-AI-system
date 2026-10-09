@@ -46,7 +46,9 @@ function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = f
     }
   };
   return { bridge, server, received, setStatus(next: Record<string, unknown>) { status = { ...status, ...next }; statusListeners.forEach(listener => listener(status)); },
-    emit(events: unknown[]) { eventListeners.forEach(listener => listener({ streamId: "session:srv-1", events })); } };
+    emit(events: unknown[]) { eventListeners.forEach(listener => listener({ streamId: "session:srv-1", events })); },
+    update(update: unknown) { eventListeners.forEach(listener => listener(update)); },
+    deleteChat(id: string) { chats.splice(chats.findIndex(chat => chat.id === id), 1); } };
 }
 
 const type = (app: Harness, text: string) => {
@@ -330,4 +332,17 @@ test("a server chat sends attachments to the server in chunks, then the message 
   assert.ok(calls.every((call: unknown[]) => call.at(-1) === HOST));
   assert.equal(app.document.querySelector(".composer-attachments"), null, "the draft's attachments are sent");
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => /^(POST|PUT) /.test(entry)), [], "nothing went to this computer");
+});
+
+test("a server chat deleted on another device is left for another of its chats", async t => {
+  const paired = fakeServer({ manage: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  assert.equal(app.document.querySelector(".app-topbar h1").textContent, "Server chat");
+  paired.deleteChat("srv-1");
+  paired.update({ streamId: "session:srv-1", resync: "cursor_ahead" });
+  await settle();
+  assert.equal(app.document.querySelector(".app-topbar h1").textContent, "Older chat");
+  assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /Server chat/);
 });

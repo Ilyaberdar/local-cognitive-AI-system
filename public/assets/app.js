@@ -6690,10 +6690,13 @@ async function reloadRemoteChat() {
   if (!chatTarget?.isRemote() || chatTarget.blocksSend()) { repaintChatTarget(); return; }
   try {
     await chatTarget.refreshSessions();
-    if (isServerChat(state.activeSessionId)) await loadRemoteSession();
+    // A chat deleted on another device (or on the server) is left for another of its chats.
+    const listed = chatTarget.sessionList().some((session) => session.id === state.activeSessionId);
+    if (isServerChat(state.activeSessionId) && listed) await loadRemoteSession();
     else await ensureRemoteSession();
   } catch (error) {
-    pushToast(error instanceof Error ? error.message : "Could not load the server chat", "danger");
+    if (error?.code === "session_unknown") await ensureRemoteSession().catch(() => undefined);
+    else pushToast(error instanceof Error ? error.message : "Could not load the server chat", "danger");
   }
   const scroll = captureScrollState();
   render();
@@ -6919,7 +6922,12 @@ async function renameServerChat(key, field) {
 /** Deletes a server chat there (for every device), then opens another of its chats. */
 async function deleteServerChat(key) {
   await runAction(async () => {
-    await chatTarget.remove(key);
+    try { await chatTarget.remove(key); }
+    catch (error) {
+      // Not deleted (it is answering): follow it again.
+      if (key === state.activeSessionId) await loadRemoteSession().catch(() => undefined);
+      throw error;
+    }
     voiceInput.cancelSession(key);
     delete state.drafts[key];
     delete state.draftAttachments[key];

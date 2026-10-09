@@ -16,6 +16,7 @@ import {
   createCreateSessionController,
   createCancelProcessRunController,
   createDeleteSessionController,
+  type SessionDeletionHooks,
   createDashboardBootstrapController,
   createGetAllManagedModelsController,
   createGetAllLocalModelsController,
@@ -78,7 +79,9 @@ import {
 
 export const createApiRouter = (
   runtimeManager: RuntimeManager,
-  sessionIndexStore: SessionIndexStore
+  sessionIndexStore: SessionIndexStore,
+  /** On a server: a chat deleted here also loses its device turns and journal (R5-4). */
+  chatRuns?: SessionDeletionHooks
 ): Router => {
   const router = Router();
   // Execution, approval and settings must have the same origin boundary as OAuth.
@@ -121,7 +124,7 @@ export const createApiRouter = (
   router.post("/projects/:projectId/reveal", createRevealProjectController(runtimeManager));
   router.post("/sessions", createCreateSessionController(sessionIndexStore, runtimeManager));
   router.patch("/sessions/:sessionId", createRenameSessionController(sessionIndexStore));
-  router.delete("/sessions/:sessionId", createDeleteSessionController(runtimeManager, sessionIndexStore));
+  router.delete("/sessions/:sessionId", createDeleteSessionController(runtimeManager, sessionIndexStore, chatRuns));
   router.get("/sessions/:sessionId/messages", createGetSessionMessagesController(runtimeManager));
   router.get("/sessions/:sessionId/settings", createGetSessionSettingsController(runtimeManager));
   router.put("/sessions/:sessionId/settings", createUpdateSessionSettingsController(runtimeManager));
