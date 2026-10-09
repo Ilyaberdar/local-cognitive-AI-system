@@ -128,7 +128,7 @@ definition → call sites.
 | A:301→4669,4725,4741 | GET /local/models/all R:111→C:270 | file paths | HOST-API | `models.managed.list` |
 | A:220→4309; MM:570 | POST /local/models/load R:112→C:282 | no timeout for llama.cpp | HOST-API | `models.load` |
 | A:226→4347; MM:570 | POST /local/models/unload R:113→C:304 | | HOST-API | `models.unload` |
-| A:210→4378,4402; SD:15→SS:572 | POST /providers/:id/test R:130→C:647 | | HOST-API | `providers.test` |
+| A:210→4378,4402; SD:15→SS:572 | POST /providers/:id/test R:130→C:647 | | HOST-API | `providers.test` (R5-3: `{providerId, model?}`, uses the key saved on the host, answer scrubbed of keys; not for `llamacpp`) |
 | MM:441 | GET /local/catalog LMC:13 | | HOST-API | `models.catalog.search` |
 | MM:465 | GET /local/catalog/model LMC:14 | | HOST-API | `models.catalog.get` |
 | MM:485 | GET /local/runtime LMC:28 | also 5 s fallback poll; paths | HOST-API | `models.local.snapshot` |
@@ -139,13 +139,13 @@ definition → call sites.
 | MM:573 | DELETE /local/models/:libraryId LMC:26 | | HOST-API | `models.local.delete` |
 | MM:558 | IPC `models:select-files` → `importModel` (REST LMC:21 unused) | native dialog | ADAPT | `fs.browse` + `models.local.import` |
 | MM:559 | IPC `models:select-projector` (REST LMC:27 unused) | | ADAPT | `fs.browse` + `models.local.attachProjector` |
-| SS:561 | IPC `models:select-directory` → `localModels.modelsDir` | | ADAPT | `fs.browse` then `settings.update` |
+| SS:561 | IPC `models:select-directory` → `localModels.modelsDir` | | ADAPT | R5-3: host-only, shown as "Set on <server>"; `fs.browse` later |
 
 ## Settings and MCP
 
 | UI | Route | Notes | Class | Operation |
 |---|---|---|---|---|
-| SD:8→SS:352,417,436,595, A:506,677; A:204→371,421,4395 | PUT /app/settings R:129→C:611 | response returns raw settings with secrets | HOST-API with per-field policy | `settings.update` (+ `client.settings.update` for `ui`, `profile`) |
+| SD:8→SS:352,417,436,595, A:506,677; A:204→371,421,4395 | PUT /app/settings R:129→C:611 | response returns raw settings with secrets | HOST-API with per-field policy | `settings.get` / `settings.update` (R5-3: safe view; allowlist; keys `{set}` / `{clear}`; appearance and profile never leave the device) |
 | SD:18→SS:452 | GET /mcp/clients MC:17 | | HOST-API | `mcp.clients.list` |
 | SD:19→SS:444 | POST /mcp/clients/:id/connect MC:25 | | HOST-API | `mcp.clients.connect` |
 | SD:20→SS:444 | POST /mcp/clients/:id/disconnect MC:32 | | HOST-API | `mcp.clients.disconnect` |
@@ -153,6 +153,15 @@ definition → call sites.
 `settings.update` field policy: `ui` and `profile` are client settings in Remote; `mcp.client.servers`
 (stdio command = arbitrary host execution), `filesystem.*`, memory paths and `localModels.modelsDir`
 are host-admin scope; secrets are write-only (`set` / `clear` / `unchanged`).
+
+Done in R5-3 (`src/runtime/settingsOperations.ts`, `settingsDto.ts`): a device may change chat
+defaults, the default provider, provider enabled/model/timeout (Anthropic version and token limit),
+provider keys (written or cleared, never read), local runtime tuning, agent limits and memory tuning.
+Refused with the reason, and nothing written: `filesystem.*`, `localModels.modelsDir`, memory paths,
+`providers.*.baseUrl`, `mcp.server`, `telegram` (`host_only`); `mcp.client`, `plugins` (`unsupported`,
+step 6); `profile` and appearance keys (`client_setting`). The view carries `apiKeyState`, an address's
+origin only, and counts instead of folders. No `client.settings.update`: appearance and profile are
+saved by this device's own API whichever machine is selected.
 
 ## Plugins and integrations (helper PU:16, base `/integrations`)
 

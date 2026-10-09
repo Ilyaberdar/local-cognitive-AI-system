@@ -9,6 +9,7 @@ import { createRemoteUi } from "./remote-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelOptions, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
 import { createServerModels } from "./server-models.js";
 import { createServerOrchestration } from "./server-orchestration.js";
+import { createServerSettings } from "./server-settings.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
@@ -158,6 +159,8 @@ let savedLocalChat = null;
 let serverModels = null;
 // The Tasks & workflows screen of the selected server (R5-2), read through `state.orchestration`.
 let serverOrchestration = null;
+// The Settings pages that show the selected server (R5-3); this device's pages stay local.
+let serverSettings = null;
 // What the Tasks & workflows screen holds per machine ("local" or a server id) across a switch.
 const parkedOrchestration = new Map();
 const isServerChat = sessionId => Boolean(chatTarget?.owns(sessionId));
@@ -504,9 +507,14 @@ serverModels = createServerModels({ target: chatTarget, createModelManager, onUs
   isVisible: () => state.route === "models" && Boolean(chatTarget?.isRemote()),
   notify: (message, tone) => { const scroll = captureScrollState(); pushToast(message, tone); render(); restoreScrollState(scroll); },
   currentTarget: () => isServerChat(state.activeSessionId) ? state.sessionSettings?.defaultTarget : undefined });
+serverSettings = createServerSettings({ target: chatTarget,
+  onChange: () => settingsShell.targetChanged(),
+  // The server's chat models and its Models tab read what was just saved.
+  onSaved: () => { chatTarget.invalidateModels(); serverModels?.settingsChanged(); } });
 const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput, account: accountState,
-  // Settings are this computer's; with a server selected the pages say so (R5 settings split comes later).
-  getContext: () => ({ ...state.bootstrap, route: state.route, remoteHost: chatTarget?.isRemote() ? chatTarget.hostName() : "" }),
+  // Host pages follow the selected server (`server`); appearance, profile and the rest stay this device's.
+  getContext: () => ({ ...state.bootstrap, route: state.route, server: serverSettings?.source(),
+    useThisComputer: () => switchChatTarget("local", { route: "settings" }) }),
   renderModelControl: renderProviderSettingsModelControl, applyPreferences: applyUiPreferences,
   captureScroll: captureScrollState, restoreScroll: restoreScrollState,
   onReturn: () => {
@@ -517,7 +525,7 @@ const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
 });
 systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") applyTheme("system", false); });
 
-window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); serverOrchestration?.dispose(); });
+window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); serverOrchestration?.dispose(); serverSettings?.dispose(); });
 
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
@@ -6779,6 +6787,7 @@ async function cancelRemoteRun(active) {
 
 /** Status changes repaint the switch, banner and send button only: typing is not interrupted. */
 function repaintChatTarget() {
+  if (settingsShell.isOpen()) { serverSettings?.statusChanged(); settingsShell.targetChanged(); }
   const actions = document.querySelector(".app-topbar__actions");
   const existing = actions?.querySelector(".chat-target, .local-indicator");
   if (existing) {

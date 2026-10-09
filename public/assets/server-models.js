@@ -93,6 +93,8 @@ export function createServerModels({ target, bridge = window.desktopRemote, crea
         active.updateLiveView();
       } catch { /* Metrics never block the tab. */ }
     },
+    /** The server's settings were saved from Settings: its runtime settings are read again. */
+    settingsChanged() { if (manager && target.online()) void context.loadSettings?.(); },
     dispose() { manager?.dispose(); manager = null; key = ""; context = {}; }
   };
 }

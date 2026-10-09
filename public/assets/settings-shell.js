@@ -8,6 +8,10 @@ const groups = [
   ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connected accounts', 'externalLink']]],
   ['System', [['data', 'Data & Privacy', 'shield'], ['about', 'About', 'info']]]
 ];
+// With a server selected, these pages show and change that server's settings (R5-3); plugins and
+// MCP are each machine's own and are not offered for a server yet. Every other page is this device's.
+const HOST_PAGES = new Set(['general', 'providers', 'runtime', 'agents', 'memory', 'data']);
+const DEFER_PAGES = new Set(['plugins', 'connections', 'mcp']);
 const providerNames = { llamacpp: 'Local models', ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const get = (object, key) => key.split('.').reduce((value, part) => value?.[part], object);
@@ -46,12 +50,30 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   const menu = document.createElement('div');
   menu.id = 'profile-menu'; menu.className = 'profile-menu liquid-glass'; menu.setAttribute('popover', 'auto'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Local profile');
   document.body.append(menu);
-  let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest;
+  let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   const drafts = new Map(), statuses = new Map(), results = new Map();
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations, accountPending, accountNotice;
   const context = () => getContext() || {};
-  const settings = () => context().appSettings || {};
+  const clientSettings = () => context().appSettings || {};
+  /** The selected server, for the pages it owns; this device's pages never see it. */
+  const serverFor = route => {
+    const server = context().server, [name] = route.split('/');
+    return server && (HOST_PAGES.has(name) || DEFER_PAGES.has(name)) ? server : undefined;
+  };
+  /** Where a page's values come from and are saved, fixed when an action starts: drafts and
+   * statuses are kept per machine, and a save never lands on a server selected after it began. */
+  const placeOf = route => {
+    const server = serverFor(route);
+    return server ? { key: `${server.key}\u0000${route}`, server, store: server.data, settings: () => server.settings() || {} }
+      : { key: route, store: data, settings: clientSettings };
+  };
+  const settingsOf = route => placeOf(route).settings();
+  const settings = () => settingsOf(page);
   const fieldsFor = route => {
+    const specs = baseFieldsFor(route), server = serverFor(route);
+    return server ? server.fields(route, specs) : specs;
+  };
+  const baseFieldsFor = route => {
     const [name, id] = route.split('/');
     if (name === 'general') return [
       select('ui.language', 'Response language', [['auto', 'Auto detect'], ['en', 'English'], ['ru', 'Russian']], 'Default for new chats.'),
@@ -71,14 +93,14 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       field('ui.codeFontSize', 'Code text size', 'code-font-size', { description: 'Code blocks in chat, workflow responses and Review. Independent of text size. Default: 12 px.' }),
       bool('ui.animations', 'Animations', 'Shows the one-pass sweep when Chat, Workflow, Synthesis or Models is clicked. Motion is reduced automatically when your system requests it.')
     ];
-    if (name === 'providers' && id && settings().providers?.[id]) {
+    if (name === 'providers' && id && Object.hasOwn(settingsOf(route).providers || {}, id)) {
       return [bool(`providers.${id}.enabled`, 'Enabled'), ...(id === 'llamacpp' ? [] : [
         field(`providers.${id}.baseUrl`, 'Base URL', 'url'), ...(id === 'ollama' ? [] : [field(`providers.${id}.apiKey`, 'API key', 'secret')])
       ]), field(`providers.${id}.model`, 'Default model', 'model', { provider: id }),
       ...(id === 'llamacpp' ? [] : [number(`providers.${id}.timeoutMs`, 'Timeout (ms)', 1000, 3600000)]),
       ...(id === 'anthropic' ? [field(`providers.${id}.version`, 'Anthropic version'), number(`providers.${id}.maxTokens`, 'Max tokens', 1, 1000000)] : [])];
     }
-    if (name === 'providers') return [select('llm.defaultProvider', 'Default provider', Object.keys(settings().providers || {}).map(id => [id, providerNames[id] || id]), 'Used when a chat or workflow has no explicit provider override.')];
+    if (name === 'providers') return [select('llm.defaultProvider', 'Default provider', Object.keys(settingsOf(route).providers || {}).map(id => [id, providerNames[id] || id]), 'Used when a chat or workflow has no explicit provider override.')];
     if (name === 'runtime') return [
       field('localModels.modelsDir', 'Model storage folder', 'directory', { description: 'Changing storage copies and verifies models before switching. Previous files remain as a backup. Pause downloads first.' }),
       number('localModels.contextSize', 'Context size (tokens)', 512, 131072), field('localModels.gpuLayers', 'GPU layers', 'text', { description: 'auto places each model on the GPU first by free memory. A number fixes the offloaded layers; 0 runs on the CPU.' }),
@@ -109,8 +131,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (id) return name === 'providers' ? providerNames[id] || id : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : externalMcpServers()[id]?.name || id : id;
     return groups.flatMap(([, items]) => items).find(([key]) => key === name)?.[1] || 'Page not found';
   }
-  const dirty = route => { if (!drafts.has(route)) drafts.set(route, {}); return drafts.get(route); };
-  function valueOf(spec) { const value = Object.hasOwn(dirty(page), spec.name) ? dirty(page)[spec.name] : get(settings(), spec.name); return Array.isArray(value) ? value.join('\n') : value; }
+  const dirty = key => { if (!drafts.has(key)) drafts.set(key, {}); return drafts.get(key); };
+  function valueOf(spec) { const draft = dirty(placeOf(page).key), value = Object.hasOwn(draft, spec.name) ? draft[spec.name] : get(settings(), spec.name); return Array.isArray(value) ? value.join('\n') : value; }
   function activeAppearanceTheme() {
     const candidate = valueOf({ name: 'ui.theme' });
     return Object.hasOwn(appearancePresets, candidate) ? candidate : 'dark';
@@ -152,7 +174,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     return `<span class="local-avatar ${extraClass}">${image}</span>`;
   }
   function renderField(spec) {
-    const value = valueOf(spec), id = `setting-${spec.name.replaceAll('.', '-')}`;
+    // Set on the server itself: what it is, never a path or a full address, and nothing to edit.
+    if (spec.type === 'host-only') return `<div class="settings-row settings-host-only" data-setting="${escape(spec.name)}"><div><span class="settings-row-label">${escape(spec.label)}</span>${spec.description ? `<p>${escape(spec.description)}</p>` : ''}</div><div class="settings-control"><span>${escape(spec.display)}</span></div></div>`;
+    const value = valueOf(spec), id = `setting-${spec.name.replaceAll('.', '-')}`, draft = dirty(placeOf(page).key);
     let control;
     const common = `id="${id}" name="${escape(spec.name)}"`;
     if (spec.type === 'boolean') control = `<input ${common} type="checkbox" role="switch" ${value ? 'checked' : ''} />`;
@@ -167,9 +191,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     else if (spec.type === 'font-scale') control = `<div class="settings-font-scale"><input ${common} type="range" min="85" max="150" step="5" value="${value ?? 100}" aria-valuetext="${value ?? 100}%" /><output for="${id}">${value ?? 100}%</output></div>`;
     else if (spec.type === 'code-font-size') control = `<div class="settings-font-scale"><input ${common} type="range" min="10" max="20" step="1" value="${value ?? 12}" aria-valuetext="${value ?? 12} px" /><output for="${id}">${value ?? 12} px</output></div><pre class="settings-code-preview" aria-label="Code size preview"><code><span class="hljs-keyword">const</span> message = <span class="hljs-string">"Hello, world"</span>;</code></pre>`;
     else if (spec.type === 'select') control = `<select ${common}>${spec.choices.map(choice => { const [key, label] = Array.isArray(choice) ? choice : [choice, choice]; return `<option value="${escape(key)}" ${String(value) === key ? 'selected' : ''}>${escape(label)}</option>`; }).join('')}</select>`;
-    else if (spec.type === 'secret') control = `<div class="settings-secret"><input ${common} type="password" autocomplete="new-password" value="" placeholder="${get(settings(), spec.name) ? 'Saved key · leave blank to keep' : 'Enter API key'}" /><button type="button" class="ghost-button" data-clear="${escape(spec.name)}">Remove key</button><small data-secret-state="${escape(spec.name)}">${Object.hasOwn(dirty(page), spec.name) ? dirty(page)[spec.name] === '' ? 'Key will be removed on Apply.' : 'Replacement key entered.' : 'Blank input keeps the existing key.'}</small></div>`;
+    else if (spec.type === 'secret') control = `<div class="settings-secret"><input ${common} type="password" autocomplete="new-password" value="" placeholder="${get(settings(), spec.name) || get(settings(), `${spec.name}State`) === 'set' ? 'Saved key · leave blank to keep' : 'Enter API key'}" /><button type="button" class="ghost-button" data-clear="${escape(spec.name)}">Remove key</button><small data-secret-state="${escape(spec.name)}">${Object.hasOwn(draft, spec.name) ? draft[spec.name] === '' ? 'Key will be removed on Apply.' : 'Replacement key entered.' : 'Blank input keeps the existing key.'}</small></div>`;
     else if (spec.type === 'model') {
-      control = renderModelControl(spec.provider, value || '').replaceAll(`provider.${spec.provider}.model`, spec.name);
+      control = (serverFor(page)?.renderModelControl ?? renderModelControl)(spec.provider, value || '').replaceAll(`provider.${spec.provider}.model`, spec.name);
       // The existing model picker is reused with a unique accessible label.
       control = control.replace(/<(select|input) /, `<$1 id="${id}" `);
     } else if (spec.type === 'textarea') control = `<textarea ${common} rows="3">${escape(value)}</textarea>`;
@@ -185,11 +209,13 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function form(specs, leadingRows = '', beforeRows = '') {
     if (!specs.length) return '';
     const preference = specs.every(item => item.name.startsWith('ui.'));
-    const status = statuses.get(page);
-    return `<form id="settings-entity-form" data-entity="${escape(page)}" class="settings-form">${beforeRows}<div class="settings-rows">${leadingRows}${specs.map(renderField).join('')}</div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${status?.error ? 'is-error' : status?.success ? 'is-success' : ''}">${escape(status?.text || (preference ? 'Changes save automatically.' : 'Apply changes to this page only.'))}</span>${preference ? '<button type="submit" class="ghost-button" data-retry hidden>Retry save</button>' : `<button type="submit" class="primary-button" ${status?.busy ? 'disabled' : ''}>Save / Apply</button>`}</div></form>`;
+    const status = statuses.get(placeOf(page).key);
+    const rows = `<div class="settings-rows">${leadingRows}${specs.map(renderField).join('')}</div>`;
+    if (!beforeRows && specs.every(item => item.type === 'host-only')) return `<div class="settings-form">${rows}</div>`;
+    return `<form id="settings-entity-form" data-entity="${escape(page)}" class="settings-form">${beforeRows}${rows}<div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${status?.error ? 'is-error' : status?.success ? 'is-success' : ''}">${escape(status?.text || (preference ? 'Changes save automatically.' : 'Apply changes to this page only.'))}</span>${preference ? '<button type="submit" class="ghost-button" data-retry hidden>Retry save</button>' : `<button type="submit" class="primary-button" ${status?.busy ? 'disabled' : ''}>Save / Apply</button>`}</div></form>`;
   }
   function profile() {
-    const user = localProfileView(settings());
+    const user = localProfileView(clientSettings());
     return `<div class="local-profile-view">${avatar(user)}<h2>${escape(user.name)}</h2><p>Stored only on this device</p></div>`;
   }
   function accountSubtitle(view) {
@@ -250,12 +276,12 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     }
   }
   function profileEditor() {
-    const user = localProfileView(settings());
+    const user = localProfileView(clientSettings());
     return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', accountLinkDescription(account.get())) + link('usage', 'Usage', 'Activity reporting availability');
   }
-  function externalMcpServers() { return settings().mcp?.client?.servers || {}; }
+  function externalMcpServers() { return clientSettings().mcp?.client?.servers || {}; }
   function externalMcpBindings(serverId) {
-    return Object.values(settings().mcp?.client?.bindings || {}).filter(binding => binding.serverId === serverId);
+    return Object.values(clientSettings().mcp?.client?.bindings || {}).filter(binding => binding.serverId === serverId);
   }
   function externalMcpStatus(serverId) {
     const bindingIds = new Set(externalMcpBindings(serverId).map(binding => binding.id));
@@ -280,7 +306,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function newMcpId(name) {
     const stem = String(name || 'external-mcp').toLowerCase().trim().replace(/[^a-z0-9._-]+/g, '-').replace(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, '').slice(0, 116) || 'external-mcp';
     const reserved = new Set(['local-cognitive', 'new']);
-    const existing = new Set([...Object.keys(externalMcpServers()), ...Object.keys(settings().mcp?.client?.bindings || {})]);
+    const existing = new Set([...Object.keys(externalMcpServers()), ...Object.keys(clientSettings().mcp?.client?.bindings || {})]);
     let id = stem, suffix = 2;
     while (reserved.has(id) || existing.has(id)) id = `${stem.slice(0, 120)}-${suffix++}`;
     return id;
@@ -311,10 +337,18 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         <div class="settings-row"><div><label for="external-mcp-enabled">Enabled</label><p>When on, the app connects and discovers tools. Turning it off stops all bindings for this server.</p></div><div class="settings-control"><input id="external-mcp-enabled" data-mcp-field="enabled" type="checkbox" role="switch" ${server?.enabled !== false ? 'checked' : ''} /></div></div>
       </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>`;
   }
+  function blockedPage(blocked) {
+    const actions = blocked.actions.map(action => action === 'use-local'
+      ? '<button type="button" class="primary-button" data-server-action="use-local">Use This computer</button>'
+      : '<button type="button" class="ghost-button" data-server-action="retry">Try again</button>').join('');
+    return `<div class="settings-empty" role="status"><span class="settings-empty-icon">${icon('info')}</span><h2>${escape(blocked.title)}</h2>${blocked.text ? `<p>${escape(blocked.text)}</p>` : ''}${actions ? `<div class="settings-empty-actions">${actions}</div>` : ''}</div>`;
+  }
   function content() {
     const [name, id] = page.split('/');
+    const server = serverFor(page), blocked = server?.page(page).blocked;
+    if (blocked) return blockedPage(blocked);
     const specs = fieldsFor(page);
-    const result = results.get(page);
+    const result = results.get(placeOf(page).key);
     const testResult = result ? `<div class="settings-test-result ${result.ok ? 'is-success' : 'is-error'}" role="status"><div class="settings-test-heading">${icon(result.ok ? 'check' : 'shieldAlert')}<strong>${result.ok ? 'Test succeeded' : 'Test failed'}</strong></div>${result.ok && name === 'providers' ? '<div class="settings-connection-status">Provider connected <small>Verified by the last test</small></div>' : ''}<p>${escape(result.message)}</p>${result.model ? `<small>Model: ${escape(result.model)}</small>` : ''}</div>` : '';
     if (name === 'voice') return '<div data-voice-settings-page></div>';
     if (name === 'profile') return profileEditor();
@@ -324,23 +358,24 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'connections') return '<div data-integrations-page></div>';
     if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
     if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
-    if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata']].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>`;
+    if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata'], ['Selected server', context().server && [context().server.hostName(), context().server.version()].filter(Boolean).join(' · ')]].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>`;
+    if (name === 'data' && server) return form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p><button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
     if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerNames[key] || key, provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
-    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}</p>` + form(specs) + `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(page)?.busy ? 'disabled' : ''}>Save & test provider</button></div>` + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
+    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${server.hostName()}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button></div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
     if (name === 'runtime') {
       const generation = specs.find(spec => spec.type === 'local-generation');
       const runtimeSpecs = specs.filter(spec => spec !== generation);
-      return `<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape(context().localModels?.runtime?.status || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(runtimeSpecs, '', generation ? renderGenerationControl() : '');
+      return `<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape((server ? server.runtimeStatus() : context().localModels?.runtime?.status) || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(runtimeSpecs, '', generation ? renderGenerationControl() : '');
     }
     if (name === 'memory') return form(specs) + (!id ? link('memory/advanced', 'Advanced memory', 'Partition, chunk and adapter parameters') : '');
     if (name === 'mcp' && !id) {
-      return `<div class="mcp-overview"><div class="mcp-overview-meta"><span>Model Context Protocol</span><span>${mcpServerCount(settings())} configured server${mcpServerCount(settings()) === 1 ? '' : 's'}</span></div>
+      return `<div class="mcp-overview"><div class="mcp-overview-meta"><span>Model Context Protocol</span><span>${mcpServerCount(clientSettings())} configured server${mcpServerCount(clientSettings()) === 1 ? '' : 's'}</span></div>
         <aside class="mcp-info" aria-labelledby="mcp-info-title"><span class="mcp-info-icon">${icon('workflow')}</span><div><h2 id="mcp-info-title">Tools for your agents</h2><p>Connect local or remote MCP servers to make their tools available in chats and workflows.</p><small>You'll approve each tool call before it runs.</small></div></aside>`
         + externalMcpList()
         + `<section class="mcp-card" aria-labelledby="mcp-builtin-title"><div class="mcp-card-heading"><div><h2 id="mcp-builtin-title">Built-in server</h2><p>Share Local Cognitive tools with other AI apps.</p></div><span class="mcp-badge">Included</span></div><div class="mcp-server-list">`
-        + link('mcp/local-cognitive', 'Local Cognitive MCP server', `stdio · ${settings().mcp?.server?.enabled ? 'Enabled · Starts on demand' : 'Disabled'}`)
+        + link('mcp/local-cognitive', 'Local Cognitive MCP server', `stdio · ${clientSettings().mcp?.server?.enabled ? 'Enabled · Starts on demand' : 'Disabled'}`)
         + '</div></section></div>';
     }
     if (name === 'mcp' && id === 'local-cognitive') return `<p class="settings-description">Incoming MCP server for Local Cognitive. Other applications connect to this runtime over stdio; these controls do not manage outgoing connections.</p>` + form(specs, '<div class="settings-row"><span>Transport</span><span>stdio</span></div>') + `<p class="settings-footnote">Changes apply when the stdio server is next started.</p><pre class="config-snippet">npm run --silent mcp:stdio</pre>`;
@@ -351,7 +386,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   function searchEntries() {
     const routes = groups.flatMap(([, items]) => items.map(([route]) => route));
-    routes.push(...Object.keys(settings().providers || {}).map(id => `providers/${id}`), ...data.integrations.map(item => `plugins/${item.id}`), 'memory/advanced', 'mcp/local-cognitive');
+    routes.push(...Object.keys(settingsOf('providers').providers || {}).map(id => `providers/${id}`), ...data.integrations.map(item => `plugins/${item.id}`), 'memory/advanced', 'mcp/local-cognitive');
     return routes.flatMap(route => [{ route, label: titleFor(route) }, ...fieldsFor(route).map(spec => ({ route, label: spec.label, description: spec.description, field: spec.name }))]);
   }
   function renderSearch() {
@@ -377,42 +412,73 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (row) { row.classList.add('settings-highlight'); row.scrollIntoView({ block: 'center', behavior: 'auto' }); row.querySelector('input,select,textarea')?.focus({ preventScroll: true }); }
     else root.querySelector('h1')?.focus({ preventScroll: true });
   }
+  /** What the open page shows about machines: a new one means the page is rendered again. */
+  function targetSignature() {
+    const selected = context().server, server = serverFor(page);
+    return [selected?.key ?? '', server ? [server.online(), server.loaded(), server.error(), server.unsupported()].join() : ''].join('|');
+  }
+  function targetNote(server) {
+    const selected = context().server;
+    if (!selected) return '';
+    let text;
+    if (server && server.loaded() && !server.online()) text = `${server.hostName()} is not connected. These are its last known settings; nothing can be saved until it reconnects.`;
+    else if (server) text = server.page(page).note;
+    else text = `These settings are kept on this device. ${selected.hostName()} has its own.`;
+    return text ? `<p class="settings-target-note" role="note">${icon('info')}<span>${escape(text)}</span></p>` : '';
+  }
   function render() {
     disposeVoice?.(); disposeVoice = undefined;
     disposeIntegrations?.(); disposeIntegrations = undefined;
     const [name, id] = page.split('/');
+    const server = serverFor(page);
+    server?.ensureLoaded();
+    shownTarget = targetSignature();
+    const selected = context().server;
+    // Pages that show the selected server are marked with its name.
+    const scope = route => selected && (HOST_PAGES.has(route) || DEFER_PAGES.has(route)) ? `<span class="settings-nav-scope" title="${escape(`Shows ${selected.hostName()}`)}">${escape(selected.hostName())}</span>` : '';
     const parent = ['account', 'usage'].includes(name) ? 'profile' : id ? name : ['connections', 'mcp'].includes(name) ? 'plugins' : null;
-    root.innerHTML = `<div class="settings-shell"><aside class="settings-sidebar liquid-glass"><a class="settings-back" href="${escape(previousRoute)}">${icon('chevronLeft')}<span>Back to app</span></a><div class="settings-search">${icon('search')}<input id="settings-search" type="search" placeholder="Search settings" aria-label="Search settings" value="${escape(search)}" /></div><div class="settings-search-results" hidden></div><nav class="settings-groups" aria-label="Settings navigation">${groups.map(([group, items]) => `<div class="settings-group"><h2>${group}</h2>${items.map(([route, label, symbol]) => `<a href="#/settings/${route}" class="settings-nav-row ${route === name ? 'active' : ''}" ${route === name ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span></a>`).join('')}</div>`).join('')}</nav></aside><main class="settings-content"><div class="settings-content-inner">${parent ? `<a class="settings-parent" href="#/settings/${parent}" aria-label="Back to ${escape(titleFor(parent))}">${icon('chevronLeft')}<span>${escape(titleFor(parent))}</span></a>` : ''}<h1 tabindex="-1">${escape(titleFor(page))}</h1>${context().remoteHost ? `<p class="settings-target-note" role="note">${icon('info')}<span>${escape(`These settings are for This computer. ${context().remoteHost} keeps its own settings; its models are set up in Models.`)}</span></p>` : ''}${content()}</div></main></div>`;
+    root.innerHTML = `<div class="settings-shell"><aside class="settings-sidebar liquid-glass"><a class="settings-back" href="${escape(previousRoute)}">${icon('chevronLeft')}<span>Back to app</span></a><div class="settings-search">${icon('search')}<input id="settings-search" type="search" placeholder="Search settings" aria-label="Search settings" value="${escape(search)}" /></div><div class="settings-search-results" hidden></div><nav class="settings-groups" aria-label="Settings navigation">${groups.map(([group, items]) => `<div class="settings-group"><h2>${group}</h2>${items.map(([route, label, symbol]) => `<a href="#/settings/${route}" class="settings-nav-row ${route === name ? 'active' : ''}" ${route === name ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${scope(route)}</a>`).join('')}</div>`).join('')}</nav></aside><main class="settings-content"><div class="settings-content-inner">${parent ? `<a class="settings-parent" href="#/settings/${parent}" aria-label="Back to ${escape(titleFor(parent))}">${icon('chevronLeft')}<span>${escape(titleFor(parent))}</span></a>` : ''}<h1 tabindex="-1">${escape(titleFor(page))}</h1>${targetNote(server)}${content()}</div></main></div>`;
     root.querySelector('#settings-search').addEventListener('input', event => { search = event.target.value; renderSearch(); });
     renderSearch(); bindForm(); bindGlassLighting(root);
+    root.querySelectorAll('[data-server-action]').forEach(button => button.addEventListener('click', () => {
+      if (button.dataset.serverAction === 'use-local') void context().useThisComputer?.();
+      else if (server?.online()) void server.reload();
+      else void server?.reconnect();
+    }));
+    if (server && server.loaded() && !server.online()) {
+      // The last known values stay readable; nothing on the page can be sent.
+      root.querySelector('.settings-content').classList.add('is-offline');
+      root.querySelectorAll('.settings-content-inner :is(form, .settings-test-actions) :is(input, select, textarea, button)').forEach(control => { control.disabled = true; });
+    }
+    if (server) return;
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
     if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
-    if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(settings()) });
+    if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(clientSettings()) });
     root.querySelector('[data-open-data]')?.addEventListener('click', openDataFolder);
     if (name === 'mcp') loadMcpSnapshot();
     if (page === 'about' && !appInfo) void (window.desktopApp?.getInfo?.() || fetch('/app/info').then(response => response.json())).then(info => { appInfo = info; if (active && page === 'about') render(); }).catch(() => { appInfo = { version: 'Unavailable' }; if (active && page === 'about') render(); });
   }
-  function setStatus(route, value) {
-    statuses.set(route, value);
-    if (!active || page !== route) return;
+  function setStatus(key, value) {
+    statuses.set(key, value);
+    if (!active || placeOf(page).key !== key) return;
     const slot = root.querySelector('.settings-save-status');
     if (slot) { slot.textContent = value.text; slot.classList.toggle('is-error', Boolean(value.error)); slot.classList.toggle('is-success', Boolean(value.success)); }
     root.querySelectorAll('button[type="submit"], [data-test]').forEach(button => { button.disabled = Boolean(value.busy); });
     const retry = root.querySelector('[data-retry]'); if (retry) retry.hidden = !value.error;
   }
-  async function save(route) {
-    const snapshot = { ...dirty(route) };
+  async function save({ key, store }) {
+    const draft = dirty(key), snapshot = { ...draft };
     if (!Object.keys(snapshot).length) return true;
-    setStatus(route, { text: 'Saving…', busy: true });
+    setStatus(key, { text: 'Saving…', busy: true });
     try {
-      await data.save(entityPatch(snapshot));
-      for (const [key, value] of Object.entries(snapshot)) if (dirty(route)[key] === value) delete dirty(route)[key];
-      setStatus(route, { text: Object.keys(dirty(route)).length ? 'Unsaved changes' : 'Saved' });
+      await store.save(entityPatch(snapshot));
+      for (const [name, value] of Object.entries(snapshot)) if (draft[name] === value) delete draft[name];
+      setStatus(key, { text: Object.keys(draft).length ? 'Unsaved changes' : 'Saved' });
       return true;
     } catch (error) {
-      setStatus(route, { text: `Not saved. ${error.message}`, error: true });
+      setStatus(key, { text: `Not saved. ${error.message}`, error: true });
       return false;
     }
   }
@@ -429,7 +495,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     form.querySelectorAll('[data-mcp-stdio]').forEach(row => { row.hidden = http; row.querySelectorAll('input,textarea').forEach(input => { input.disabled = http; }); });
   }
   function uniqueMcpBindingId(serverId) {
-    const bindings = settings().mcp?.client?.bindings || {};
+    const bindings = clientSettings().mcp?.client?.bindings || {};
     let id = serverId, suffix = 2;
     while (Object.hasOwn(bindings, id)) id = `${serverId.slice(0, 120)}-${suffix++}`;
     return id;
@@ -512,7 +578,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     }).finally(() => { mcpRequest = undefined; if (active && page.startsWith('mcp')) render(); });
   }
   function bindForm() {
-    const current = page, specs = fieldsFor(page), element = root.querySelector('#settings-entity-form');
+    const current = page, place = placeOf(page), key = place.key, specs = fieldsFor(page), element = root.querySelector('#settings-entity-form');
     const preference = specs.length && specs.every(spec => spec.name.startsWith('ui.'));
     element?.addEventListener('input', event => {
       const generationField = event.target?.dataset?.generationField;
@@ -525,17 +591,17 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         const next = { ...base, preset: 'custom' };
         if (raw === '') delete next[generationField];
         else next[generationField] = Number(raw);
-        dirty(current)['localModels.generation'] = next;
-        results.delete(current);
-        if (!statuses.get(current)?.busy) setStatus(current, { text: 'Unsaved changes' });
+        dirty(key)['localModels.generation'] = next;
+        results.delete(key);
+        if (!statuses.get(key)?.busy) setStatus(key, { text: 'Unsaved changes' });
         return;
       }
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
       const value = spec.name === 'localModels.gpuLayers' ? (/^\s*(auto)?\s*$/i.test(event.target.value) ? 'auto' : Number(event.target.value)) : spec.name === 'filesystem.allowedDirectories' ? event.target.value.split('\n').map(value => value.trim()).filter(Boolean) : spec.type === 'boolean' ? event.target.checked : ['number', 'font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
-      if (spec.type === 'secret' && value === '') delete dirty(current)[spec.name]; else dirty(current)[spec.name] = value;
-      results.delete(current);
+      if (spec.type === 'secret' && value === '') delete dirty(key)[spec.name]; else dirty(key)[spec.name] = value;
+      results.delete(key);
       root.querySelector('.settings-test-result')?.remove();
-      if (!statuses.get(current)?.busy) setStatus(current, { text: 'Unsaved changes' });
+      if (!statuses.get(key)?.busy) setStatus(key, { text: 'Unsaved changes' });
       if (spec.type === 'secret') root.querySelector(`[data-secret-state="${spec.name}"]`).textContent = value ? 'Replacement key entered.' : 'Blank input keeps the existing key.';
       if (spec.type === 'color') {
         const picker = root.querySelector(`[data-appearance-picker="${spec.name}"]`);
@@ -558,9 +624,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       const next = preset === 'custom'
         ? { ...(previous.preset === 'custom' ? previous : generationPresets[previous.preset] || generationPresets.balanced), preset: 'custom' }
         : { preset };
-      dirty(current)['localModels.generation'] = next;
-      results.delete(current);
-      setStatus(current, { text: 'Unsaved changes' });
+      dirty(key)['localModels.generation'] = next;
+      results.delete(key);
+      setStatus(key, { text: 'Unsaved changes' });
       const scroll = root.querySelector('.settings-content')?.scrollTop || 0;
       render();
       root.querySelector('.settings-content').scrollTop = scroll;
@@ -569,9 +635,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       if (!preference) return;
       const spec = specs.find(spec => spec.name === event.target.name); if (!spec) return;
       if (spec.type === 'color' && (!event.target.reportValidity() || !isHexColor(event.target.value))) return;
-      dirty(current)[spec.name] = spec.type === 'boolean' ? event.target.checked : ['font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
-      applyPreferences(entityPatch(dirty(current)).ui || {});
-      void save(current);
+      dirty(key)[spec.name] = spec.type === 'boolean' ? event.target.checked : ['font-scale', 'code-font-size'].includes(spec.type) ? Number(event.target.value) : event.target.value;
+      applyPreferences(entityPatch(dirty(key)).ui || {});
+      void save(place);
     });
     root.querySelectorAll('[data-appearance-picker]').forEach(picker => picker.addEventListener('input', () => {
       const input = element?.elements.namedItem(picker.dataset.appearancePicker);
@@ -582,15 +648,15 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     }));
     root.querySelectorAll('[data-appearance-theme]').forEach(button => button.addEventListener('click', () => {
       const theme = button.dataset.appearanceTheme;
-      if (!Object.hasOwn(appearancePresets, theme) || statuses.get(current)?.busy) return;
-      dirty(current)['ui.theme'] = theme;
+      if (!Object.hasOwn(appearancePresets, theme) || statuses.get(key)?.busy) return;
+      dirty(key)['ui.theme'] = theme;
       root.querySelectorAll('[data-appearance-theme]').forEach(choice => {
         const selected = choice.dataset.appearanceTheme === theme;
         choice.classList.toggle('is-selected', selected);
         choice.setAttribute('aria-pressed', String(selected));
       });
       for (const [fieldName, presetKey] of Object.entries(appearanceColorKey)) {
-        const currentColor = Object.hasOwn(dirty(current), fieldName) ? dirty(current)[fieldName] : get(settings(), fieldName);
+        const currentColor = Object.hasOwn(dirty(key), fieldName) ? dirty(key)[fieldName] : get(place.settings(), fieldName);
         if (isHexColor(currentColor)) continue;
         const color = appearancePresets[theme][presetKey];
         const input = element?.elements.namedItem(fieldName);
@@ -599,40 +665,41 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         if (picker) picker.value = color;
       }
       applyPreferences({ theme });
-      void save(current);
+      void save(place);
     }));
     root.querySelector('[data-reset-appearance]')?.addEventListener('click', () => {
       const reset = Object.fromEntries(Object.keys(appearanceColorKey).map(key => [key, '']));
-      Object.assign(dirty(current), reset);
+      Object.assign(dirty(key), reset);
       applyPreferences(entityPatch(reset).ui);
-      void save(current).then(saved => { if (saved && active && page === current) render(); });
+      void save(place).then(saved => { if (saved && active && placeOf(page).key === key) render(); });
     });
-    element?.addEventListener('submit', event => { event.preventDefault(); if (element.reportValidity()) void save(current); });
+    element?.addEventListener('submit', event => { event.preventDefault(); if (element.reportValidity()) void save(place); });
     root.querySelectorAll('[data-clear]').forEach(button => button.addEventListener('click', () => {
-      dirty(current)[button.dataset.clear] = '';
+      dirty(key)[button.dataset.clear] = '';
       const input = element.elements.namedItem(button.dataset.clear); input.value = '';
       root.querySelector(`[data-secret-state="${button.dataset.clear}"]`).textContent = 'Key will be removed on Apply.';
-      setStatus(current, { text: 'Unsaved changes · key removal pending' });
-      results.delete(current); root.querySelector('.settings-test-result')?.remove();
+      setStatus(key, { text: 'Unsaved changes · key removal pending' });
+      results.delete(key); root.querySelector('.settings-test-result')?.remove();
     }));
     root.querySelector('[data-directory]')?.addEventListener('click', async () => {
       try { const directory = await window.desktopModels.selectDirectory(); if (directory) { const input = element.elements.namedItem('localModels.modelsDir'); input.value = directory; input.dispatchEvent(new Event('input', { bubbles: true })); } }
-      catch (error) { setStatus(current, { text: error.message, error: true }); }
+      catch (error) { setStatus(key, { text: error.message, error: true }); }
     });
     root.querySelector('[data-test]')?.addEventListener('click', async event => {
-      if (statuses.get(current)?.busy || !element.reportValidity()) return;
+      if (statuses.get(key)?.busy || !element.reportValidity()) return;
       const kind = event.currentTarget.dataset.test, id = current.split('/')[1];
-      if (!await save(current)) return;
+      if (!await save(place)) return;
       // New edits during a save must be applied before testing their values.
-      if (Object.keys(dirty(current)).length) { setStatus(current, { text: 'Apply the newer changes before testing.' }); return; }
-      setStatus(current, { text: 'Testing…', busy: true });
+      if (Object.keys(dirty(key)).length) { setStatus(key, { text: 'Apply the newer changes before testing.' }); return; }
+      setStatus(key, { text: 'Testing…', busy: true });
       let result;
-      try { result = await data.testProvider(id, settings().providers[id].model, settings().providers[id].timeoutMs); }
+      const provider = place.settings().providers?.[id];
+      try { result = await place.store.testProvider(id, provider?.model, provider?.timeoutMs); }
       catch (error) { result = { ok: false, message: error.message }; }
-      if (!Object.keys(dirty(current)).length) results.set(current, result);
-      const hasNewerEdits = Object.keys(dirty(current)).length > 0;
-      setStatus(current, { text: hasNewerEdits ? 'Unsaved changes · test used the previous configuration' : result.ok ? 'Test succeeded' : 'Test failed', error: !result.ok, success: result.ok && !hasNewerEdits });
-      if (active && page === current) { const scroll = root.querySelector('.settings-content').scrollTop; render(); root.querySelector('.settings-content').scrollTop = scroll; }
+      if (!Object.keys(dirty(key)).length) results.set(key, result);
+      const hasNewerEdits = Object.keys(dirty(key)).length > 0;
+      setStatus(key, { text: hasNewerEdits ? 'Unsaved changes · test used the previous configuration' : result.ok ? 'Test succeeded' : 'Test failed', error: !result.ok, success: result.ok && !hasNewerEdits });
+      if (active && placeOf(page).key === key) { const scroll = root.querySelector('.settings-content').scrollTop; render(); root.querySelector('.settings-content').scrollTop = scroll; }
     });
   }
   async function openDataFolder() {
@@ -694,7 +761,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   });
   function openMenu() {
     if (menu.matches(':popover-open')) { closeMenu(); return; }
-    const user = localProfileView(settings());
+    const user = localProfileView(clientSettings());
     menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>${escape(accountSubtitle(account.get()))}</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
     menu.querySelectorAll('[data-profile-route]').forEach(button => button.addEventListener('click', () => {
       closeMenu(false);
@@ -733,7 +800,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   });
   return {
     isOpen: () => active,
-    profileButton: () => { const user = localProfileView(settings()); return `<button id="local-profile-button" class="local-profile-button" type="button" aria-label="${escape(user.name)} profile" aria-haspopup="menu" aria-controls="profile-menu" aria-expanded="false">${avatar(user)}<span class="local-profile-label">${escape(user.name)}</span>${icon('chevronDown')}</button>`; },
+    profileButton: () => { const user = localProfileView(clientSettings()); return `<button id="local-profile-button" class="local-profile-button" type="button" aria-label="${escape(user.name)} profile" aria-haspopup="menu" aria-controls="profile-menu" aria-expanded="false">${avatar(user)}<span class="local-profile-label">${escape(user.name)}</span>${icon('chevronDown')}</button>`; },
     bindProfile: () => document.getElementById('local-profile-button')?.addEventListener('click', openMenu),
     route(hash) {
       let route = hash.replace(/^#\/?/, '');
@@ -759,6 +826,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       }
       return false;
     },
-    refreshPreferences() { if (active && page === 'appearance') render(); }
+    refreshPreferences() { if (active && page === 'appearance') render(); },
+    /** The selected machine, its connection or the server's settings changed: the open page is
+     * rendered again only when what it shows about them changed, so typing is not interrupted. */
+    targetChanged() { if (active && targetSignature() !== shownTarget) render(); }
   };
 }

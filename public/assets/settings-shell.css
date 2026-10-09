@@ -370,3 +370,10 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .account-id { font: calc(11px * var(--font-scale, 1))/1.5 var(--font-mono); overflow-wrap: anywhere; }
 .account-offline { display: flex; gap: 8px; align-items: flex-start; color: var(--muted); margin: 0 0 18px; }
 .account-offline .ui-icon { width: 16px; flex-shrink: 0; }
+
+/* R5-3: pages that show the selected server. */
+.settings-nav-scope { margin-left: auto; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); }
+.settings-row-label { display: block; font-size: calc(13px * var(--font-scale, 1)); color: var(--text); font-weight: 450; }
+.settings-host-only .settings-control > span { color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.settings-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.settings-content.is-offline .settings-form, .settings-content.is-offline .settings-test-actions { opacity: 0.55; }
