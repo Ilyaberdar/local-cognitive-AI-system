@@ -2,6 +2,8 @@ import path from "path";
 import type net from "net";
 import { config } from "../config/config";
 import { startBackend } from "../index";
+import { createUsageOperations } from "../runtime/usageOperations";
+import { RemoteHostStore } from "../remote/host/RemoteHostStore";
 import { DataRootLockedError } from "../runtime/db/DataRootLock";
 import { resolveHeadlessVault } from "../security/headlessVault";
 import { appVersion } from "../utils/appVersion";
@@ -96,6 +98,7 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
         sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
+      ...createUsageOperations({ ledger: backend.usage, outbox: backend.usageOutbox, owner: () => new RemoteHostStore(host.database).owner() }),
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
       ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),

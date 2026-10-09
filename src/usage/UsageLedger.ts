@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import type { HostDatabase } from "../runtime/db/HostDatabase";
 import type { Logger } from "../utils/Logger";
 import type { UsageAttemptRecord, UsageRecorder } from "./UsageCall";
+import type { UsageQuarter } from "./UsageProjection";
 
 /** Who a model call ran for, read when it is recorded: the account that owns this server, or the
  * one signed in to this computer, and the Cloud id of a registered server. */
@@ -122,6 +123,28 @@ export class UsageLedger implements UsageRecorder {
       const wait = db.prepare("UPDATE usage_events SET sync_state = 'pending', sync_error = ? WHERE event_id = ? AND sync_state = 'sent'");
       for (const eventId of eventIds) wait.run(error.slice(0, 200), eventId);
     });
+  }
+
+  /** The ledger by quarter hour: an account's events the Cloud had not received by `asOf` (what
+   * its totals lack), all of an account's, or (no account) everything recorded here. */
+  quarters(filter: { accountId?: string; missingFromCloudAt?: string } = {}): { quarters: UsageQuarter[]; firstEventAt: string | null } {
+    const where: string[] = [], values: string[] = [];
+    if (filter.accountId) { where.push("account_id = ?"); values.push(filter.accountId); }
+    if (filter.missingFromCloudAt) {
+      where.push("(sync_state IN ('pending', 'sent') OR (sync_state = 'acked' AND cloud_received_at > ?))");
+      values.push(new Date(filter.missingFromCloudAt).toISOString());
+    }
+    const condition = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = this.host.db.prepare(`SELECT substr(occurred_at, 1, 14) || printf('%02d', (CAST(substr(occurred_at, 15, 2) AS INTEGER) / 15) * 15) AS quarter,
+      count(*) AS requests, coalesce(sum(input_tokens), 0) AS input, coalesce(sum(output_tokens), 0) AS output, coalesce(sum(total_tokens), 0) AS total,
+      coalesce(sum(cached_input_tokens), 0) AS cached, coalesce(sum(reasoning_tokens), 0) AS reasoning,
+      sum(CASE WHEN total_tokens IS NULL AND outcome IN ('completed', 'cancelled') THEN 1 ELSE 0 END) AS without, min(occurred_at) AS first
+      FROM usage_events ${condition} GROUP BY quarter ORDER BY quarter`).all(...values) as Array<Record<string, unknown>>;
+    return {
+      quarters: rows.map(row => ({ quarter: String(row.quarter), requests: Number(row.requests), inputTokens: Number(row.input), outputTokens: Number(row.output),
+        totalTokens: Number(row.total), cachedInputTokens: Number(row.cached), reasoningTokens: Number(row.reasoning), requestsWithoutUsage: Number(row.without) })),
+      firstEventAt: rows.length ? String(rows[0]!.first) : null
+    };
   }
 
   /** How many of an account's events have not reached the Cloud yet. */

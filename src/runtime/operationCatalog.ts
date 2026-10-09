@@ -15,6 +15,8 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "session.ping": { kind: "request", timeoutMs: 15_000 },
   "host.info": { kind: "request", timeoutMs: 15_000 },
   "host.status": { kind: "request", timeoutMs: 15_000 },
+  // The server's not yet sent usage, for its owner's Usage page (it sends first, up to 3 s).
+  "usage.pending": { kind: "request", timeoutMs: 15_000 },
   // Chat (R4)
   "sessions.list": { kind: "request", timeoutMs: 30_000 },
   "sessions.create": { kind: "request", timeoutMs: 30_000 },
