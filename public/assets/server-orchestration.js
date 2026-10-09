@@ -1,4 +1,5 @@
-import { createRemoteRequest, ORCHESTRATION_ROUTES } from "./runtime-routes.js";
+import { remoteModelOptions } from "./chat-target.js";
+import { createRemoteRequest, createRunEventsSource, ORCHESTRATION_ROUTES } from "./runtime-routes.js";
 
 const ACTIVE_RUNS = new Set(["queued", "running"]);
 const LIST_FIELDS = ["workflows", "tasks", "schedules", "workflowRuns"];
@@ -15,7 +16,7 @@ export function createServerOrchestration({ target, bridge = window.desktopRemot
       source?.dispose();
       source = null;
       key = next;
-      if (next) source = createSource({ target, runtime, onChange });
+      if (next) source = createSource({ target, runtime, onChange, onStatus: bridge?.onChange });
     }
     return source;
   };
@@ -28,7 +29,7 @@ export function createServerOrchestration({ target, bridge = window.desktopRemot
   };
 }
 
-function createSource({ target, runtime, onChange }) {
+function createSource({ target, runtime, onChange, onStatus }) {
   const hostId = target.hostId(), generation = target.generation();
   const isCurrent = () => target.isRemote() && target.hostId() === hostId && target.generation() === generation;
   const name = () => target.hostName();
@@ -53,6 +54,29 @@ function createSource({ target, runtime, onChange }) {
     getWorkflowRun: runId => request(path("/workflow-runs", runId)),
     cancelWorkflowRun: runId => request(path("/workflow-runs", runId, "/cancel"), { method: "POST" }),
     validateWorkflow: workflow => request(path("/workflows", workflow.id || "draft", "/validate"), { method: "POST", body: body(workflow) })
+  };
+
+  /** Saves a workflow edited from `base`, the version the editor started from (null: a new one);
+   * a save on the server in between is refused as a conflict instead of overwritten. */
+  const saveWorkflow = async (workflow, base) => {
+    if (!online()) throw Object.assign(new Error(`${name()} is not connected. Nothing was sent.`), { code: "not_connected" });
+    const result = await runtime.send("workflows.save", { workflow, expectedUpdatedAt: base ?? null }, hostId);
+    if (!isCurrent()) throw Object.assign(new Error("The selected server changed."), { code: "host_changed" });
+    if (!result?.ok) throw Object.assign(new Error(result?.error?.message || `${name()} did not save the workflow.`), { code: result?.error?.code });
+    return result.value;
+  };
+
+  /** What the editor offers for a workflow on the server: its models, and no folders, projects,
+   * full access or plugins yet. */
+  const editorOptions = async () => {
+    const models = await target.models().catch(() => undefined);
+    const providers = (models?.providers ?? []).filter(provider => provider.id !== "local").map(provider => {
+      const choices = remoteModelOptions(models, provider.id);
+      return { ...provider, models: choices.map(choice => choice.id), defaultModel: models?.appSettings?.providers?.[provider.id]?.model ?? "",
+        installedOnly: provider.id === "llamacpp", modelLabels: Object.fromEntries(choices.map(choice => [choice.id, choice.label])) };
+    });
+    return { providers, projects: [], plugins: [], pluginsError: `Plugins in workflows on ${name()} come in a later update.`,
+      limits: { folder: false, fullAccess: false } };
   };
 
   /** Fetches the lists; an unchanged answer keeps them. Arrays are replaced in place, so a list
@@ -83,7 +107,8 @@ function createSource({ target, runtime, onChange }) {
   const load = () => { void refresh().then(changed => { if (changed) onChange(); }, () => { if (!disposed && isCurrent()) onChange(); }); };
 
   return {
-    lists, api, request, refresh,
+    lists, api, request, refresh, saveWorkflow, editorOptions,
+    EventSourceClass: createRunEventsSource({ runtime, hostId, isCurrent, onStatus }),
     hostName: name, online,
     loaded: () => loaded,
     error: () => loadError,

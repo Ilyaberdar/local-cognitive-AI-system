@@ -132,6 +132,9 @@ export interface WorkflowEditorProps {
   onRun?: (workflow: WorkflowDefinition) => Promise<void>;
   onStop?: (runId: string) => Promise<void>;
   onChooseFolder?: () => Promise<string | null>;
+  /** What the machine running the workflow allows (a paired server, R5-2): false hides folders
+   * and projects, or full access. Absent on this computer: everything is offered. */
+  limits?: { folder?: boolean; fullAccess?: boolean };
   execution?: WorkflowExecution;
   starting?: boolean;
   initialViewState?: WorkflowEditorViewState;

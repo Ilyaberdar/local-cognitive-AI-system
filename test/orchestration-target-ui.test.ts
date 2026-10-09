@@ -324,3 +324,141 @@ test("an older fedora is asked to update and nothing is sent; fedora's name is t
   assert.equal(other.window.hacked, undefined);
   assert.match(text(other, ".orchestration-main"), /Tasks on <img/);
 });
+
+const RUN_ID = "4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d77";
+const liveEvent = (sequence: number) => ({ sequence, runId: RUN_ID, at: T0, type: "node.output", level: "info", message: `event ${sequence}` });
+
+test("a run on fedora drives the editor's live view: history, live events, a lost cursor, a dropped connection and an unknown run", async () => {
+  const fs = await import("node:fs");
+  const vm = await import("node:vm");
+  const routes = fs.readFileSync("public/assets/runtime-routes.js", "utf8").replace(/^export /gm, "");
+  const live = fs.readFileSync("public/assets/workflow-live.js", "utf8").replace("export function", "function");
+  let last = 2;
+  const calls: unknown[][] = [], eventListeners: Array<(update: unknown) => void> = [], statusListeners: Array<(status: unknown) => void> = [];
+  const detail = { run: { id: RUN_ID, status: "running", updatedAt: T0 }, nodeRuns: [] };
+  const history = (after: number) => ({ events: Array.from({ length: Math.max(0, last - after) }, (_value, index) => liveEvent(after + index + 1)), firstSequence: 1,
+    lastSequence: last, truncated: false, detail, cursor: { streamId: `workflow-run:${RUN_ID}`, epoch: "e1", after: last } });
+  const runtime = {
+    request: async (op: string, payload: any, hostId: string) => { calls.push([op, payload, hostId]); return { ok: true, value: op === "workflows.runs.events" ? history(payload.after) : detail }; },
+    subscribe: async (cursor: unknown, hostId: string) => { calls.push(["subscribe", cursor, hostId]); return { ok: true }; },
+    unsubscribe: async (streamId: string) => { calls.push(["unsubscribe", streamId]); return { ok: true }; },
+    onEvent: (listener: (update: unknown) => void) => { eventListeners.push(listener); return () => eventListeners.splice(eventListeners.indexOf(listener), 1); }
+  };
+  const context: any = vm.createContext({ setTimeout, clearTimeout, URL, JSON, Promise });
+  vm.runInContext(`${routes}\n${live}\nthis.createRunEventsSource = createRunEventsSource; this.watchWorkflowRun = watchWorkflowRun;`, context);
+  const Source = context.createRunEventsSource({ runtime, hostId: HOST,
+    onStatus: (listener: (status: unknown) => void) => { statusListeners.push(listener); return () => undefined; } });
+  const observed: any[] = [];
+  const watch = context.watchWorkflowRun({ runId: RUN_ID, detail, onChange: (value: unknown) => observed.push(copy(value)), EventSourceClass: Source,
+    request: async () => detail });
+  const sequences = () => observed.at(-1).events.map((item: { sequence: number }) => item.sequence);
+  const emit = (update: unknown) => eventListeners.forEach(listener => listener(update));
+  await flush(10);
+  assert.deepEqual(copy(calls.slice(0, 2)), [["workflows.runs.events", { runId: RUN_ID, after: 0 }, HOST], ["subscribe", { streamId: `workflow-run:${RUN_ID}`, epoch: "e1", after: 2 }, HOST]]);
+  assert.deepEqual(sequences(), [1, 2]);
+  assert.equal(observed.at(-1).connection, "live");
+
+  emit({ streamId: `workflow-run:${RUN_ID}`, events: [{ seq: 3, type: "node.output", runId: RUN_ID, occurredAt: T0, payload: liveEvent(3) }] });
+  emit({ streamId: `workflow-run:${RUN_ID}`, events: [{ seq: 3, type: "node.output", runId: RUN_ID, occurredAt: T0, payload: liveEvent(3) }] });
+  emit({ streamId: "workflow-run:another", events: [{ seq: 9, type: "x", runId: "another", occurredAt: T0, payload: liveEvent(9) }] });
+  assert.deepEqual(sequences(), [1, 2, 3], "each event once, only this run's");
+
+  // The cursor can no longer continue: the history after the last one seen.
+  last = 5;
+  emit({ streamId: `workflow-run:${RUN_ID}`, resync: "cursor_expired" });
+  await flush(10);
+  assert.deepEqual(copy(calls.at(-2)), ["workflows.runs.events", { runId: RUN_ID, after: 3 }, HOST]);
+  assert.deepEqual(sequences(), [1, 2, 3, 4, 5]);
+
+  // A dropped connection: reconnecting until fedora is back, then nothing is missed.
+  emit({ streamId: `workflow-run:${RUN_ID}`, resync: "host_changed" });
+  assert.equal(observed.at(-1).connection, "reconnecting");
+  last = 6;
+  statusListeners.forEach(listener => listener({ state: "online", hostId: HOST }));
+  await flush(10);
+  assert.deepEqual(sequences(), [1, 2, 3, 4, 5, 6]);
+  assert.equal(observed.at(-1).connection, "live");
+
+  // A run the server no longer knows: the view stops following it.
+  emit({ streamId: `workflow-run:${RUN_ID}`, resync: "run_unknown" });
+  await flush(5);
+  assert.deepEqual(copy(calls.at(-1)), ["unsubscribe", `workflow-run:${RUN_ID}`]);
+  const before = observed.length;
+  emit({ streamId: `workflow-run:${RUN_ID}`, events: [{ seq: 7, type: "node.output", runId: RUN_ID, occurredAt: T0, payload: liveEvent(7) }] });
+  assert.equal(observed.length, before);
+  watch.close();
+});
+
+/** fedora with its models and the operations the workflow editor uses on it. */
+function fedoraWithEditor() {
+  const fedora = fedoraWithTasks({ capabilities: ["chat.runs.start", "events.poll", "orchestration.snapshot", "workflows.runs.start"] });
+  const server = { workflow: copy(WORKFLOW), saves: 0, run: { id: RUN_ID, workflowId: WORKFLOW.id, workflowVersion: 1, workflowSnapshot: WORKFLOW, status: "running",
+    source: "standalone", createdAt: T0, updatedAt: T0 } as Record<string, unknown> };
+  const runtime = fedora.bridge.runtime as unknown as Record<string, (...args: any[]) => Promise<any>>;
+  const request = runtime.request!, send = runtime.send!;
+  const detail = () => copy({ run: server.run, nodeRuns: [] });
+  runtime.request = async (op: string, payload: any, hostId: string) => {
+    if (op === "models.available") return { ok: true, value: { providers: [{ id: "llamacpp", name: "Local models" }, { id: "local", name: "Local" }], availableModels: [],
+      loadedModels: [], allManagedModels: [{ providerId: "llamacpp", id: "srv-llama", libraryId: "srv-llama", displayName: "Llama", filesAvailable: true }],
+      appSettings: { llm: { defaultProvider: "llamacpp" }, providers: { llamacpp: { model: "srv-llama" } } } } };
+    if (op === "workflows.validate") return { ok: true, value: { ok: true, errors: [] } };
+    if (op === "workflows.runs.get") return { ok: true, value: detail() };
+    if (op === "workflows.runs.events") return { ok: true, value: { events: [], firstSequence: 0, lastSequence: 0, truncated: false, detail: detail(),
+      cursor: { streamId: `workflow-run:${payload.runId}`, epoch: "e1", after: 0 } } };
+    if (op === "workflows.runs.cancel") { server.run.status = "cancelled"; return { ok: true, value: copy(server.run) }; }
+    return request(op, payload, hostId);
+  };
+  runtime.send = async (op: string, payload: any, hostId: string) => {
+    if (op === "workflows.save") {
+      if (payload.expectedUpdatedAt !== server.workflow.updatedAt) return { ok: false, error: { code: "workflow_conflict",
+        message: "This workflow was changed on the server since you opened it. Reload it, then make your changes again." } };
+      server.workflow = { ...payload.workflow, updatedAt: `2026-10-0${2 + server.saves++}T10:00:00.000Z` };
+      return { ok: true, value: copy(server.workflow) };
+    }
+    if (["workflows.runs.start", "workflows.runs.resume", "workflows.runs.review"].includes(op)) return { ok: true, value: copy(server.run) };
+    return send(op, payload, hostId);
+  };
+  return { ...fedora, server };
+}
+
+test("on fedora the workflow editor offers its models without folders or full access, and runs, reviews and saves there", async t => {
+  const fedora = fedoraWithEditor();
+  const app = await bootApp({ ...localOrchestration(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  const localBefore = app.requests.length, callsBefore = app.bridgeCalls.length;
+  await onFedoraTasks(app);
+  await click(app, '[data-action="set-orchestration-tab"][data-orchestration-tab="workflow"]');
+  await settle();
+  const props = editor(app);
+  assert.deepEqual(copy(props.limits), { folder: false, fullAccess: false });
+  assert.equal(props.onChooseFolder, undefined);
+  assert.deepEqual(copy(props.projects), []);
+  assert.deepEqual(copy(props.plugins), []);
+  assert.match(props.pluginsError, /later update/);
+  assert.deepEqual(copy(props.providers).map((provider: { id: string; models: string[] }) => [provider.id, provider.models]), [["llamacpp", ["srv-llama"]]]);
+
+  await props.onRun(copy(props.workflow));
+  await settle();
+  await props.onStop(RUN_ID);
+  await props.onResume(RUN_ID);
+  await props.onReview(RUN_ID, { approved: true, waitingNodeRunId: "step-1" });
+  await settle();
+  await click(app, '[data-action="save-workflow"]');
+  await settle();
+  // Someone else saves on fedora meanwhile: the next save is a conflict, not an overwrite.
+  fedora.server.workflow.updatedAt = "2026-10-05T10:00:00.000Z";
+  await click(app, '[data-action="save-workflow"]');
+  await settle();
+  const validations = app.editors.filter(entry => !entry.handle.unmounted).at(-1)!.handle.validations;
+  assert.match(JSON.stringify(validations.at(-1)), /changed on the server since you opened it/);
+
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => LOCAL_ORCHESTRATION_API.test(entry)), [], "this computer's workflow API was not asked");
+  const calls = runtimeCalls(app, callsBefore);
+  assert.ok(calls.every(call => call.at(-1) === HOST), "every call names fedora");
+  const sent = calls.filter(call => call[0] === "send").map(call => [call[1], call[1] === "workflows.save" ? (call[2] as { expectedUpdatedAt: string }).expectedUpdatedAt : undefined]);
+  assert.deepEqual(sent, [["workflows.runs.start", undefined], ["workflows.runs.resume", undefined], ["workflows.runs.review", undefined],
+    ["workflows.save", T0], ["workflows.save", "2026-10-02T10:00:00.000Z"]], "runs, resumes, reviews and saves are commands; each save names its base");
+  assert.deepEqual(calls.find(call => call[1] === "workflows.runs.review")![2], { runId: RUN_ID, approved: true, waitingNodeRunId: "step-1" });
+  assert.ok(calls.some(call => call[1] === "workflows.runs.cancel"));
+  assert.ok(app.bridgeCalls.slice(callsBefore).some(call => call.op === "runtime.subscribe" && call.payload[0].streamId === `workflow-run:${RUN_ID}`), "the run's log is followed");
+});

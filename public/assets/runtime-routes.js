@@ -132,5 +132,99 @@ export const ORCHESTRATION_ROUTES = [
   { method: "DELETE", pattern: /^\/schedules\/([^/]+)$/, op: "schedules.delete", payload: match => ({ scheduleId: segment(match[1]) }) },
   { method: "POST", pattern: /^\/workflows\/[^/]+\/validate$/, op: "workflows.validate", payload: (_match, _query, body) => ({ workflow: body }) },
   { method: "GET", pattern: /^\/workflow-runs\/([^/]+)$/, op: "workflows.runs.get", payload: match => ({ runId: segment(match[1]) }) },
-  { method: "POST", pattern: /^\/workflow-runs\/([^/]+)\/cancel$/, op: "workflows.runs.cancel", payload: match => ({ runId: segment(match[1]) }) }
+  { method: "POST", pattern: /^\/workflow-runs\/([^/]+)\/cancel$/, op: "workflows.runs.cancel", payload: match => ({ runId: segment(match[1]) }) },
+  // The editor's run, resume and review: accepted on the server, followed through its events.
+  { method: "POST", pattern: /^\/workflow-runs$/, op: "workflows.runs.start", send: true,
+    payload: (_match, _query, body) => ({ workflow: body?.workflow, options: present(body?.options) }) },
+  { method: "POST", pattern: /^\/workflow-runs\/([^/]+)\/resume$/, op: "workflows.runs.resume", send: true, payload: match => ({ runId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/workflow-runs\/([^/]+)\/review$/, op: "workflows.runs.review", send: true,
+    payload: (match, _query, body) => ({ runId: segment(match[1]), ...pick(body, ["approved", "comment", "approvalId", "waitingNodeRunId"]) }) },
+  { method: "GET", pattern: /^\/workflow-runs\/([^/]+)\/agent-runs\/([^/]+)$/, op: "workflows.runs.agentTrace.get",
+    payload: match => ({ runId: segment(match[1]), agentRunId: segment(match[2]) }) }
 ];
+
+/** An EventSource for /workflow-runs/<id>/events?after=<n> (public/assets/workflow-live.js) that
+ * follows the run on the server: its history first (`workflows.runs.events`), then its log as an
+ * `events.poll` stream. A stream that cannot continue reads the history again from where the editor
+ * is; a dropped connection is an error until the server is back; an unknown run stops it. */
+export function createRunEventsSource({ runtime, hostId, isCurrent = () => true, onStatus }) {
+  return class RunEventsSource {
+    constructor(url) {
+      const address = new URL(url, "http://local");
+      const match = /^\/workflow-runs\/([^/]+)\/events$/.exec(address.pathname);
+      this.runId = match ? decodeURIComponent(match[1]) : "";
+      this.streamId = `workflow-run:${this.runId}`;
+      this.after = Number(address.searchParams.get("after") || 0);
+      this.readyState = 0;
+      this.onopen = null; this.onerror = null; this.onmessage = null;
+      this.listeners = new Map();
+      this.following = false;
+      this.stops = [
+        runtime.onEvent?.(update => this.receive(update)),
+        onStatus?.(status => { if (!this.following && status?.state === "online" && status.hostId === hostId) void this.open(); })
+      ];
+      void this.open();
+    }
+
+    async open() {
+      if (this.readyState === 2 || !isCurrent() || !this.runId) return;
+      this.following = true;
+      try {
+        const result = await runtime.request("workflows.runs.events", { runId: this.runId, after: this.after }, hostId);
+        if (this.readyState === 2 || !isCurrent()) return;
+        if (!result?.ok) { this.fail(result?.error?.code === "not_found"); return; }
+        const history = result.value;
+        this.after = history.lastSequence;
+        if (this.readyState !== 1) { this.readyState = 1; this.dispatch("open", { type: "open" }); }
+        this.dispatch("history", { type: "history", data: JSON.stringify(history), lastEventId: String(history.lastSequence) });
+        const followed = await runtime.subscribe(history.cursor, hostId);
+        if (!followed?.ok) this.fail();
+      } catch { this.fail(); }
+    }
+
+    /** `final`: the run does not exist on the server; nothing more will come. */
+    fail(final = false) {
+      if (this.readyState === 2) return;
+      this.following = false;
+      this.readyState = 0;
+      this.dispatch("error", { type: "error" });
+      if (final) this.close();
+    }
+
+    receive(update) {
+      if (this.readyState === 2 || update?.streamId !== this.streamId || !isCurrent()) return;
+      if ("resync" in update) {
+        if (update.resync === "run_unknown") this.fail(true);
+        // Another server or a dropped connection: again once this server is back.
+        else if (update.resync === "host_changed") this.fail();
+        else void this.open();
+        return;
+      }
+      for (const event of update.events ?? []) {
+        if (event.seq <= this.after) continue;
+        this.after = event.seq;
+        this.dispatch("update", { type: "update", data: JSON.stringify(event.payload), lastEventId: String(event.seq) });
+      }
+    }
+
+    dispatch(type, event) {
+      const handler = this[`on${type}`];
+      if (typeof handler === "function") handler.call(this, event);
+      for (const listener of this.listeners.get(type) ?? []) listener.call(this, event);
+    }
+
+    addEventListener(type, listener) {
+      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+      this.listeners.get(type).add(listener);
+    }
+
+    removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
+
+    close() {
+      if (this.readyState === 2) return;
+      this.readyState = 2;
+      for (const stop of this.stops) if (typeof stop === "function") stop();
+      Promise.resolve(runtime.unsubscribe?.(this.streamId)).catch(() => undefined);
+    }
+  };
+}

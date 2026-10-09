@@ -3,13 +3,15 @@ import { createPortal } from "react-dom";
 import { Field } from "./NodeConfigFields";
 import type { WorkflowEditorProps, WorkflowRunOptions } from "./types";
 
-export function RunSettings({ options, projects = [], onUpdate, onChooseFolder, disabled, initiallyOpen, onOpenChange, hasRun, container }: {
+export function RunSettings({ options, projects = [], onUpdate, onChooseFolder, disabled, initiallyOpen, onOpenChange, hasRun, container, limits }: {
   options: WorkflowRunOptions; projects: WorkflowEditorProps["projects"]; onUpdate: (options: WorkflowRunOptions) => void;
+  limits?: WorkflowEditorProps["limits"];
   onChooseFolder?: WorkflowEditorProps["onChooseFolder"];
   hasRun?: boolean; disabled?: boolean; initiallyOpen?: boolean; onOpenChange: (open: boolean) => void;
   container?: HTMLElement | null;
 }) {
   const folderMode = options.rootPath !== undefined;
+  const folders = limits?.folder !== false, fullAccess = limits?.fullAccess !== false;
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
   const id = useId();
@@ -58,19 +60,20 @@ export function RunSettings({ options, projects = [], onUpdate, onChooseFolder, 
           setError("");
           onUpdate({ ...options, projectId: value.startsWith("__") ? undefined : value, rootPath: value === "__folder" ? "" : undefined });
         }}>
-          <option value="__managed">New folder for this run</option><option value="__folder">Choose a folder…</option>
+          <option value="__managed">New folder for this run</option>{folders ? <option value="__folder">Choose a folder…</option> : null}
           {options.projectId && !projects.some(item => item.id === options.projectId && !item.archivedAt) ? <option value={options.projectId} disabled>Project unavailable</option> : null}
-          {projects.filter(item => !item.archivedAt).map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+          {folders ? projects.filter(item => !item.archivedAt).map(project => <option key={project.id} value={project.id}>{project.name}</option>) : null}
         </select></Field>
         <div className="fsm-run-options-row">
           <Field label="Access"><select value={options.accessMode ?? "default"} onChange={event => update({ accessMode: event.target.value as WorkflowRunOptions["accessMode"] })}>
-            <option value="default">Ask for commands / web</option><option value="ask">Ask before changes</option><option value="full">Full access</option>
+            <option value="default">Ask for commands / web</option><option value="ask">Ask before changes</option>
+            {fullAccess || options.accessMode === "full" ? <option value="full" disabled={!fullAccess}>Full access</option> : null}
           </select></Field>
           <Field label="Step limit"><input type="number" min={1} max={250} value={options.maxSteps ?? 25} onChange={event => update({ maxSteps: Number(event.target.value) })} /></Field>
         </div>
         </div>
         <div className="fsm-run-settings__instructions">
-        {folderMode ? <div className="fsm-run-folder">
+        {folderMode && folders ? <div className="fsm-run-folder">
           <Field label="Folder path"><input value={options.rootPath ?? ""} placeholder="/absolute/path/to/folder" onChange={event => update({ rootPath: event.target.value })} /></Field>
           {onChooseFolder ? <button type="button" onClick={async () => {
             try { const path = await onChooseFolder(); if (path) update({ rootPath: path }); setError(""); }
