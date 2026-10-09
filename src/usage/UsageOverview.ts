@@ -1,6 +1,6 @@
 import type { UsageLedger } from "./UsageLedger";
 import type { UsageOutbox } from "./UsageOutbox";
-import { addTotals, daysFromQuarters, emptyTotals, knownTimeZone, localDate, mergeDays, shiftDate, type UsageDay, type UsageTotals } from "./UsageProjection";
+import { addTotals, daysFromQuarters, emptyTotals, knownTimeZone, localDate, mergeDays, dateBefore, type UsageDay, type UsageTotals } from "./UsageProjection";
 
 /** About a year of days: the Daily heatmap's 53 weeks. */
 export const OVERVIEW_DAYS = 370;
@@ -43,7 +43,7 @@ export async function usageOverview(input: { ledger: UsageLedger; outbox?: Usage
   const { ledger } = input;
   const timeZone = knownTimeZone(input.timeZone);
   const now = input.now ?? new Date();
-  const to = localDate(now, timeZone), from = shiftDate(to, OVERVIEW_DAYS);
+  const to = localDate(now, timeZone), from = dateBefore(to, OVERVIEW_DAYS);
   const base = { timeZone, from, to, ledgerStartedAt: ledger.startedAt, runtimeId: ledger.runtimeId };
   const here = (accountId?: string) => {
     const local = ledger.quarters(accountId ? { accountId } : {});
