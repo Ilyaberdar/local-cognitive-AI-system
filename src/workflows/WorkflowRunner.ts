@@ -22,7 +22,12 @@ import {
 
 const stopped = (run: WorkflowRun): boolean => ["done", "failed", "cancelled", "waiting", "blocked", "interrupted"].includes(run.status);
 
-export interface WorkflowReviewIdentity { approvalId?: string; waitingNodeRunId?: string; }
+export interface WorkflowReviewIdentity {
+  approvalId?: string;
+  waitingNodeRunId?: string;
+  /** Checked under the run's lock with what an approval would actually approve; throws to refuse. */
+  beforeApprove?: (waiting: Record<string, unknown>) => void;
+}
 
 export class WorkflowRunner {
   private static readonly steps = new Map<string, Promise<WorkflowRun>>();
@@ -274,6 +279,7 @@ export class WorkflowRunner {
       const nodeRuns = await this.runStore.listNodeRuns(runId);
       const waitingNodeRun = [...nodeRuns].reverse().find((item) => item.nodeId === node.id && item.status === "waiting");
       const waitingData = readRecord(waiting.data);
+      if (approved) identity.beforeApprove?.(waitingData);
       if (run.workspace) {
         const expectedId = permissionRequired ? waitingData.approvalId : waitingNodeRun?.id;
         const suppliedId = permissionRequired ? identity.approvalId : identity.waitingNodeRunId;

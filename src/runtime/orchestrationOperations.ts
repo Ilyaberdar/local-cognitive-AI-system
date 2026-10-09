@@ -375,16 +375,14 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "workflows.runs.review": (payload, context) => known(async () => {
       const input = parse(schemas.review, payload);
       return command(context, "workflows.runs.review", input, async () => {
-        const run = await requireRun(input.runId);
-        const reason = await runHostOnly(run);
+        const reason = await runHostOnly(await requireRun(input.runId));
         if (reason) throw unsupported(reason);
-        // A waiting external MCP call would run in the host's own applications: only the host
-        // approves it (a device may still reject it, which stops the step).
-        if (input.approved && (run.state as { nodeResults?: Record<string, { data?: { tool?: unknown } }> }).nodeResults?.[run.currentNodeId ?? ""]?.data?.tool === "mcp") {
-          throw unsupported(MCP_ON_HOST);
-        }
         return safeRun(await runtime().workflowRunner.review(input.runId, input.approved, input.comment ?? "", true,
-          { ...(input.approvalId ? { approvalId: input.approvalId } : {}), ...(input.waitingNodeRunId ? { waitingNodeRunId: input.waitingNodeRunId } : {}) }));
+          { ...(input.approvalId ? { approvalId: input.approvalId } : {}), ...(input.waitingNodeRunId ? { waitingNodeRunId: input.waitingNodeRunId } : {}),
+            // A waiting external MCP call would run in the host's own applications: only the host
+            // approves it (a device may still reject it, which stops the step). Checked under the
+            // run's lock, on the operation being approved.
+            beforeApprove: waiting => { if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST); } }));
       }, { target: input.runId, allowWhileDraining: true });
     }),
     "workflows.runs.resume": (payload, context) => known(async () => {
