@@ -43,6 +43,9 @@ export type TransitionGuard =
 
 export interface WorkflowDefinition {
   runDefaults?: WorkflowRunOptions;
+  /** Saved from a paired device: the host's tasks and schedules run it without the host's MCP
+   * tools, until the host saves it in its own editor. */
+  deviceOrigin?: true;
   id: string;
   name: string;
   version: number;

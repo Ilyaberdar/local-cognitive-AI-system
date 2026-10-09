@@ -476,7 +476,29 @@ test("what a device starts or makes runs without the host's MCP tools: its runs,
   const hostTask = await f.taskService.create({ title: "Host task", description: "", workflowId: "review-flow", priority: "normal" });
   const started = await f.call("tasks.run", { commandId: "cmd-run-mcp", taskId: hostTask.id });
   assert.equal((await f.workflowRunStore.getRun(started.runId))?.deviceOrigin, true);
-  // The host starting its own task: no mark.
+  // The host starting its own task of a workflow the device wrote: still marked (see the next test
+  // for a workflow the host saved itself).
   const own = await f.taskService.create({ title: "Own", description: "", workflowId: "review-flow", priority: "normal" });
-  assert.equal((await f.workflowRunner.startTask(own.id)).deviceOrigin, undefined);
+  assert.equal((await f.workflowRunner.startTask(own.id)).deviceOrigin, true);
+});
+
+test("a workflow a device saved runs without the host's MCP tools until the host saves it; a device cannot approve a host MCP call", async t => {
+  const f = await setup(t);
+  await f.call("workflows.save", { commandId: "cmd-save-dev", workflow: reviewWorkflow(), expectedUpdatedAt: null });
+  const saved = (await f.workflowStore.list()).find(item => item.id === "review-flow")!;
+  assert.equal(saved.deviceOrigin, true);
+  const hostTask = await f.taskService.create({ title: "Nightly", description: "", workflowId: "review-flow", priority: "normal" });
+  assert.equal((await f.workflowRunner.startTask(hostTask.id)).deviceOrigin, true, "the host's own task runs what the device wrote without MCP");
+  await f.workflowStore.update("review-flow", { ...saved, deviceOrigin: undefined } as never);
+  const other = await f.taskService.create({ title: "Later", description: "", workflowId: "review-flow", priority: "normal" });
+  assert.equal((await f.workflowRunner.startTask(other.id)).deviceOrigin, undefined, "saved by the host: its own again");
+
+  // A host-started run waiting on an external MCP call.
+  const run = await f.workflowRunner.startStandalone(reviewWorkflow(), {});
+  f.workflowRunner.runInBackground(run.id);
+  await until(() => f.workflowRunStore.getRun(run.id), current => current?.status === "waiting");
+  const waiting = (await f.workflowRunStore.getRun(run.id))!;
+  const nodeResults = { ...(waiting.state.nodeResults as object), [waiting.currentNodeId!]: { status: "needs_input", data: { tool: "mcp", approvalId: "a1" } } };
+  await f.workflowRunStore.updateRun(run.id, { state: { ...waiting.state, nodeResults } });
+  await assert.rejects(f.call("workflows.runs.review", { commandId: "cmd-review-mcp", runId: run.id, approved: true }), code("unsupported"));
 });
