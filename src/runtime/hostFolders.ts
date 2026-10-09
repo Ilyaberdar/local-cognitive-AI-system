@@ -21,6 +21,24 @@ export class FolderError extends Error {
 
 export const foldersFilePath = (dataRoot: string) => path.join(dataRoot, "folders.json");
 const inside = (child: string, parent: string) => child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
+/** Whether `child` is `parent` or lies inside it, by device and inode: a case-insensitive filesystem
+ * or a bind mount cannot hide it behind another spelling. */
+const containsByIdentity = (parent: string, child: string): boolean => {
+  let target: fs.Stats;
+  try { target = fs.statSync(parent); } catch { return false; }
+  for (let current = child; ; current = path.dirname(current)) {
+    try { const stat = fs.statSync(current); if (stat.dev === target.dev && stat.ino === target.ino) return true; } catch { /* Not there; go up. */ }
+    if (path.dirname(current) === current) return false;
+  }
+};
+/** What may never be shared: the filesystem root, the data directory (and folders holding it or
+ * inside it) and the folders of given files (the credential key). */
+const shareable = (real: string, dataRoot: string, protectedFiles: string[] = []): string | undefined => {
+  if (path.parse(real).root === real) return "The filesystem root cannot be shared.";
+  if (containsByIdentity(dataRoot, real) || containsByIdentity(real, dataRoot)) return "The server's data directory, or a folder holding it, cannot be shared.";
+  if (protectedFiles.some(file => containsByIdentity(real, path.dirname(file)))) return "A folder holding the server's credential key cannot be shared.";
+  return undefined;
+};
 
 const readAdminFolders = (dataRoot: string): AdminFolder[] => {
   let raw: string;
@@ -38,14 +56,14 @@ const writeAdminFolders = (dataRoot: string, folders: AdminFolder[]) => {
 };
 
 /** Admin side (`local-cognitive-server folders`): a folder devices may browse, and use for projects
- * and runs. Never the filesystem root, the data directory, a folder holding it, or one inside it. */
-export const addAdminFolder = (dataRoot: string, folder: string, options: { label?: string; allowCreate?: boolean } = {}): AdminFolder => {
+ * and runs. Never the filesystem root, the data directory, a folder holding it, one inside it, or
+ * the folder of a protected file (the credential key). */
+export const addAdminFolder = (dataRoot: string, folder: string, options: { label?: string; allowCreate?: boolean; protectedFiles?: string[] } = {}): AdminFolder => {
   let real: string;
   try { real = fs.realpathSync(path.resolve(folder)); } catch { throw new FolderError(`${folder} does not exist.`, "not_found"); }
   if (!fs.statSync(real).isDirectory()) throw new FolderError(`${folder} is not a folder.`, "invalid_folder");
-  if (path.parse(real).root === real) throw new FolderError("The filesystem root cannot be shared.", "invalid_folder");
-  const data = fs.realpathSync(dataRoot);
-  if (inside(real, data) || inside(data, real)) throw new FolderError("The server's data directory, or a folder holding it, cannot be shared.", "invalid_folder");
+  const refusal = shareable(real, fs.realpathSync(dataRoot), options.protectedFiles);
+  if (refusal) throw new FolderError(refusal, "invalid_folder");
   const folders = readAdminFolders(dataRoot);
   if (folders.some(item => item.path === real)) throw new FolderError(`${real} is already shared.`, "exists");
   const added: AdminFolder = { id: randomUUID(), path: real, ...(options.label ? { label: options.label.slice(0, 60) } : {}), ...(options.allowCreate ? { allowCreate: true } : {}) };
@@ -82,9 +100,23 @@ export class HostFolders {
       canCreate: Boolean(folder.allowCreate), path: folder.path }))];
   }
 
+  /** A root as it must still be: an admin folder at the place it was shared (not since replaced by a
+   * link elsewhere) and still shareable; the managed folder a real folder in the data directory. */
+  private realRoot(root: FolderRoot): string | undefined {
+    try {
+      if (root.kind === "managed") {
+        const stat = fs.lstatSync(root.path);
+        const expected = path.join(fs.realpathSync(this.dataRoot), MANAGED_ROOT_ID);
+        return stat.isDirectory() && !stat.isSymbolicLink() && fs.realpathSync(root.path) === expected ? expected : undefined;
+      }
+      const real = fs.realpathSync(root.path);
+      return real === root.path && fs.statSync(real).isDirectory() && !shareable(real, fs.realpathSync(this.dataRoot)) ? real : undefined;
+    } catch { return undefined; }
+  }
+
   /** A place inside a root: each segment one name (no separators, `.` or `..`), resolved through
-   * symlinks, and still inside the root. */
-  async resolve(rootId: string, segments: string[] = []): Promise<{ root: FolderRoot; real: string }> {
+   * symlinks, and still inside the root. A link leading out answers as a missing path does. */
+  async resolve(rootId: string, segments: string[] = []): Promise<{ root: FolderRoot; real: string; realRoot: string }> {
     const root = this.roots().find(item => item.rootId === rootId);
     if (!root) throw new FolderError("This folder is not shared by the server.", "not_found");
     if (segments.length > MAX_DEPTH || segments.join("/").length > MAX_PATH) throw new FolderError("The path is too long.", "invalid_path");
@@ -93,13 +125,12 @@ export class HostFolders {
         throw new FolderError("A path is a list of folder and file names.", "invalid_path");
       }
     }
-    let realRoot: string, real: string;
-    try { realRoot = await fsp.realpath(root.path); }
-    catch { throw new FolderError("This folder is not available on the server.", "not_found"); }
-    try { real = await fsp.realpath(path.join(realRoot, ...segments)); }
-    catch { throw new FolderError("This path does not exist on the server.", "not_found"); }
-    if (!inside(real, realRoot)) throw new FolderError("This path leaves the shared folder.", "forbidden");
-    return { root, real };
+    const realRoot = this.realRoot(root);
+    if (!realRoot) throw new FolderError("This folder is not available on the server.", "not_found");
+    let real: string;
+    try { real = await fsp.realpath(path.join(realRoot, ...segments)); } catch { real = ""; }
+    if (!real || !inside(real, realRoot)) throw new FolderError("This path does not exist on the server.", "not_found");
+    return { root, real, realRoot };
   }
 
   /** Where an absolute folder of the host lies among the current roots (for what a device is shown). */
@@ -107,8 +138,8 @@ export class HostFolders {
     let real: string;
     try { real = fs.realpathSync(absolute); } catch { return undefined; }
     for (const root of this.roots()) {
-      let realRoot: string;
-      try { realRoot = fs.realpathSync(root.path); } catch { continue; }
+      const realRoot = this.realRoot(root);
+      if (!realRoot) continue;
       if (inside(real, realRoot)) return { rootId: root.rootId, label: root.label, path: path.relative(realRoot, real).split(path.sep).filter(Boolean) };
     }
     return undefined;
@@ -117,12 +148,12 @@ export class HostFolders {
   /** A folder's entries: folders first, at most 500, hidden ones only when asked; an entry whose
    * link leads out of the shared folder is left out. */
   async browse(rootId: string, segments: string[] = [], { hidden = false } = {}): Promise<{ entries: FolderEntry[]; truncated: boolean }> {
-    const { real } = await this.resolve(rootId, segments);
-    const realRoot = await fsp.realpath(this.roots().find(item => item.rootId === rootId)!.path);
+    const { real, realRoot } = await this.resolve(rootId, segments);
     if (!(await fsp.stat(real)).isDirectory()) throw new FolderError("This is a file, not a folder.", "invalid_path");
     const names = (await fsp.readdir(real)).filter(name => hidden || !name.startsWith(".")).sort((a, b) => a.localeCompare(b));
     const entries: FolderEntry[] = [];
     for (const name of names) {
+      if (entries.length > MAX_ENTRIES) break;
       try {
         const target = await fsp.realpath(path.join(real, name));
         if (!inside(target, realRoot)) continue;
@@ -137,11 +168,19 @@ export class HostFolders {
 
   /** Makes one folder, where the root allows it. */
   async mkdir(rootId: string, segments: string[], name: string): Promise<string[]> {
-    const { root, real } = await this.resolve(rootId, segments);
+    const { root, real, realRoot } = await this.resolve(rootId, segments);
     if (!root.canCreate) throw new FolderError("New folders cannot be made here.", "forbidden");
     await this.resolve(rootId, [...segments, name]).then(() => { throw new FolderError("A folder with this name exists.", "exists"); },
       error => { if (!(error instanceof FolderError) || error.code !== "not_found") throw error; });
-    await fsp.mkdir(path.join(real, name), { mode: 0o755 });
+    const made = path.join(real, name);
+    try { await fsp.mkdir(made, { mode: 0o755 }); }
+    catch (error) { throw new FolderError((error as NodeJS.ErrnoException).code === "EEXIST" ? "Something with this name exists." : "The folder could not be made.", "exists"); }
+    // A parent replaced by a link meanwhile would put it elsewhere: then it is removed again.
+    const placed = await fsp.realpath(made).catch(() => "");
+    if (!placed || !inside(placed, realRoot)) {
+      await fsp.rmdir(made).catch(() => undefined);
+      throw new FolderError("This path does not exist on the server.", "not_found");
+    }
     return [...segments, name];
   }
 }

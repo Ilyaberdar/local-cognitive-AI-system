@@ -48,23 +48,105 @@ export function createProjectsUi(options) {
   </div>`;
   };
 
-  // A server's chats: no projects; deleting where the server offers it; a spinner where it is answering.
+  // A server's chats, grouped by its projects where it offers them; deleting where it offers it; a
+  // spinner where it is answering. A project set up on the server shows by name, with no new chat.
   function remoteSidebar(remote) {
     const state = options.getState();
-    const rows = remote.sessions.map(session => {
+    const host = escape(remote.hostName);
+    const row = session => {
       const running = session.running || state.chatRequests?.has(session.id);
       return `<div class="session-row ${session.id === state.activeSessionId ? "active" : ""} ${running ? "is-running" : ""}">
       <button class="session-item ${session.id === state.activeSessionId ? "active" : ""}" data-action="open-session" data-session-id="${escape(session.id)}" title="${escape(session.title)}${session.updatedAt ? ` · ${escape(new Date(session.updatedAt).toLocaleString())}` : ""}" ${session.id === state.activeSessionId ? 'aria-current="page"' : ""}><span class="session-title">${escape(session.title)}</span></button>
       ${running ? `<span class="session-delete session-working" role="status" aria-label="${escape(session.title)} is working" title="Answering on the server"><span class="button-spinner" aria-hidden="true"></span></span>`
-        : remote.canDelete ? `<button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${escape(session.id)}" aria-label="Delete ${escape(session.title)} on ${escape(remote.hostName)}" title="Delete chat on ${escape(remote.hostName)}">${icon("close")}</button>` : ""}
+        : remote.canDelete ? `<button class="session-delete" type="button" data-action="delete-session-quick" data-session-id="${escape(session.id)}" aria-label="Delete ${escape(session.title)} on ${host}" title="Delete chat on ${host}">${icon("close")}</button>` : ""}
     </div>`;
-    }).join("");
-    return `<div class="sidebar-conversations" data-sidebar-scroll="conversations">
-      <section class="sidebar-section sidebar-chats" aria-label="Chats on ${escape(remote.hostName)}">
-        <div class="sidebar-header"><span class="sidebar-section-label">${icon("remote")}<span>Chats on ${escape(remote.hostName)}</span></span><button class="icon-button" type="button" data-action="new-session" data-project-id="" aria-label="New chat on ${escape(remote.hostName)}" title="New chat on ${escape(remote.hostName)}">${icon("plus")}</button></div>
-        <div class="session-list">${rows || `<p class="sidebar-empty">${remote.loaded ? "No chats on this server yet" : "Loading…"}</p>`}</div>
+    };
+    const { recent, byProject } = groupProjectSessions(remote.sessions);
+    const chats = remote.projects ? recent : remote.sessions;
+    const projectGroup = project => {
+      const sessions = byProject.get(project.id) ?? [];
+      const isOpen = !collapsed.has(project.id);
+      const where = project.folder ? [remote.hostName, project.folder.rootLabel, ...project.folder.path].join(" › ") : `Set up on ${remote.hostName}`;
+      return `<div class="project-group ${project.hostOnly ? "is-host-only" : ""}">
+        <div class="project-row">
+          <button class="project-folder" type="button" data-action="toggle-project" data-project-id="${escape(project.id)}" data-project-color="${folderColor(project)}" aria-label="${isOpen ? "Collapse" : "Expand"} ${escape(project.name)}" aria-expanded="${isOpen}">${icon("folder")}</button>
+          <span class="project-title" title="${escape(where)}">${escape(project.name)}</span>
+          <div class="project-actions">${project.hostOnly ? "" : `<button class="icon-button" type="button" data-action="new-session" data-project-id="${escape(project.id)}" aria-label="New chat in ${escape(project.name)}" title="New chat">${icon("plus")}</button>`}<button class="icon-button" type="button" data-action="server-project-settings" data-project-id="${escape(project.id)}" aria-label="Settings of ${escape(project.name)}" title="Project settings">${icon("settings")}</button></div>
+        </div>
+        ${isOpen ? `<div class="project-chats">${sessions.map(row).join("")}${!sessions.length && !project.hostOnly ? `<button class="project-empty" type="button" data-action="new-session" data-project-id="${escape(project.id)}">New chat in this project</button>` : ""}</div>` : ""}
+      </div>`;
+    };
+    const projects = remote.projects ? `<section class="sidebar-section sidebar-projects" aria-label="Projects on ${host}">
+        <div class="sidebar-header">${sectionToggle("projects", `Projects on ${host}`)}<button class="icon-button" type="button" data-action="new-server-project" aria-label="Add project on ${host}" title="Add project on ${host}">${icon("plus")}</button></div>
+        <div id="sidebar-projects-content" class="project-list" ${collapsedSections.has("projects") ? "hidden" : ""}>${remote.projects.filter(project => !project.archived).map(projectGroup).join("")
+          || '<button class="project-empty" type="button" data-action="new-server-project">Add a project folder</button>'}${remote.projects.some(project => project.archived) ? '<button class="project-show-more" type="button" data-action="archived-server-projects">Archived projects</button>' : ""}</div>
+      </section>` : "";
+    return `<div class="sidebar-conversations" data-sidebar-scroll="conversations">${projects}
+      <section class="sidebar-section sidebar-chats" aria-label="Chats on ${host}">
+        <div class="sidebar-header"><span class="sidebar-section-label">${icon("remote")}<span>Chats on ${host}</span></span><button class="icon-button" type="button" data-action="new-session" data-project-id="" aria-label="New chat on ${host}" title="New chat on ${host}">${icon("plus")}</button></div>
+        <div class="session-list">${chats.map(row).join("") || `<p class="sidebar-empty">${remote.loaded ? "No chats on this server yet" : "Loading…"}</p>`}</div>
       </section>
     </div>`;
+  }
+
+  /** A server's project: made in a folder chosen among its shared folders; renamed, recoloured or
+   * archived later. A project set up on the server can only be archived from here. */
+  function serverProjectDialog(project) {
+    const server = options.serverProjects, remote = options.remoteSessions?.();
+    if (!server || !remote) return;
+    const host = remote.hostName;
+    let folder = null;
+    const fixed = Boolean(project?.hostOnly);
+    const dialog = dialogShell(project ? "Project settings" : `New project on ${host}`, `<form class="project-form">
+      <label class="field">Name<input name="name" value="${escape(project?.name)}" placeholder="My project" maxlength="120" required ${fixed ? "disabled" : "autofocus"} /></label>
+      <div class="field">Folder<div class="project-directory-input"><output data-server-folder>${escape(project ? (project.folder ? [host, project.folder.rootLabel, ...project.folder.path].join(" › ") : `Set up on ${host}`) : `Choose a folder on ${host}`)}</output>${project ? "" : '<button class="ghost-button" type="button" data-server-folder-browse>Browse</button>'}</div></div>
+      <p class="subtle">${escape(fixed ? `This project's folder was chosen on ${host}, so it is changed there.` : `Chats in this project work in this folder on ${host}.`)}</p>
+      <fieldset class="project-color-picker" ${fixed ? "disabled" : ""}><legend>Folder color</legend><div class="project-color-options">${folderColors.map(([value, label]) => `<label class="project-color-option" title="${label}"><input type="radio" name="color" value="${value}" aria-label="${label}" ${folderColor(project) === value ? "checked" : ""} /><span data-project-color="${value}"></span></label>`).join("")}</div></fieldset>
+      <p class="project-form-error" role="alert" hidden></p>
+      <div class="project-dialog-footer">${project ? '<button class="ghost-button" type="button" data-project-archive>Archive project</button>' : "<span></span>"}${fixed ? "" : `<button class="primary-button" type="submit">${project ? "Save changes" : "Create project"}</button>`}</div>
+    </form>`);
+    const form = dialog.querySelector("form");
+    const showError = error => { const target = dialog.querySelector("[role=alert]"); target.hidden = false; target.textContent = error.message || String(error); };
+    const submit = async action => {
+      if (form.dataset.busy) return;
+      form.dataset.busy = "true";
+      form.querySelectorAll("button").forEach(button => { button.disabled = true; });
+      try { await action(); dialog.close(); } catch (error) { showError(error); }
+      finally { delete form.dataset.busy; form.querySelectorAll("button").forEach(button => { button.disabled = false; }); }
+    };
+    dialog.querySelector("[data-server-folder-browse]")?.addEventListener("click", async () => {
+      const chosen = await server.chooseFolder();
+      if (!chosen) return;
+      folder = chosen;
+      dialog.querySelector("[data-server-folder]").textContent = [host, chosen.rootLabel, ...chosen.path].join(" › ");
+      if (!form.elements.name.value.trim()) form.elements.name.value = chosen.path.at(-1) || chosen.rootLabel;
+    });
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const name = form.elements.name.value.trim(), color = form.elements.color?.value || null;
+      if (!name) return;
+      if (!project && !folder) { showError(new Error(`Choose a folder on ${host}.`)); return; }
+      void submit(async () => {
+        const saved = project ? await server.update(project.id, { name, color })
+          : await server.create({ commandId: crypto.randomUUID(), name, folder: { rootId: folder.rootId, path: folder.path }, ...(color ? { color } : {}) });
+        setSectionExpanded("projects", true); collapsed.delete(saved.id);
+        await options.refresh(); options.render();
+      });
+    });
+    dialog.querySelector("[data-project-archive]")?.addEventListener("click", () => void submit(async () => {
+      await server.update(project.id, { archived: true }); await options.refresh(); options.render();
+    }));
+  }
+
+  function serverArchivedDialog() {
+    const server = options.serverProjects, projects = (options.remoteSessions?.()?.projects ?? []).filter(project => project.archived);
+    if (!server) return;
+    const dialog = dialogShell("Archived projects", `<div class="archived-project-list">${projects.map(project => `<div><span>${escape(project.name)}</span>${project.hostOnly ? "" : `<button class="ghost-button" data-restore-project="${escape(project.id)}">Restore</button>`}</div>`).join("")}</div><p class="project-form-error" role="alert" hidden></p>`);
+    dialog.querySelectorAll("[data-restore-project]").forEach(button => button.addEventListener("click", async () => {
+      button.disabled = true;
+      try { await server.update(button.dataset.restoreProject, { archived: false }); await options.refresh(); setSectionExpanded("projects", true); options.render(); dialog.close(); }
+      catch (error) { const target = dialog.querySelector("[role=alert]"); target.hidden = false; target.textContent = error.message; button.disabled = false; }
+    }));
   }
 
   function sidebar() {
@@ -247,6 +329,10 @@ export function createProjectsUi(options) {
       document.querySelectorAll(".project-menu:popover-open").forEach(menu => menu.hidePopover());
     }, { passive: true });
     document.querySelector("[data-action='archived-projects']")?.addEventListener("click", archivedDialog);
+    document.querySelectorAll("[data-action='new-server-project']").forEach(button => button.addEventListener("click", () => serverProjectDialog()));
+    document.querySelectorAll("[data-action='server-project-settings']").forEach(button => button.addEventListener("click", () =>
+      serverProjectDialog((options.remoteSessions?.()?.projects ?? []).find(project => project.id === button.dataset.projectId))));
+    document.querySelector("[data-action='archived-server-projects']")?.addEventListener("click", serverArchivedDialog);
     document.querySelectorAll("[data-action='open-project']").forEach(button => button.addEventListener("click", () => { collapsed.delete(button.dataset.projectId); void options.selectProject(button.dataset.projectId); }));
     document.querySelectorAll("[data-action='toggle-project']").forEach(button => button.addEventListener("click", () => { const id = button.dataset.projectId; if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id); options.render(); }));
     document.querySelectorAll("[data-action='more-project-chats']").forEach(button => button.addEventListener("click", () => { const id = button.dataset.projectId; if (expandedLists.has(id)) expandedLists.delete(id); else expandedLists.add(id); options.render(); }));

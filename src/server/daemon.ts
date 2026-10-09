@@ -17,6 +17,7 @@ import { createChatOperations, createChatScrubber, requireRemoteSession } from "
 import { UploadStore } from "../runtime/uploadStore";
 import { createFolderOperations } from "../runtime/folderOperations";
 import { HostFolders } from "../runtime/hostFolders";
+import { createProjectAccess, createProjectOperations } from "../runtime/projectOperations";
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
@@ -75,12 +76,14 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   // The folders devices may browse and use: the server's own "Projects" and those its admin shared.
   const folders = new HostFolders(path.dirname(config.appDataDir));
   folders.ensureManaged();
+  // A project a device may use lies in one of those folders, checked at every use.
+  const projects = createProjectAccess({ runtimeManager: backend.runtimeManager, folders });
   // Attachments devices send for their next turn; expired ones are dropped even when none arrive.
   const uploads = new UploadStore();
   setInterval(() => uploads.sweep(), 60 * 60 * 1000).unref();
   const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
     operations: {
-      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads,
+      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
       ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId),
         sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
@@ -88,7 +91,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
       ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),
-      ...createFolderOperations({ folders })
+      ...createFolderOperations({ folders }),
+      ...createProjectOperations({ runtimeManager: backend.runtimeManager, folders, ledger: host.ledger,
+        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" })
     },
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();

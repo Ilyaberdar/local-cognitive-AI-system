@@ -164,4 +164,28 @@ test("a server chat's attachment arrives in chunks across a dropped connection a
   assert.ok(fs.statSync(path.join(server.root, "projects", "site")).isDirectory());
   assert.equal(server.run("folders", "remove", roots[1]!.rootId).status, 0);
   assert.equal(await failure(runtime.request("fs.browse", { rootId: roots[1]!.rootId })), "not_found", "unshared at once");
+
+  // Projects: one made from the device in the server's Projects folder, and one the server set up elsewhere.
+  const project = await runtime.send<{ id: string; folder: { path: string[] } }>("projects.create", { name: "Site", folder: { rootId: "projects", path: ["site"] } });
+  assert.deepEqual(project.folder.path, ["site"]);
+  const inProject = await runtime.request<{ id: string; projectId: string }>("sessions.create", { title: "New chat", projectId: project.id });
+  assert.equal(inProject.projectId, project.id);
+  updates.length = 0;
+  runtime.subscribe((await runtime.request<Snapshot>("sessions.messages.list", { sessionId: inProject.id })).cursor);
+  model.state.answer = `I will work in ${path.join(server.root, "projects", "site")}/index.html.`;
+  await runtime.send("chat.runs.start", { sessionId: inProject.id, input: "Make a page" });
+  await until(() => updates.flatMap(update => "events" in update ? update.events.map(event => event.type) : []), types => types.includes("run.completed") || types.includes("run.failed"), 60_000);
+  // A project chat runs the agent loop (which wants actions, not this stub's prose); what matters
+  // here is that it ran in the project and nothing it sent names the project's folder.
+  const received = JSON.stringify([await runtime.request<Snapshot>("sessions.messages.list", { sessionId: inProject.id }), updates]);
+  assert.equal(received.includes(server.root), false, "the project's folder is not named");
+  const elsewhere = path.join(path.dirname(server.root), "elsewhere");
+  fs.mkdirSync(elsewhere);
+  const port = (JSON.parse(server.run("status", "--json").stdout) as { http: { port: number } }).http.port;
+  const hostProject = await (await fetch(`http://127.0.0.1:${port}/projects`, { method: "POST", headers: { "content-type": "application/json", "x-local-cognitive": "1" },
+    body: JSON.stringify({ name: "Host project", rootPath: elsewhere }) })).json() as { id: string };
+  const listed = await runtime.request<Array<{ id: string; hostOnly?: boolean; folder?: unknown }>>("projects.list", {});
+  assert.deepEqual(listed.find(item => item.id === hostProject.id), { ...listed.find(item => item.id === hostProject.id), hostOnly: true });
+  assert.equal(JSON.stringify(listed).includes(elsewhere), false, "no folder of the host");
+  assert.equal(await failure(runtime.request("sessions.create", { title: "New chat", projectId: hostProject.id })), "unsupported");
 });

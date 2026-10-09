@@ -10,6 +10,7 @@ import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuid
 import { createServerModels } from "./server-models.js";
 import { createServerOrchestration } from "./server-orchestration.js";
 import { createServerSettings } from "./server-settings.js";
+import { chooseServerFolder } from "./folder-browser.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
@@ -331,11 +332,18 @@ const projectsUi = createProjectsUi({
   getState: () => state,
   // While a server is the chat target, the sidebar lists that server's chats only.
   remoteSessions: () => chatTarget?.isRemote() ? { hostName: chatTarget.hostName(), sessions: chatTarget.sessionList(), loaded: chatTarget.sessionsLoaded(),
-    canDelete: chatTarget.supports("sessions.delete") } : null,
+    canDelete: chatTarget.supports("sessions.delete"), projects: chatTarget.supports("projects.list") ? chatTarget.projectList() : undefined } : null,
+  // The selected server's projects (R5-4g): made in a folder chosen among the server's shared folders.
+  serverProjects: {
+    create: (input) => chatTarget.createProject(input),
+    update: (projectId, patch) => chatTarget.updateProject(projectId, patch),
+    chooseFolder: () => chooseServerFolder({ call: chatTarget.call, hostName: chatTarget.hostName(), title: "Choose the project's folder" })
+  },
   createProject: api.createProject,
   updateProject: api.updateProject,
   notify: message => { pushToast(message, "danger"); render(); },
-  refresh: refreshBootstrap,
+  // A server's projects and chats come from the server.
+  refresh: () => (chatTarget?.isRemote() ? chatTarget.refreshSessions() : refreshBootstrap()),
   render,
   selectProject: projectId => runAction(async () => {
     await persistActiveSessionSetup({ refreshBootstrap: false });
@@ -615,7 +623,7 @@ async function ensureSession() {
 }
 
 async function createChatInProject(projectId) {
-  if (chatTarget?.isRemote()) return createRemoteChat();
+  if (chatTarget?.isRemote()) return createRemoteChat(projectId);
   const snapshot = readSessionSetupSnapshot();
   const currentSettings = snapshot ? sessionSettingsToPatch(snapshot.settings) : null;
   await persistActiveSessionSetup({ refreshBootstrap: false });
@@ -6681,13 +6689,19 @@ async function loadRemoteSession() {
   chatTarget.subscribe(key, loaded.cursor);
 }
 
-async function createRemoteChat() {
+async function createRemoteChat(projectId) {
   if (chatTarget.blocksSend()) throw new Error(`${chatTarget.hostName()} is not connected.`);
-  const session = await chatTarget.createSession("New chat");
+  // A new chat keeps the agents, model and access of the chat on screen, as on this computer.
+  const previous = isServerChat(state.activeSessionId) && chatTarget.setup(state.activeSessionId).agents ? readSessionSetupSnapshot()?.settings : null;
+  const session = await chatTarget.createSession("New chat", projectId || undefined);
   await chatTarget.refreshSessions();
   state.activeProjectId = null;
   state.activeSessionId = session.id;
   await loadRemoteSession();
+  if (previous && state.activeSessionId === session.id && chatTarget.setup(session.id).agents) {
+    const { codeAgents, hypothesisAgents, debate, defaultTarget, defaultAccessMode } = previous;
+    state.sessionSettings = await chatTarget.updateSettings(session.id, { codeAgents, hypothesisAgents, debate, defaultTarget, defaultAccessMode }).catch(() => state.sessionSettings);
+  }
   state.notice = "";
   state.route = "chat";
   window.location.hash = "/chat";

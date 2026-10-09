@@ -23,7 +23,8 @@ async function setup(t: TestContext) {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new SessionSettingsStore({ baseDir: root }, { providerId: "llamacpp", model: "qwen" }, { llamacpp: "qwen", openai: "gpt-4o-mini" });
   const forgotten: string[] = [];
-  const runtime = { sessionSettingsStore: store, memoryService: { deleteSession: async (id: string) => { forgotten.push(`memory ${id}`); } }, providerDescriptors: ["llamacpp", "ollama", "openai", "anthropic"].map(id => ({ id, name: id, configured: true, defaultModel: "" })) };
+  const runtime = { sessionSettingsStore: store, sessionIndexStore: { get: async (id: string) => ({ id }) }, projectStore: { get: async () => null },
+    memoryService: { deleteSession: async (id: string) => { forgotten.push(`memory ${id}`); } }, providerDescriptors: ["llamacpp", "ollama", "openai", "anthropic"].map(id => ({ id, name: id, configured: true, defaultModel: "" })) };
   const sessions: Record<string, { id: string; title?: string; updatedAt?: string; projectId?: string }> = { chat: { id: "chat" }, full: { id: "full" }, busy: { id: "busy" } };
   const calls: string[] = [];
   const runService = {
@@ -201,10 +202,16 @@ test("a device reads a chat's files by the paths it was shown: in the chat's own
   await fs.writeFile(path.join(output, "image.bin"), Buffer.from([1, 0, 2, 3]));
   const big = Buffer.alloc(600 * 1024, 7);
   await fs.writeFile(path.join(output, "big.bin"), big);
-  const written = ["report.md", "image.bin", "big.bin"].map(name => ({ tool: "file.write", ok: true, metadata: { filePath: path.join(output, name) } }));
+  const written: unknown[] = ["report.md", "image.bin", "big.bin", "swapped.md"].map(name => ({ tool: "file.write", ok: true, metadata: { filePath: path.join(output, name) } }));
+  // A delete names a path, but grants nothing: a file made there later is not this chat's.
+  written.push({ tool: "file", ok: true, metadata: { path: path.join(output, "deleted.md") } });
+  await fs.writeFile(path.join(output, "deleted.md"), "made later by someone else");
+  // A file the chat wrote, replaced since by a link to a file outside.
+  await fs.symlink(path.join(elsewhere, "secret.txt"), path.join(output, "swapped.md"));
   const store = new SessionSettingsStore({ baseDir: path.join(root, "settings") }, { providerId: "openai" }, {});
   await store.update("full", { defaultAccessMode: "full" });
   const runtime = { sessionSettingsStore: store, providerDescriptors: [], config: { filesystem: { allowedDirectories: [shared] } },
+    sessionIndexStore: { get: async (id: string) => ({ id }) }, projectStore: { get: async () => null },
     memoryService: { recent: async ({ actor }: any) => actor.sessionId === "chat" ? [{ metadata: { tools: written } }] : [] } };
   const ops = createChatOperations({
     runtimeManager: { getRuntime: () => runtime, getSettings: async () => ({ memory: { localProfileId: "me" }, filesystem: { outputDir: output, allowedDirectories: [shared] } }) } as unknown as RuntimeManager,
@@ -217,7 +224,7 @@ test("a device reads a chat's files by the paths it was shown: in the chat's own
   assert.deepEqual({ ...report, version: typeof report.version }, { path: "<output>/report.md", name: "report.md", sizeBytes: 9, content: "# Report\n", version: "string" });
   // Neither the output folder plain chats share nor a folder file tools may use is readable as a
   // whole; another chat's file, a missing one and one outside alike get one answer.
-  for (const [sessionId, ref] of [["chat", "<output>/other.md"], ["other", "<output>/report.md"], ["chat", "<folder>/notes.txt"], ["chat", `${elsewhere}/secret.txt`], ["chat", "<output>/../elsewhere/secret.txt"], ["chat", "report.md"],
+  for (const [sessionId, ref] of [["chat", "<output>/deleted.md"], ["chat", "<output>/swapped.md"], ["chat", "<output>/other.md"], ["other", "<output>/report.md"], ["chat", "<folder>/notes.txt"], ["chat", `${elsewhere}/secret.txt`], ["chat", "<output>/../elsewhere/secret.txt"], ["chat", "report.md"],
     ["chat", "<output>/gone.md"], ["chat", `${elsewhere}/missing.txt`], ["chat", "/etc/hosts"]]) {
     await assert.rejects(call("files.read", { sessionId, path: ref, as: "text" }), code("file_unavailable"), `${sessionId} ${ref}`);
   }
@@ -231,4 +238,46 @@ test("a device reads a chat's files by the paths it was shown: in the chat's own
   assert.deepEqual([first.eof, second.eof], [false, true]);
   assert.ok(Buffer.concat([Buffer.from(first.data, "base64"), Buffer.from(second.data, "base64")]).equals(big));
   assert.equal(JSON.stringify([report, stat, first]).includes(root), false, "no folder of the server in an answer");
+});
+
+test("project chats: created and used from a device only in a project it may use; readable and deletable always", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "chat-projects-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new SessionSettingsStore({ baseDir: root }, { providerId: "openai" }, {});
+  const sessions: Record<string, { id: string; title: string; updatedAt: string; projectId?: string }> = {
+    "in-site": { id: "in-site", title: "Site chat", updatedAt: "t", projectId: "site" }, "in-host": { id: "in-host", title: "Host chat", updatedAt: "t", projectId: "host" } };
+  const started: string[] = [];
+  const ops = createChatOperations({
+    runtimeManager: { getRuntime: () => ({ sessionSettingsStore: store, sessionIndexStore: { get: async (id: string) => sessions[id] }, projectStore: { get: async () => null } }),
+      getSettings: async () => ({ ui: {}, filesystem: {} }) } as unknown as RuntimeManager,
+    sessionIndexStore: { get: async (id: string) => sessions[id], list: async () => Object.values(sessions),
+      create: async (title: string, _channel: string, projectId?: string) => (sessions.created = { id: "created", title, updatedAt: "t", ...(projectId ? { projectId } : {}) }) } as unknown as SessionIndexStore,
+    runService: { start: async (_scope: string, request: { sessionId: string }, admit?: () => Promise<unknown>) => { await admit?.(); started.push(request.sessionId); return { status: "accepted" }; },
+      activeRun: () => undefined, unfinishedTurns: () => [] } as unknown as RunService,
+    journal: { head: () => ({ epoch: "e", head: 0 }) } as unknown as EventJournal, scopeOf: () => "device",
+    projects: { usable: async (projectId: string) => projectId === "site" ? { project: {} as never } : { project: {} as never, reason: "This project's folder was chosen on the server." } }
+  });
+  const call = <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
+  assert.deepEqual((await call("sessions.list")).map((item: any) => [item.id, item.projectId]), [["in-site", "site"], ["in-host", "host"]]);
+  assert.equal((await call("sessions.create", { title: "New chat", projectId: "site" })).projectId, "site");
+  await assert.rejects(call("sessions.create", { title: "New chat", projectId: "host" }), code("unsupported"));
+  await call("chat.runs.start", { commandId: "command-1", sessionId: "in-site", input: "hi" });
+  await assert.rejects(call("chat.runs.start", { commandId: "command-2", sessionId: "in-host", input: "hi" }), code("unsupported"));
+  await assert.rejects(call("sessions.settings.update", { sessionId: "in-host", patch: { language: "en" } }), code("unsupported"));
+  assert.match((await call("sessions.setup.get", { sessionId: "in-host" })).access.hostOnly, /chosen on the server/);
+  assert.ok(await call("sessions.settings.get", { sessionId: "in-host" }), "readable");
+  assert.deepEqual(started, ["in-site"]);
+});
+
+test("a project chat's folder is <workspace> in what a device receives", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "chat-workspace-")));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const project = path.join(root, "site");
+  await fs.mkdir(project);
+  const runtimeManager = { getSettings: async () => ({ filesystem: {} }), getRuntime: () => ({
+    sessionIndexStore: { get: async (id: string) => ({ id, projectId: id === "in-project" ? "p1" : undefined }) },
+    projectStore: { get: async (id: string) => id === "p1" ? { id, rootPath: project } : null } }) } as unknown as RuntimeManager;
+  const scrubbers = createChatScrubber({ runtimeManager, hostDirectories: [path.join(root, "data")] });
+  assert.equal((await scrubbers("in-project"))(`Wrote ${project}/index.html`), "Wrote <workspace>/index.html");
+  assert.equal((await scrubbers("plain"))(`Wrote ${project}/index.html`), `Wrote ${project}/index.html`, "only a project chat's own folder");
 });

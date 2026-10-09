@@ -5,20 +5,28 @@ import { bootApp, flush, SESSION_ID, sessionSettings, type Harness } from "./fix
 
 const HOST = "6f1c2c3e-58a4-4c55-9a0e-3c7f5b1d2e90";
 const RUN = "0b6a3f0e-7f1d-4b9e-8a52-1f2c3d4e5f60";
+const copyJson = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 40)); await flush(10); };
 
 /** A paired server behind the desktop bridge, with one chat; `agents`: a server that offers agent setup (R5-4). */
-function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = false, files = false } = {}) {
+function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = false, files = false, projects = false } = {}) {
   let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0",
-    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : []), ...(uploads ? ["uploads.begin"] : []), ...(files ? ["files.read", "files.stat"] : [])] };
+    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : []), ...(uploads ? ["uploads.begin"] : []), ...(files ? ["files.read", "files.stat"] : []), ...(projects ? ["projects.list", "fs.roots"] : [])] };
+  const projectList: any[] = projects ? [{ id: "p1", name: "Site", folder: { rootId: "projects", rootLabel: "Projects", path: ["site"] }, archived: false },
+    { id: "p2", name: '<img src=x id=pwn>', hostOnly: true, archived: false }] : [];
+  const sent: unknown[][] = [];
   const REPORT = "# Report\nShip on Friday.\n";
   const received: Record<string, { meta: any; chunks: string[] }> = {};
-  const chats = [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }, ...(manage ? [{ id: "srv-3", title: "Older chat", updatedAt: "2026-10-07T10:00:00.000Z" }] : [])];
+  const chats: any[] = [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }, ...(manage ? [{ id: "srv-3", title: "Older chat", updatedAt: "2026-10-07T10:00:00.000Z" }] : []),
+    ...(projects ? [{ id: "srv-p", title: "Project chat", updatedAt: "2026-10-08T09:00:00.000Z", projectId: "p1" }] : [])];
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
   const server = { messages: [] as unknown[], settings: { ...sessionSettings(), defaultTarget: { providerId: "llamacpp", model: "qwen" } }, head: 0 };
   const ok = (value: unknown) => ({ ok: true, value });
   const handlers: Record<string, (payload: any) => unknown> = {
     "sessions.list": () => chats,
+    "projects.list": () => projectList,
+    "fs.roots": () => [{ rootId: "projects", label: "Projects", kind: "managed", canCreate: true }],
+    "fs.browse": payload => ({ rootId: payload.rootId, path: payload.path ?? [], entries: (payload.path ?? []).length ? [] : [{ name: "site2", kind: "dir" }, { name: "notes.md", kind: "file" }], truncated: false }),
     "files.read": payload => payload.as === "text" ? { path: payload.path, name: "report.md", sizeBytes: REPORT.length, content: REPORT, version: "v1" }
       : { path: payload.path, name: "report.md", sizeBytes: REPORT.length, offset: payload.offset ?? 0, data: Buffer.from(REPORT).toString("base64"), eof: true },
     "files.stat": payload => ({ path: payload.path, name: "report.md", sizeBytes: REPORT.length, modifiedAt: "t", sha256: createHash("sha256").update(REPORT).digest("hex") }),
@@ -27,7 +35,7 @@ function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = f
     "uploads.commit": payload => { const { meta } = received[payload.uploadId]!; return { id: payload.uploadId, name: meta.name, mimeType: meta.mimeType, sizeBytes: meta.sizeBytes, kind: meta.kind }; },
     "sessions.rename": payload => Object.assign(chats.find(chat => chat.id === payload.sessionId)!, { title: payload.title }),
     "sessions.delete": payload => { chats.splice(chats.findIndex(chat => chat.id === payload.sessionId), 1); return { deleted: true }; },
-    "sessions.create": () => ({ id: "srv-2", title: "New chat" }),
+    "sessions.create": payload => { const chat = { id: "srv-2", title: "New chat", ...(payload?.projectId ? { projectId: payload.projectId } : {}) }; chats.push(chat); return chat; },
     "sessions.messages.list": () => ({ messages: server.messages, cursor: { streamId: "session:srv-1", epoch: "e1", after: server.head } }),
     "sessions.settings.get": () => server.settings,
     "sessions.setup.get": () => ({ settings: server.settings, access: { modes: ["ask", "default"], ...(hostOnly ? { hostOnly } : {}) }, limits: { subagents: 4, advisors: 5 } }),
@@ -44,12 +52,16 @@ function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = f
     onChange: (listener: (value: unknown) => void) => { statusListeners.push(listener); },
     runtime: {
       request: async (op: string, payload: unknown) => ok(handlers[op]!(payload)),
-      send: async (_op: string, payload: { input: string }) => ok({ commandId: "c1", status: "accepted", runId: RUN, userMessageId: "u1", assistantMessageId: "a1", input: payload.input }),
+      send: async (op: string, payload: any) => {
+        sent.push([op, payload]);
+        if (op === "projects.create") { const project = { id: "p3", name: payload.name, folder: { rootId: payload.folder.rootId, rootLabel: "Projects", path: payload.folder.path }, archived: false }; projectList.push(project); return ok(project); }
+        return ok({ commandId: "c1", status: "accepted", runId: RUN, userMessageId: "u1", assistantMessageId: "a1", input: payload.input });
+      },
       subscribe: async () => ok(undefined), unsubscribe: async () => ok(undefined),
       onEvent: (listener: (value: unknown) => void) => { eventListeners.push(listener); }
     }
   };
-  return { bridge, server, received, setStatus(next: Record<string, unknown>) { status = { ...status, ...next }; statusListeners.forEach(listener => listener(status)); },
+  return { bridge, server, received, sent, setStatus(next: Record<string, unknown>) { status = { ...status, ...next }; statusListeners.forEach(listener => listener(status)); },
     emit(events: unknown[]) { eventListeners.forEach(listener => listener({ streamId: "session:srv-1", events })); },
     update(update: unknown) { eventListeners.forEach(listener => listener(update)); },
     deleteChat(id: string) { chats.splice(chats.findIndex(chat => chat.id === id), 1); } };
@@ -376,4 +388,43 @@ test("a server chat's file opens in Review from the server, and Save a copy down
   assert.deepEqual(calls.map(([op, payload]: [string, any]) => [op, payload.path, payload.as]), [["files.read", "<output>/report.md", "text"], ["files.stat", "<output>/report.md", undefined],
     ["files.read", "<output>/report.md", "base64"]]);
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => entry.includes("/workspace/")), [], "this computer's files are not asked");
+});
+
+test("a server's projects group its chats; a chat and a project are made there, in a folder chosen among its shared folders", async t => {
+  const paired = fakeServer({ projects: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const localBefore = app.requests.length;
+  const sidebar = () => app.document.querySelector(".sidebar-projects");
+  assert.match(sidebar().textContent, /Projects on fedora[\s\S]*Site[\s\S]*Project chat/);
+  assert.equal(app.document.querySelector("#pwn"), null, "a project's name is text");
+  assert.equal(app.document.querySelectorAll(".sidebar-projects [data-action='new-session'][data-project-id='p2']").length, 0, "no new chat in a project set up on the server");
+  assert.equal(app.document.querySelector(".sidebar-projects .project-title[title]").getAttribute("title"), "fedora › Projects › site");
+  assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /Project chat/, "a project's chats are under the project");
+
+  app.document.querySelector(".sidebar-projects [data-action='new-session'][data-project-id='p1']").click();
+  await settle();
+  assert.deepEqual(ops(app, "request").filter(([op]: [string]) => op === "sessions.create").map(([, payload]: [string, unknown]) => payload), [{ title: "New chat", projectId: "p1" }]);
+
+  app.document.querySelector("[data-action='new-server-project']").click();
+  await settle();
+  app.document.querySelector("[data-server-folder-browse]").click();
+  await settle();
+  app.document.querySelector("[data-folder-root='projects']").click();
+  await settle();
+  assert.deepEqual([...app.document.querySelectorAll(".folder-browser [data-folder-open]")].map((button: any) => button.dataset.folderOpen), ["site2"], "folders only");
+  app.document.querySelector("[data-folder-open='site2']").click();
+  await settle();
+  app.document.querySelector("[data-folder-choose]").click();
+  await settle();
+  assert.equal(app.document.querySelector("[data-server-folder]").textContent, "fedora › Projects › site2");
+  const form = app.document.querySelector(".project-dialog form");
+  assert.equal(form.elements.name.value, "site2");
+  form.dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
+  await settle();
+  const [created] = copyJson(paired.sent.filter(([op]) => op === "projects.create")) as Array<[string, Record<string, unknown>]>;
+  assert.deepEqual({ ...created[1], commandId: "<id>" }, { commandId: "<id>", name: "site2", folder: { rootId: "projects", path: ["site2"] } });
+  assert.match(sidebar().textContent, /site2/);
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => /\/projects|\/sessions/.test(entry)), [], "this computer's projects are not asked");
 });
