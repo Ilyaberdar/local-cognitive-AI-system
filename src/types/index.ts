@@ -78,10 +78,19 @@ export interface SubagentRunSummary {
   output?: string;
 }
 
+/** Tokens of one model request; a count the provider did not report stays undefined, never 0.
+ * The input counts every prompt token, cached ones included, and the output every generated
+ * token, reasoning included; the details are parts of those, never added on top. */
 export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** Of the input: read from a prompt cache. */
+  cachedInputTokens?: number;
+  /** Of the input: written to a prompt cache (Anthropic). */
+  cacheWriteTokens?: number;
+  /** Of the output: the model's hidden reasoning. */
+  reasoningTokens?: number;
 }
 
 export interface GenerationMetrics {
