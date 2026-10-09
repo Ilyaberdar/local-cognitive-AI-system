@@ -44,7 +44,11 @@ export class AgentLoopRunner {
     const files=(latest?.metadata?.images as McpResultImage[]|undefined)??[];
     if(!latest||!files.length)return {note:""};
     const operation=String(latest.metadata?.operation??latest.tool);
-    if(this.supportsImages?.(target)===false)return {note:`The latest result (${operation}) included ${files.length} image(s). This model cannot see images; rely on the text results.`};
+    // Sent only to a model known to see images: the app's own llama.cpp models say so (their
+    // projector), cloud models do; for LM Studio and Ollama it is not known, and an image sent
+    // to a text-only model fails the step.
+    const sees=this.supportsImages?.(target)??(["openai","anthropic","gemini"].includes(target.providerId)?true:undefined);
+    if(sees!==true)return {note:`The latest result (${operation}) included ${files.length} image(s). ${sees===false?"This model cannot see images":"Images are not sent to this model (its image support is not known)"}; rely on the text results.`};
     const inherited=currentInferenceImages()??[];
     const images:LLMImage[]=[];
     for(const image of files.slice(0,Math.max(0,5-inherited.length))){

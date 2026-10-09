@@ -125,6 +125,13 @@ test("a model that sees images gets the screenshot on its next step; one that do
   await blind.run("blind");
   assert.equal(blind.requests[1]!.images, undefined);
   assert.match(blind.requests[1]!.prompt, /This model cannot see images/);
+
+  // LM Studio, Ollama: whether the model sees images is not known, so none is sent.
+  const unknown = await agent(t, {});
+  unknown.set([call("look")]);
+  await unknown.run("unknown");
+  assert.equal(unknown.requests[1]!.images, undefined);
+  assert.match(unknown.requests[1]!.prompt, /its image support is not known/);
 });
 
 test("an MCP call may repeat (the editor changes between calls), but not three times in a row", async t => {
