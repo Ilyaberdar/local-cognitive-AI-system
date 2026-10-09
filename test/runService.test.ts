@@ -256,3 +256,17 @@ test("a resend that loses the race for its attachments gets the first attempt's 
   assert.equal(again.runId, first.runId);
   assert.equal(again.replayed, true);
 });
+
+test("a turn stops when its chat can no longer be used from a device (a project archived or unshared)", async t => {
+  const f = setup(t);
+  let reason: string | undefined;
+  f.service.setGuard(async () => reason);
+  const ack = await f.service.start("remote:a:d1", { commandId: "c1", sessionId: "s1", input: "work" });
+  await until(() => f.script.calls.length === 1);
+  const { hooks } = f.script.calls[0]!;
+  hooks.onProgress({ phase: "tools", label: "Working", answer: "Step 1", at: at() });
+  reason = "The project is archived. Restore it to use its chats.";
+  await assert.rejects(hooks.requestApproval({ tool: "file", operation: "write", summary: "Write", details: "Write a file" }));
+  await until(() => f.service.get(ack.runId!)?.status === "failed");
+  assert.equal(f.service.get(ack.runId!)!.error, "The project is archived. Restore it to use its chats.");
+});

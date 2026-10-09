@@ -8,10 +8,14 @@ import { FolderError, type HostFolders } from "./hostFolders";
 export const PROJECT_ON_HOST = "This project's folder was chosen on the server, so its chats can only be used there.";
 const ARCHIVED = "The project is archived. Restore it to use its chats.";
 
+/** A project made from a device whose folder is still shared: the only kind a device may use. One
+ * the host set up is the host's even when its folder lies in a shared folder: the host chose it. */
+const deviceFolder = (project: Project, folders: HostFolders) => project.origin === "device" ? folders.locate(project.rootPath) : undefined;
+
 /** A project as a device sees it: its folder as a place in a shared folder, or none (set up on the
  * server, `hostOnly`); never the folder's path on the host. */
 export const safeProject = (project: Project, folders: HostFolders) => {
-  const folder = folders.locate(project.rootPath);
+  const folder = deviceFolder(project, folders);
   return { id: project.id, name: project.name, ...(project.color ? { color: project.color } : {}), archived: Boolean(project.archivedAt),
     createdAt: project.createdAt, updatedAt: project.updatedAt,
     ...(folder ? { folder: { rootId: folder.rootId, rootLabel: folder.label, path: folder.path } } : { hostOnly: true as const }) };
@@ -30,12 +34,12 @@ export interface ProjectAccess {
 export const createProjectAccess = (deps: { runtimeManager: RuntimeManager; folders: HostFolders }): ProjectAccess => ({
   async visible(projectId) {
     const project = await deps.runtimeManager.getRuntime().projectStore.get(projectId);
-    return Boolean(project && deps.folders.locate(project.rootPath));
+    return Boolean(project && deviceFolder(project, deps.folders));
   },
   async usable(projectId) {
     const project = await deps.runtimeManager.getRuntime().projectStore.get(projectId);
     if (!project) throw new RemoteOperationError("The project does not exist on the server.", "project_unknown");
-    if (!deps.folders.locate(project.rootPath)) return { project, reason: PROJECT_ON_HOST };
+    if (!deviceFolder(project, deps.folders)) return { project, reason: PROJECT_ON_HOST };
     if (project.archivedAt) return { project, reason: ARCHIVED };
     return { project };
   }
@@ -81,10 +85,19 @@ export const createProjectOperations = (deps: ProjectOperationDependencies): Rec
 
     "projects.create": (payload, context) => known(async () => {
       const { commandId: key, ...input } = parse(schemas.create, payload);
-      return deps.ledger.run({ scope: deps.scopeOf(context), key, operation: "projects.create", payload: input, accepting: () => !deps.isDraining() }, async () => {
-        const { real } = await deps.folders.resolve(input.folder.rootId, input.folder.path);
-        return safeProject(await store().create({ name: input.name, rootPath: real, ...(input.color !== undefined ? { color: input.color } : {}) }), deps.folders);
-      });
+      return deps.ledger.run({ scope: deps.scopeOf(context), key, operation: "projects.create", payload: input, accepting: () => !deps.isDraining(),
+        // A restart after the project was made: that project is the answer.
+        reconcile: async () => {
+          const { real } = await deps.folders.resolve(input.folder.rootId, input.folder.path).catch(() => ({ real: "" }));
+          const made = real ? (await store().list()).find(project => project.origin === "device" && project.rootPath === real) : undefined;
+          return made ? safeProject(made, deps.folders) : undefined;
+        } },
+        // Refusals become codes here, so the ledger keeps them for a resend.
+        () => known(async () => {
+          const { real } = await deps.folders.resolve(input.folder.rootId, input.folder.path);
+          return safeProject(await store().create({ name: input.name, rootPath: real, expectedRoot: real, origin: "device",
+            ...(input.color !== undefined ? { color: input.color } : {}) }), deps.folders);
+        }));
     }),
 
     "projects.update": payload => known(async () => {
@@ -92,7 +105,7 @@ export const createProjectOperations = (deps: ProjectOperationDependencies): Rec
       const project = await store().get(projectId);
       if (!project) throw new RemoteOperationError("The project does not exist on the server.", "project_unknown");
       // A project set up on the server may be archived from a device, nothing more.
-      if (!deps.folders.locate(project.rootPath) && (patch.name !== undefined || patch.color !== undefined || patch.archived !== true)) {
+      if (!deviceFolder(project, deps.folders) && (patch.name !== undefined || patch.color !== undefined || patch.archived !== true)) {
         throw new RemoteOperationError(PROJECT_ON_HOST.replace("its chats can only be used there", "it can only be changed there"), "unsupported");
       }
       const saved = await store().update(projectId, patch);

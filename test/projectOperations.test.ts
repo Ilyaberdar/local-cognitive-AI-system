@@ -46,6 +46,7 @@ test("a device creates a project in a shared folder once per command, and sees i
   assert.deepEqual(await f.call("projects.create", request), created, "a resend gets the same project");
   assert.equal((await f.store.list()).length, 1);
   await assert.rejects(f.call("projects.create", { ...request, commandId: "command-again" }), code("conflict"), "one project per folder");
+  await assert.rejects(f.call("projects.create", { ...request, commandId: "command-again" }), code("conflict"), "a resend keeps the refusal's code");
   await assert.rejects(f.call("projects.create", { ...request, commandId: "command-up", folder: { rootId: "projects", path: [".."] } }), code("invalid_path"));
   await assert.rejects(f.call("projects.create", { ...request, commandId: "command-missing", folder: { rootId: "projects", path: ["missing"] } }), code("not_found"));
   assert.equal(JSON.stringify(await f.call("projects.list")).includes(f.base), false, "no folder of the host");
@@ -76,4 +77,20 @@ test("a project in an admin's folder is usable until the folder is no longer sha
   removeAdminFolder(f.data, work.id);
   assert.equal((await f.access.usable(project.id)).reason, PROJECT_ON_HOST, "unshared at once");
   await assert.rejects(f.access.usable("missing"), code("project_unknown"));
+});
+
+test("a project the host set up stays the host's even inside a shared folder", async t => {
+  const f = setup(t);
+  const hostMade = await f.store.create({ name: "Host site", rootPath: path.join(f.data, "projects", "site") });
+  const [listed] = await f.call("projects.list");
+  assert.deepEqual([listed.id, listed.hostOnly, listed.folder], [hostMade.id, true, undefined]);
+  assert.equal((await f.access.usable(hostMade.id)).reason, PROJECT_ON_HOST);
+  assert.equal(await f.access.visible(hostMade.id), false, "its chats are not a device's to see");
+  await assert.rejects(f.call("projects.update", { projectId: hostMade.id, archived: false }), code("unsupported"));
+});
+
+test("a project is not made where the folder resolves elsewhere than checked", async t => {
+  const f = setup(t);
+  await assert.rejects(f.store.create({ name: "Moved", rootPath: path.join(f.data, "projects", "site"), expectedRoot: path.join(f.base, "elsewhere") }),
+    (error: unknown) => (error as { statusCode?: number }).statusCode === 409);
 });

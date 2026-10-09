@@ -207,8 +207,12 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       let handle: fsp.FileHandle;
       try { handle = await fsp.open(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch { continue; }
       try {
-        const [stat, now] = await Promise.all([handle.stat(), fsp.stat(await fsp.realpath(real))]);
-        if (stat.dev !== now.dev || stat.ino !== now.ino) { await handle.close(); continue; }
+        // O_NOFOLLOW covers only the last name: a folder above it swapped for a link would have been
+        // followed, so the path must still be its own real path, and the opened file the one there.
+        const stat = await handle.stat();
+        const again = await fsp.realpath(real).catch(() => "");
+        const now = again === real ? await fsp.stat(real).catch(() => undefined) : undefined;
+        if (!now || stat.dev !== now.dev || stat.ino !== now.ino) { await handle.close(); continue; }
         if (!stat.isFile()) { await handle.close(); throw new RemoteOperationError("This is a folder, not a file.", "invalid_request"); }
         return { handle, stat, path: scrub(real), name: path.basename(real) };
       } catch (error) { await handle.close().catch(() => undefined); throw error; }

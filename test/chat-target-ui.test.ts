@@ -18,7 +18,8 @@ function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = f
   const REPORT = "# Report\nShip on Friday.\n";
   const received: Record<string, { meta: any; chunks: string[] }> = {};
   const chats: any[] = [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }, ...(manage ? [{ id: "srv-3", title: "Older chat", updatedAt: "2026-10-07T10:00:00.000Z" }] : []),
-    ...(projects ? [{ id: "srv-p", title: "Project chat", updatedAt: "2026-10-08T09:00:00.000Z", projectId: "p1" }] : [])];
+    ...(projects ? [{ id: "srv-p", title: "Project chat", updatedAt: "2026-10-08T09:00:00.000Z", projectId: "p1" },
+      { id: "srv-old", title: "Archived project chat", updatedAt: "2026-10-01T09:00:00.000Z", projectId: "p-archived" }] : [])];
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
   const server = { messages: [] as unknown[], settings: { ...sessionSettings(), defaultTarget: { providerId: "llamacpp", model: "qwen" } }, head: 0 };
   const ok = (value: unknown) => ({ ok: true, value });
@@ -401,7 +402,8 @@ test("a server's projects group its chats; a chat and a project are made there, 
   assert.equal(app.document.querySelector("#pwn"), null, "a project's name is text");
   assert.equal(app.document.querySelectorAll(".sidebar-projects [data-action='new-session'][data-project-id='p2']").length, 0, "no new chat in a project set up on the server");
   assert.equal(app.document.querySelector(".sidebar-projects .project-title[title]").getAttribute("title"), "fedora › Projects › site");
-  assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /Project chat/, "a project's chats are under the project");
+  assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /\bProject chat/, "a project's chats are under the project");
+  assert.match(app.document.querySelector(".sidebar-chats").textContent, /Archived project chat/, "a chat whose project is not listed stays reachable");
 
   app.document.querySelector(".sidebar-projects [data-action='new-session'][data-project-id='p1']").click();
   await settle();

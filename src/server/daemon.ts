@@ -17,7 +17,7 @@ import { createChatOperations, createChatScrubber, requireRemoteSession } from "
 import { UploadStore } from "../runtime/uploadStore";
 import { createFolderOperations } from "../runtime/folderOperations";
 import { HostFolders } from "../runtime/hostFolders";
-import { createProjectAccess, createProjectOperations } from "../runtime/projectOperations";
+import { createProjectAccess, createProjectOperations, PROJECT_ON_HOST } from "../runtime/projectOperations";
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
@@ -78,6 +78,13 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   folders.ensureManaged();
   // A project a device may use lies in one of those folders, checked at every use.
   const projects = createProjectAccess({ runtimeManager: backend.runtimeManager, folders });
+  // A device's turn in a project chat stops once the project is archived or its folder unshared.
+  host.runService.setGuard(async sessionId => {
+    const projectId = (await sessionIndexStore.get(sessionId))?.projectId;
+    if (!projectId) return undefined;
+    if (!await projects.visible(projectId)) return PROJECT_ON_HOST;
+    return (await projects.usable(projectId)).reason;
+  });
   // Attachments devices send for their next turn; expired ones are dropped even when none arrive.
   const uploads = new UploadStore();
   setInterval(() => uploads.sweep(), 60 * 60 * 1000).unref();

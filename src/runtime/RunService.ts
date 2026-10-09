@@ -41,6 +41,8 @@ export interface RunServiceDependencies {
 
 interface ActiveRun {
   runId: string; sessionId: string; assistantMessageId: string; controller: AbortController; attachments?: ChatAttachment[]; scrub?: Scrubber;
+  /** Why the turn was stopped by its guard (the chat can no longer be used from a device). */
+  stopReason?: string; guardedAt?: number;
   text: string; pendingText?: { offset: number; text: string; replace?: boolean }; progress?: Omit<ProcessProgressEvent, "answer">; progressDirty: boolean;
   timer?: NodeJS.Timeout; approval?: { view: PendingApprovalView; decide: (approved: boolean) => void };
 }
@@ -51,6 +53,8 @@ export const streamOf = (sessionId: string) => `session:${sessionId}`;
  * any client connection, journaled as they progress, and never re-executed after a crash. */
 export class RunService {
   private readonly active = new Map<string, ActiveRun>();
+  /** Why a device's chat may no longer be used, if so: checked while a turn runs, which stops then. */
+  private guard?: (sessionId: string) => Promise<string | undefined>;
   /** Chats being deleted: no new turn starts in them. */
   private readonly deleting = new Set<string>();
   private accepting = true;
@@ -59,6 +63,15 @@ export class RunService {
   constructor(private readonly deps: RunServiceDependencies) {}
 
   private now(): Date { return this.deps.now?.() ?? new Date(); }
+  /** Set by the server: a project archived or no longer shared stops its chats' turns (R5-4g). */
+  setGuard(guard: (sessionId: string) => Promise<string | undefined>): void { this.guard = guard; }
+  private checkGuard(run: ActiveRun, force = false): Promise<void> {
+    if (!this.guard || run.stopReason || (!force && run.guardedAt && Date.now() - run.guardedAt < 2_000)) return Promise.resolve();
+    run.guardedAt = Date.now();
+    return this.guard(run.sessionId).then(reason => {
+      if (reason && !run.stopReason) { run.stopReason = reason; run.controller.abort("host_only"); }
+    }, () => undefined);
+  }
   activeCount(): number { return this.active.size; }
   stopAccepting(): void { this.accepting = false; }
 
@@ -276,6 +289,7 @@ export class RunService {
       const reason = run.controller.signal.aborted ? run.controller.signal.reason : undefined;
       if (reason === "cancel") this.finish(run, "cancelled");
       else if (reason === "host_shutdown") this.finish(run, "interrupted", "The server stopped while answering.");
+      else if (reason === "host_only") this.finish(run, "failed", run.stopReason);
       else this.finish(run, "failed", error instanceof Error ? error.message : "The answer failed on the server.");
     }
   }
@@ -294,6 +308,7 @@ export class RunService {
   }
 
   private onProgress(run: ActiveRun, event: ProcessProgressEvent): void {
+    void this.checkGuard(run);
     const { answer: raw, ...rawProgress } = event;
     const answer = typeof raw === "string" ? this.visibleText(run, raw) : raw;
     const progress = run.scrub ? run.scrub(rawProgress) : rawProgress;
@@ -330,7 +345,8 @@ export class RunService {
     this.deps.journal.publish(appended);
   }
 
-  private requestApproval(run: ActiveRun, operation: ApprovalOperation): Promise<boolean> {
+  private async requestApproval(run: ActiveRun, operation: ApprovalOperation): Promise<boolean> {
+    await this.checkGuard(run, true);
     run.controller.signal.throwIfAborted();
     if (run.approval) return Promise.reject(new RunServiceError("Another approval is pending.", "approval_pending"));
     const view: PendingApprovalView = { ...(run.scrub ? run.scrub(operation) : operation), approvalId: randomUUID(), digest: sha256(canonical(operation)), requestedAt: this.now().toISOString() };

@@ -198,7 +198,8 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     projectList: () => projects,
     async refreshSessions() {
       const host = target;
-      const [list, projectList] = await Promise.all([call("sessions.list"), api.supports("projects.list") ? call("projects.list") : Promise.resolve([])]);
+      // Projects failing to load keep the last ones; the chats still show.
+      const [list, projectList] = await Promise.all([call("sessions.list"), api.supports("projects.list") ? call("projects.list").catch(() => projects) : Promise.resolve([])]);
       if (host !== target) return sessions;
       projects = projectList;
       sessions = list.map(session => ({ ...session, id: keyFor(session.id, host), serverId: session.id, running: Boolean(session.activeRunId) }));
@@ -284,14 +285,16 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     call: (op, payload) => call(op, payload),
     /** Creates a project in a shared folder, once per command even if sent again. */
     async createProject(input) {
-      const result = await runtime.send("projects.create", input, target);
+      const host = target;
+      const result = await runtime.send("projects.create", input, host);
       if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The project was not created."), { code: result?.error?.code });
-      projects = [result.value, ...projects.filter(project => project.id !== result.value.id)];
+      if (host === target) projects = [result.value, ...projects.filter(project => project.id !== result.value.id)];
       return result.value;
     },
     async updateProject(projectId, patch) {
+      const host = target;
       const saved = await call("projects.update", { projectId, ...patch });
-      projects = projects.map(project => project.id === saved.id ? saved : project);
+      if (host === target) projects = projects.map(project => project.id === saved.id ? saved : project);
       return saved;
     },
     /** A file of a server chat as Review shows it: its text, under the path the chat showed. */
