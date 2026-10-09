@@ -330,7 +330,7 @@ test("a server's name is shown as text in Settings", async t => {
   const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
   t.after(() => app.close());
   await selectFedora(app);
-  for (const route of ["general", "data", "mcp", "appearance"]) {
+  for (const route of ["general", "providers", "providers/llamacpp", "providers/openai", "runtime", "memory", "data", "mcp", "appearance", "about"]) {
     open(app, route); await settle();
     assert.equal(app.document.querySelector("#settings-root img[src='x']"), null, route);
   }
