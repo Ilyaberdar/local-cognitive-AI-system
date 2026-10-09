@@ -164,6 +164,26 @@ export class LocalModelService implements LocalModelManager {
       signal.throwIfAborted();
     }, signal);
   }
+  /** Loads the loaded models again by the current GPU settings, the largest first, once the
+   * requests running on them have finished. It happens only when asked: nothing is unloaded on
+   * its own. A model that cannot be loaded again is named and left unloaded. */
+  async rebalance(): Promise<{ reloaded: string[]; failed: Array<{ modelId: string; message: string }> }> {
+    await this.init(); this.assertLibrary();
+    return this.scheduler.runExclusive(async () => {
+      const loaded = this.runtime.snapshot().loadedModelIds ?? [];
+      const size = (id: string) => { try { return this.store.getModel(id).sizeBytes ?? 0; } catch { return 0; } };
+      const order = [...loaded].sort((left, right) => size(right) - size(left));
+      // All first: each then plans against the others already in their new places.
+      await Promise.all(order.map(id => this.runtime.stop(id)));
+      const reloaded: string[] = [], failed: Array<{ modelId: string; message: string }> = [];
+      for (const id of order) {
+        try { await this.ensureLoaded(id, this.lifetime.signal); reloaded.push(id); }
+        catch (error) { failed.push({ modelId: id, message: error instanceof Error ? error.message : String(error) }); }
+      }
+      this.emit();
+      return { reloaded, failed };
+    }, this.lifetime.signal);
+  }
   async unloadModel(identifier: string, callerSignal?: AbortSignal): Promise<void> {
     await this.init(); this.assertLibrary(); this.store.getModel(identifier);
     const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);

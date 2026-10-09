@@ -167,3 +167,22 @@ test("without a CUDA build no GPU list is shown", async t => {
   const f = await setup(t, twoGpus);
   assert.equal(f.pool.snapshot().gpus, undefined);
 });
+
+test("Rebalance loads the loaded models again by the current settings, largest first, and names one that did not load", async () => {
+  const { LocalModelService } = await import("../src/local/LocalModelService");
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "rebalance-")));
+  const service = new LocalModelService({ enabled: true, dataDir: root, modelsDir: root, runtimeDir: root, contextSize: 2048, gpuLayers: "auto",
+    loadTimeoutMs: 5000, generationTimeoutMs: 5000, memoryLimitPercent: 75 }, new Logger());
+  const events: string[] = [];
+  const internals = service as unknown as Record<string, unknown>;
+  internals.init = async () => undefined;
+  internals.assertLibrary = () => undefined;
+  internals.store = { getModel: (id: string) => ({ sizeBytes: { small: 1, big: 9, mid: 5 }[id] ?? 0 }) };
+  internals.runtime = { snapshot: () => ({ loadedModelIds: ["small", "big", "mid"] }), stop: async (id: string) => { events.push(`stop ${id}`); } };
+  internals.ensureLoaded = async (id: string) => { events.push(`load ${id}`); if (id === "mid") throw new Error("Not enough memory to load mid"); };
+  try {
+    const result = await service.rebalance();
+    assert.deepEqual(events, ["stop big", "stop mid", "stop small", "load big", "load mid", "load small"]);
+    assert.deepEqual(result, { reloaded: ["big", "small"], failed: [{ modelId: "mid", message: "Not enough memory to load mid" }] });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

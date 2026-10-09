@@ -233,7 +233,23 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       <fieldset class="mm-settings-field"><legend>GPUs models may use</legend>${gpus.map((gpu) => `<label class="mm-gpu-choice"><input type="checkbox" data-mm-gpu-device="${escape(gpu.id)}" ${!chosen.length || chosen.includes(gpu.id) ? "checked" : ""} ${state.gpuSaving ? "disabled" : ""} /> GPU ${escape(gpu.index)} · ${escape(gpu.name)} · ${bytes(gpu.totalBytes)}</label>`).join("")}</fieldset>
       <button class="ghost-button mm-settings-save" type="submit" ${state.gpuSaving ? "disabled" : ""}>${state.gpuSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button>
       ${state.gpuError ? renderModelError(state.gpuError) : state.gpuSaved ? '<div class="subtle mm-context-feedback" role="status">Saved. The next model you load follows it.</div>' : ""}
-    </form>`;
+    </form>
+    <div class="mm-settings-copy"><h3>Rebalance</h3><p class="subtle">Load the loaded models again by these settings, the largest first, once their running requests finish. They are briefly unavailable.</p>
+      <button type="button" class="ghost-button" data-mm-rebalance ${state.rebalancing ? "disabled" : ""}>${state.rebalancing ? '<span class="button-spinner" aria-hidden="true"></span>Rebalancing…' : "Rebalance loaded models"}</button>
+      ${state.rebalanceMessage ? `<div class="subtle mm-context-feedback" role="status">${escape(state.rebalanceMessage)}</div>` : ""}</div>`;
+  }
+
+  async function rebalanceModels() {
+    if (state.rebalancing) return;
+    state.rebalancing = true; state.rebalanceMessage = ""; repaint();
+    try {
+      const result = await request("/local/models/rebalance", { method: "POST", timeoutMs: 0 });
+      state.rebalanceMessage = result.status === "rebalancing" ? "Rebalancing continues; the models show their new places when loaded."
+        : result.failed?.length ? `Reloaded ${result.reloaded.length}; not loaded again: ${result.failed.map((item) => item.modelId).join(", ")}.`
+        : result.reloaded?.length ? `Reloaded ${result.reloaded.length} model${result.reloaded.length === 1 ? "" : "s"}.` : "No model was loaded.";
+      await refresh();
+    } catch (error) { state.rebalanceMessage = error.message || "Unable to rebalance the models."; }
+    finally { state.rebalancing = false; repaint(); }
   }
 
   async function saveGpuSettings() {
@@ -735,6 +751,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     });
     root.querySelector("#mm-generation-form")?.addEventListener("submit", (event) => { event.preventDefault(); void saveGenerationSettings(); });
     root.querySelector("[data-mm-gpu-form]")?.addEventListener("submit", (event) => { event.preventDefault(); void saveGpuSettings(); });
+    root.querySelector("[data-mm-rebalance]")?.addEventListener("click", () => { void rebalanceModels(); });
     root.querySelectorAll("[data-mm-gpu]").forEach((select) => select.addEventListener("change", (event) => {
       state.gpuDraft = { ...gpuSettings(), [event.target.dataset.mmGpu]: event.target.value }; state.gpuError = ""; state.gpuSaved = false;
     }));
