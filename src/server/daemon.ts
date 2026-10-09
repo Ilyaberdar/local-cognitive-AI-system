@@ -85,10 +85,10 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     operations: {
       ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
-      ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId),
+      ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
         sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
-      ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
+      ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
       ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),
       ...createFolderOperations({ folders }),

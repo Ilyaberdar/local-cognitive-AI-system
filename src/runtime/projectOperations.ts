@@ -18,12 +18,20 @@ export const safeProject = (project: Project, folders: HostFolders) => {
 };
 
 export interface ProjectAccess {
+  /** Whether a device may see the project's chats at all: its folder is inside a shared folder (an
+   * archived project's chats stay readable). A project set up on the server keeps its chats there:
+   * they hold what its folder on the host contains. */
+  visible(projectId: string): Promise<boolean>;
   /** Whether a device may use the project's chats now: it exists, is not archived and its folder is
    * still inside a shared folder (checked at every use, so an unshared folder ends it at once). */
   usable(projectId: string): Promise<{ project: Project; reason?: string }>;
 }
 
 export const createProjectAccess = (deps: { runtimeManager: RuntimeManager; folders: HostFolders }): ProjectAccess => ({
+  async visible(projectId) {
+    const project = await deps.runtimeManager.getRuntime().projectStore.get(projectId);
+    return Boolean(project && deps.folders.locate(project.rootPath));
+  },
   async usable(projectId) {
     const project = await deps.runtimeManager.getRuntime().projectStore.get(projectId);
     if (!project) throw new RemoteOperationError("The project does not exist on the server.", "project_unknown");

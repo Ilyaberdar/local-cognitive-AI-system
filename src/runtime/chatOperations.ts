@@ -11,7 +11,7 @@ import { RemoteOperationError, type OperationContext, type RemoteOperation } fro
 import type { SessionIndexStore } from "../session/SessionIndexStore";
 import type { ChatMessage, SessionSettings, SessionSettingsPatch } from "../types";
 import type { EventJournal } from "./EventJournal";
-import { pathScrubber } from "./orchestrationDto";
+import { pathScrubber, type Scrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore";
@@ -123,17 +123,20 @@ export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostD
 export const chatHostOnly = (settings: Pick<SessionSettings, "defaultAccessMode" | "codeAgents">): string | undefined =>
   settings.defaultAccessMode === "full" || settings.codeAgents?.some(agent => agent.accessMode === "full") ? CHAT_ON_HOST : undefined;
 
-/** A chat a device may read. Whether it may also use it is `requireUsable` (full access, and for a
- * project chat whether the project is one a device may use). */
-export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string) => {
+/** A chat a device may read: an ordinary chat, or one in a project whose folder is shared (a
+ * project set up on the server keeps its chats there, as if they did not exist). Whether it may
+ * also use it is `requireUsable` (full access; an archived or no longer shared project). */
+export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string, projects?: ProjectAccess) => {
   const session = await store.get(sessionId);
-  if (!session) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+  if (!session || (session.projectId && !(projects && await projects.visible(session.projectId)))) {
+    throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+  }
   return session;
 };
 
 export const createChatOperations = (deps: ChatOperationDependencies): Record<string, RemoteOperation> => {
   const runtime = () => deps.runtimeManager.getRuntime();
-  const requireSession = (sessionId: string) => requireRemoteSession(deps.sessionIndexStore, sessionId);
+  const requireSession = (sessionId: string) => requireRemoteSession(deps.sessionIndexStore, sessionId, deps.projects);
   const scrubber = createChatScrubber(deps);
   /** Why a device may not use or change a chat, if it may not: the host gave it full access, or
    * it belongs to a project set up on the server (or archived). Checked at every use. */
@@ -275,11 +278,22 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
   return {
     // A title is the start of a message, which may name a folder of the host.
-    // Project chats are listed where the server offers projects (R5-4g).
-    "sessions.list": async () => (await scrubber())((await deps.sessionIndexStore.list()).filter(session => deps.projects || !session.projectId).map(session => ({
-      id: session.id, title: session.title, updatedAt: session.updatedAt, ...(session.projectId ? { projectId: session.projectId } : {}),
-      ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {})
-    }))),
+    // Chats of projects a device may see are listed where the server offers projects (R5-4g). A
+    // title is the start of a message, which may name a folder of the host (or of its project).
+    "sessions.list": async () => {
+      const sessions = await deps.sessionIndexStore.list();
+      const visible = new Map<string, boolean>(), scrubs = new Map<string, Scrubber>();
+      const listed = [];
+      for (const session of sessions) {
+        const key = session.projectId ?? "";
+        if (key && !visible.has(key)) visible.set(key, Boolean(deps.projects && await deps.projects.visible(key)));
+        if (key && !visible.get(key)) continue;
+        if (!scrubs.has(key)) scrubs.set(key, await scrubber(key ? session.id : undefined));
+        listed.push(scrubs.get(key)!({ id: session.id, title: session.title, updatedAt: session.updatedAt, ...(session.projectId ? { projectId: session.projectId } : {}),
+          ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {}) }));
+      }
+      return listed;
+    },
 
     "sessions.create": async payload => {
       const { title, projectId } = parse(schemas.sessionsCreate, payload) ?? {};

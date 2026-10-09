@@ -240,7 +240,7 @@ test("a device reads a chat's files by the paths it was shown: in the chat's own
   assert.equal(JSON.stringify([report, stat, first]).includes(root), false, "no folder of the server in an answer");
 });
 
-test("project chats: created and used from a device only in a project it may use; readable and deletable always", async t => {
+test("project chats: seen and used from a device only in a project it may use; a project set up on the server keeps its chats there", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "chat-projects-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new SessionSettingsStore({ baseDir: root }, { providerId: "openai" }, {});
@@ -255,17 +255,22 @@ test("project chats: created and used from a device only in a project it may use
     runService: { start: async (_scope: string, request: { sessionId: string }, admit?: () => Promise<unknown>) => { await admit?.(); started.push(request.sessionId); return { status: "accepted" }; },
       activeRun: () => undefined, unfinishedTurns: () => [] } as unknown as RunService,
     journal: { head: () => ({ epoch: "e", head: 0 }) } as unknown as EventJournal, scopeOf: () => "device",
-    projects: { usable: async (projectId: string) => projectId === "site" ? { project: {} as never } : { project: {} as never, reason: "This project's folder was chosen on the server." } }
+    projects: { visible: async (projectId: string) => projectId !== "host",
+      usable: async (projectId: string) => projectId === "site" ? { project: {} as never } : { project: {} as never, reason: "The project is archived. Restore it to use its chats." } }
   });
   const call = <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
-  assert.deepEqual((await call("sessions.list")).map((item: any) => [item.id, item.projectId]), [["in-site", "site"], ["in-host", "host"]]);
+  sessions["in-archived"] = { id: "in-archived", title: "Old chat", updatedAt: "t", projectId: "archived" };
+  assert.deepEqual((await call("sessions.list")).map((item: any) => [item.id, item.projectId]), [["in-site", "site"], ["in-archived", "archived"]], "a host project's chats are not listed");
   assert.equal((await call("sessions.create", { title: "New chat", projectId: "site" })).projectId, "site");
   await assert.rejects(call("sessions.create", { title: "New chat", projectId: "host" }), code("unsupported"));
   await call("chat.runs.start", { commandId: "command-1", sessionId: "in-site", input: "hi" });
-  await assert.rejects(call("chat.runs.start", { commandId: "command-2", sessionId: "in-host", input: "hi" }), code("unsupported"));
-  await assert.rejects(call("sessions.settings.update", { sessionId: "in-host", patch: { language: "en" } }), code("unsupported"));
-  assert.match((await call("sessions.setup.get", { sessionId: "in-host" })).access.hostOnly, /chosen on the server/);
-  assert.ok(await call("sessions.settings.get", { sessionId: "in-host" }), "readable");
+  for (const [op, payload] of [["chat.runs.start", { commandId: "command-2", sessionId: "in-host", input: "hi" }], ["sessions.messages.list", { sessionId: "in-host" }],
+    ["sessions.settings.get", { sessionId: "in-host" }], ["sessions.delete", { sessionId: "in-host" }], ["files.read", { sessionId: "in-host", path: "<workspace>/a", as: "text" }]] as const) {
+    await assert.rejects(call(op, payload), code("session_unknown"), op);
+  }
+  // An archived project's chats are readable, not usable.
+  assert.match((await call("sessions.setup.get", { sessionId: "in-archived" })).access.hostOnly, /archived/);
+  await assert.rejects(call("sessions.settings.update", { sessionId: "in-archived", patch: { language: "en" } }), code("unsupported"));
   assert.deepEqual(started, ["in-site"]);
 });
 
