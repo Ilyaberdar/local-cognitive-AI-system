@@ -22,6 +22,7 @@ import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
+import { withoutAttachmentData } from "./runtime/chatOperations";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
 import { loadSessionMessages } from "./conversations/sessionHistory";
@@ -211,7 +212,8 @@ const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, ses
           metadata: { chatRunId: run.runId }, signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
         return { ...(result.result.error ? { error: result.result.error } : {}) };
       },
-      completedTurn: async (sessionId, runId) => (await loadSessionMessages(runtimeManager, sessionId, 4)).messages.filter(message => message.runId === runId)
+      // The finished turn as a device receives it: attachment contents stay on the host.
+      completedTurn: async (sessionId, runId) => (await loadSessionMessages(runtimeManager, sessionId, 4)).messages.filter(message => message.runId === runId).map(withoutAttachmentData)
     });
     const recovered = runService.recover();
     if (recovered) logger.warn("Chat turns were interrupted by the previous shutdown", { count: recovered });

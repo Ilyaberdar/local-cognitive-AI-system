@@ -25,6 +25,8 @@ const TERMINAL = { "run.completed": "completed", "run.failed": "failed", "run.ca
 export function remoteSettingsPatch(patch, current, { agents = false } = {}) {
   const result = {};
   if (agents) {
+    // Ask or approve-for-me; full access is given only on the server itself.
+    if (["ask", "default"].includes(patch?.defaultAccessMode) && patch.defaultAccessMode !== current?.defaultAccessMode) result.defaultAccessMode = patch.defaultAccessMode;
     for (const key of AGENT_SETTINGS) {
       const value = remoteAgentSetting(key, patch?.[key]);
       if (value === undefined) continue;
@@ -288,8 +290,11 @@ export function renderTargetSwitch(target) {
     </div></span>`;
 }
 
-/** Shown above the composer while a selected server is not connected. */
-export function renderTargetBanner(target) {
+/** Shown above the composer while a selected server is not connected, or when the chat on screen
+ * (`key`) is the server's alone. */
+export function renderTargetBanner(target, key) {
+  const hostOnly = key && target.online() ? target.setup(key).hostOnly : "";
+  if (hostOnly) return `<section class="chat-approval chat-target-banner" role="status"><div class="chat-approval__heading">${icon("shieldAlert")}<strong>${escape(hostOnly)}</strong></div></section>`;
   if (!target.isRemote() || target.online()) return "";
   const status = target.status();
   const name = escape(target.hostName());
@@ -364,7 +369,7 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
   const providers = (models?.providers ?? []).filter(provider => provider.id !== "local");
   const providerId = settings.defaultTarget?.providerId;
   const model = settings.defaultTarget?.model ?? "";
-  const note = hostOnly || (agents ? "Attachments and access modes for server chats arrive in a later update."
+  const note = hostOnly || (agents ? "Attachments for server chats arrive in a later update."
     : `Update Local Cognitive on ${hostName} to add subagents and debate agents to its chats.`);
   return `<form class="panel chat-settings form-grid ${collapsed ? "chat-settings--collapsed" : ""}" id="session-settings-form" data-session-id="${escape(sessionKey)}" data-remote-setup="true" data-setup-mode="${escape(mode)}">
       <div class="session-resize-handle" data-action="resize-right-panel" title="Resize panel"></div>

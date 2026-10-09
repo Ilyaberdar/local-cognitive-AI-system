@@ -63,6 +63,18 @@ export const orchestrationLists = (input: { tasks: Task[]; schedules: Schedule[]
   return { ...lists, ...(truncated ? { truncated: true } : {}) };
 };
 
+/** Replaces each folder by its label in a whole value (longest folder first, so a folder inside
+ * another is replaced by its own label). */
+export const pathScrubber = (pairs: Array<[string, string]>) => {
+  const sorted = pairs.filter(([dir]) => dir.length > 1).sort((a, b) => b[0].length - a[0].length);
+  return <T>(value: T): T => {
+    if (!sorted.length || value === undefined) return value;
+    let json = JSON.stringify(value);
+    for (const [dir, label] of sorted) json = json.split(JSON.stringify(dir).slice(1, -1)).join(label);
+    return JSON.parse(json) as T;
+  };
+};
+
 /** Replaces folders of the host in what a device receives about a run: the run's workspace and
  * output folders, then the host's data directories. Applied to whole values (outputs, events). */
 export const scrubberFor = (run: WorkflowRun | undefined, hostDirectories: string[] = []) => {
@@ -71,14 +83,7 @@ export const scrubberFor = (run: WorkflowRun | undefined, hostDirectories: strin
     ...(run?.workspace?.allowedDirectories ?? []).filter(dir => dir.length > 1).map(dir => [dir, "<folder>"] as [string, string]),
     ...hostDirectories.filter(dir => dir.length > 1).map(dir => [dir, "<server>"] as [string, string])
   ];
-  // Longest first: a folder inside another is replaced by its own label.
-  pairs.sort((a, b) => b[0].length - a[0].length);
-  return <T>(value: T): T => {
-    if (!pairs.length || value === undefined) return value;
-    let json = JSON.stringify(value);
-    for (const [dir, label] of pairs) json = json.split(JSON.stringify(dir).slice(1, -1)).join(label);
-    return JSON.parse(json) as T;
-  };
+  return pathScrubber(pairs);
 };
 
 const MAX_DATA_BYTES = 32 * 1024;

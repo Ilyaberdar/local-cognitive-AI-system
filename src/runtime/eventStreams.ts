@@ -22,7 +22,9 @@ export interface StreamSource {
 /** `events.poll` (spec §7.2): a long poll over the streams a device follows, chat journals and
  * the sources' streams alike. Answers at once when any stream has news, otherwise after the next
  * event, `waitMs` or the device's disconnect. A stale cursor gets `resync`. */
-export const createEventStreamOperations = (deps: { journal: EventJournal; requireSession(sessionId: string): Promise<unknown>; sources?: StreamSource[] }): Record<string, RemoteOperation> => ({
+export const createEventStreamOperations = (deps: { journal: EventJournal; requireSession(sessionId: string): Promise<unknown>; sources?: StreamSource[];
+  /** What a device may see of a chat's events: the host's folders replaced (R5-4). */
+  scrubSession?(): Promise<<T>(value: T) => T> }): Record<string, RemoteOperation> => ({
   "events.poll": async (payload, context) => {
     const parsed = schema.safeParse(payload);
     if (!parsed.success) throw new RemoteOperationError("The request is not valid.", "invalid_request");
@@ -40,9 +42,10 @@ export const createEventStreamOperations = (deps: { journal: EventJournal; requi
     const stops = kinds.flatMap(kind => "source" in kind ? [kind.source!.subscribe(kind.id!, wake)] : []);
     context.signal.addEventListener("abort", wake, { once: true });
     try {
+      const scrub = kinds.some(kind => "session" in kind) && deps.scrubSession ? await deps.scrubSession() : <T>(value: T) => value;
       const read = () => Promise.all(streams.map(async (stream, index) => {
         const kind = kinds[index]!;
-        return { streamId: stream.streamId, ...("source" in kind ? await kind.source!.read(kind.id!, stream, maxEvents) : deps.journal.read(stream.streamId, stream, { maxEvents })) };
+        return { streamId: stream.streamId, ...("source" in kind ? await kind.source!.read(kind.id!, stream, maxEvents) : scrub(deps.journal.read(stream.streamId, stream, { maxEvents }))) };
       }));
       let results = await read();
       const news = () => results.some(result => "resync" in result || result.events.length > 0);

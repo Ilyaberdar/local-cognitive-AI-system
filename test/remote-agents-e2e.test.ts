@@ -51,9 +51,20 @@ test("a server chat's subagents and debate agents are set from a device; a chat 
   await turn("Is a cache worth adding here?");
   assert.ok(model.state.requests - debateBefore >= 3, `support, attack and the advisor ran (${model.state.requests - debateBefore} model calls)`);
 
+  // Access: ask or approve-for-me from a device; the server's folders never reach it.
+  const asked = await runtime.request<SessionSettings>("sessions.settings.update", { sessionId: session.id, patch: { mode: "general", defaultAccessMode: "ask" } });
+  assert.deepEqual([asked.defaultAccessMode, asked.codeAgents[0]!.accessMode], ["ask", "ask"], "agents follow the chat's access");
+  model.state.answer = `The report is saved as ${server.root}/app/outputs/report.md.`;
+  const scrubbed = await turn("Where is the report?");
+  const received = JSON.stringify([scrubbed, await snapshot(), updates]);
+  assert.equal(received.includes(server.root), false, "no folder of the server reaches the device");
+  assert.match(scrubbed.content, /saved as <server>\/app\/outputs\/report\.md/);
+  model.state.answer = "Paris is the capital of France.";
+
   // What a device may not set is refused.
   assert.equal(await failure(runtime.request("sessions.settings.update", { sessionId: session.id, patch: { codeAgents: [{ id: "x", name: "X", providerId: "__proto__" }] } })), "invalid_request");
-  assert.equal(await failure(runtime.request("sessions.settings.update", { sessionId: session.id, patch: { codeAgents: [{ id: "x", name: "X", providerId: "lmstudio", accessMode: "full" }] } })), "invalid_request");
+  assert.equal(await failure(runtime.request("sessions.settings.update", { sessionId: session.id, patch: { codeAgents: [{ id: "x", name: "X", providerId: "lmstudio", accessMode: "full" }] } })), "unsupported");
+  assert.equal(await failure(runtime.request("sessions.settings.update", { sessionId: session.id, patch: { defaultAccessMode: "full" } })), "unsupported");
 
   // The server's own API gives the chat full access: from now on it is the server's alone.
   const status = JSON.parse(server.run("status", "--json").stdout) as { http?: { port: number } };

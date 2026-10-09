@@ -107,9 +107,9 @@ export async function startDaemon(t: TestContext, origin: string, extraEnv: Reco
   };
 }
 
-/** An OpenAI-compatible model whose answers wait for `release()` while `held` is true. */
+/** An OpenAI-compatible model whose answers (`state.answer`) wait for `release()` while `held` is true. */
 export async function startStubModel(t: TestContext, answer = "Paris is the capital of France.") {
-  const state = { held: false, requests: 0, aborted: 0, waiting: [] as Array<() => void>, authorizations: [] as string[] };
+  const state = { held: false, requests: 0, aborted: 0, waiting: [] as Array<() => void>, authorizations: [] as string[], answer };
   const server = http.createServer((request, response) => {
     if (request.method === "GET") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "fixture" }] })); return; }
     let body = "";
@@ -122,8 +122,8 @@ export async function startStubModel(t: TestContext, answer = "Paris is the capi
         if (answered || response.destroyed) return;
         answered = true;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ id: `resp-${state.requests}`, choices: [{ message: { role: "assistant", content: answer }, finish_reason: "stop" }],
-          output_text: answer, usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12, input_tokens: 5, output_tokens: 7 } }));
+        response.end(JSON.stringify({ id: `resp-${state.requests}`, choices: [{ message: { role: "assistant", content: state.answer }, finish_reason: "stop" }],
+          output_text: state.answer, usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12, input_tokens: 5, output_tokens: 7 } }));
       };
       response.once("close", () => { if (!answered) state.aborted++; });
       if (state.held) state.waiting.push(reply); else reply();

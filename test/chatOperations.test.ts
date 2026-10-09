@@ -5,7 +5,8 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import type { RuntimeManager } from "../src/app/RuntimeManager";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
-import { createChatOperations } from "../src/runtime/chatOperations";
+import { createChatOperations, createChatScrubber } from "../src/runtime/chatOperations";
+import { createEventStreamOperations } from "../src/runtime/eventStreams";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
 import type { RunService } from "../src/runtime/RunService";
 import type { EventJournal } from "../src/runtime/EventJournal";
@@ -69,15 +70,19 @@ test("agents a device may not set are refused, and nothing is written", async t 
   const agent = (extra: Record<string, unknown> = {}) => ({ id: "a", name: "Nova", providerId: "openai", ...extra });
   const role = (name: string, value: string, providerId = "openai") => ({ id: name, name, role: value, providerId });
   const refused: unknown[] = [
-    { codeAgents: [agent({ accessMode: "full" })] }, { codeAgents: [agent({ providerId: "unknown" })] }, { codeAgents: [agent({ providerId: "local" })] },
+    { codeAgents: [agent({ accessMode: "ask" })] }, { codeAgents: [agent({ providerId: "unknown" })] }, { codeAgents: [agent({ providerId: "local" })] },
     { codeAgents: [agent({ providerId: "toString" })] }, { codeAgents: [agent({ providerId: "__proto__" })] }, { codeAgents: [agent({ providerId: "constructor" })] },
     { codeAgents: [agent(), agent(), agent(), agent(), agent()] }, { codeAgents: [agent({ name: "line\nbreak" })] }, { codeAgents: [agent({ name: " " })] },
     { hypothesisAgents: [role("J1", "judge", "local"), role("J2", "judge", "local")] },
     { hypothesisAgents: ["A1", "A2", "A3", "A4", "A5", "A6"].map(name => role(name, "advisor")) },
     { hypothesisAgents: [role("X", "chair")] }, { debate: { enabled: false } }, { debate: { support: { providerId: "local" } } },
-    { defaultTarget: { providerId: "local" } }, { defaultTarget: { providerId: "hasOwnProperty" } }, { defaultAccessMode: "full" }, { subagents: [agent()] }, { workspace: "/" }
+    { defaultTarget: { providerId: "local" } }, { defaultTarget: { providerId: "hasOwnProperty" } }, { defaultAccessMode: "none" }, { subagents: [agent()] }, { workspace: "/" }
   ];
   for (const patch of refused) await assert.rejects(f.call("sessions.settings.update", { sessionId: "chat", patch }), code("invalid_request"), JSON.stringify(patch));
+  // Full access is given only on the server, and the answer says so.
+  for (const patch of [{ defaultAccessMode: "full" }, { codeAgents: [agent({ accessMode: "full" })] }]) {
+    await assert.rejects(f.call("sessions.settings.update", { sessionId: "chat", patch }), code("unsupported"), JSON.stringify(patch));
+  }
   assert.equal(await fs.readFile(f.file("chat"), "utf8"), before, "the chat's settings are byte for byte the same");
 });
 
@@ -97,4 +102,26 @@ test("a chat the host gave full access is used only there: a device may stop it 
   // An agent with full access makes the chat the host's too.
   await f.store.update("chat", { codeAgents: [{ id: "a", name: "Nova", providerId: "openai", accessMode: "full" }] });
   await assert.rejects(f.call("chat.runs.start", { commandId: "command-2", sessionId: "chat", input: "hi" }), code("unsupported"));
+});
+
+test("a device chooses ask or approve-for-me, and the chat's agents follow", async t => {
+  const f = await setup(t);
+  await f.call("sessions.settings.update", { sessionId: "chat", patch: { codeAgents: [{ id: "a", name: "Nova", providerId: "openai" }] } });
+  const asked = await f.call("sessions.settings.update", { sessionId: "chat", patch: { defaultAccessMode: "ask" } });
+  assert.deepEqual([asked.defaultAccessMode, asked.codeAgents[0].accessMode], ["ask", "ask"]);
+});
+
+test("the server's folders are replaced in what a device receives about a chat", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "chat-scrub-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "out"), allowed = path.join(root, "shared"), data = path.join(root, "data");
+  const scrub = await createChatScrubber({ runtimeManager: { getSettings: async () => ({ filesystem: { outputDir: output, allowedDirectories: [allowed] } }) } as unknown as RuntimeManager,
+    hostDirectories: [data] })();
+  const value = { details: `Write ${output}/report.md\nWorking directory: ${allowed}/repo`, text: `Log in ${data}/app/logs and /etc/hosts` };
+  assert.deepEqual(scrub(value), { details: "Write <output>/report.md\nWorking directory: <folder>/repo", text: "Log in <server>/app/logs and /etc/hosts" });
+
+  const journal = { read: () => ({ events: [{ seq: 1, type: "approval.requested", payload: { details: `Delete ${output}/a.txt` } }] }), wait: async () => undefined } as unknown as EventJournal;
+  const poll = createEventStreamOperations({ journal, requireSession: async () => undefined, scrubSession: async () => scrub })["events.poll"]!;
+  const result = await poll({ streams: [{ streamId: "session:chat", epoch: "e", after: 0 }], waitMs: 0 }, context) as any;
+  assert.equal(result.streams[0].events[0].payload.details, "Delete <output>/a.txt");
 });
