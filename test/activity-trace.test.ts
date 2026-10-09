@@ -65,3 +65,22 @@ test("local action streaming reports model notes separately and never leaks part
   assert.equal(events.find(event => event.phase === "thinking")?.note, "Inspecting the provided file.");
   assert.equal(events.at(-1).phase, "responding");
 });
+
+test("a long turn keeps its first step, so its total time never shrinks", () => {
+  const trace = new ActivityTrace();
+  const started = new Date(Date.now() - 55 * 60_000).toISOString();
+  trace.record({ phase: "preparing", label: "Preparing request", at: started });
+  for (let i = 0; i < 80; i++) trace.record({ phase: "tools", label: `step ${i}`, operationId: `op-${i}`, at: new Date().toISOString() });
+  const kept = trace.snapshot();
+  assert.equal(kept.length, 48);
+  assert.equal(kept[0]!.at, started, "the turn's beginning stays");
+  assert.equal(kept.at(-1)!.label, "step 79");
+  const ui: any = {};
+  vm.runInNewContext(fs.readFileSync("public/assets/activity-ui.js", "utf8").replace(/export function/g, "function"), ui);
+  const renderChatActivity = ui.renderChatActivity as (options: object) => string;
+  const total = (html: string) => /<summary>[\s\S]*?<time>([^<]*)<\/time>/.exec(html)?.[1];
+  assert.match(total(renderChatActivity({ activity: kept, pending: true, createdAt: started }))!, /55m|55 min|0?55:/);
+  // Sent before its first recorded step: counted from the send.
+  const later = [{ ...kept[0]!, at: new Date(Date.now() - 60_000).toISOString() }];
+  assert.match(total(renderChatActivity({ activity: later, pending: true, createdAt: started }))!, /55m|55 min|0?55:/);
+});

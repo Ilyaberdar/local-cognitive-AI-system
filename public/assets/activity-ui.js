@@ -27,7 +27,9 @@ const duration = milliseconds => {
 export function renderChatActivity({ activity = [], pending = false, progress, createdAt, agents = "", format = String } = {}) {
   if (!pending && !activity.length) return "";
   const last = activity.at(-1);
-  const start = activity[0]?.at || createdAt;
+  // A turn began when it was sent, or at its first recorded step if that is earlier.
+  const first = Date.parse(activity[0]?.at), sent = Date.parse(createdAt);
+  const start = pending && Number.isFinite(sent) && !(first < sent) ? createdAt : activity[0]?.at || createdAt;
   const end = pending ? Date.now() : Date.parse(last?.updatedAt || createdAt);
   const failed = last?.status === "error";
   const label = pending ? activityLabel(progress || last) : failed ? "Activity interrupted" : "Activity";

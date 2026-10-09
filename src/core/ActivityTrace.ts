@@ -30,7 +30,8 @@ export class ActivityTrace {
         detail: event.detail?.slice(0, 600), note: event.note?.slice(-6000), model: event.model,
         agentRunId: event.agentRunId, operationId: event.operationId, at: event.at, updatedAt: event.at,
         status: error ? "error" : terminal || event.phase === "tool_result" ? "complete" : "active" });
-      this.entries = this.entries.slice(-48);
+      // The first entry stays: it is when the turn began, and its total time is counted from it.
+      if (this.entries.length > 48) this.entries = [this.entries[0]!, ...this.entries.slice(-47)];
     }
     return this.snapshot();
   }
