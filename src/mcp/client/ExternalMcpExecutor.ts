@@ -5,7 +5,7 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { PendingApproval, ToolExecutionResult } from "../../types";
 import type { OperationInput } from "../../tools/OperationExecutor";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../../utils/fileStore";
-import { compileToolArgumentErrors, snapshotArguments } from "./schema";
+import { compileToolArgumentErrors, parseArgumentsJson, snapshotArguments } from "./schema";
 import type { McpApprovalMode, McpClientService, McpDiscoveredTool } from "./types";
 
 type Outcome = { result?: ToolExecutionResult; pendingApproval?: PendingApproval };
@@ -98,7 +98,7 @@ export class ExternalMcpExecutor {
 
     const toolId = String(input.arguments.toolId);
     let args: Record<string, unknown>;
-    try { args = snapshotArguments(JSON.parse(String(input.arguments.argumentsJson))); }
+    try { args = snapshotArguments(parseArgumentsJson(String(input.arguments.argumentsJson))); }
     catch (error) {
       const reason = error instanceof SyntaxError ? ` (${error.message.slice(0, 160)})` : "";
       return { result: failure(`argumentsJson must be one serialized JSON object matching the tool's input schema${reason}.`) };

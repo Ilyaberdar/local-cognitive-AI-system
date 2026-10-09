@@ -54,3 +54,32 @@ export function snapshotArguments(value: unknown): Record<string, unknown> {
   if (!result || typeof result !== "object" || Array.isArray(result)) throw new McpClientError("invalid_arguments");
   return result as Record<string, unknown>;
 }
+
+/** A tool call's `argumentsJson` as a model writes it. Local models often put raw line breaks
+ * inside a string (Python code for an editor), escape like Python (`\d`, `\.`), or add text after
+ * the object; such a call would cost a step to correct. Inside strings, raw control characters are
+ * escaped and an unknown escape is read as the backslash it meant; the first complete JSON value
+ * is read. What is read is validated against the tool's schema, and that object is exactly what
+ * the approval shows and the tool receives. */
+export function parseArgumentsJson(text: string): unknown {
+  try { return JSON.parse(text); } catch (error) {
+    let repaired = "", inString = false, depth = 0;
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index]!;
+      if (inString) {
+        if (char === "\\") {
+          const next = text[index + 1];
+          if (next !== undefined && "\"\\/bfnrtu".includes(next)) { repaired += char + next; index++; }
+          else repaired += "\\\\";
+          continue;
+        }
+        if (char === "\"") inString = false;
+        else if (char < " ") { repaired += char === "\n" ? "\\n" : char === "\r" ? "\\r" : char === "\t" ? "\\t" : `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`; continue; }
+      } else if (char === "\"") inString = true;
+      else if (char === "{" || char === "[") depth++;
+      else if (char === "}" || char === "]") { depth--; if (depth === 0) { repaired += char; break; } }
+      repaired += char;
+    }
+    try { return JSON.parse(repaired); } catch { throw error; }
+  }
+}
