@@ -250,7 +250,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       <button class="ghost-button mm-settings-save" type="submit" ${off}>${state.gpuSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button>
       ${state.gpuError ? renderModelError(state.gpuError) : state.gpuSaved ? '<div class="subtle mm-context-feedback" role="status">Saved. The next model you load follows it.</div>' : ""}
     </form>
-    <div class="mm-settings-copy"><h3>Rebalance</h3><p class="subtle">Load the loaded models again by these settings, the largest first, once their running requests finish. They are briefly unavailable.</p>
+    <div class="mm-settings-copy mm-gpu-rebalance"><h3>Rebalance</h3><p class="subtle">Load the loaded models again by these settings, the largest first, once their running requests finish. They are briefly unavailable.</p>
       <button type="button" class="ghost-button" data-mm-rebalance ${state.rebalancing || inactive ? "disabled" : ""}>${state.rebalancing ? '<span class="button-spinner" aria-hidden="true"></span>Rebalancing…' : "Rebalance loaded models"}</button>
       ${state.rebalanceMessage ? `<div class="subtle mm-context-feedback" role="status">${escape(state.rebalanceMessage)}</div>` : ""}</div>`;
   }
