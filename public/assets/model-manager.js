@@ -246,7 +246,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       <label class="mm-settings-field"><span>Split by</span><select data-mm-gpu="mode" ${off}>
         <option value="layer" ${mode === "layer" ? "selected" : ""}>Layers (any GPU)</option>
         <option value="row" ${mode === "row" ? "selected" : ""}>Rows (NVIDIA; the main GPU also holds the context)</option></select></label>
-      <fieldset class="mm-settings-field"><legend>GPUs models may use</legend>${gpus.length ? gpus.map((gpu) => `<label class="mm-gpu-choice"><input type="checkbox" data-mm-gpu-device="${escape(gpu.id)}" ${!chosen.length || chosen.includes(gpu.id) ? "checked" : ""} ${off} /> GPU ${escape(gpu.index)} · ${escape(gpu.name)} · ${bytes(gpu.totalBytes)}</label>`).join("") : '<span class="subtle">No NVIDIA GPUs found.</span>'}</fieldset>
+      <fieldset class="mm-settings-field mm-gpu-field"><legend>GPUs models may use</legend><div class="mm-gpu-list">${gpus.length ? gpus.map((gpu) => `<label class="mm-gpu-choice"><input type="checkbox" data-mm-gpu-device="${escape(gpu.id)}" ${!chosen.length || chosen.includes(gpu.id) ? "checked" : ""} ${off} /> GPU ${escape(gpu.index)} · ${escape(gpu.name)} · ${bytes(gpu.totalBytes)}</label>`).join("") : '<span class="subtle">No NVIDIA GPUs found.</span>'}</div></fieldset>
       <button class="ghost-button mm-settings-save" type="submit" ${off}>${state.gpuSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button>
       ${state.gpuError ? renderModelError(state.gpuError) : state.gpuSaved ? '<div class="subtle mm-context-feedback" role="status">Saved. The next model you load follows it.</div>' : ""}
     </form>
