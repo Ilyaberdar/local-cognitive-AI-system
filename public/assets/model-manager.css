@@ -266,4 +266,7 @@ html[data-motion=off] .model-manager .mm-loading-spinner { animation: button-spi
 .mm-gpu-field legend { float: left; width: 100%; padding: 0; margin: 0 0 5px; }
 .mm-gpu-list { clear: both; display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--control-bg); font-size: calc(12px * var(--font-scale, 1)); }
 .mm-gpu-choice { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+/* Its own section under the form's Save, as the panels are spaced elsewhere. */
+.mm-gpu-rebalance { margin-top: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+.mm-gpu-rebalance > button { margin-top: 12px; }
 .mm-gpu-inactive { margin: 6px 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2, rgba(127,127,127,.12)); color: var(--text); font-size: calc(12px * var(--font-scale, 1)); }
