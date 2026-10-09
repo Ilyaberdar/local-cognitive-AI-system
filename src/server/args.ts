@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "connect-key" | "devices" | "revoke-device" | "reset-owner";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -22,10 +22,12 @@ export interface ServerArgs {
   ttlMinutes?: number;
   /** revoke-device: the device id from `devices`. */
   deviceId?: string;
+  /** folders: list, add <path> or remove <id>. */
+  folders?: { action: "list" } | { action: "add"; path: string; label?: string; allowCreate: boolean } | { action: "remove"; id: string };
   yes: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "connect-key", "devices", "revoke-device", "reset-owner"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "connect-key", "devices", "revoke-device", "reset-owner", "folders"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -38,6 +40,9 @@ Commands:
   devices                List computers that can connect to this server
   revoke-device <id>     Remove a computer's access
   reset-owner --yes      Unlink the server from its account and remove every computer
+  folders                List the folders connected computers may browse and use
+  folders add <path>     Share a folder with connected computers (--label, --allow-create)
+  folders remove <id>    Stop sharing a folder
   help      Show this help
 
 Options:
@@ -54,6 +59,8 @@ Options:
   --no-wait                 drain: return once draining started
   --ttl <minutes>           connect-key: key lifetime (1-60, default: 10)
   --yes                     reset-owner: confirm
+  --label <name>            folders add: the name computers see
+  --allow-create            folders add: computers may make folders in it
   --json                    Machine-readable output
   --quiet                   status: no output, only the exit code
   --allow-root              Allow running as root (not recommended)`;
@@ -73,27 +80,35 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
       init: { type: "boolean" }, "env-file": { type: "string" }, "llama-runtime-dir": { type: "string" }, "drain-timeout": { type: "string" },
       "vault-key-file": { type: "string" }, timeout: { type: "string" }, "no-wait": { type: "boolean" }, json: { type: "boolean" },
       quiet: { type: "boolean" }, "allow-root": { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean" },
-      ttl: { type: "string" }, yes: { type: "boolean" }
+      ttl: { type: "string" }, yes: { type: "boolean" }, label: { type: "string" }, "allow-create": { type: "boolean" }
     } });
   } catch (error) { throw new CliError(error instanceof Error ? error.message : String(error), ExitCode.usage); }
   const { values, positionals } = parsed;
   const command = values.help ? "help" : values.version ? "version" : (positionals[0] ?? "help") as ServerCommand;
   if (!commands.includes(command)) throw new CliError(`Unknown command: ${command}`, ExitCode.usage);
-  const extra = command === "revoke-device" ? 2 : 1;
+  const extra = command === "revoke-device" ? 2 : command === "folders" ? 3 : 1;
   if (positionals.length > extra) throw new CliError(`Unexpected argument: ${positionals[extra]}`, ExitCode.usage);
   const deviceId = command === "revoke-device" ? positionals[1] : undefined;
   if (command === "revoke-device" && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError("revoke-device needs a device id (see `devices`).", ExitCode.usage);
   if (command === "reset-owner" && !values.yes) throw new CliError("reset-owner removes every computer's access: add --yes to confirm.", ExitCode.usage);
+  let folders: ServerArgs["folders"];
+  if (command === "folders") {
+    const [action = "list", target] = positionals.slice(1);
+    if (action === "list" && !target) folders = { action };
+    else if (action === "add" && target) folders = { action, path: target, ...(values.label ? { label: values.label } : {}), allowCreate: Boolean(values["allow-create"]) };
+    else if (action === "remove" && target) folders = { action, id: target };
+    else throw new CliError("Use: folders, folders add <path> [--label <name>] [--allow-create], or folders remove <id>.", ExitCode.usage);
+  }
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "connect-key", "devices", "revoke-device", "reset-owner"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "connect-key", "devices", "revoke-device", "reset-owner", "folders"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,
     init: Boolean(values.init), envFile: values["env-file"], llamaRuntimeDir: values["llama-runtime-dir"],
     drainTimeoutSec: integer(values["drain-timeout"] ?? values.timeout, values.timeout !== undefined ? "timeout" : "drain-timeout", 0, 86_400),
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
-    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes)
+    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {})
   };
 };

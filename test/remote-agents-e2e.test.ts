@@ -149,4 +149,19 @@ test("a server chat's attachment arrives in chunks across a dropped connection a
   for (const ref of ["<output>/notes.md", "<server>/private.txt", "<output>/../private.txt", "<server>/missing.txt"]) {
     assert.equal(await failure(runtime.request("files.read", { sessionId: session.id, path: ref, as: "text" })), "file_unavailable", ref);
   }
+
+  // Folders: the server's own Projects, and one its admin shares while it runs (no restart).
+  const work = path.join(path.dirname(server.root), "work");
+  fs.mkdirSync(path.join(work, "app"), { recursive: true });
+  const shared = server.run("folders", "add", work, "--label", "Work", "--json");
+  assert.equal(shared.status, 0, shared.stderr);
+  const roots = await runtime.request<Array<{ rootId: string; label: string }>>("fs.roots", {});
+  assert.deepEqual(roots.map(root => root.label), ["Projects", "Work"]);
+  assert.equal(JSON.stringify(roots).includes(path.dirname(server.root)), false);
+  const listing = await runtime.request<{ entries: Array<{ name: string }> }>("fs.browse", { rootId: roots[1]!.rootId });
+  assert.deepEqual(listing.entries.map(entry => entry.name), ["app"]);
+  assert.deepEqual(await runtime.request("fs.mkdir", { rootId: "projects", path: [], name: "site" }), { rootId: "projects", path: ["site"] });
+  assert.ok(fs.statSync(path.join(server.root, "projects", "site")).isDirectory());
+  assert.equal(server.run("folders", "remove", roots[1]!.rootId).status, 0);
+  assert.equal(await failure(runtime.request("fs.browse", { rootId: roots[1]!.rootId })), "not_found", "unshared at once");
 });

@@ -31,6 +31,10 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   // A chat's files: Review reads them as text, a saved copy in parts (scrubbed paths, checked as Review is).
   "files.stat": { kind: "request", timeoutMs: 60_000 },
   "files.read": { kind: "request", timeoutMs: 30_000 },
+  // Shared folders (R5-4f): a place is a root id and a list of names, never a path of the host.
+  "fs.roots": { kind: "request", timeoutMs: 15_000 },
+  "fs.browse": { kind: "request", timeoutMs: 15_000 },
+  "fs.mkdir": { kind: "request", timeoutMs: 15_000 },
   "sessions.settings.update": { kind: "request", timeoutMs: 30_000 },
   "models.available": { kind: "request", timeoutMs: 45_000 },
   "chat.runs.start": { kind: "command", timeoutMs: 30_000 },
