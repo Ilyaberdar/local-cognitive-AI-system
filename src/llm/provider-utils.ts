@@ -141,52 +141,59 @@ export const readResponseError = (payload: Record<string, unknown>): string | un
   return undefined;
 };
 
+const count = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+const sum = (...values: Array<number | undefined>): number | undefined =>
+  values.some(value => value !== undefined) ? values.reduce<number>((total, value) => total + (value ?? 0), 0) : undefined;
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" ? value as Record<string, unknown> : {};
+
+/** The tokens a provider reported for one response, in one shape for every provider: the input
+ * includes cached prompt tokens, the output includes reasoning, and nothing unreported becomes 0.
+ * OpenAI chat and Responses, Anthropic (whose input excludes the cache), Gemini's usageMetadata
+ * (whose thoughts are outside the candidates), Ollama's eval counts and llama.cpp's timings. */
 export const readUsage = (payload: unknown): TokenUsage | undefined => {
-  if (!payload || typeof payload !== "object") {
-    return undefined;
+  const body = record(payload);
+  let usage: TokenUsage;
+  if (body.usage && typeof body.usage === "object") {
+    const u = record(body.usage);
+    const cacheWrite = count(u.cache_creation_input_tokens), cacheRead = count(u.cache_read_input_tokens);
+    const anthropic = cacheWrite !== undefined || cacheRead !== undefined;
+    const prompt = count(u.input_tokens) ?? count(u.prompt_tokens);
+    const inputDetails = record(u.input_tokens_details ?? u.prompt_tokens_details);
+    const outputDetails = record(u.output_tokens_details ?? u.completion_tokens_details);
+    usage = {
+      inputTokens: anthropic ? sum(prompt, cacheWrite, cacheRead) : prompt,
+      outputTokens: count(u.output_tokens) ?? count(u.completion_tokens),
+      totalTokens: count(u.total_tokens),
+      cachedInputTokens: anthropic ? cacheRead : count(inputDetails.cached_tokens),
+      cacheWriteTokens: cacheWrite,
+      reasoningTokens: count(outputDetails.reasoning_tokens)
+    };
+  } else if (body.usageMetadata && typeof body.usageMetadata === "object") {
+    const u = record(body.usageMetadata);
+    const candidates = count(u.candidatesTokenCount), thoughts = count(u.thoughtsTokenCount);
+    usage = {
+      inputTokens: sum(count(u.promptTokenCount), count(u.toolUsePromptTokenCount)),
+      // A response with only thinking reports no candidates; its output is still the thoughts.
+      outputTokens: candidates === undefined && thoughts === undefined ? undefined : sum(candidates, thoughts),
+      totalTokens: count(u.totalTokenCount),
+      cachedInputTokens: count(u.cachedContentTokenCount),
+      reasoningTokens: thoughts
+    };
+  } else if (count(body.prompt_eval_count) !== undefined || count(body.eval_count) !== undefined) {
+    usage = { inputTokens: count(body.prompt_eval_count), outputTokens: count(body.eval_count) };
+  } else {
+    usage = {};
   }
-
-  const record = payload as Record<string, unknown>;
-  const usage = record.usage;
-
-  if (!usage || typeof usage !== "object") {
-    return undefined;
-  }
-
-  const usageRecord = usage as Record<string, unknown>;
-
-  const inputTokens =
-    typeof usageRecord.input_tokens === "number"
-      ? usageRecord.input_tokens
-      : typeof usageRecord.prompt_tokens === "number"
-        ? usageRecord.prompt_tokens
-        : undefined;
-  const outputTokens =
-    typeof usageRecord.output_tokens === "number"
-      ? usageRecord.output_tokens
-      : typeof usageRecord.completion_tokens === "number"
-        ? usageRecord.completion_tokens
-        : undefined;
-  const totalTokens =
-    typeof usageRecord.total_tokens === "number"
-      ? usageRecord.total_tokens
-      : typeof inputTokens === "number" || typeof outputTokens === "number"
-        ? (inputTokens ?? 0) + (outputTokens ?? 0)
-        : undefined;
-
-  if (
-    typeof inputTokens !== "number" &&
-    typeof outputTokens !== "number" &&
-    typeof totalTokens !== "number"
-  ) {
-    return undefined;
-  }
-
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens
-  };
+  // llama.cpp's own timings fill what its OpenAI-style usage left out.
+  const timings = record(body.timings);
+  if (usage.inputTokens === undefined && count(timings.prompt_n) !== undefined) usage.inputTokens = sum(count(timings.prompt_n), count(timings.cache_n));
+  if (usage.outputTokens === undefined) usage.outputTokens = count(timings.predicted_n);
+  if (usage.cachedInputTokens === undefined && count(timings.cache_n)) usage.cachedInputTokens = count(timings.cache_n);
+  if (usage.totalTokens === undefined && usage.inputTokens !== undefined && usage.outputTokens !== undefined) usage.totalTokens = usage.inputTokens + usage.outputTokens;
+  const known = Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== undefined)) as TokenUsage;
+  return known.inputTokens === undefined && known.outputTokens === undefined && known.totalTokens === undefined ? undefined : known;
 };
 
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
