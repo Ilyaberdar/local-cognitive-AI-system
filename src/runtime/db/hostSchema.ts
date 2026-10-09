@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Migration } from "./HostDatabase";
 
 /** Append-only once released: a shipped migration is never edited, only followed by a new one.
@@ -120,5 +120,51 @@ CREATE TABLE remote_grants(
 ) STRICT;
 CREATE UNIQUE INDEX remote_grants_active_device_key ON remote_grants(device_spki_sha256) WHERE status = 'active';
 `);
+  }
+}, {
+  // The usage ledger (spec §10): one row per request to a model, its tokens as counts (NULL when
+  // the provider reported none), the account it ran for and its delivery to the Cloud. The v1
+  // tables were never written; they are replaced.
+  version: 3, name: "usage_ledger",
+  up(db) {
+    db.exec(`
+DROP TABLE IF EXISTS usage_outbox;
+DROP TABLE IF EXISTS usage_events;
+CREATE TABLE usage_events(
+  event_id TEXT PRIMARY KEY,
+  execution_host_id TEXT NOT NULL,
+  account_id TEXT,
+  call_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL CHECK (attempt >= 1),
+  run_ref TEXT,
+  session_ref TEXT,
+  origin TEXT,
+  purpose TEXT,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('completed','rejected','failed','cancelled')),
+  http_status INTEGER,
+  usage_source TEXT NOT NULL CHECK (usage_source IN ('reported','estimated','unknown')),
+  input_tokens INTEGER CHECK (input_tokens >= 0),
+  output_tokens INTEGER CHECK (output_tokens >= 0),
+  total_tokens INTEGER CHECK (total_tokens >= 0),
+  cached_input_tokens INTEGER CHECK (cached_input_tokens >= 0),
+  cache_write_tokens INTEGER CHECK (cache_write_tokens >= 0),
+  reasoning_tokens INTEGER CHECK (reasoning_tokens >= 0),
+  sync_state TEXT NOT NULL CHECK (sync_state IN ('pending','sent','acked','local_only')),
+  sync_attempts INTEGER NOT NULL DEFAULT 0,
+  next_sync_at TEXT,
+  cloud_received_at TEXT,
+  sync_error TEXT
+) STRICT;
+CREATE INDEX usage_events_time ON usage_events(occurred_at);
+CREATE INDEX usage_events_sync ON usage_events(sync_state, account_id, next_sync_at);
+`);
+    const meta = db.prepare("INSERT OR IGNORE INTO host_meta(key, value) VALUES (?, ?)");
+    meta.run("usage.runtime_id", randomUUID());
+    meta.run("usage.id_salt", randomBytes(32).toString("base64url"));
+    meta.run("usage.ledger_started_at", new Date().toISOString());
   }
 }];

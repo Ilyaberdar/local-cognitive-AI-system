@@ -20,6 +20,8 @@ import { processRunRegistry } from "./api/ProcessRunRegistry";
 import { WorkflowRunner } from "./workflows/WorkflowRunner";
 import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
+import { RemoteHostStore } from "./remote/host/RemoteHostStore";
+import { UsageLedger } from "./usage/UsageLedger";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
 import { createChatScrubber, withoutAttachmentData } from "./runtime/chatOperations";
@@ -59,9 +61,15 @@ export interface BackendHandle {
   interruptActiveWork(): number;
   dispose(): Promise<void>;
   host?: HostServices;
+  /** This runtime's usage ledger; absent when host.db could not be opened on a desktop. */
+  usage?: UsageLedger;
 }
 
-export interface BackendOptions { runtimeKind?: RuntimeKind }
+export interface BackendOptions {
+  runtimeKind?: RuntimeKind;
+  /** The account signed in to this computer (desktop); a server's account is its owner. */
+  usageAccount?: () => string | undefined;
+}
 
 export const startBackend = async (config: AppConfig = defaultConfig, integrations: IntegrationRuntimeOptions = {}, options: BackendOptions = {}): Promise<BackendHandle> => {
   // One runtime owns a data directory; a second backend or MCP server on it is refused.
@@ -69,17 +77,28 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const lock = await DataRootLock.acquire(config.appDataDir, options.runtimeKind ?? "server", appVersion(), { waitMs: 3000 });
   if (lock.previousShutdown === "unclean") logger.warn("The previous runtime did not shut down cleanly", { kind: lock.previousOwner?.kind });
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
-  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, integrations);
+  // host.db: the server's durable runs, and every runtime's usage ledger.
+  let database: HostDatabase | undefined;
+  try { database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations); }
+  catch (error) {
+    if (options.runtimeKind === "server") { lock.release(); throw error; }
+    logger.warn("Usage is not recorded: host.db could not be opened", { message: error instanceof Error ? error.message : String(error) });
+  }
+  const remoteStore = database && options.runtimeKind === "server" ? new RemoteHostStore(database) : undefined;
+  const usage = database ? new UsageLedger(database, () => remoteStore
+    ? { accountId: remoteStore.owner(), hostId: remoteStore.hostId() }
+    : { accountId: options.usageAccount?.() }, logger) : undefined;
+  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, { ...integrations, ...(usage ? { usage } : {}) });
   let runtime;
   try { runtime = await runtimeManager.init(); }
-  catch (error) { lock.release(); throw error; }
+  catch (error) { database?.close(); lock.release(); throw error; }
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = runtime.sessionIndexStore;
   // The server keeps chat turns durable across disconnects and restarts (R4); the desktop does not yet.
   let host: HostServices | undefined;
   if (options.runtimeKind === "server") {
-    try { host = openHostServices(config, runtimeManager, sessionIndexStore); }
-    catch (error) { await runtimeManager.dispose(); lock.release(); throw error; }
+    try { host = openHostServices(database!, config, runtimeManager, sessionIndexStore); }
+    catch (error) { await runtimeManager.dispose(); database?.close(); lock.release(); throw error; }
   }
 
   let server: Server | undefined;
@@ -94,7 +113,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     const closed = server ? new Promise<void>((resolve) => server!.close(() => resolve())) : Promise.resolve();
     await host?.runService.dispose();
     await runtimeManager.dispose();
-    host?.database.close();
+    database?.close();
     server?.closeAllConnections();
     await closed;
     lock.release();
@@ -198,7 +217,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting();
     try { runtimeManager.getRuntime().synthesis.stopAccepting(); } catch { /* Runtime not built. */ } };
   const interruptActiveWork = () => processRunRegistry.cancelAll() + (host?.runService.interruptAll() ?? 0);
-  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}) };
+  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}) };
   } catch (error) { await dispose(); throw error; }
 };
 
@@ -209,36 +228,33 @@ export const deviceRunMetadata = (run: { runId: string; attachments?: ChatAttach
   chatRunId: run.runId, deviceRun: true, pluginIds: [] as string[], ...(run.attachments?.length ? { attachments: run.attachments } : {})
 });
 
-/** Opens host.db, interrupts turns a crash left running, and wires chat runs to the shared engine. */
-const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore): HostServices => {
-  const database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations);
-  try {
-    const journal = new EventJournal(database);
-    const runService = new RunService({
-      host: database, journal, logger,
-      sessionExists: async sessionId => Boolean(await sessionIndexStore.get(sessionId)),
-      legacyBusy: sessionId => processRunRegistry.hasActiveSession(sessionId),
-      // Events are written as a device may see them: no folder of this server.
-      scrubber: createChatScrubber({ runtimeManager, hostDirectories: [path.dirname(config.appDataDir)] }),
-      // The same entry, channel and profile as the local chat: one history per session.
-      execute: async (run, hooks) => {
-        const settings = await runtimeManager.getSettings();
-        // The first message names a new chat; a chat that has a name (renamed on a device) keeps it.
-        const title = (await sessionIndexStore.get(run.sessionId))?.title;
-        const sessionTitle = title && title !== "New chat" ? title : undefined;
-        const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId, sessionTitle,
-          metadata: deviceRunMetadata(run), signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
-        return { ...(result.result.error ? { error: result.result.error } : {}) };
-      },
-      // The finished turn as a device receives it: attachment contents stay on the host.
-      completedTurn: async (sessionId, runId) => (await loadSessionMessages(runtimeManager, sessionId, 4)).messages.filter(message => message.runId === runId).map(withoutAttachmentData)
-    });
-    const recovered = runService.recover();
-    if (recovered) logger.warn("Chat turns were interrupted by the previous shutdown", { count: recovered });
-    journal.compact();
-    setInterval(() => { try { journal.compact(); } catch (error) { logger.warn("Event journal compaction failed", { message: error instanceof Error ? error.message : String(error) }); } }, 3_600_000).unref();
-    return { database, journal, runService, ledger: new CommandLedger(database) };
-  } catch (error) { database.close(); throw error; }
+/** Interrupts turns a crash left running, and wires chat runs to the shared engine. */
+const openHostServices = (database: HostDatabase, config: AppConfig, runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore): HostServices => {
+  const journal = new EventJournal(database);
+  const runService = new RunService({
+    host: database, journal, logger,
+    sessionExists: async sessionId => Boolean(await sessionIndexStore.get(sessionId)),
+    legacyBusy: sessionId => processRunRegistry.hasActiveSession(sessionId),
+    // Events are written as a device may see them: no folder of this server.
+    scrubber: createChatScrubber({ runtimeManager, hostDirectories: [path.dirname(config.appDataDir)] }),
+    // The same entry, channel and profile as the local chat: one history per session.
+    execute: async (run, hooks) => {
+      const settings = await runtimeManager.getSettings();
+      // The first message names a new chat; a chat that has a name (renamed on a device) keeps it.
+      const title = (await sessionIndexStore.get(run.sessionId))?.title;
+      const sessionTitle = title && title !== "New chat" ? title : undefined;
+      const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId, sessionTitle,
+        metadata: deviceRunMetadata(run), signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
+      return { ...(result.result.error ? { error: result.result.error } : {}) };
+    },
+    // The finished turn as a device receives it: attachment contents stay on the host.
+    completedTurn: async (sessionId, runId) => (await loadSessionMessages(runtimeManager, sessionId, 4)).messages.filter(message => message.runId === runId).map(withoutAttachmentData)
+  });
+  const recovered = runService.recover();
+  if (recovered) logger.warn("Chat turns were interrupted by the previous shutdown", { count: recovered });
+  journal.compact();
+  setInterval(() => { try { journal.compact(); } catch (error) { logger.warn("Event journal compaction failed", { message: error instanceof Error ? error.message : String(error) }); } }, 3_600_000).unref();
+  return { database, journal, runService, ledger: new CommandLedger(database) };
 };
 
 if (require.main === module) void (async () => {
