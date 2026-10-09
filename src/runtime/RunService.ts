@@ -58,7 +58,8 @@ export class RunService {
 
   /** Accepts a chat turn. `scope` is who asks (account and device, or the local profile); the
    * client's `commandId` is the idempotency key within that scope. */
-  async start(scope: string, request: { commandId: string; sessionId: string; input: string }): Promise<CommandAck> {
+  /** `admit` refuses a new turn (it throws) after a resent command has had its first answer. */
+  async start(scope: string, request: { commandId: string; sessionId: string; input: string }, admit?: () => Promise<void>): Promise<CommandAck> {
     const input = request.input.trim();
     if (!input) throw new RunServiceError("The message is empty.", "invalid_input");
     if (input.length > MAX_INPUT_CHARS) throw new RunServiceError("The message is too long.", "invalid_input");
@@ -66,6 +67,7 @@ export class RunService {
     if (replay) return replay;
     if (!this.accepting) throw new RunServiceError("The server is shutting down. Try again when it is back.", "host_draining");
     if (!await this.deps.sessionExists(request.sessionId)) throw new RunServiceError("The chat does not exist on the server.", "session_unknown");
+    await admit?.();
     const legacyBusy = this.deps.legacyBusy?.(request.sessionId) ?? false;
     const payloadJson = canonical({ sessionId: request.sessionId, input });
     const at = this.now().toISOString();

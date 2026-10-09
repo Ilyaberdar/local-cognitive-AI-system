@@ -266,3 +266,13 @@ test("workflow agent trace includes a waiting adviser before the main agent star
   assert.equal((await read("owned", foreignId)).status, 404);
   assert.equal((await read("other", baseId)).status, 404);
 });
+
+test("a paired device's turn never runs in a chat the host gave full access", async t => {
+  const f = await fixture(t);
+  await f.settings.update(f.ordinary.id, { defaultAccessMode: "full" });
+  f.setScript(() => final("Done."));
+  await assert.rejects(f.engine.process({ input: "Delete the logs", actor: f.actor(f.ordinary.id), metadata: { deviceRun: true } }), /full access on the server/);
+  assert.equal(f.calls.length, 0, "no model was asked");
+  const local = await f.engine.process({ input: "Delete the logs", actor: f.actor(f.ordinary.id) });
+  assert.ok(local, "the host's own screen still uses it");
+});

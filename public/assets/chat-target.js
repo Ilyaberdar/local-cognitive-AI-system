@@ -362,7 +362,7 @@ function renderRemoteAgents({ mode, settings, providers, models, hostName }) {
   const cards = agents.map((agent, index) => `<div class="code-agent-card hypothesis-agent-card" data-hypothesis-agent-index="${index}" data-setup-agent-id="${escape(agent.id)}">
       <input type="hidden" name="hypothesisAgentId:${index}" value="${escape(agent.id)}" />
       <div class="field"><label>Name</label><input name="hypothesisAgentName:${index}" value="${escape(agent.name)}" maxlength="60" /></div>
-      <div class="field"><label>Role</label><select name="hypothesisAgentRole:${index}" ${index < 3 ? "disabled" : ""}>${["support", "attack", "judge", "advisor"].map(value => option(value, agent.role)).join("")}</select>
+      <div class="field"><label>Role</label><select name="hypothesisAgentRole:${index}" ${index < 3 ? "disabled" : ""}>${(index < 3 ? ["support", "attack", "judge", "advisor"] : ["advisor"]).map(value => option(value, agent.role)).join("")}</select>
         ${index < 3 ? `<input type="hidden" name="hypothesisAgentRole:${index}" value="${escape(agent.role)}" />` : ""}</div>
       <div class="field"><label>Provider</label>${providerSelect(`hypothesisAgentProvider:${index}`, `hypothesisAgentModel:${index}`, agent.providerId, agent.role === "judge" ? judges : providers)}</div>
       <div class="field hypothesis-agent-model-field" data-hypothesis-agent-model-index="${index}"><label>Model</label>${remoteModelSelect(`hypothesisAgentModel:${index}`, agent.providerId, agent.model ?? "", models)}</div>
@@ -417,6 +417,8 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
 
 /** Reads the server chat's setup form; nothing is resolved against this computer's models. */
 export function readRemoteSetup(form, settings) {
+  // A chat that is the server's alone shows its setup read-only: nothing on it is read back.
+  if (form.querySelector("fieldset.remote-setup-fields")?.disabled) return settings;
   const data = new FormData(form);
   const text = name => String(data.get(name) ?? "").trim();
   const providerId = String(data.get("defaultProvider") || settings.defaultTarget?.providerId || "");

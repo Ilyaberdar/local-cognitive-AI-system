@@ -209,7 +209,7 @@ const openHostServices = (config: AppConfig, runtimeManager: RuntimeManager, ses
       execute: async (run, hooks) => {
         const settings = await runtimeManager.getSettings();
         const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId,
-          metadata: { chatRunId: run.runId }, signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
+          metadata: { chatRunId: run.runId, deviceRun: true }, signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
         return { ...(result.result.error ? { error: result.result.error } : {}) };
       },
       // The finished turn as a device receives it: attachment contents stay on the host.

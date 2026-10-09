@@ -21,6 +21,8 @@ const uuid = z.uuid();
 const target = z.object({ providerId: z.string().min(1).max(100), model: z.string().max(300).optional() }).strict();
 const agentFields = { id: z.string().trim().min(1).max(100), name: z.string().trim().min(1).max(60).refine(value => !/[\u0000-\u001f\u007f]/.test(value)),
   providerId: z.string().min(1).max(100), model: z.string().max(300).optional() };
+// An agent's id names its task and progress row; its name is how a message @mentions it.
+const AGENT_ID = /^[A-Za-z0-9_-]{1,100}$/, AGENT_NAME = /^[\p{L}\p{N}_-]{1,60}$/u;
 const schemas = {
   sessionsCreate: z.object({ title: z.string().max(200).optional() }).strict().optional(),
   session: z.object({ sessionId: id }).strict(),
@@ -108,11 +110,24 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     const reason = chatHostOnly(await runtime().sessionSettingsStore.get(sessionId));
     if (reason) throw new RemoteOperationError(reason, "unsupported");
   };
-  /** Every model an agent names must be one of the host's providers ("local" only judges). */
-  const checkProviders = (patch: z.infer<typeof schemas.settingsUpdate>["patch"]) => {
+  /** Every model an agent names must be one of the host's providers ("local" only judges); ids and
+   * names must be usable and unique. Agents saved as they are on the host are taken as they are. */
+  const checkAgents = (patch: z.infer<typeof schemas.settingsUpdate>["patch"], current: SessionSettings) => {
     const known = new Set(runtime().providerDescriptors.map(provider => provider.id));
-    const judges = [...(patch.hypothesisAgents ?? []).filter(agent => agent.role === "judge"), ...(patch.debate?.judge ? [patch.debate.judge] : [])];
-    const others = [patch.defaultTarget, ...(patch.codeAgents ?? []), ...(patch.hypothesisAgents ?? []).filter(agent => agent.role !== "judge"),
+    const same = (agent: { id: string; name: string; providerId: string; model?: string }, saved: Array<{ id: string; name: string; providerId: string; model?: string }>) =>
+      saved.some(item => item.id === agent.id && item.name === agent.name && item.providerId === agent.providerId && (item.model ?? "") === (agent.model ?? ""));
+    const codeAgents = (patch.codeAgents ?? []).filter(agent => !same(agent, current.codeAgents));
+    const hypothesisAgents = (patch.hypothesisAgents ?? []).filter(agent => !same(agent, current.hypothesisAgents));
+    for (const list of [patch.codeAgents ?? [], patch.hypothesisAgents ?? []]) {
+      if (new Set(list.map(agent => agent.id)).size < list.length) throw new RemoteOperationError("Two agents have the same id.", "invalid_request");
+      if (new Set(list.map(agent => agent.name.toLowerCase())).size < list.length) throw new RemoteOperationError("Two agents have the same name.", "invalid_request");
+    }
+    for (const agent of [...codeAgents, ...hypothesisAgents]) {
+      if (!AGENT_ID.test(agent.id) || agent.id === "main-model") throw new RemoteOperationError("An agent's id is letters, digits, - or _.", "invalid_request");
+      if (!AGENT_NAME.test(agent.name)) throw new RemoteOperationError(`Name ${publicError(agent.name)} cannot be @mentioned: use one word of letters, digits, - or _.`, "invalid_request");
+    }
+    const judges = [...hypothesisAgents.filter(agent => agent.role === "judge"), ...(patch.debate?.judge ? [patch.debate.judge] : [])];
+    const others = [patch.defaultTarget, ...codeAgents, ...hypothesisAgents.filter(agent => agent.role !== "judge"),
       patch.debate?.support, patch.debate?.attack].filter(item => item !== undefined);
     for (const item of [...judges.filter(judge => judge.providerId !== "local"), ...others]) {
       if (!known.has(item.providerId)) throw new RemoteOperationError(`The provider ${publicError(item.providerId)} does not exist on the server.`, "invalid_request");
@@ -196,9 +211,9 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       }
       const { sessionId, patch } = parse(schemas.settingsUpdate, payload);
       await requireSession(sessionId);
-      checkProviders(patch);
       const current = await runtime().sessionSettingsStore.get(sessionId);
       if (chatHostOnly(current)) throw new RemoteOperationError(CHAT_ON_HOST, "unsupported");
+      checkAgents(patch, current);
       // The chat type is mode plus debate, as the local chat screen saves it.
       const debate = patch.mode || patch.debate ? { debate: { ...patch.debate, ...(patch.mode ? { enabled: patch.mode === "hypothesis" } : {}) } } : {};
       // Agents take the chat's access mode, which a device cannot make full.
@@ -226,8 +241,8 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "chat.runs.start": (payload, context) => known(async () => {
       const request = parse(schemas.start, payload);
       await requireSession(request.sessionId);
-      await requireUsable(request.sessionId);
-      return deps.runService.start(deps.scopeOf(context), request);
+      // Checked after a resent command got its first answer, and again by the engine when it runs.
+      return deps.runService.start(deps.scopeOf(context), request, () => requireUsable(request.sessionId));
     }),
 
     "chat.runs.get": payload => known(() => {

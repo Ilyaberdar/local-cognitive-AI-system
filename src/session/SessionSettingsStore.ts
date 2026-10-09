@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { resolveProviderTarget } from "../llm/ProviderTargetResolver";
@@ -18,6 +19,9 @@ const maxHypothesisAdvisors = 5;
 const maxHypothesisAgents = 3 + maxHypothesisAdvisors;
 
 export class SessionSettingsStore {
+  /** One read-modify-write at a time per chat: two updates never lose each other's fields. */
+  private readonly queues = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly options: SessionSettingsStoreOptions,
     private readonly defaultTarget: ProviderTarget,
@@ -37,7 +41,16 @@ export class SessionSettingsStore {
     }
   }
 
-  async update(sessionId: string, patch: SessionSettingsPatch): Promise<SessionSettings> {
+  update(sessionId: string, patch: SessionSettingsPatch): Promise<SessionSettings> {
+    const previous = this.queues.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.applyUpdate(sessionId, patch));
+    const settled = next.catch(() => undefined);
+    this.queues.set(sessionId, settled);
+    void settled.then(() => { if (this.queues.get(sessionId) === settled) this.queues.delete(sessionId); });
+    return next;
+  }
+
+  private async applyUpdate(sessionId: string, patch: SessionSettingsPatch): Promise<SessionSettings> {
     const current = await this.get(sessionId);
     const next = this.normalize({
       ...current,
@@ -72,9 +85,18 @@ export class SessionSettingsStore {
     }
   }
 
+  /** Written beside the file and renamed over it: a reader sees the old settings or the new ones,
+   * never an empty or half-written file (which would read as the defaults). */
   private async save(sessionId: string, settings: SessionSettings): Promise<void> {
     await fs.mkdir(this.options.baseDir, { recursive: true });
-    await fs.writeFile(this.getPath(sessionId), JSON.stringify(settings, null, 2), "utf8");
+    const file = this.getPath(sessionId), temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporary, JSON.stringify(settings, null, 2), "utf8");
+      await fs.rename(temporary, file);
+    } catch (error) {
+      await fs.rm(temporary, { force: true });
+      throw error;
+    }
   }
 
   private normalize(settings: Partial<SessionSettings>): SessionSettings {

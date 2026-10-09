@@ -204,6 +204,7 @@ test("a server chat sets up subagents and debate agents with the server's own mo
   pick(app, "debateProfile", "security");
   app.document.querySelector("[data-action='add-hypothesis-agent']").click();
   await autosave();
+  assert.deepEqual([...app.document.querySelectorAll("[name='hypothesisAgentRole:3'] option")].map((item: any) => item.value), ["advisor"], "an advisor stays an advisor");
   const latest = settingsUpdates(app).slice(2);
   assert.ok(latest.some((patch: any) => patch.mode === "hypothesis"), "the chat type is saved");
   const last = Object.assign({}, ...latest);
@@ -237,6 +238,11 @@ test("a chat with full access on the server shows why and cannot be used or chan
   assert.equal(app.document.querySelector("#chat-access-menu"), null, "no access choices");
   assert.match(app.document.querySelector(".access-trigger").getAttribute("aria-label"), /Full access · set on fedora/);
   assert.equal(app.document.querySelector("#chat-form button[type='submit']").disabled, true);
+  // Its read-only setup is never read back into a save.
+  const language = app.document.querySelector("#session-settings-form select[name='language']");
+  language.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+  await autosave();
+  assert.deepEqual(settingsUpdates(app), []);
   type(app, "Do it");
   submit(app);
   await settle();
