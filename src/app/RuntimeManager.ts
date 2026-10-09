@@ -84,11 +84,13 @@ export class RuntimeManager {
       // Sampler settings are sent with each request. Persist them and update the
       // service in place rather than rebuilding the runtime/unloading a model.
       const localKeys = patch.localModels ? Object.keys(patch.localModels) : [];
-      const generationOnly = Boolean(patch.localModels) && localKeys.every(key => key === "generation") &&
+      // Generation and multi-GPU settings apply to the next request or load: nothing is unloaded.
+      const generationOnly = Boolean(patch.localModels) && localKeys.every(key => key === "generation" || key === "multiGpu") &&
         Object.keys(patch).every(key => key === "ui" || key === "profile" || key === "localModels");
       if (generationOnly && this.localModelService) {
         const settings = await this.settingsStore.update(patch);
-        await this.localModelService.setGenerationSettings(settings.localModels!.generation);
+        if (localKeys.includes("generation")) await this.localModelService.setGenerationSettings(settings.localModels!.generation);
+        if (localKeys.includes("multiGpu")) await this.localModelService.setPlacementSettings(settings.localModels!.multiGpu);
         return { runtime: this.getRuntime(), settings };
       }
       try {
@@ -178,7 +180,7 @@ export class RuntimeManager {
       localModels: { ...baseLocalModels, ...(local ? {
         modelsDir: local.modelsDir, contextSize: local.contextSize, gpuLayers: local.gpuLayers,
         loadTimeoutMs: local.loadTimeoutMs, generationTimeoutMs: local.generationTimeoutMs,
-        memoryLimitPercent: local.memoryLimitPercent, generation: local.generation
+        memoryLimitPercent: local.memoryLimitPercent, generation: local.generation, ...(local.multiGpu ? { multiGpu: local.multiGpu } : {})
       } : {}) },
       agentLimits: settings.agentLimits,
       llm: {

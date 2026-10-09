@@ -46,3 +46,10 @@ test("settings accept auto or a layer count", () => {
   assert.throws(() => validateSettingsPatch({ localModels: { gpuLayers: 1000 } }), /gpuLayers/);
   assert.throws(() => validateSettingsPatch({ localModels: { gpuLayers: 1.5 } }), /gpuLayers/);
 });
+
+test("multi-GPU settings are checked: known modes, GPU ids, a model's own GPUs", () => {
+  validateSettingsPatch({ localModels: { multiGpu: { split: "always", mode: "row", devices: ["GPU-a", "CUDA1"], pins: { "gguf-1": ["GPU-b"] } } } } as never);
+  for (const multiGpu of [{ split: "sometimes" }, { mode: "tensor" }, { devices: ["GPU a"] }, { devices: ["x", "x"] }, { pins: JSON.parse('{"__proto__": ["GPU-a"]}') }, { extra: true }]) {
+    assert.throws(() => validateSettingsPatch({ localModels: { multiGpu } } as never), JSON.stringify(multiGpu));
+  }
+});

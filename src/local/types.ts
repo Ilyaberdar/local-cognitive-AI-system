@@ -1,4 +1,4 @@
-import { LocalGenerationSettings, ManagedModel } from "../types";
+import { LocalGenerationSettings, ManagedModel, MultiGpuSettings } from "../types";
 
 export interface LocalModelOptions {
   enabled: boolean;
@@ -15,6 +15,7 @@ export interface LocalModelOptions {
   generation?: LocalGenerationSettings;
   /** Backend chosen by the headless server (`start --inference`); absent on the desktop. */
   inference?: { preference: "auto" | "cuda" | "cpu"; fallbackReason?: string };
+  multiGpu?: MultiGpuSettings;
 }
 
 export interface ModelArtifact {
@@ -154,6 +155,8 @@ export interface LocalRuntimeSnapshot {
   error?: string;
   queueLength: number;
   busy: boolean;
+  /** The GPUs a CUDA build sees (for the multi-GPU settings); absent on Apple Silicon and CPU builds. */
+  gpus?: Array<{ id: string; index: number; name: string; totalBytes: number; freeBytes: number }>;
   contextSize: number;
   /** Context reported by the running native server; absent while unloaded or unverified. */
   effectiveContextSize?: number;

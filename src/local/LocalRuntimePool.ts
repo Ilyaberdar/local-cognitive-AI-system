@@ -42,6 +42,8 @@ export class LocalRuntimePool {
     if (this.gpuRuntime() && this.options.gpuLayers !== 0) void this.inventory.probeDevices().then(() => this.changed(), () => undefined);
   }
   forModel(id: string): LocalRuntimeSnapshot | undefined { return this.instances.get(id)?.snapshot(); }
+  /** Multi-GPU settings: the next load follows them; nothing loaded is restarted. */
+  setPlacementSettings(multiGpu: LocalModelOptions["multiGpu"]): void { this.options = { ...this.options, multiGpu }; }
   snapshot(): LocalRuntimeSnapshot {
     const instances = [...this.instances.values()].map(runtime => runtime.snapshot()).filter(runtime => runtime.modelId);
     const idle = this.probe.snapshot();
@@ -49,7 +51,10 @@ export class LocalRuntimePool {
       ?? instances.find(runtime => runtime.status === "ready")
       ?? instances.find(runtime => runtime.status === "error") ?? { ...idle, backend: this.idleBackend(idle.backend) };
     const fallbackReason = this.fallbackReason();
-    return { ...selected, modelId: instances.length === 1 ? instances[0].modelId : undefined,
+    // A CUDA build lists its GPUs, for the multi-GPU settings (never on Apple Silicon or CPU builds).
+    const gpus = this.gpuRuntime() ? (this.inventory.cached()?.devices ?? []).filter(device => device.kind === "gpu")
+      .map(({ id, index, name, totalBytes, freeBytes }) => ({ id, index, name, totalBytes, freeBytes })) : [];
+    return { ...selected, ...(gpus.length ? { gpus } : {}), modelId: instances.length === 1 ? instances[0].modelId : undefined,
       loadedModelIds: instances.filter(runtime => runtime.status === "ready").map(runtime => runtime.modelId!), instances,
       ...(this.installed?.id ? { runtimeId: this.installed.id } : {}), ...(fallbackReason ? { fallbackReason } : {}) };
   }
@@ -84,7 +89,10 @@ export class LocalRuntimePool {
         if (!(error instanceof LocalModelError) || error.code !== "out_of_memory" || plan.manual || plan.kind === "unified" || plan.kind === "cpu" || signal?.aborted) throw error;
         this.logger.warn("Model ran out of memory; retrying with another placement", { modelId: id, placement: plan.kind });
         await new Promise(resolve => setTimeout(resolve, 500));
-        plan = await this.plan(id, estimate, { after: plan.kind, policy: { safetyFactor: 1.2 } });
+        // A row split that ran short first tries the same GPUs split by layers.
+        plan = plan.launch.args.includes("row")
+          ? await this.plan(id, estimate, { layerSplit: true, policy: { safetyFactor: 1.2 } })
+          : await this.plan(id, estimate, { after: plan.kind, policy: { safetyFactor: 1.2 } });
         await target.load(id, file, signal, projector, this.launch(plan, true));
       }
     });
@@ -115,7 +123,7 @@ export class LocalRuntimePool {
     this.instances.clear();
   }
 
-  private async plan(id: string, estimate: ModelMemoryEstimate, retry: { after?: PlacementPlan["kind"]; policy?: { safetyFactor: number } } = {}): Promise<PlacementPlan> {
+  private async plan(id: string, estimate: ModelMemoryEstimate, retry: { after?: PlacementPlan["kind"]; policy?: { safetyFactor: number }; layerSplit?: boolean } = {}): Promise<PlacementPlan> {
     // GPU layers 0 means CPU only: no device probe, the same launch as before placement.
     const inventory = this.options.gpuLayers === 0 ? { devices: [], warnings: [] } : await this.inventory.probeDevices();
     for (const warning of inventory.warnings) this.logger.warn(warning);
@@ -131,7 +139,9 @@ export class LocalRuntimePool {
     });
     const totalBytes = inventory.devices.find(device => device.kind === "unified")?.totalBytes ?? getSystemMemory().total;
     const result = planPlacement({ modelId: id, estimate, contextSize: this.options.contextSize, devices: inventory.devices, system: { totalBytes }, residents,
-      gpuLayers: this.options.gpuLayers, gpuRuntime: this.gpuRuntime(), ...retry });
+      gpuLayers: this.options.gpuLayers, gpuRuntime: this.gpuRuntime(),
+      ...(this.options.multiGpu ? { multiGpu: retry.layerSplit ? { ...this.options.multiGpu, mode: "layer" as const } : this.options.multiGpu } : {}),
+      ...(retry.after ? { after: retry.after } : {}), ...(retry.policy ? { policy: retry.policy } : {}) });
     if (result.kind === "error") {
       this.instances.get(id)?.fail(id, result.message);
       throw new LocalModelError(result.message, 409, "insufficient_memory", { options: result.options });

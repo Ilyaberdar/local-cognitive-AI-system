@@ -52,6 +52,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     actions: new Set(), deleteId: "", started: false, eventSequence: 0,
     contextDraft: null, contextSaving: false, contextError: "", contextSaved: false,
     settingsTab: "context", advancedDrafts: {}, advancedSaving: false, advancedError: "", advancedSaved: false,
+    gpuDraft: null, gpuSaving: false, gpuError: "", gpuSaved: false,
     generationDraft: null, generationSaving: false, generationError: "", generationSaved: false,
     storage: null, storageOpen: false, settingsOpen: false
   };
@@ -211,12 +212,56 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       ${asArray(storage.warnings).map(warning => `<p class="subtle">${escape(warning)}</p>`).join("")}</div></details>`;
   }
 
+  /** The GPUs a CUDA build sees; the GPU tab is shown only with more than one. */
+  function runtimeGpus() { return (state.runtime || getContext().runtime)?.gpus ?? []; }
+  function settingsTabs() { return runtimeGpus().length > 1 ? [...MODEL_SETTINGS_TABS, { id: "gpus", label: "GPUs" }] : MODEL_SETTINGS_TABS; }
+  function gpuSettings() { return state.gpuDraft ?? getContext().settings?.localModels?.multiGpu ?? {}; }
+
+  /** How models use several GPUs: split or not, by layers or rows, and which GPUs. */
+  function renderGpuSettings() {
+    const settings = gpuSettings(), gpus = runtimeGpus(), chosen = settings.devices ?? [];
+    const split = settings.split ?? "auto", mode = settings.mode ?? "layer";
+    return `<form class="mm-settings-form" id="mm-gpus-form" data-mm-gpu-form>
+      <div class="mm-settings-copy"><h3>Several GPUs</h3><p class="subtle">How a model uses more than one GPU. It applies to the next model you load; loaded models keep their place.</p><p class="subtle">Not yet checked on real multi-GPU hardware.</p></div>
+      <label class="mm-settings-field"><span>Split a model across GPUs</span><select data-mm-gpu="split" ${state.gpuSaving ? "disabled" : ""}>
+        <option value="auto" ${split === "auto" ? "selected" : ""}>Only when it does not fit one GPU</option>
+        <option value="always" ${split === "always" ? "selected" : ""}>Always, over every chosen GPU with room</option>
+        <option value="never" ${split === "never" ? "selected" : ""}>Never (one GPU; the rest on the CPU)</option></select></label>
+      <label class="mm-settings-field"><span>Split by</span><select data-mm-gpu="mode" ${state.gpuSaving ? "disabled" : ""}>
+        <option value="layer" ${mode === "layer" ? "selected" : ""}>Layers (any GPU)</option>
+        <option value="row" ${mode === "row" ? "selected" : ""}>Rows (NVIDIA; the main GPU also holds the context)</option></select></label>
+      <fieldset class="mm-settings-field"><legend>GPUs models may use</legend>${gpus.map((gpu) => `<label class="mm-gpu-choice"><input type="checkbox" data-mm-gpu-device="${escape(gpu.id)}" ${!chosen.length || chosen.includes(gpu.id) ? "checked" : ""} ${state.gpuSaving ? "disabled" : ""} /> GPU ${escape(gpu.index)} · ${escape(gpu.name)} · ${bytes(gpu.totalBytes)}</label>`).join("")}</fieldset>
+      <button class="ghost-button mm-settings-save" type="submit" ${state.gpuSaving ? "disabled" : ""}>${state.gpuSaving ? '<span class="button-spinner" aria-hidden="true"></span>Saving…' : "Save"}</button>
+      ${state.gpuError ? renderModelError(state.gpuError) : state.gpuSaved ? '<div class="subtle mm-context-feedback" role="status">Saved. The next model you load follows it.</div>' : ""}
+    </form>`;
+  }
+
+  async function saveGpuSettings() {
+    if (state.gpuSaving) return;
+    const form = root.querySelector("[data-mm-gpu-form]");
+    const devices = [...form.querySelectorAll("[data-mm-gpu-device]")];
+    const checked = devices.filter((box) => box.checked).map((box) => box.dataset.mmGpuDevice);
+    if (!checked.length) { state.gpuError = "Choose at least one GPU."; repaint(); return; }
+    const multiGpu = { split: form.querySelector('[data-mm-gpu="split"]').value, mode: form.querySelector('[data-mm-gpu="mode"]').value,
+      // All GPUs checked: no list, so a GPU added later is used too. A model's own GPUs stay.
+      ...(checked.length < devices.length ? { devices: checked } : {}), ...(gpuSettings().pins ? { pins: gpuSettings().pins } : {}) };
+    state.gpuSaving = true; state.gpuError = ""; state.gpuSaved = false; repaint();
+    try {
+      if (typeof onLocalSettingsChange !== "function") throw new Error("GPU settings cannot be saved in this build.");
+      await onLocalSettingsChange({ multiGpu });
+      state.gpuDraft = null; state.gpuSaved = true;
+      await refresh();
+    } catch (error) { state.gpuError = error.message || "Unable to save the GPU settings."; }
+    finally { state.gpuSaving = false; repaint(); }
+  }
+
   function renderSettings() {
-    const activeTab = MODEL_SETTINGS_TABS.some((tab) => tab.id === state.settingsTab) ? state.settingsTab : "context";
-    const activePanel = activeTab === "context" ? renderContextControl() : activeTab === "generation" ? renderGenerationSettings() : renderAdvancedSettings(activeTab);
+    const tabs = settingsTabs();
+    const activeTab = tabs.some((tab) => tab.id === state.settingsTab) ? state.settingsTab : "context";
+    const activePanel = activeTab === "context" ? renderContextControl() : activeTab === "generation" ? renderGenerationSettings() : activeTab === "gpus" ? renderGpuSettings() : renderAdvancedSettings(activeTab);
     return `<section id="mm-settings" class="mm-settings" popover="auto" role="dialog" tabindex="-1" aria-labelledby="mm-settings-title">
       <header class="mm-settings-header"><div><h2 id="mm-settings-title">Model settings</h2><p class="subtle">${getContext().host ? escape(`Configure inference on ${getContext().host}`) : "Configure local inference"}</p></div><button type="button" class="mm-settings-close" popovertarget="mm-settings" popovertargetaction="hide" aria-label="Close model settings">${icon("close")}</button></header>
-      <div class="mm-settings-body"><div class="mm-settings-tabs" role="tablist" aria-label="Model settings">${MODEL_SETTINGS_TABS.map((tab) => `<button type="button" role="tab" id="mm-${tab.id}-tab" data-mm-settings-tab="${tab.id}" aria-selected="${tab.id === activeTab}" aria-controls="mm-${tab.id}-panel" tabindex="${tab.id === activeTab ? "0" : "-1"}">${tab.label}</button>`).join("")}</div>
+      <div class="mm-settings-body"><div class="mm-settings-tabs" role="tablist" aria-label="Model settings">${tabs.map((tab) => `<button type="button" role="tab" id="mm-${tab.id}-tab" data-mm-settings-tab="${tab.id}" aria-selected="${tab.id === activeTab}" aria-controls="mm-${tab.id}-panel" tabindex="${tab.id === activeTab ? "0" : "-1"}">${tab.label}</button>`).join("")}</div>
       <div id="mm-${activeTab}-panel" class="mm-settings-panel" role="tabpanel" aria-labelledby="mm-${activeTab}-tab">${activePanel}</div>${renderStorage()}</div>
     </section>`;
   }
@@ -689,6 +734,10 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       state.generationError = ""; state.generationSaved = false; repaint();
     });
     root.querySelector("#mm-generation-form")?.addEventListener("submit", (event) => { event.preventDefault(); void saveGenerationSettings(); });
+    root.querySelector("[data-mm-gpu-form]")?.addEventListener("submit", (event) => { event.preventDefault(); void saveGpuSettings(); });
+    root.querySelectorAll("[data-mm-gpu]").forEach((select) => select.addEventListener("change", (event) => {
+      state.gpuDraft = { ...gpuSettings(), [event.target.dataset.mmGpu]: event.target.value }; state.gpuError = ""; state.gpuSaved = false;
+    }));
     MODEL_SETTINGS_TABS.filter((tab) => tab.id !== "context" && tab.id !== "generation").forEach((tab) => {
       root.querySelector(`#mm-${tab.id}-form`)?.addEventListener("submit", (event) => { event.preventDefault(); void saveAdvancedSettings(tab.id); });
     });

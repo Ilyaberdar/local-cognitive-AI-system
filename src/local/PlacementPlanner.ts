@@ -13,6 +13,9 @@ export interface PlacementPolicy { gpuHeadroomBytes: number; gpuContextBytes: nu
 // buffers took ~765 MiB, each offloaded layer ~171 MiB. The headroom absorbs driver and display variance.
 export const defaultPlacementPolicy: PlacementPolicy = { gpuHeadroomBytes: 512 * MiB, gpuContextBytes: 384 * MiB, computeBytes: 384 * MiB, safetyFactor: 1 };
 
+export type { MultiGpuSettings } from "../types";
+import type { MultiGpuSettings } from "../types";
+
 export interface PlacementInput {
   modelId: string;
   estimate: ModelMemoryEstimate;
@@ -27,6 +30,7 @@ export interface PlacementInput {
   /** Retry after an out-of-memory failure: only kinds after this one are tried, except that a
    * partial placement is first retried with fewer layers (scaled by the policy's safety factor). */
   after?: PlacementKind;
+  multiGpu?: MultiGpuSettings;
 }
 
 export interface PlannedDevice { id: string; backendName: string; index: number; name: string; estimatedBytes: number }
@@ -46,7 +50,7 @@ export interface PlacementFailure { kind: "error"; message: string; options: Pla
 
 const gb = (bytes: number) => (bytes / GB).toFixed(1);
 
-const launchFor = (devices: InventoryDevice[], layers: number | "all", tensorSplit?: number[]): PlacementPlan["launch"] => {
+const launchFor = (devices: InventoryDevice[], layers: number | "all", tensorSplit?: number[], rowMain?: InventoryDevice): PlacementPlan["launch"] => {
   const ordered = [...devices].sort((left, right) => left.index - right.index);
   const env: Record<string, string> = {};
   let names = ordered.map(device => device.backendName);
@@ -56,7 +60,11 @@ const launchFor = (devices: InventoryDevice[], layers: number | "all", tensorSpl
     if (ordered.every(device => device.uuid)) { env.CUDA_VISIBLE_DEVICES = ordered.map(device => device.uuid).join(","); names = ordered.map((_, index) => `CUDA${index}`); }
   }
   const args = ["--device", names.join(",")];
-  if (tensorSplit && ordered.length > 1) args.push("--split-mode", "layer", "--tensor-split", tensorSplit.join(","));
+  if (tensorSplit && ordered.length > 1) {
+    args.push("--split-mode", rowMain ? "row" : "layer", "--tensor-split", tensorSplit.join(","));
+    // Row split keeps intermediate results and the context cache on one GPU (its position here).
+    if (rowMain) args.push("--main-gpu", String(ordered.indexOf(rowMain)));
+  }
   // The planner already fixed devices and layers; llama.cpp's own fitting would only re-probe.
   args.push("--n-gpu-layers", String(layers), "--fit", "off");
   return { args, env };
@@ -71,8 +79,22 @@ const subsets = <T>(items: T[], size: number): T[][] => {
 };
 
 /** Chooses where a model runs. GPU always comes first; the CPU gets only what does not fit.
- * Nothing already loaded is evicted: without room, the result explains the options. */
+ * Nothing already loaded is evicted: without room, the result explains the options. The GPUs
+ * chosen in the settings (all, some, or a model's own) bound every choice. */
 export const planPlacement = (input: PlacementInput): PlacementPlan | PlacementFailure => {
+  const chosen = input.multiGpu?.pins?.[input.modelId]?.length ? input.multiGpu.pins[input.modelId] : input.multiGpu?.devices?.length ? input.multiGpu.devices : undefined;
+  if (!chosen) return planOn(input);
+  const allowed = input.devices.filter(device => device.kind !== "gpu" || chosen.includes(device.id));
+  // GPUs that are gone (replaced, or a stale choice) do not leave the model without one.
+  if (input.devices.some(device => device.kind === "gpu") && !allowed.some(device => device.kind === "gpu")) {
+    const plan = planOn(input);
+    return plan.kind === "error" ? plan : { ...plan, warnings: ["The GPUs chosen for this model were not found; it may use any GPU.", ...plan.warnings] };
+  }
+  return planOn({ ...input, devices: allowed });
+};
+
+const planOn = (input: PlacementInput): PlacementPlan | PlacementFailure => {
+  const split = input.multiGpu?.split ?? "auto";
   const policy = { ...defaultPlacementPolicy, ...input.policy };
   const { estimate } = input;
   const hostUsed = input.residents.reduce((sum, resident) => sum + resident.hostBytes, 0);
@@ -117,7 +139,22 @@ export const planPlacement = (input: PlacementInput): PlacementPlan | PlacementF
   const totalLayers = estimate.layers + 1;
   const planned = (devices: InventoryDevice[], bytes: (device: InventoryDevice) => number): PlannedDevice[] =>
     devices.map(device => ({ id: device.id, backendName: device.backendName, index: device.index, name: device.name, estimatedBytes: Math.round(bytes(device)) }));
-  const splitFor = (devices: InventoryDevice[]) => devices.map(device => Math.max(1, Math.floor(usable(device) / MiB)));
+  const splitFor = (devices: InventoryDevice[], reserve?: { device: InventoryDevice; bytes: number }) =>
+    devices.map(device => Math.max(1, Math.floor((usable(device) - (device === reserve?.device ? reserve.bytes : 0)) / MiB)));
+  /** Row split: CUDA only. Its main GPU (the one with most room) also holds the context cache. */
+  const rowFor = (devices: InventoryDevice[]): { main?: InventoryDevice; warning?: string } => {
+    if (input.multiGpu?.mode !== "row" || devices.length < 2) return {};
+    if (!devices.every(device => device.backendName.startsWith("CUDA"))) return { warning: "Row split needs CUDA GPUs; the model is split by layers instead." };
+    return { main: [...devices].sort((left, right) => usable(right) - usable(left) || left.index - right.index)[0] };
+  };
+  const multiPlan = (devices: InventoryDevice[]): PlacementPlan => {
+    const row = rowFor(devices);
+    const cache = estimate.kvCacheBytes + estimate.recurrentStateBytes;
+    const tensorSplit = splitFor(devices, row.main ? { device: row.main, bytes: cache } : undefined), total = tensorSplit.reduce((sum, value) => sum + value, 0);
+    return { kind: "multi-gpu", manual: false, label: label(devices, row.main ? " · row split" : ""),
+      devices: planned(devices, device => need * Math.max(1, Math.floor(usable(device) / MiB)) / total),
+      tensorSplit, gpuLayers: "all", hostBytes: policy.computeBytes, warnings: row.warning ? [row.warning] : [], launch: launchFor(devices, "all", tensorSplit, row.main) };
+  };
 
   const cpuPlan = (explicit: boolean): PlacementPlan | PlacementFailure => {
     if (estimate.weightsBytes + estimate.projectorBytes > hostBudget) return failure(hostBudget + gpus.reduce((sum, device) => sum + Math.max(0, usable(device)), 0));
@@ -153,7 +190,9 @@ export const planPlacement = (input: PlacementInput): PlacementPlan | PlacementF
     const layers = Math.min(input.gpuLayers, totalLayers);
     const partly = layers < totalLayers && estimate.perLayerBytes > 0;
     const gpuBytes = partly ? estimate.projectorBytes * 1.1 + layers * estimate.perLayerBytes : need;
-    const single = singleFit(gpuBytes), multi = single ? undefined : multiFit(gpuBytes), devices = single ? [single] : multi ?? gpus.filter(device => usable(device) > 0);
+    const best = [...gpus].sort((left, right) => usable(right) - usable(left))[0];
+    const single = singleFit(gpuBytes), multi = single || split === "never" ? undefined : multiFit(gpuBytes);
+    const devices = single ? [single] : multi ?? (split === "never" ? (best && usable(best) > 0 ? [best] : []) : gpus.filter(device => usable(device) > 0));
     if (!devices.length) return cpuPlan(false);
     const warnings = !single && !multi ? [`${layers} GPU layers may not fit in free GPU memory; loading can fail.`] : [];
     const tensorSplit = devices.length > 1 ? splitFor(devices) : undefined;
@@ -163,8 +202,14 @@ export const planPlacement = (input: PlacementInput): PlacementPlan | PlacementF
       warnings, launch: { ...launchFor(devices, input.gpuLayers, tensorSplit) } };
   }
 
+  // Always split: every allowed GPU with room shares the model, even one that would fit one GPU.
+  if (split === "always" && !input.after && gpus.length > 1) {
+    const devices = gpus.filter(device => usable(device) > estimate.perLayerBytes);
+    if (devices.length > 1 && devices.reduce((sum, device) => sum + usable(device), 0) >= need + devices.length * estimate.perLayerBytes &&
+      usable(devices[0]!) >= estimate.projectorBytes * 1.1) return multiPlan(devices);
+  }
   const start = input.after ? ladder.indexOf(input.after) + (input.after === "partial" ? 0 : 1) : 0;
-  for (const kind of ladder.slice(start)) {
+  for (const kind of ladder.slice(start).filter(kind => !(kind === "multi-gpu" && split === "never"))) {
     if (kind === "single-gpu") {
       const device = singleFit();
       if (device) return { kind, manual: false, label: label([device]), devices: planned([device], () => need), gpuLayers: "all", hostBytes: policy.computeBytes,
@@ -172,15 +217,13 @@ export const planPlacement = (input: PlacementInput): PlacementPlan | PlacementF
     }
     if (kind === "multi-gpu") {
       const devices = multiFit();
-      if (devices) {
-        const tensorSplit = splitFor(devices), total = tensorSplit.reduce((sum, value) => sum + value, 0);
-        return { kind, manual: false, label: label(devices), devices: planned(devices, device => need * Math.max(1, Math.floor(usable(device) / MiB)) / total),
-          tensorSplit, gpuLayers: "all", hostBytes: policy.computeBytes, warnings: [], launch: launchFor(devices, "all", tensorSplit) };
-      }
+      if (devices) return multiPlan(devices);
     }
     if (kind === "partial" && estimate.layers > 0 && estimate.perLayerBytes > 0) {
       const perLayer = estimate.perLayerBytes * policy.safetyFactor;
-      const devices = gpus.filter(device => usable(device) > perLayer);
+      const fitting = gpus.filter(device => usable(device) > perLayer);
+      // Never split: only the GPU with most room takes layers.
+      const devices = split === "never" ? [...fitting].sort((left, right) => usable(right) - usable(left)).slice(0, 1) : fitting;
       const room = devices.reduce((sum, device) => sum + usable(device), 0) - estimate.projectorBytes * 1.1 - devices.length * perLayer;
       const layers = Math.min(estimate.layers, Math.floor(room / perLayer));
       if (devices.length && layers >= 1) {

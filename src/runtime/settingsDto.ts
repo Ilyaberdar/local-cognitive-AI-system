@@ -29,7 +29,7 @@ export const hostSettingsView = (settings: AppSettings) => {
         ...(takesKey(id) ? { apiKeyState: provider.apiKey?.trim() ? "set" : "unset" } : {})
       }])),
     localModels: models ? { contextSize: models.contextSize, gpuLayers: models.gpuLayers, memoryLimitPercent: models.memoryLimitPercent, loadTimeoutMs: models.loadTimeoutMs,
-      generationTimeoutMs: models.generationTimeoutMs, generation: models.generation } : {},
+      generationTimeoutMs: models.generationTimeoutMs, generation: models.generation, ...(models.multiGpu ? { multiGpu: models.multiGpu } : {}) } : {},
     agentLimits: { maxSteps: limits?.maxSteps, advisorMaxSteps: limits?.advisorMaxSteps, maxTotalSteps: limits?.maxTotalSteps, maxActiveMs: limits?.maxActiveMs },
     memory: {
       adapter: memory?.adapter, topK: memory?.topK,

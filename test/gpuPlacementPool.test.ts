@@ -19,7 +19,7 @@ const fakeServer = `#!/usr/bin/env node
 const fs=require('fs'),http=require('http'),path=require('path');const args=process.argv.slice(2);const value=k=>args[args.indexOf(k)+1];
 const log=path.join(process.env.FAKE_LOG_DIR,'launches.jsonl');
 fs.appendFileSync(log,JSON.stringify({model:value('--alias'),args,visible:process.env.CUDA_VISIBLE_DEVICES,cwd:process.cwd(),ggml:process.env.GGML_BACKEND_PATH,argHost:process.env.LLAMA_ARG_HOST,at:Date.now()})+'\\n');
-if(process.env.FAKE_OOM_ON&&value('--device')==='CUDA0'&&process.env.CUDA_VISIBLE_DEVICES===process.env.FAKE_OOM_ON){console.error('ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000 MiB on device 0: cudaMalloc failed: out of memory');process.exit(1);}
+if((process.env.FAKE_OOM_ON&&value('--device')==='CUDA0'&&process.env.CUDA_VISIBLE_DEVICES===process.env.FAKE_OOM_ON)||(process.env.FAKE_OOM_ROW&&args.includes('row'))){console.error('ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000 MiB on device 0: cudaMalloc failed: out of memory');process.exit(1);}
 const delay=Number(process.env.FAKE_START_DELAY||0);
 setTimeout(()=>http.createServer(async(req,res)=>{res.setHeader('Content-Type','application/json');
 if(req.url==='/health')return res.end('{"status":"ok"}');if(req.url==='/props')return res.end('{"n_ctx":2048}');
@@ -39,7 +39,7 @@ async function setup(t: TestContext, devices: string, gpuLayers: number | "auto"
   const options: LocalModelOptions = { enabled: true, dataDir: root, modelsDir: root, runtimeDir: root, executablePath: executable, contextSize: 2048,
     gpuLayers, loadTimeoutMs: 5000, generationTimeoutMs: 5000, memoryLimitPercent: 75, ...(extra.inference ? { inference: extra.inference } : {}) };
   const pool = new LocalRuntimePool(options, new Logger(), () => {}, new DeviceInventory(probe));
-  t.after(async () => { await pool.dispose(); delete process.env.FAKE_OOM_ON; delete process.env.FAKE_START_DELAY; await fs.rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await pool.dispose(); delete process.env.FAKE_OOM_ON; delete process.env.FAKE_OOM_ROW; delete process.env.FAKE_START_DELAY; await fs.rm(root, { recursive: true, force: true }); });
   await pool.init();
   const launches = async () => (await fs.readFile(path.join(root, "launches.jsonl"), "utf8")).trim().split("\n")
     .map(line => JSON.parse(line) as { model: string; args: string[]; visible?: string; cwd: string; ggml?: string; argHost?: string; at: number });
@@ -141,4 +141,29 @@ test("GPU layers 0 on a CUDA runtime keeps the process off the GPUs and is not a
   const [launch] = await f.launches();
   assert.ok(launch!.args.join(" ").includes("--device none --n-gpu-layers 0"), launch!.args.join(" "));
   assert.equal(f.pool.snapshot().fallbackReason, undefined);
+});
+
+test("multi-GPU settings: a CUDA build lists its GPUs, always-split spans both, and a row split that runs short is retried by layers", async t => {
+  const f = await setup(t, twoGpus, "auto", "linux", { runtime: { id: "cuda-test", backend: "cuda" } });
+  for (let index = 0; index < 50 && !f.pool.snapshot().gpus; index++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(f.pool.snapshot().gpus?.map(gpu => gpu.index), [0, 1]);
+  f.pool.setPlacementSettings({ split: "always" });
+  await f.pool.load("small", path.join(f.root, "small.gguf"), undefined, undefined, estimate(1000));
+  const spread = (await f.launches()).at(-1)!;
+  assert.equal(spread.args[spread.args.indexOf("--device") + 1], "CUDA0,CUDA1");
+  assert.equal(spread.args[spread.args.indexOf("--split-mode") + 1], "layer");
+  assert.equal(spread.visible, "GPU-a,GPU-b");
+  // Row split: CUDA only; one that runs out of memory goes on with the same GPUs by layers.
+  process.env.FAKE_OOM_ROW = "1";
+  f.pool.setPlacementSettings({ split: "always", mode: "row" });
+  await f.pool.load("rows", path.join(f.root, "rows.gguf"), undefined, undefined, estimate(1000));
+  const [rowTry, layerRetry] = (await f.launches()).filter(launch => launch.model === "rows");
+  assert.ok(rowTry!.args.includes("row") && rowTry!.args.includes("--main-gpu"));
+  assert.equal(layerRetry!.args[layerRetry!.args.indexOf("--split-mode") + 1], "layer");
+  assert.equal(f.pool.forModel("rows")?.status, "ready");
+});
+
+test("without a CUDA build no GPU list is shown", async t => {
+  const f = await setup(t, twoGpus);
+  assert.equal(f.pool.snapshot().gpus, undefined);
 });

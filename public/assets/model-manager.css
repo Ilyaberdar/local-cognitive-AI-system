@@ -260,3 +260,6 @@ html[data-motion=off] .model-manager .mm-loading-spinner { animation: button-spi
 @media (prefers-reduced-motion: reduce) {
   html[data-motion=off] .model-manager .mm-loading-spinner { animation: none !important; }
 }
+.mm-settings-field select { width: 100%; min-height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--control-bg); color: var(--text); font: inherit; font-size: calc(12px * var(--font-scale, 1)); }
+.mm-settings-field legend { padding: 0; margin-bottom: 4px; }
+.mm-gpu-choice { display: flex; align-items: center; gap: 8px; font-weight: 400; }
