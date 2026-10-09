@@ -80,7 +80,8 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   window.HTMLDialogElement.prototype.close = function (this: any) { this.removeAttribute("open"); };
   window.confirm = () => true;
   window.__workflowEditorModule = { mountWorkflowEditor: (_container: unknown, props: any) => {
-    const handle = { unmounted: false, setPlugins() {}, setValidation() {}, setColorMode() {}, setNodeRuns() {}, setExecution() {}, setStarting() {},
+    const handle = { unmounted: false, validations: [] as unknown[], executions: [] as unknown[], setPlugins() {}, setColorMode() {}, setNodeRuns() {}, setStarting() {},
+      setValidation(value: unknown) { handle.validations.push(value); }, setExecution(value: unknown) { handle.executions.push(value); },
       captureState: () => undefined, unmount() { handle.unmounted = true; } };
     editors.push({ props, handle });
     return handle;

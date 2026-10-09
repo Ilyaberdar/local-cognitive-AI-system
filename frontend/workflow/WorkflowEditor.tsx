@@ -406,7 +406,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
       </div>
 
       {runError ? <div className="fsm-field-error" role="alert">{runError}</div> : null}
-      <RunSettings key={draft.id} container={props.settingsContainer} options={draft.runDefaults ?? {}} projects={props.projects} onChooseFolder={props.onChooseFolder}
+      <RunSettings key={draft.id} container={props.settingsContainer} options={draft.runDefaults ?? {}} projects={props.projects} onChooseFolder={props.onChooseFolder} limits={props.limits}
         hasRun={Boolean(execution)} disabled={readOnly} initiallyOpen={props.initialViewState?.runSettingsOpen} onOpenChange={open => { runSettingsOpen.current = open; }}
         onUpdate={runDefaults => updateWorkflow({ runDefaults })} />
       {props.validation && !props.validation.ok ? (
@@ -507,6 +507,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
               providers={props.providers}
               plugins={props.plugins}
               pluginsError={props.pluginsError}
+              limits={props.limits}
               configError={configError}
               onConfigError={setConfigError}
               onRename={renameNode}
@@ -541,7 +542,7 @@ function WorkflowFields({ draft, onUpdate }: {
   );
 }
 
-function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pluginsError, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
+function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pluginsError, limits, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
   node: WorkflowNodeDefinition;
   nodes: WorkflowNodeDefinition[];
   disabled: boolean;
@@ -549,6 +550,7 @@ function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pl
   providers: WorkflowEditorProps["providers"];
   plugins: WorkflowEditorProps["plugins"];
   pluginsError: WorkflowEditorProps["pluginsError"];
+  limits?: WorkflowEditorProps["limits"];
   configError: string;
   onConfigError: (value: string) => void;
   onRename: (id: string) => void;
@@ -594,7 +596,8 @@ function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pl
       </> : null}
       {["agent", "file_read", "file_search", "file_write", "command", "web_fetch"].includes(node.type) ? <Field label="Step access"><select aria-label="Step access" value={["never", "always"].includes(String(node.config.approval)) ? String(node.config.approval) : ""} onChange={event => onConfigUpdate({ approval: event.target.value })}>
         {!["never", "always"].includes(String(node.config.approval)) ? <option value="" disabled>Existing rules · choose to override</option> : null}
-        <option value="always">Ask</option><option value="never">Full access · no requests</option>
+        <option value="always">Ask</option>
+        {limits?.fullAccess !== false || node.config.approval === "never" ? <option value="never" disabled={limits?.fullAccess === false}>Full access · no requests</option> : null}
       </select><span className="fsm-model-hint">Ask shows Approve / Reject above this node. Full access runs this step’s actions without asking.</span>
         {!["never", "always"].includes(String(node.config.approval)) ? <span className="fsm-model-hint">This saved step keeps its previous access rules until you choose a mode.</span> : null}
       </Field> : null}

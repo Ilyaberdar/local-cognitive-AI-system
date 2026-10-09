@@ -1614,8 +1614,8 @@ function renderOrchestrationRoute() {
   const tasks = lists?.tasks ?? [];
   const schedules = lists?.schedules ?? [];
   const workflowRuns = lists?.workflowRuns ?? [];
-  // The editor runs on this computer only until it can run on a server (R5-2 next step).
-  const workflowDraft = server ? null : ensureWorkflowBuilderDraft(workflows);
+  // On a server the editor waits for its lists: no blank draft stands in for its workflows.
+  const workflowDraft = server && !server.loaded() ? null : ensureWorkflowBuilderDraft(workflows);
   const selectedRunId = state.activeWorkflowRunId;
   const selectedRun = state.workflowRunDetail?.run?.id === selectedRunId
     ? state.workflowRunDetail.run
@@ -1641,7 +1641,7 @@ function renderOrchestrationRoute() {
       </div>
       ${
         activeTab === "workflow"
-          ? server ? renderNotOnServer("The workflow editor") : renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun)
+          ? workflowDraft ? renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) : `<div class="empty">${escapeHtml(`Loading workflows from ${server.hostName()}…`)}</div>`
           : renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules)
       }
     </div>
@@ -1830,7 +1830,7 @@ function renderWorkflowOrchestrationTab(workflows, workflowDraft, selectedRun) {
           <label class="field workflow-run-history">Run history
             <select data-action="workflow-run-history">
               <option value="">Select a run…</option>
-              ${(state.bootstrap?.workflowRuns ?? []).slice(0, 50).map(run => `<option value="${escapeAttr(run.id)}" ${run.id === selectedRun?.id ? "selected" : ""}>${escapeHtml(run.workflowSnapshot?.name ?? run.workflowId)} · ${escapeHtml(formatDate(run.createdAt))} · ${escapeHtml(run.status)} · ${run.taskId ? "Task" : "Direct"} · ${escapeHtml(run.id.slice(0, 8))}</option>`).join("")}
+              ${((state.orchestration?.lists ?? state.bootstrap)?.workflowRuns ?? []).slice(0, 50).map(run => `<option value="${escapeAttr(run.id)}" ${run.id === selectedRun?.id ? "selected" : ""}>${escapeHtml(run.workflowSnapshot?.name ?? run.workflowId)} · ${escapeHtml(formatDate(run.createdAt))} · ${escapeHtml(run.status)} · ${run.taskId ? "Task" : "Direct"} · ${escapeHtml(run.id.slice(0, 8))}</option>`).join("")}
             </select>
           </label>
           <div class="card-header run-header">
@@ -2004,7 +2004,7 @@ function renderTaskCard(task) {
         <div class="task-actions__primary">
           ${canRun ? `<button class="primary-button" type="button" data-action="run-task" data-task-id="${escapeAttr(task.id)}" ${state.loading || offline || state.attachmentImports[`task:${task.id}`] ? "disabled" : ""}>Run</button>` : ""}
           ${
-            task.lastRunId && !server
+            task.lastRunId
               ? `<button class="ghost-button" type="button" data-action="select-workflow-run" data-run-id="${escapeAttr(task.lastRunId)}">Trace</button>`
               : ""
           }
@@ -2133,7 +2133,9 @@ function rememberWorkflowWorkspace() {
 function selectWorkflowWorkspace(workflow, key = workflowDraftKey(workflow), detail) {
   rememberWorkflowWorkspace();
   workflowSelectionSequence += 1;
-  const workspace = workflowWorkspaces.get(key) ?? { draft: cloneWorkflow(workflow), validation: null };
+  const workspace = workflowWorkspaces.get(key) ?? { draft: cloneWorkflow(workflow), validation: null,
+    // On a server, a save names the version it was edited from.
+    ...(state.orchestration ? { base: (state.orchestration.lists.workflows.find(item => item.id === workflow.id && item.version === workflow.version)?.updatedAt) ?? null } : {}) };
   if (detail) Object.assign(workspace, { runId: detail.run.id, detail });
   workflowWorkspaces.set(key, workspace);
   workflowWorkspaceKey = key;
@@ -2153,7 +2155,7 @@ function selectWorkflowRun(detail) {
   if (!snapshot) return;
   rememberWorkflowWorkspace();
   const draftKey = workflowDraftKey(snapshot);
-  const savedDraft = workflowWorkspaces.get(draftKey)?.draft ?? (state.bootstrap?.workflows ?? []).find(item => item.id === snapshot.id && item.version === snapshot.version);
+  const savedDraft = workflowWorkspaces.get(draftKey)?.draft ?? ((state.orchestration?.lists ?? state.bootstrap)?.workflows ?? []).find(item => item.id === snapshot.id && item.version === snapshot.version);
   // Historical snapshots must never overwrite unsaved changes to the same workflow.
   const key = savedDraft && workflowGraphSignature(savedDraft) !== workflowGraphSignature(snapshot)
     ? `run:${detail.run.id}` : draftKey;
@@ -2174,27 +2176,32 @@ function unmountWorkflowEditor() {
   workflowEditorHandle = null;
 }
 
-function rememberWorkflowRun(detail, workspace) {
+/** `lists`: the machine's lists the run belongs to, taken when the editor mounted, so a late answer
+ * from a server never lands in this computer's runs (or the reverse). */
+function rememberWorkflowRun(detail, workspace, lists = state.orchestration?.lists ?? state.bootstrap) {
   if (workspace) Object.assign(workspace, { runId: detail.run.id, detail });
-  const runs = state.bootstrap?.workflowRuns;
+  const runs = lists?.workflowRuns;
   if (!runs) return;
   const index = runs.findIndex(run => run.id === detail.run.id);
   if (index < 0) runs.unshift(detail.run);
   else runs[index] = detail.run;
 }
 
-function connectWorkflowRun(detail, generation, workspace) {
+function connectWorkflowRun(detail, generation, workspace, lists) {
   workflowLiveConnection?.close();
   const runId = detail.run.id;
   state.activeWorkflowRunId = runId;
-  workflowLiveConnection = watchWorkflowRun({ runId, detail, cached: workflowEventCache.get(runId), request,
+  // On a server: its requests, and its run log in place of this computer's event stream.
+  const server = state.orchestration;
+  workflowLiveConnection = watchWorkflowRun({ runId, detail, cached: workflowEventCache.get(runId), request: server?.request ?? request,
+    ...(server ? { EventSourceClass: server.EventSourceClass } : {}),
     onChange: execution => {
       if (generation !== workflowEditorMountGeneration || state.activeWorkflowRunId !== runId) return;
       workflowEventCache.delete(runId);
       workflowEventCache.set(runId, execution);
       if (workflowEventCache.size > 20) workflowEventCache.delete(workflowEventCache.keys().next().value);
       state.workflowRunDetail = { run: execution.run, nodeRuns: execution.nodeRuns };
-      rememberWorkflowRun(state.workflowRunDetail, workspace);
+      rememberWorkflowRun(state.workflowRunDetail, workspace, lists);
       workflowEditorHandle?.setExecution(execution);
       const history = document.querySelector("[data-action='workflow-run-history']");
       if (history) {
@@ -2263,27 +2270,34 @@ async function mountActiveWorkflowEditor() {
   const key = workflowWorkspaceKey;
   const generation = workflowEditorMountGeneration;
   const isCurrent = () => generation === workflowEditorMountGeneration && key === workflowWorkspaceKey && container.isConnected;
+  // The server this editor works on, fixed for this mount; on this computer its calls and lists
+  // are read when used, as before.
+  const server = state.orchestration;
+  const calls = () => server?.api ?? api;
+  const send = (url, options) => (server?.request ?? request)(url, options);
+  const lists = server?.lists;
   container.innerHTML = `<div class="empty compact">Loading visual workflow editor...</div>`;
   try {
     workflowEditorModulePromise ??= import("/assets/workflow-editor.js");
-    const matchingRuns = (state.bootstrap?.workflowRuns ?? []).filter(run => run.workflowId === workflow.id && run.workflowVersion === workflow.version);
+    const matchingRuns = ((lists ?? state.bootstrap)?.workflowRuns ?? []).filter(run => run.workflowId === workflow.id && run.workflowVersion === workflow.version);
     const selectedRunId = workspace.runId ?? matchingRuns.find(run => workflowGraphSignature(run.workflowSnapshot) === workflowGraphSignature(workflow))?.id;
-    const [module, fetchedDetail, plugins] = await Promise.all([
+    const [module, fetchedDetail, loaded] = await Promise.all([
       workflowEditorModulePromise,
-      selectedRunId ? api.getWorkflowRun(selectedRunId) : workspace.detail ?? null,
-      refreshAvailablePlugins(true)
+      selectedRunId ? calls().getWorkflowRun(selectedRunId) : workspace.detail ?? null,
+      server ? server.editorOptions() : refreshAvailablePlugins(true)
     ]);
     if (!isCurrent()) return;
+    const plugins = server ? loaded.plugins : loaded;
     const detail = workspace.detail && workspace.runId !== fetchedDetail?.run.id ? workspace.detail : fetchedDetail;
-    const providers = getProviderOptions().map(provider => ({ ...provider,
+    const providers = server ? loaded.providers : getProviderOptions().map(provider => ({ ...provider,
       models: getSelectableSessionModels(provider.id, getProviderConfiguredModel(provider.id)),
       defaultModel: getProviderConfiguredModel(provider.id), installedOnly: provider.id === "llamacpp",
       modelLabels: Object.fromEntries(getModelOptions(provider.id).map(modelId => [modelId, getModelDisplayName(provider.id, modelId)]))
     }));
     const updateRun = async (runId, action) => {
       await action();
-      const updated = await api.getWorkflowRun(runId);
-      rememberWorkflowRun(updated, workspace);
+      const updated = await calls().getWorkflowRun(runId);
+      rememberWorkflowRun(updated, workspace, lists);
       if (workflowMountedKey !== key || state.activeWorkflowRunId !== runId) return;
       state.workflowRunDetail = updated;
       workflowLiveConnection?.setDetail(updated);
@@ -2292,36 +2306,37 @@ async function mountActiveWorkflowEditor() {
     workflowMountedKey = key;
     workflowEditorHandle = module.mountWorkflowEditor(container, {
       settingsContainer: document.querySelector("#workflow-settings-control"),
-      workflow: cloneWorkflow(workflow), providers, projects: state.bootstrap?.projects ?? [],
-      plugins, pluginsError: state.pluginsError,
+      workflow: cloneWorkflow(workflow), providers, projects: server ? loaded.projects : state.bootstrap?.projects ?? [],
+      plugins, pluginsError: server ? loaded.pluginsError : state.pluginsError,
+      ...(server ? { limits: loaded.limits } : {}),
       initialViewState: workspace.ui, starting: Boolean(workspace.pendingStart),
-      onChooseFolder: window.desktopProjects ? () => window.desktopProjects.selectDirectory() : undefined,
+      onChooseFolder: !server && window.desktopProjects ? () => window.desktopProjects.selectDirectory() : undefined,
       onRun: async draft => {
         if (workspace.pendingStart) return;
         workspace.pendingStart = true;
         workflowEditorHandle?.setStarting(true);
         try {
-          const run = await request("/workflow-runs", { method: "POST", body: JSON.stringify({ workflow: draft, options: draft.runDefaults ?? {} }) });
+          const run = await send("/workflow-runs", { method: "POST", body: JSON.stringify({ workflow: draft, options: draft.runDefaults ?? {} }) });
           workspace.draft = cloneWorkflow(draft);
-          rememberWorkflowRun({ run, nodeRuns: [] }, workspace);
+          rememberWorkflowRun({ run, nodeRuns: [] }, workspace, lists);
           // A shell refresh may have remounted this same workspace during POST.
           if (workflowWorkspaceKey === key) {
             state.workflowBuilder.draft = cloneWorkflow(draft);
             state.activeWorkflowRunId = run.id;
             state.workflowRunDetail = workspace.detail;
-            if (workflowMountedKey === key) connectWorkflowRun(workspace.detail, workflowEditorMountGeneration, workspace);
+            if (workflowMountedKey === key) connectWorkflowRun(workspace.detail, workflowEditorMountGeneration, workspace, lists);
           }
-          const updated = await api.getWorkflowRun(run.id);
-          rememberWorkflowRun(updated, workspace);
+          const updated = await calls().getWorkflowRun(run.id);
+          rememberWorkflowRun(updated, workspace, lists);
           if (workflowMountedKey === key && state.activeWorkflowRunId === run.id) workflowLiveConnection?.setDetail(updated);
         } finally {
           workspace.pendingStart = false;
           if (workflowMountedKey === key) workflowEditorHandle?.setStarting(false);
         }
       },
-      onStop: runId => updateRun(runId, () => api.cancelWorkflowRun(runId)),
-      onResume: runId => updateRun(runId, () => request(`/workflow-runs/${encodeURIComponent(runId)}/resume`, { method: "POST", body: JSON.stringify({ background: true }) })),
-      onReview: (runId, decision) => updateRun(runId, () => request(`/workflow-runs/${encodeURIComponent(runId)}/review`, {
+      onStop: runId => updateRun(runId, () => calls().cancelWorkflowRun(runId)),
+      onResume: runId => updateRun(runId, () => send(`/workflow-runs/${encodeURIComponent(runId)}/resume`, { method: "POST", body: JSON.stringify({ background: true }) })),
+      onReview: (runId, decision) => updateRun(runId, () => send(`/workflow-runs/${encodeURIComponent(runId)}/review`, {
         method: "POST", body: JSON.stringify({ ...decision, background: true }), timeoutMs: 900000
       })),
       validation: state.workflowBuilder?.validation ?? null,
@@ -2336,7 +2351,7 @@ async function mountActiveWorkflowEditor() {
         workflowEditorHandle?.setValidation(null);
       }
     });
-    if (detail) connectWorkflowRun(detail, generation, workspace);
+    if (detail) connectWorkflowRun(detail, generation, workspace, lists);
   } catch (error) {
     if (isCurrent()) container.innerHTML = `<div class="status-block danger"><div class="status-block__label">Editor failed to load</div><div class="status-block__text">${escapeHtml(error instanceof Error ? error.message : "Unknown error")}</div></div>`;
   }
@@ -2553,7 +2568,8 @@ function renderWorkflowRunTrace(selectedRun) {
           ? `<div class="status-block danger"><div class="status-block__label">Error</div><div class="status-block__text">${escapeHtml(selectedRun.error)}</div></div>`
           : ""
       }
-      ${workspace ? `<div class="run-workspace"><strong>${escapeHtml(workspace.projectName || (selectedRun.taskId ? "Task folder" : "Run folder"))}</strong><span>${escapeHtml(workspace.rootPath)}</span><button class="ghost-button" type="button" data-action="open-run-folder" data-run-id="${escapeAttr(selectedRun.id)}" data-root-path="${escapeAttr(workspace.rootPath)}">${icon("folder")}Open folder</button></div>` : ""}
+      ${workspace && state.orchestration ? `<div class="run-workspace"><strong>${escapeHtml(`${workspace.projectName || (selectedRun.taskId ? "Task folder" : "Run folder")} on ${state.orchestration.hostName()}`)}</strong></div>` : ""}
+      ${workspace && !state.orchestration ? `<div class="run-workspace"><strong>${escapeHtml(workspace.projectName || (selectedRun.taskId ? "Task folder" : "Run folder"))}</strong><span>${escapeHtml(workspace.rootPath)}</span><button class="ghost-button" type="button" data-action="open-run-folder" data-run-id="${escapeAttr(selectedRun.id)}" data-root-path="${escapeAttr(workspace.rootPath)}">${icon("folder")}Open folder</button></div>` : ""}
       ${selectedRun.status === "waiting" ? `<p class="workspace-hint">Review the request above the waiting node to continue.</p>` : ""}
       <div class="run-node-list">
         ${nodeRuns.length ? nodeRuns.map(renderNodeRunCard).join("") : `<div class="empty compact">Steps appear here as the workflow runs.</div>`}
@@ -3510,7 +3526,7 @@ async function submitChatMessage(input, attachments, options = {}) {
 function bindWorkflowCardActions() {
   document.querySelectorAll("[data-action='edit-workflow']").forEach((button) => {
     button.addEventListener("click", () => {
-      const workflow = (state.bootstrap?.workflows ?? []).find(
+      const workflow = ((state.orchestration?.lists ?? state.bootstrap)?.workflows ?? []).find(
         (item) =>
           item.id === button.dataset.workflowId &&
           String(item.version) === String(button.dataset.workflowVersion)
@@ -3528,7 +3544,7 @@ function bindWorkflowCardActions() {
 
   document.querySelectorAll("[data-action='duplicate-workflow-card']").forEach((button) => {
     button.addEventListener("click", () => {
-      const workflow = (state.bootstrap?.workflows ?? []).find(
+      const workflow = ((state.orchestration?.lists ?? state.bootstrap)?.workflows ?? []).find(
         (item) =>
           item.id === button.dataset.workflowId &&
           String(item.version) === String(button.dataset.workflowVersion)
@@ -3551,7 +3567,7 @@ function bindEvents() {
     if (!runId) return;
     const sequence = ++workflowSelectionSequence;
     try {
-      const detail = await api.getWorkflowRun(runId);
+      const detail = await (state.orchestration?.api ?? api).getWorkflowRun(runId);
       if (sequence !== workflowSelectionSequence) return;
       selectWorkflowRun(detail);
       render();
@@ -4003,26 +4019,34 @@ function bindEvents() {
       const saving = action === "save-workflow";
       const original = saving ? "Save" : "Validate";
       button.textContent = saving ? "Saving…" : "Checking…";
+      const server = state.orchestration;
       try {
-        const validation = await api.validateWorkflow(draft);
+        const validation = await (server?.api ?? api).validateWorkflow(draft);
         if (isCurrentDraft()) {
           state.workflowBuilder.validation = validation;
           workflowEditorHandle?.setValidation(validation);
         }
         if (!validation.ok) { button.textContent = original; return; }
         if (saving) {
-          const exists = (state.bootstrap?.workflows ?? []).some(workflow => workflow.id === draft.id && workflow.version === draft.version);
-          const saved = exists ? await api.updateWorkflow(draft.id, draft) : await api.createWorkflow(draft);
-          await refreshBootstrap();
+          const lists = server?.lists ?? state.bootstrap;
+          const listed = (lists?.workflows ?? []).find(workflow => workflow.id === draft.id && workflow.version === draft.version);
+          // A server keeps someone else's save instead of overwriting it: name the version this edit started from.
+          const base = listed ? workflowWorkspaces.get(workflowWorkspaceKey)?.base ?? listed.updatedAt : null;
+          const saved = server ? await server.saveWorkflow(draft, base)
+            : listed ? await api.updateWorkflow(draft.id, draft) : await api.createWorkflow(draft);
+          if (server) await server.refresh(); else await refreshBootstrap();
           // Preserve changes made while this particular snapshot was being saved.
           if (isCurrentDraft()) {
             state.workflowBuilder.draft = cloneWorkflow(saved);
             const workspace = rememberWorkflowWorkspace();
-            if (workspace) workflowWorkspaces.set(workflowDraftKey(saved), workspace);
+            if (workspace) {
+              if (server) workspace.base = saved.updatedAt;
+              workflowWorkspaces.set(workflowDraftKey(saved), workspace);
+            }
           }
           const list = document.querySelector(".workflow-list");
           if (list) {
-            list.innerHTML = (state.bootstrap?.workflows ?? []).map(renderWorkflowCard).join("");
+            list.innerHTML = (lists?.workflows ?? []).map(renderWorkflowCard).join("");
             bindWorkflowCardActions();
           }
         }
@@ -4125,10 +4149,11 @@ function bindEvents() {
       const server = state.orchestration;
       await runAction(async () => {
         if (server) {
-          // Accepted on the server: it runs there, and the board follows it.
-          await server.api.runTask(taskId);
+          // Accepted on the server: it runs there; its run opens here as on this computer.
+          const started = await server.api.runTask(taskId);
           await server.refresh();
-          pushToast(`Started on ${server.hostName()}.`, "info");
+          const detail = started?.runId ? await server.api.getWorkflowRun(started.runId) : null;
+          if (detail && sequence === workflowSelectionSequence && state.orchestration === server) selectWorkflowRun(detail);
           return;
         }
         const result = await api.runTask(taskId);
@@ -4147,7 +4172,9 @@ function bindEvents() {
       if (server) {
         const result = await server.api.runNextTask();
         await server.refresh();
-        pushToast(result?.runId ? `Started on ${server.hostName()}.` : "No task is waiting to run.", "info");
+        const detail = result?.runId ? await server.api.getWorkflowRun(result.runId) : null;
+        if (detail && sequence === workflowSelectionSequence && state.orchestration === server) selectWorkflowRun(detail);
+        else if (!detail) pushToast("No task is waiting to run.", "info");
         return;
       }
       const result = await api.runNextTask();
@@ -4167,7 +4194,7 @@ function bindEvents() {
 
       const sequence = ++workflowSelectionSequence;
       try {
-        const detail = await api.getWorkflowRun(runId);
+        const detail = await (state.orchestration?.api ?? api).getWorkflowRun(runId);
         if (sequence !== workflowSelectionSequence) return;
         selectWorkflowRun(detail);
         render();
@@ -6458,7 +6485,7 @@ function bindWorkflowReviewActions() {
     if (!disclosure.open) return;
     const output = disclosure.querySelector("[data-agent-steps]");
     try {
-      const trace = await request(`/workflow-runs/${encodeURIComponent(disclosure.dataset.runId)}/agent-runs/${encodeURIComponent(disclosure.dataset.agentTrace)}`);
+      const trace = await (state.orchestration?.request ?? request)(`/workflow-runs/${encodeURIComponent(disclosure.dataset.runId)}/agent-runs/${encodeURIComponent(disclosure.dataset.agentTrace)}`);
       const data = trace.run ?? trace;
       const text = Array.isArray(data.turns) ? data.turns.map((turn, index) => `${index + 1}. ${turn.type}\n${turn.content}`).join("\n\n") : JSON.stringify(data, null, 2);
       state.workflowAgentTraces[disclosure.dataset.agentTrace] = text;
@@ -6527,14 +6554,29 @@ async function switchChatTarget(next, { route = state.route } = {}) {
 
 /** What the Tasks & workflows screen holds for one machine, kept while another one is on screen. */
 function parkOrchestrationState(machine) {
-  parkedOrchestration.set(machine, { taskWorkspaces: state.taskWorkspaces, taskDraftAttachments: state.taskDraftAttachments });
+  // The editor keeps its view state in its workspace before it goes.
+  unmountWorkflowEditor();
+  parkedOrchestration.set(machine, { taskWorkspaces: state.taskWorkspaces, taskDraftAttachments: state.taskDraftAttachments,
+    workflowWorkspaces: new Map(workflowWorkspaces), workflowEventCache: new Map(workflowEventCache), workflowWorkspaceKey,
+    workflowBuilder: state.workflowBuilder, activeWorkflowRunId: state.activeWorkflowRunId, workflowRunDetail: state.workflowRunDetail,
+    workflowAgentTraces: state.workflowAgentTraces });
 }
 
 function restoreOrchestrationState(machine) {
   const parked = parkedOrchestration.get(machine);
   parkedOrchestration.delete(machine);
+  workflowSelectionSequence += 1;
   state.taskWorkspaces = parked?.taskWorkspaces ?? {};
   state.taskDraftAttachments = parked?.taskDraftAttachments ?? [];
+  workflowWorkspaces.clear();
+  for (const [key, workspace] of parked?.workflowWorkspaces ?? []) workflowWorkspaces.set(key, workspace);
+  workflowEventCache.clear();
+  for (const [key, events] of parked?.workflowEventCache ?? []) workflowEventCache.set(key, events);
+  workflowWorkspaceKey = parked?.workflowWorkspaceKey ?? null;
+  state.workflowBuilder = parked?.workflowBuilder ?? null;
+  state.activeWorkflowRunId = parked?.activeWorkflowRunId ?? null;
+  state.workflowRunDetail = parked?.workflowRunDetail ?? null;
+  state.workflowAgentTraces = parked?.workflowAgentTraces ?? {};
 }
 
 /** The Tasks & workflows screen of a server that is loading, unreachable or failed to answer. */
