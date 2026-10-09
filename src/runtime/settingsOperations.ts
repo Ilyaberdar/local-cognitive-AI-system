@@ -80,12 +80,17 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
 
     "settings.update": async payload => {
       refuseByField(payload);
+      // The schema would drop such a key silently; it is refused instead.
+      if (Object.keys(record(record(payload).providers)).some(id => ["__proto__", "constructor", "prototype"].includes(id))) {
+        throw new RemoteOperationError("The request is not valid.", "invalid_request");
+      }
       const input = parse(schemas.update, payload);
       if (deps.isDraining()) throw draining();
       const current = await deps.runtimeManager.getSettings();
-      // Only providers the host has: an unknown id would create one.
+      // Only providers the host has, as its own entries: an unknown id would create one, and a name
+      // such as "toString" or "constructor" must not pass for a provider through the prototype.
       for (const id of [...Object.keys(input.providers ?? {}), ...(input.llm ? [input.llm.defaultProvider] : [])]) {
-        if (!current.providers[id]) throw new RemoteOperationError(`The provider ${publicError(id)} does not exist on the server.`, "invalid_request");
+        if (!Object.hasOwn(current.providers, id)) throw new RemoteOperationError(`The provider ${publicError(id)} does not exist on the server.`, "invalid_request");
       }
       const providers: NonNullable<AppSettingsPatch["providers"]> = {};
       for (const [id, fields] of Object.entries(input.providers ?? {})) {
@@ -112,7 +117,7 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
       if (deps.isDraining()) throw draining();
       if (id === "llamacpp") throw new RemoteOperationError("Load and use the server's models from Models.", "unsupported");
       const settings = await deps.runtimeManager.getSettings();
-      const provider = settings.providers[id];
+      const provider = Object.hasOwn(settings.providers, id) ? settings.providers[id] : undefined;
       if (!provider) throw new RemoteOperationError("The provider does not exist on the server.", "invalid_request");
       if (!provider.enabled) return { ok: false, providerId: id, message: "Provider is disabled." };
       const secrets = Object.values(settings.providers).map(item => item.apiKey ?? "").filter(Boolean);
