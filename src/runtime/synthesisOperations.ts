@@ -67,16 +67,21 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
       if (reason) throw new RemoteOperationError(reason, "unsupported");
     }
   };
-  /** A run is reached through its project: an id is not a permission. */
-  const requireRun = async (id: string, use: boolean) => {
+  /** A run is reached through its project: an id is not a permission. `stop`: a run a device
+   * started may be stopped also once its project is no longer the device's to see. */
+  const requireRun = async (id: string, use: boolean, stop = false) => {
     const run = await service().existing(id);
     if (!run) throw new RemoteOperationError("The Synthesis run does not exist on the server.", "not_found");
     await requireProject(run.projectId, use).catch(error => {
+      if (stop && run.startedBy === "device") return;
       if (error instanceof RemoteOperationError && error.code === "project_unknown") throw new RemoteOperationError("The Synthesis run does not exist on the server.", "not_found");
       throw error;
     });
     return run;
   };
+  /** A device's run stops once the device may no longer use its project (archived, folder unshared). */
+  const device = (projectId: string) => ({ guard: async () =>
+    await deps.projects.visible(projectId) ? (await deps.projects.usable(projectId)).reason : PROJECT_ON_HOST });
   /** Service refusals keep a code and a short, path-free text; anything else is reported generically. */
   const known = async <T>(projectId: string | undefined, task: () => Promise<T>): Promise<T> => {
     try { return await task(); }
@@ -183,7 +188,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
         await requireProject(input.projectId, true);
         const scrub = await scrubberFor(input.projectId);
         return command(context, "synthesis.runs.start", input, record => known(input.projectId, async () =>
-          runSummary(await service().start(input.projectId, input.moduleId, { runId: record.runId }), scrub)), {
+          runSummary(await service().start(input.projectId, input.moduleId, { runId: record.runId, device: device(input.projectId) }), scrub)), {
           reserveRunId: true,
           // A restart after the run was made: that run is the answer (recovery interrupted it).
           reconcile: async record => { const run = record.runId ? await service().existing(record.runId) : undefined; return run ? runSummary(run, scrub) : undefined; }
@@ -194,7 +199,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
     "synthesis.runs.cancel": payload => {
       const { runId: id } = parse(schemas.run, payload);
       return known(undefined, async () => {
-        const run = await requireRun(id, false);
+        const run = await requireRun(id, false, true);
         const stopped = service().cancel(id).then(() => undefined);
         await Promise.race([stopped, new Promise(resolve => setTimeout(resolve, 10_000).unref())]);
         return runSummary((await service().existing(id)) ?? run, await scrubberFor(run.projectId));
@@ -207,7 +212,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
         const run = await requireRun(input.runId, true);
         const scrub = await scrubberFor(run.projectId);
         return command(context, "synthesis.runs.resume", input, record => known(run.projectId, async () =>
-          runSummary(await service().restart(input.runId, { runId: record.runId }), scrub)), {
+          runSummary(await service().restart(input.runId, { runId: record.runId, device: device(run.projectId) }), scrub)), {
           reserveRunId: true, target: input.runId,
           reconcile: async record => { const made = record.runId ? await service().existing(record.runId) : undefined; return made ? runSummary(made, scrub) : undefined; }
         });
@@ -222,7 +227,13 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
           await service().apply(input.runId);
           return { ok: true, appliedAt: (await service().existing(input.runId))?.appliedAt ?? new Date().toISOString() };
         }), { target: input.runId, allowWhileDraining: true,
-          reconcile: async () => { const applied = (await service().existing(input.runId))?.appliedAt; return applied ? { ok: true, appliedAt: applied } : undefined; } });
+          // A restart during Apply: the project's files tell whether it was written, not at all, or in part.
+          reconcile: async () => {
+            const outcome = await service().applyOutcome(input.runId);
+            if (outcome === "none") return undefined;
+            if (outcome === "partial") throw new RemoteOperationError("The server restarted while applying this run and only some files were written. Check the project's files.", "unknown_outcome");
+            return { ok: true, appliedAt: (await service().existing(input.runId))?.appliedAt ?? new Date().toISOString() };
+          } });
       });
     }
   };

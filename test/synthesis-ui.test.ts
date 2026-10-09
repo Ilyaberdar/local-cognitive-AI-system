@@ -415,3 +415,23 @@ test("on a server the screen reaches Synthesis through its transport, with no ed
     assert.equal(dom.window.localStorage.getItem("lcai.synthesis.project.v1:host-1"), "p1", "this server's view is kept apart");
   } finally { handle.unmount(); dom.window.close(); }
 });
+
+test("a server's projects arriving after the screen keep the project chosen there before", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.localStorage.setItem("lcai.synthesis.project.v1:host-1", "p2");
+  dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
+  const asked: string[] = [];
+  const transport = { remote: { hostName: "fedora" }, request: async (path: string) => {
+    asked.push(path);
+    return path.endsWith("/modules") ? { modules: [] } : path.endsWith("/runs") ? [] : {};
+  } };
+  const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"), { projects: [], active: true, transport, storageKey: "host-1" });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(dom.window.localStorage.getItem("lcai.synthesis.project.v1:host-1"), "p2", "no project yet is not a choice");
+    handle.setProjects([{ id: "p1", name: "One", rootPath: "fedora › Projects › one" }, { id: "p2", name: "Two", rootPath: "fedora › Projects › two" }]);
+    await until(() => asked.includes("/projects/p2/modules"), "saved project");
+    assert.equal((dom.window.document.getElementById("synthesis-project") as HTMLSelectElement).value, "p2");
+    assert.equal(asked.some(path => path.startsWith("/projects/p1/")), false);
+  } finally { handle.unmount(); dom.window.close(); }
+});

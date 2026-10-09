@@ -257,7 +257,9 @@ export const SYNTHESIS_ROUTES = [
   { method: "GET", pattern: /^\/projects\/([^/]+)\/folders$/, op: "synthesis.folders.list",
     payload: (match, query) => ({ projectId: segment(match[1]), ...(query.get("directory") ? { directory: query.get("directory") } : {}) }) },
   { method: "POST", pattern: /^\/projects\/([^/]+)\/modules$/, op: "synthesis.modules.create", send: true,
-    payload: (match, _query, body) => ({ projectId: segment(match[1]), ...pick(body, ["name", "template", "directory"]) }) },
+    // An empty folder is the project's root (the server's default is "Synthesis").
+    payload: (match, _query, body) => ({ projectId: segment(match[1]), ...pick(body, ["name", "template"]),
+      ...(typeof body?.directory === "string" ? { directory: body.directory } : {}) }) },
   { method: "GET", pattern: /^\/projects\/([^/]+)\/runs$/, op: "synthesis.runs.list", payload: match => ({ projectId: segment(match[1]) }) },
   { method: "POST", pattern: /^\/projects\/([^/]+)\/runs$/, op: "synthesis.runs.start", send: true,
     payload: (match, _query, body) => ({ projectId: segment(match[1]), moduleId: body?.moduleId }) },

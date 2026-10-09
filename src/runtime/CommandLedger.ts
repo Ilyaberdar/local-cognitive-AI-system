@@ -20,7 +20,8 @@ export interface LedgerCommand<T> {
   /** False while the host drains: a new command is refused before anything is recorded. */
   accepting?: () => boolean;
   /** For a command an earlier process accepted but never finished: its result if its effect is
-   * known to exist, undefined if it is known not to (it is then reported as not started). */
+   * known to exist, undefined if it is known not to (it is then reported as not started); a
+   * RemoteOperationError it throws is the answer when neither is known. */
   reconcile?: (record: CommandRecord) => Promise<T | undefined>;
 }
 
@@ -85,7 +86,14 @@ export class CommandLedger {
     if (inFlight) return inFlight as Promise<T>;
     // Accepted by an earlier process that stopped before it finished: never executed again.
     const record: CommandRecord = { ...(row.run_id ? { runId: row.run_id } : {}), acceptedAt: row.accepted_at, ...(row.target ? { target: row.target } : {}) };
-    const recovered = command.reconcile ? await command.reconcile(record) : undefined;
+    let recovered: T | undefined;
+    try { recovered = command.reconcile ? await command.reconcile(record) : undefined; }
+    catch (error) {
+      // What it did is known to be incomplete: that answer is kept for every resend.
+      if (!(error instanceof RemoteOperationError)) throw error;
+      this.settle(row.command_id, "interrupted", { error: { code: error.code, message: error.message } });
+      throw error;
+    }
     if (recovered !== undefined) {
       this.settle(row.command_id, "completed", { result: recovered });
       return recovered;

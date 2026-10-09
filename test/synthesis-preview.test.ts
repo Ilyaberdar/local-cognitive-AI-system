@@ -26,3 +26,16 @@ test("a preview of a page with no head still carries its policy", () => {
   const page = previewDocument({ "index.html": "<p>Hi</p>" });
   assert.match(page, /^<html><head><meta http-equiv="Content-Security-Policy"/);
 });
+
+test("a preview keeps no link, refresh or ping that would reach past its policy", () => {
+  const page = previewDocument({
+    "index.html": `<html><head><meta http-equiv="refresh" content="0;url=https://elsewhere.example/"><meta http-equiv="Content-Security-Policy" content="default-src *">
+      <link rel="prefetch" href="https://elsewhere.example/a"><link rel="dns-prefetch" href="//elsewhere.example"><link rel="icon" href="https://elsewhere.example/i.png">
+      <link rel="stylesheet" href="style.css"></head><body><a href="#top" ping="https://elsewhere.example/p">Top</a></body></html>`,
+    "style.css": "a{color:red}"
+  });
+  assert.doesNotMatch(page, /elsewhere\.example|<link|refresh|ping=|default-src \*/i);
+  assert.equal((page.match(/http-equiv=/g) ?? []).length, 1, "only the preview's own policy");
+  assert.match(page, /<style>a\{color:red\}<\/style>/);
+  assert.match(page, /<a href="#top">Top<\/a>/);
+});
