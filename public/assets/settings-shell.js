@@ -1,6 +1,7 @@
 import { icon, bindGlassLighting } from './ui-primitives.js';
 import { createAccountState, entityPatch, localProfileView, mcpServerCount } from './settings-data.js';
 import { mountIntegrationPage } from './plugins-ui.js';
+import { mountUsagePage } from './usage-ui.js';
 
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
@@ -53,7 +54,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, accountPending, accountNotice;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, accountPending, accountNotice;
   const context = () => getContext() || {};
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
@@ -278,7 +279,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   function profileEditor() {
     const user = localProfileView(clientSettings());
-    return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', accountLinkDescription(account.get())) + link('usage', 'Usage', 'Activity reporting availability');
+    return profile() + `<p class="settings-description">Choose the name and avatar shown in the sidebar. They stay on this Mac and do not change your connected accounts or plugin credentials.</p><form id="settings-profile-form" class="settings-form"><div class="settings-rows"><div class="settings-row"><div><label for="local-profile-name">Profile name</label><p>Shown in the app navigation and local profile menu.</p></div><div class="settings-control"><input id="local-profile-name" name="displayName" type="text" maxlength="80" required value="${escape(user.name)}" /></div></div><div class="settings-row"><div><label for="local-profile-avatar">Avatar</label><p>PNG, JPEG or WebP. The image is kept locally with your settings.</p></div><div class="settings-control settings-avatar-control">${avatar(user, 'local-avatar--editor')}<label class="ghost-button" for="local-profile-avatar">Choose image</label><input id="local-profile-avatar" data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" hidden />${user.avatarDataUrl ? '<button type="button" class="ghost-button" data-remove-profile-avatar>Remove</button>' : ''}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-profile-status>Changes stay on this device.</span><button type="submit" class="primary-button">Save profile</button></div></form>` + link('account', 'Account', accountLinkDescription(account.get())) + link('usage', 'Usage', 'Tokens over time, by period and by day');
   }
   function externalMcpServers() { return clientSettings().mcp?.client?.servers || {}; }
   function externalMcpBindings(serverId) {
@@ -455,7 +456,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'voice') return '<div data-voice-settings-page></div>';
     if (name === 'profile') return profileEditor();
     if (name === 'account') return `<div data-account-page>${accountPanel()}</div>`;
-    if (name === 'usage') return note('Usage statistics are not available yet', 'This version does not maintain a complete usage ledger across chats, agents, workflows and providers. Token totals, subscription limits and lifetime activity cannot be reported reliably.');
+    if (name === 'usage') return '<div data-usage-page></div>';
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. Configurable desktop notifications are not available in this release.');
     if (name === 'connections') return '<div data-integrations-page></div>';
     if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
@@ -532,6 +533,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function render() {
     disposeVoice?.(); disposeVoice = undefined;
     disposeIntegrations?.(); disposeIntegrations = undefined;
+    disposeUsage?.(); disposeUsage = undefined;
     const [name, id] = page.split('/');
     const server = serverFor(page);
     server?.ensureLoaded();
@@ -556,6 +558,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (server) return;
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
+    if (name === 'usage') disposeUsage = mountUsagePage(root.querySelector('[data-usage-page]'));
     if (name === 'mcp' && id === 'import') bindMcpImport();
     else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));

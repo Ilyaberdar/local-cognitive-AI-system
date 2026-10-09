@@ -64,6 +64,6 @@ export const mergeDays = (...lists: UsageDay[][]): UsageDay[] => {
 
 export const sumDays = (days: UsageDay[]): UsageTotals => days.reduce((total, day) => addTotals(total, day), emptyTotals());
 
-/** The calendar date `days` before (negative: after) a date. */
-export const shiftDate = (date: string, days: number): string =>
+/** The calendar date `days` days before a date. */
+export const dateBefore = (date: string, days: number): string =>
   new Date(Date.parse(`${date}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);

@@ -398,3 +398,48 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .settings-host-only .settings-control > span { color: var(--muted); text-align: right; overflow-wrap: anywhere; }
 .settings-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .settings-content.is-offline .settings-form, .settings-content.is-offline .settings-test-actions { opacity: 0.55; }
+
+/* Usage: cards in the settings style, a period bar, a year of days, weeks and a cumulative line. */
+.usage-page { display: grid; gap: 16px; max-width: 760px; }
+.usage-status { margin: 0; }
+.usage-card { border: 1px solid var(--line); background: var(--surface); border-radius: 16px; padding: 18px 20px; min-width: 0; }
+.usage-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.usage-card-head h2 { margin: 0; font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; }
+.usage-refresh { display: inline-flex; align-items: center; gap: 6px; }
+.usage-big { font-size: calc(30px * var(--font-scale, 1)); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.usage-sub { margin: 6px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.6; }
+.usage-tabs { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--control-bg, transparent); }
+.usage-tabs button { padding: 4px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: calc(12px * var(--font-scale, 1)); }
+.usage-tabs button[aria-selected="true"] { background: var(--highlight); color: var(--text); }
+.usage-period-total { font-size: calc(20px * var(--font-scale, 1)); font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-period-total small { font-size: calc(12px * var(--font-scale, 1)); font-weight: 400; color: var(--muted); }
+.usage-bar { display: flex; height: 8px; margin: 10px 0 8px; overflow: hidden; border-radius: 4px; background: var(--line); }
+.usage-bar .is-input, .usage-key.is-input { background: var(--accent); }
+.usage-bar .is-output, .usage-key.is-output { background: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.usage-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); font-variant-numeric: tabular-nums; }
+.usage-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-left: 6px; }
+.usage-key:first-child { margin-left: 0; }
+.usage-legend-note { margin-left: auto; }
+.usage-heatmap-scroll { overflow-x: auto; padding-bottom: 4px; }
+.usage-heatmap { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 6px; row-gap: 4px; width: max-content; }
+.usage-heatmap-months { grid-column: 2; display: grid; grid-template-columns: repeat(53, 11px); column-gap: 3px; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); white-space: nowrap; }
+.usage-heatmap-days { grid-row: 2; display: grid; grid-template-rows: repeat(7, 11px); row-gap: 3px; color: var(--muted); font-size: calc(9px * var(--font-scale, 1)); line-height: 11px; }
+.usage-heatmap-grid { grid-row: 2; grid-column: 2; display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 11px); grid-auto-columns: 11px; gap: 3px; }
+.usage-cell { display: inline-block; width: 11px; height: 11px; border-radius: 2px; background: var(--line); }
+.usage-cell[data-level="1"] { background: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.usage-cell[data-level="2"] { background: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.usage-cell[data-level="3"] { background: color-mix(in srgb, var(--accent) 78%, var(--line)); }
+.usage-cell[data-level="4"] { background: var(--accent); }
+.usage-cell.is-future { background: transparent; }
+.usage-heatmap-legend { display: flex; align-items: center; justify-content: flex-end; gap: 3px; margin-top: 8px; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); }
+.usage-heatmap-legend > span:first-child { margin-right: 3px; }
+.usage-heatmap-legend > span:last-child { margin-left: 3px; }
+.usage-chart { display: block; width: 100%; height: 140px; }
+.usage-chart rect { fill: var(--accent); }
+.usage-chart .usage-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.usage-chart .usage-area { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: none; }
+.usage-axis { display: flex; justify-content: space-between; margin-top: 6px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); font-variant-numeric: tabular-nums; }
+.usage-sources { display: grid; }
+.usage-source { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.usage-source:last-child { border-bottom: 0; }
+.usage-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); padding: 20px 0; }
