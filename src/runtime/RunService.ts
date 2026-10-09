@@ -4,6 +4,7 @@ import type { Logger } from "../utils/Logger";
 import { canonical, sha256 } from "./canonical";
 import type { HostDatabase } from "./db/HostDatabase";
 import type { EventJournal, JournalEvent } from "./EventJournal";
+import type { Scrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 
 export type RunStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "needs_review";
@@ -31,12 +32,15 @@ export interface RunServiceDependencies {
   sessionExists(sessionId: string): Promise<boolean>;
   /** A legacy /chat request already running on the session. */
   legacyBusy?(sessionId: string): boolean;
+  /** What a device may see of a turn: the host's folders replaced. Applied as events are written,
+   * so streamed offsets count the text the device receives. */
+  scrubber?(): Promise<Scrubber>;
   logger?: Logger;
   now?: () => Date;
 }
 
 interface ActiveRun {
-  runId: string; sessionId: string; assistantMessageId: string; controller: AbortController; attachments?: ChatAttachment[];
+  runId: string; sessionId: string; assistantMessageId: string; controller: AbortController; attachments?: ChatAttachment[]; scrub?: Scrubber;
   text: string; pendingText?: { offset: number; text: string; replace?: boolean }; progress?: Omit<ProcessProgressEvent, "answer">; progressDirty: boolean;
   timer?: NodeJS.Timeout; approval?: { view: PendingApprovalView; decide: (approved: boolean) => void };
 }
@@ -47,6 +51,8 @@ export const streamOf = (sessionId: string) => `session:${sessionId}`;
  * any client connection, journaled as they progress, and never re-executed after a crash. */
 export class RunService {
   private readonly active = new Map<string, ActiveRun>();
+  /** Chats being deleted: no new turn starts in them. */
+  private readonly deleting = new Set<string>();
   private accepting = true;
   private disposed = false;
 
@@ -82,6 +88,7 @@ export class RunService {
       // Checked again inside the transaction: the async checks above may have interleaved.
       const existing = this.replay(scope, request.commandId, command);
       if (existing) return { ack: existing, appended: [] };
+      if (this.deleting.has(request.sessionId)) throw new RunServiceError("The chat does not exist on the server.", "session_unknown");
       const commandId = randomUUID(), runId = randomUUID(), userMessageId = randomUUID(), assistantMessageId = randomUUID();
       db.prepare(`INSERT INTO commands(command_id, scope, idempotency_key, operation, target, payload_sha256, payload_json, status, accepted_at, updated_at)
         VALUES (?, ?, ?, 'chat.runs.start', ?, ?, ?, 'accepted', ?, ?)`).run(commandId, scope, request.commandId, request.sessionId, sha256(payloadJson), payloadJson, at, at);
@@ -149,18 +156,26 @@ export class RunService {
     return { ...view, partialText: live?.text ?? "", ...(live?.progress ? { progress: live.progress } : {}), ...(live?.approval ? { pendingApproval: live.approval.view } : {}) };
   }
 
-  /** A deleted chat's turns and journal go with it; refused while the chat is answering, here or on
-   * the host's own screen. Followers find the stream gone and reload (and learn it no longer exists). */
+  /** Starts deleting a chat: refused while it is answering, here or on the host's own screen. New
+   * turns are refused, and its turns, their commands (with their inputs) and its journal go. */
   forgetSession(sessionId: string): void {
     if (this.activeRun(sessionId) || this.deps.legacyBusy?.(sessionId)) throw new RunServiceError("The chat is answering. Stop the answer first, then delete it.", "session_busy");
+    this.deleting.add(sessionId);
     const streamId = streamOf(sessionId);
     this.deps.host.transaction(db => {
       db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
       db.prepare("DELETE FROM runs WHERE session_id = ? AND kind = 'chat'").run(sessionId);
+      db.prepare("DELETE FROM commands WHERE operation = 'chat.runs.start' AND target = ?").run(sessionId);
       db.prepare("DELETE FROM events WHERE stream_id = ?").run(streamId);
       db.prepare("DELETE FROM event_streams WHERE stream_id = ?").run(streamId);
     });
-    this.deps.journal.wake(streamId);
+  }
+
+  /** The delete finished: followers find the stream gone and learn the chat no longer exists. Or it
+   * failed part way, and the chat takes turns again until it is deleted. */
+  forgotSession(sessionId: string, deleted: boolean): void {
+    if (deleted) this.deps.journal.wake(streamOf(sessionId));
+    else this.deleting.delete(sessionId);
   }
 
   /** Turns that history from memory does not contain: unfinished, failed, cancelled or interrupted. */
@@ -236,6 +251,7 @@ export class RunService {
         return [this.deps.journal.append(db, streamOf(sessionId), { type: "run.started", runId, payload: { runId, assistantMessageId: run.assistantMessageId } })];
       });
       this.deps.journal.publish(started);
+      run.scrub = await this.deps.scrubber?.().catch(() => undefined);
       run.controller.signal.throwIfAborted();
       const result = await this.deps.execute({ runId, sessionId, input, ...(run.attachments ? { attachments: run.attachments } : {}) }, {
         signal: run.controller.signal,
@@ -256,8 +272,22 @@ export class RunService {
   }
 
   /** Coalesces the cumulative answer into deltas and the latest progress, flushed every 300 ms. */
+  /** The answer as a device may see it: folders replaced, and an unfinished folder at the end held
+   * back until it is complete (it is sent once it is replaced or turns out to be something else). */
+  private visibleText(run: ActiveRun, text: string): string {
+    if (!run.scrub) return text;
+    const scrubbed = run.scrub(text), longest = Math.max(0, ...run.scrub.dirs.map(dir => dir.length));
+    for (let length = Math.min(scrubbed.length, longest); length > 0; length--) {
+      const tail = scrubbed.slice(-length);
+      if (run.scrub.dirs.some(dir => dir.length > length && dir.startsWith(tail))) return scrubbed.slice(0, -length);
+    }
+    return scrubbed;
+  }
+
   private onProgress(run: ActiveRun, event: ProcessProgressEvent): void {
-    const { answer, ...progress } = event;
+    const { answer: raw, ...rawProgress } = event;
+    const answer = typeof raw === "string" ? this.visibleText(run, raw) : raw;
+    const progress = run.scrub ? run.scrub(rawProgress) : rawProgress;
     if (typeof answer === "string" && answer !== run.text) {
       if (answer.startsWith(run.text)) {
         const offset = run.text.length;
@@ -294,7 +324,7 @@ export class RunService {
   private requestApproval(run: ActiveRun, operation: ApprovalOperation): Promise<boolean> {
     run.controller.signal.throwIfAborted();
     if (run.approval) return Promise.reject(new RunServiceError("Another approval is pending.", "approval_pending"));
-    const view: PendingApprovalView = { ...operation, approvalId: randomUUID(), digest: sha256(canonical(operation)), requestedAt: this.now().toISOString() };
+    const view: PendingApprovalView = { ...(run.scrub ? run.scrub(operation) : operation), approvalId: randomUUID(), digest: sha256(canonical(operation)), requestedAt: this.now().toISOString() };
     this.flush(run);
     this.transition(run, "waiting_approval", { type: "approval.requested", payload: { runId: run.runId, ...view } });
     return new Promise<boolean>((resolve, reject) => {
@@ -325,8 +355,9 @@ export class RunService {
     // Devices read this error; the host log keeps the full text.
     if (error !== undefined) {
       if (status === "failed") this.deps.logger?.warn("Chat run failed", { runId: run.runId, error });
-      error = publicError(error);
+      error = publicError(run.scrub ? run.scrub(error) : error);
     }
+    if (turn && run.scrub) turn = run.scrub(turn);
     // Providers that do not stream report no partial text; the stored turn has the final answer.
     const finalText = turn?.find(message => message.role === "assistant")?.content;
     if (finalText !== undefined) run.text = finalText;

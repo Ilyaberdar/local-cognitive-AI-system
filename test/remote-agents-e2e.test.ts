@@ -92,6 +92,8 @@ test("a server chat's subagents and debate agents are set from a device; a chat 
   model.release();
   await until(async () => (await runtime.request<Snapshot>("sessions.messages.list", { sessionId: other.id })).activeRun, run => !run);
   assert.ok(busy.runId);
+  const listed = await runtime.request<Array<{ id: string; title: string }>>("sessions.list", {});
+  assert.equal(listed.find(item => item.id === other.id)?.title, "Renamed", "a turn does not undo a rename");
   updates.length = 0;
   assert.deepEqual(await runtime.request("sessions.delete", { sessionId: other.id }), { deleted: true });
   await until(() => updates.some(update => "resync" in update), Boolean);

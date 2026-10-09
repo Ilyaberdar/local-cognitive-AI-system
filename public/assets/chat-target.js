@@ -211,6 +211,8 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     },
     /** Deletes a server chat there, for every device; what this window kept of it goes too. */
     async remove(key) {
+      // Not followed while it goes: its stream ending is this delete, not news to reload.
+      if (subscribed?.key === key) api.release();
       await call("sessions.delete", { sessionId: serverId(key) }, hostOf(key));
       sessions = sessions.filter(item => item.id !== key);
       settings.delete(key); setups.delete(key); views.delete(key);

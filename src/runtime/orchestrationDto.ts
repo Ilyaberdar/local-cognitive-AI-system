@@ -63,16 +63,22 @@ export const orchestrationLists = (input: { tasks: Task[]; schedules: Schedule[]
   return { ...lists, ...(truncated ? { truncated: true } : {}) };
 };
 
+export type Scrubber = (<T>(value: T) => T) & { readonly dirs: readonly string[] };
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Replaces each folder by its label in a whole value (longest folder first, so a folder inside
- * another is replaced by its own label). */
-export const pathScrubber = (pairs: Array<[string, string]>) => {
-  const sorted = pairs.filter(([dir]) => dir.length > 1).sort((a, b) => b[0].length - a[0].length);
-  return <T>(value: T): T => {
-    if (!sorted.length || value === undefined) return value;
+ * another is replaced by its own label). Only whole folders: `/srv/out` is not part of `/srv/outbox`. */
+export const pathScrubber = (pairs: Array<[string, string]>): Scrubber => {
+  const sorted = pairs.map(([dir, label]) => [dir.replace(/(.)[\\/]+$/, "$1"), label] as [string, string]).filter(([dir]) => dir.length > 1)
+    .sort((a, b) => b[0].length - a[0].length);
+  const patterns = sorted.map(([dir, label]) => [new RegExp(`(?<![\\w./-])${escapeRegExp(JSON.stringify(dir).slice(1, -1))}(?![\\w.-])`, "g"), label] as [RegExp, string]);
+  const scrub = <T>(value: T): T => {
+    if (!patterns.length || value === undefined) return value;
     let json = JSON.stringify(value);
-    for (const [dir, label] of sorted) json = json.split(JSON.stringify(dir).slice(1, -1)).join(label);
+    for (const [pattern, label] of patterns) json = json.replace(pattern, () => label);
     return JSON.parse(json) as T;
   };
+  return Object.assign(scrub, { dirs: sorted.map(([dir]) => dir) });
 };
 
 /** Replaces folders of the host in what a device receives about a run: the run's workspace and

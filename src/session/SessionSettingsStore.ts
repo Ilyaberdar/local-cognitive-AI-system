@@ -42,8 +42,12 @@ export class SessionSettingsStore {
   }
 
   update(sessionId: string, patch: SessionSettingsPatch): Promise<SessionSettings> {
+    return this.queued(sessionId, () => this.applyUpdate(sessionId, patch));
+  }
+
+  private queued<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(sessionId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(() => this.applyUpdate(sessionId, patch));
+    const next = previous.catch(() => undefined).then(task);
     const settled = next.catch(() => undefined);
     this.queues.set(sessionId, settled);
     void settled.then(() => { if (this.queues.get(sessionId) === settled) this.queues.delete(sessionId); });
@@ -77,12 +81,15 @@ export class SessionSettingsStore {
     return settings;
   }
 
-  async delete(sessionId: string): Promise<void> {
-    try {
-      await fs.unlink(this.getPath(sessionId));
-    } catch {
-      return;
-    }
+  /** After any save in flight, so a deleted chat's settings are not written back. */
+  delete(sessionId: string): Promise<void> {
+    return this.queued(sessionId, async () => {
+      try {
+        await fs.unlink(this.getPath(sessionId));
+      } catch {
+        return;
+      }
+    });
   }
 
   /** Written beside the file and renamed over it: a reader sees the old settings or the new ones,

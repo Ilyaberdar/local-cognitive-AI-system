@@ -6,7 +6,6 @@ import test, { type TestContext } from "node:test";
 import type { RuntimeManager } from "../src/app/RuntimeManager";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
 import { createChatOperations, createChatScrubber } from "../src/runtime/chatOperations";
-import { createEventStreamOperations } from "../src/runtime/eventStreams";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
 import { RunServiceError, type RunService } from "../src/runtime/RunService";
 import type { EventJournal } from "../src/runtime/EventJournal";
@@ -39,7 +38,8 @@ async function setup(t: TestContext) {
     forgetSession: (sessionId: string) => {
       if (sessionId === "busy") throw new RunServiceError("The chat is answering. Stop the answer first, then delete it.", "session_busy");
       forgotten.push(`turns ${sessionId}`);
-    }
+    },
+    forgotSession: (sessionId: string, deleted: boolean) => { forgotten.push(`done ${sessionId} ${deleted}`); }
   };
   const ops = createChatOperations({
     runtimeManager: { getRuntime: () => runtime, getSettings: async () => ({ ui: {} }) } as unknown as RuntimeManager,
@@ -133,10 +133,7 @@ test("the server's folders are replaced in what a device receives about a chat",
   const value = { details: `Write ${output}/report.md\nWorking directory: ${allowed}/repo`, text: `Log in ${data}/app/logs and /etc/hosts` };
   assert.deepEqual(scrub(value), { details: "Write <output>/report.md\nWorking directory: <folder>/repo", text: "Log in <server>/app/logs and /etc/hosts" });
 
-  const journal = { read: () => ({ events: [{ seq: 1, type: "approval.requested", payload: { details: `Delete ${output}/a.txt` } }] }), wait: async () => undefined } as unknown as EventJournal;
-  const poll = createEventStreamOperations({ journal, requireSession: async () => undefined, scrubSession: async () => scrub })["events.poll"]!;
-  const result = await poll({ streams: [{ streamId: "session:chat", epoch: "e", after: 0 }], waitMs: 0 }, context) as any;
-  assert.equal(result.streams[0].events[0].payload.details, "Delete <output>/a.txt");
+  assert.deepEqual(scrub({ near: `${output}box/a and ${data}2/b`, quoted: `"${output}"` }), { near: `${output}box/a and ${data}2/b`, quoted: '"<output>"' }, "only whole folders");
 });
 
 test("a device renames a server chat, and deletes one with its settings, memory, turns and events", async t => {
@@ -148,7 +145,7 @@ test("a device renames a server chat, and deletes one with its settings, memory,
   await assert.rejects(f.call("sessions.delete", { sessionId: "busy" }), code("session_busy"));
   assert.ok(f.sessions.busy, "a chat that is answering is kept");
   assert.deepEqual(await f.call("sessions.delete", { sessionId: "full" }), { deleted: true }, "a device may always delete");
-  assert.deepEqual(f.forgotten, ["turns full", "memory full"]);
+  assert.deepEqual(f.forgotten, ["turns full", "memory full", "done full true"], "turns first, the index last, then followers learn");
   assert.equal(f.sessions.full, undefined);
   await assert.rejects(fs.access(f.file("full")), "its settings are gone");
   await assert.rejects(f.call("sessions.delete", { sessionId: "full" }), code("session_unknown"));
