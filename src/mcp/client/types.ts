@@ -23,8 +23,16 @@ interface McpServerBase {
 }
 
 export type McpServerDefinition = McpServerBase & (
-  | { transport: "stdio"; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }
-  | { transport: "streamable-http"; endpoint: string }
+  | { transport: "stdio"; command: string; args?: string[]; cwd?: string; env?: Record<string, string>;
+      /** Variables whose values are secrets: kept in the vault (binding `credentialRef` "mcp:<id>"). */
+      secretEnv?: string[] }
+  | { transport: "streamable-http"; endpoint: string;
+      /** Headers sent with every request that are not secret. */
+      headers?: Record<string, string>;
+      /** Headers whose values are secrets, kept in the vault for this endpoint's origin. */
+      secretHeaders?: string[];
+      /** An `Authorization: Bearer` token kept in the vault (Codex's `bearer_token_env_var`). */
+      bearerToken?: boolean }
 );
 
 /** A binding is the connection/account identity; endpoint URLs are not identities. */

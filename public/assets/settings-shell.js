@@ -51,6 +51,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   menu.id = 'profile-menu'; menu.className = 'profile-menu liquid-glass'; menu.setAttribute('popover', 'auto'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Local profile');
   document.body.append(menu);
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
+  let mcpSecretsView, mcpSecretsRequest;
   const drafts = new Map(), statuses = new Map(), results = new Map();
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations, accountPending, accountNotice;
   const context = () => getContext() || {};
@@ -311,6 +312,30 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     while (reserved.has(id) || existing.has(id)) id = `${stem.slice(0, 120)}-${suffix++}`;
     return id;
   }
+  /** A server's secrets: names with set/not set, a value field to set one; values never come back. */
+  function mcpSecretsSection(server) {
+    const view = mcpSecretsView?.id === server.id ? mcpSecretsView.data : undefined;
+    if (!view) { loadMcpSecrets(server.id); return '<section class="mcp-secrets"><h3>Secrets</h3><p class="settings-description">Loading…</p></section>'; }
+    if (view.error) return `<section class="mcp-secrets"><h3>Secrets</h3><p class="settings-description is-error">${escape(view.error)}</p></section>`;
+    const http = server.transport === 'streamable-http';
+    const rows = view.secrets.map(item => `<li><code>${escape(item.kind === 'bearer' ? 'Bearer token' : item.name)}</code><span class="${item.set ? 'is-set' : 'is-unset'}">${item.set ? 'Set' : 'Not set'}</span><button type="button" class="ghost-button" data-mcp-secret-remove data-kind="${escape(item.kind)}" data-name="${escape(item.name)}">Remove</button></li>`).join('');
+    const disabled = view.available ? '' : 'disabled';
+    return `<section class="mcp-secrets" aria-labelledby="mcp-secrets-title"><h3 id="mcp-secrets-title">Secrets</h3>
+      <p class="settings-description">${http ? 'Headers and a bearer token sent only to this address' : 'Environment variables such as API keys'}, kept in this computer's protected storage. Their values are never shown again.</p>
+      ${view.available ? '' : `<p class="settings-description is-error">${escape(view.reason || 'Protected storage is unavailable.')}</p>`}
+      ${rows ? `<ul class="mcp-secret-list">${rows}</ul>` : ''}
+      <div class="mcp-secret-add">${http ? `<select data-mcp-secret-kind aria-label="Secret type" ${disabled}><option value="header">Header</option><option value="bearer">Bearer token</option></select>` : ''}
+        <input data-mcp-secret-name aria-label="${http ? 'Header name' : 'Variable name'}" placeholder="${http ? 'X-Api-Key' : 'API_KEY'}" autocomplete="off" spellcheck="false" ${disabled} />
+        <input data-mcp-secret-value type="password" aria-label="Value" placeholder="Value" autocomplete="new-password" ${disabled} />
+        <button type="button" class="ghost-button" data-mcp-secret-save ${disabled}>Save secret</button></div>
+      <span role="status" aria-live="polite" class="settings-save-status" data-mcp-secret-status></span></section>`;
+  }
+  function loadMcpSecrets(id) {
+    if (!data.mcpSecrets || mcpSecretsRequest) return;
+    mcpSecretsRequest = data.mcpSecrets(id).then(view => { mcpSecretsView = { id, data: view }; })
+      .catch(error => { mcpSecretsView = { id, data: { error: error.message || 'Could not read the secrets.' } }; })
+      .finally(() => { mcpSecretsRequest = undefined; if (active && page === `mcp/${id}`) render(); });
+  }
   /** The server's discovered tools as "offered to agents" checkboxes (its disabledTools). */
   function mcpToolChoices(server, binding) {
     if (!server) return '';
@@ -343,16 +368,18 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         <div class="settings-row"><div><label for="external-mcp-name">Name</label><p>Shown in Settings and in approval prompts.</p></div><div class="settings-control"><input id="external-mcp-name" data-mcp-field="name" maxlength="256" required value="${escape(server?.name || '')}" placeholder="e.g. My tools server" /></div></div>
         <div class="settings-row"><div><label for="external-mcp-transport">Transport</label><p>Match the server's MCP transport.</p></div><div class="settings-control"><select id="external-mcp-transport" data-mcp-field="transport"><option value="streamable-http" ${http ? 'selected' : ''}>Streamable HTTP</option><option value="stdio" ${http ? '' : 'selected'}>stdio command</option></select></div></div>
         <div class="settings-row" data-mcp-http ${http ? '' : 'hidden'}><div><label for="external-mcp-endpoint">MCP endpoint</label><p>Enter the MCP URL provided by your server or integration.</p></div><div class="settings-control"><input id="external-mcp-endpoint" data-mcp-field="endpoint" type="url" required ${http ? '' : 'disabled'} value="${escape(endpoint)}" placeholder="http://localhost:8000/mcp" /></div></div>
+        <div class="settings-row" data-mcp-http ${http ? '' : 'hidden'}><div><label for="external-mcp-headers">Headers (JSON object)</label><p>Optional headers that are not secret. Put tokens and keys in Secrets below.</p></div><div class="settings-control"><textarea id="external-mcp-headers" data-mcp-field="headers" rows="2" ${http ? '' : 'disabled'} placeholder='{"X-Region":"us-east-1"}'>${escape(server?.transport === 'streamable-http' && server.headers && Object.keys(server.headers).length ? JSON.stringify(server.headers) : '')}</textarea></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-command">Command</label><p>Executable used to start the local MCP server, such as uvx or npx. It is looked up as in your terminal; a full path also works.</p></div><div class="settings-control"><input id="external-mcp-command" data-mcp-field="command" required ${http ? 'disabled' : ''} value="${escape(command)}" placeholder="npx" /></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-args">Arguments (JSON array)</label><p>For example: ["-y", "your-mcp-server"]. Do not put credentials here.</p></div><div class="settings-control"><textarea id="external-mcp-args" data-mcp-field="args" rows="3" ${http ? 'disabled' : ''} placeholder='["-y", "your-mcp-server"]'>${escape(args)}</textarea></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-cwd">Working directory</label><p>Optional absolute path used only when starting the command.</p></div><div class="settings-control"><input id="external-mcp-cwd" data-mcp-field="cwd" ${http ? 'disabled' : ''} value="${escape(server?.transport === 'stdio' ? server.cwd || '' : '')}" /></div></div>
-        <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-env">Environment (JSON object)</label><p>Optional non-secret variables. Keys and values containing credentials are rejected.</p></div><div class="settings-control"><textarea id="external-mcp-env" data-mcp-field="env" rows="3" ${http ? 'disabled' : ''} placeholder='{"LOG_LEVEL":"info"}'>${escape(env)}</textarea></div></div>
+        <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-env">Environment (JSON object)</label><p>Optional variables that are not secret. Put API keys in Secrets below.</p></div><div class="settings-control"><textarea id="external-mcp-env" data-mcp-field="env" rows="3" ${http ? 'disabled' : ''} placeholder='{"LOG_LEVEL":"info"}'>${escape(env)}</textarea></div></div>
         <div class="settings-row"><div><label for="external-mcp-startup">Startup timeout (seconds)</label><p>How long the server may take to start. A first uvx or npx run downloads packages.</p></div><div class="settings-control"><input id="external-mcp-startup" data-mcp-field="startupSeconds" type="number" min="1" max="600" step="1" inputmode="numeric" value="${server?.connectTimeoutMs ? escape(String(Math.round(server.connectTimeoutMs / 1000))) : ''}" placeholder="${http ? 15 : 60}" /></div></div>
         <div class="settings-row"><div><label for="external-mcp-tool-timeout">Tool timeout (seconds)</label><p>How long a call may go without an answer or progress. A call that reports progress (a render, a build) may run up to 30 minutes.</p></div><div class="settings-control"><input id="external-mcp-tool-timeout" data-mcp-field="toolSeconds" type="number" min="1" max="3600" step="1" inputmode="numeric" value="${server?.requestTimeoutMs ? escape(String(Math.round(server.requestTimeoutMs / 1000))) : ''}" placeholder="60" /></div></div>
         ${mcpToolChoices(server, binding)}
         <div class="settings-row"><div><label for="external-mcp-approval">Approval</label><p>When a tool call waits for your confirmation. A chat set to ask first always asks.</p></div><div class="settings-control"><select id="external-mcp-approval" data-mcp-field="approval">${[['ask', 'Ask for every call'], ['read-only', 'Ask unless the tool is read-only'], ['trust', 'Trust this server (never ask)']].map(([value, label]) => `<option value="${value}" ${(server?.approval || 'ask') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
         <div class="settings-row"><div><label for="external-mcp-enabled">Enabled</label><p>When on, the app connects and discovers tools. Turning it off stops all bindings for this server.</p></div><div class="settings-control"><input id="external-mcp-enabled" data-mcp-field="enabled" type="checkbox" role="switch" ${server?.enabled !== false ? 'checked' : ''} /></div></div>
-      </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>`;
+      </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>
+      ${!isNew ? mcpSecretsSection(server) : ''}`;
   }
   function blockedPage(blocked) {
     const actions = blocked.actions.map(action => action === 'use-local'
@@ -553,6 +580,11 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       const endpoint = form.querySelector('[data-mcp-field="endpoint"]').value.trim();
       if (!endpoint) throw new Error('Enter an MCP endpoint.');
       Object.assign(server, { endpoint });
+      const rawHeaders = form.querySelector('[data-mcp-field="headers"]')?.value.trim();
+      let headers;
+      if (rawHeaders) { try { headers = JSON.parse(rawHeaders); } catch { throw new Error('Headers must be valid JSON.'); } }
+      if (headers !== undefined && (!headers || Array.isArray(headers) || Object.values(headers).some(value => typeof value !== 'string'))) throw new Error('Headers must be a JSON object with string values.');
+      if (headers && Object.keys(headers).length) server.headers = headers; else clear('headers');
       // The stdio fields of a server switched to HTTP are dropped when it is saved.
       delete server.command; delete server.args; delete server.cwd; delete server.env;
     } else {
@@ -580,7 +612,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       : { [uniqueMcpBindingId(id)]: { id: uniqueMcpBindingId(id), serverId: id, enabled } };
     setMcpFormStatus(form, 'Saving and connecting…');
     await data.save({ mcp: { client: { servers: { [id]: server }, bindings } } });
-    mcpSnapshot = undefined; mcpRequest = undefined;
+    mcpSnapshot = undefined; mcpRequest = undefined; mcpSecretsView = undefined;
     setMcpFormStatus(form, enabled ? 'Saved. Connecting…' : 'Saved. Server is disabled.');
     if (isNew) location.hash = `#/settings/mcp/${id}`;
     else render();
@@ -602,6 +634,27 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         mcpSnapshot = undefined; mcpRequest = undefined; location.hash = '#/settings/mcp';
       }).catch(error => setMcpFormStatus(form, error.message || 'Could not remove MCP server.', true));
     });
+    const secrets = root.querySelector('.mcp-secrets');
+    const secretStatus = (text, error = false) => { const slot = secrets?.querySelector('[data-mcp-secret-status]'); if (slot) { slot.textContent = text; slot.classList.toggle('is-error', error); } };
+    const serverId = form.dataset.mcpServerId;
+    const kindSelect = secrets?.querySelector('[data-mcp-secret-kind]');
+    kindSelect?.addEventListener('change', () => { const name = secrets.querySelector('[data-mcp-secret-name]'); name.hidden = kindSelect.value === 'bearer'; });
+    secrets?.querySelector('[data-mcp-secret-save]')?.addEventListener('click', event => {
+      const kind = kindSelect?.value || 'env', nameInput = secrets.querySelector('[data-mcp-secret-name]'), valueInput = secrets.querySelector('[data-mcp-secret-value]');
+      const name = nameInput.value.trim(), value = valueInput.value;
+      if (kind !== 'bearer' && !name) { secretStatus('Enter a name.', true); return; }
+      if (!value) { secretStatus('Enter the value.', true); return; }
+      event.currentTarget.disabled = true; secretStatus('Saving…');
+      void data.setMcpSecret(serverId, { kind, ...(kind === 'bearer' ? {} : { name }), value }).then(view => {
+        valueInput.value = ''; mcpSecretsView = { id: serverId, data: view }; mcpSnapshot = undefined; mcpRequest = undefined; render();
+      }).catch(error => { event.currentTarget.disabled = false; secretStatus(error.message || 'Could not save the secret.', true); });
+    });
+    secrets?.querySelectorAll('[data-mcp-secret-remove]').forEach(button => button.addEventListener('click', () => {
+      button.disabled = true; secretStatus('Removing…');
+      void data.removeMcpSecret(serverId, button.dataset.kind, button.dataset.name).then(view => {
+        mcpSecretsView = { id: serverId, data: view }; mcpSnapshot = undefined; mcpRequest = undefined; render();
+      }).catch(error => { button.disabled = false; secretStatus(error.message || 'Could not remove the secret.', true); });
+    }));
     form.querySelector('[data-mcp-action="clear-enabled-tools"]')?.addEventListener('click', () => {
       const id = form.dataset.mcpServerId;
       setMcpFormStatus(form, 'Saving…');

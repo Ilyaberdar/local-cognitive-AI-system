@@ -1,3 +1,4 @@
+import { MCP_CREDENTIAL_PREFIX, VaultMcpCredentialProvider } from "../mcp/client/credentials";
 import path from "path";
 import { SynthesisService } from "../synthesis/SynthesisService";
 import { buildRuntime, AppRuntime } from "./buildRuntime";
@@ -34,8 +35,15 @@ export class RuntimeManager {
     private readonly logger: Logger,
     mcpOptions: McpClientManagerOptions = {},
     readonly integrations: IntegrationRuntimeOptions = {}
-  ) { this.mcpClients = new McpClientManager({ ...mcpOptions, credentialProvider: { resolve: async context =>
-    context.binding.credentialRef?.startsWith("plugin:") ? this.direct?.resolve(context) : mcpOptions.credentialProvider?.resolve(context) } }); }
+  ) {
+    this.mcpSecrets = new VaultMcpCredentialProvider(integrations.vault ?? unavailableVault);
+    this.mcpClients = new McpClientManager({ ...mcpOptions, credentialProvider: { resolve: async context =>
+      context.binding.credentialRef?.startsWith("plugin:") ? this.direct?.resolve(context)
+        : context.binding.credentialRef?.startsWith(MCP_CREDENTIAL_PREFIX) ? this.mcpSecrets.resolve(context)
+        : mcpOptions.credentialProvider?.resolve(context) } });
+  }
+  /** Secrets of external MCP servers (env, headers, bearer tokens), in the vault. */
+  readonly mcpSecrets: VaultMcpCredentialProvider;
 
   getPluginManager() { if (!this.plugins) throw new Error("Plugins are not initialized."); return this.plugins; }
   getConnectionService() { if (!this.direct) throw new Error("Connections are not initialized."); return this.direct.oauth; }
@@ -84,7 +92,10 @@ export class RuntimeManager {
         return { runtime: this.getRuntime(), settings };
       }
       try {
+        const before = patch.mcp ? (await this.settingsStore.get()).mcp?.client : undefined;
         const { value: runtime, settings } = await this.settingsStore.transaction(patch, settings => this.build(settings));
+        // Secrets a server no longer names (it was removed, or a name taken off) leave the vault.
+        if (before) await this.mcpSecrets.prune(before, settings.mcp?.client ?? emptyMcpConfiguration()).catch(() => this.logger.warn("Removed MCP secrets could not all be deleted."));
         return { runtime, settings };
       } catch (error) {
         // The transaction never publishes failed settings. Read the latest committed
