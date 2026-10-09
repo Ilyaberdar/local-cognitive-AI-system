@@ -18,6 +18,7 @@ import { UploadStore } from "../runtime/uploadStore";
 import { createFolderOperations } from "../runtime/folderOperations";
 import { HostFolders } from "../runtime/hostFolders";
 import { createProjectAccess, createProjectOperations, PROJECT_ON_HOST } from "../runtime/projectOperations";
+import { createSynthesisOperations } from "../runtime/synthesisOperations";
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
@@ -99,6 +100,8 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
       ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),
       ...createFolderOperations({ folders }),
+      ...createSynthesisOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger, projects, hostDirectories: orchestration.hostDirectories,
+        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
       ...createProjectOperations({ runtimeManager: backend.runtimeManager, folders, ledger: host.ledger,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" })
     },
