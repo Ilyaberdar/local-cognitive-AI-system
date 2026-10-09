@@ -168,3 +168,20 @@ test("an approval mode is checked on save, and changing it or a name keeps the s
   await manager.reconcile(trusted);
   assert.equal(opens, 1, "the server process is not restarted");
 });
+
+test("arguments with raw line breaks in a string, or text after the object, are read as the object the tool gets", async t => {
+  const root = await folder(t);
+  const f = clients();
+  const calls: unknown[] = [];
+  const service = { ...f.service, callTool: async (request: Parameters<McpClientService["callTool"]>[0]) => { calls.push(request.arguments); return f.service.callTool(request); } };
+  const executor = new OperationExecutor(root, undefined, service, () => "trust");
+  const code = "import bpy\nfor o in bpy.data.objects:\n\tprint(o.name)";
+  const raw = `{"code":"${code}"}`;
+  assert.equal((await executor.execute(operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: raw }))).result!.ok, true);
+  assert.equal((await executor.execute({ ...operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: '{"code":"x"}}' }), id: "op-trailing" })).result!.ok, true);
+  // Python's own escapes inside the code string (\d, \.) mean a backslash.
+  assert.equal((await executor.execute({ ...operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: String.raw`{"code":"re.match(r'\d+\.blend', n)"}` }), id: "op-escape" })).result!.ok, true);
+  assert.deepEqual(calls, [{ code }, { code: "x" }, { code: String.raw`re.match(r'\d+\.blend', n)` }]);
+  assert.match((await executor.execute({ ...operation(root, "mcp.call", { toolId: "mcp:blender:execute_blender_code", argumentsJson: '{"code": ' }), id: "op-cut" })).result!.output,
+    /argumentsJson must be one serialized JSON object/, "an unfinished object is still refused");
+});

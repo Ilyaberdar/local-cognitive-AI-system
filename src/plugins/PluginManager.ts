@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { PendingApproval, ToolExecutionResult } from "../types";
 import type { OperationInput } from "../tools/OperationExecutor";
-import { compileToolArguments, snapshotArguments } from "../mcp/client/schema";
+import { compileToolArguments, parseArgumentsJson, snapshotArguments } from "../mcp/client/schema";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { catalogEntry, pluginCatalog } from "./catalog";
 import { ConnectionSnapshot, IntegrationAdapter, PluginError, PluginInvocationError, ServiceConnection } from "./contracts";
@@ -216,7 +216,7 @@ export class PluginManager {
     const toolId = String(input.arguments.toolId);
     if (selected !== undefined && !selected.includes(toolId.split(":")[0])) return { result: failure("This plugin was not selected for this request. Use the selected plugins only.") };
     let args: Record<string, unknown>;
-    try { args = snapshotArguments(JSON.parse(String(input.arguments.argumentsJson))); }
+    try { args = snapshotArguments(parseArgumentsJson(String(input.arguments.argumentsJson))); }
     catch { throw new PluginError("Tool arguments must be a JSON object matching the discovered schema."); }
     const file = path.join(this.store.directory, "operations", `${digest(input.id)}.json`);
     const identity = digest({ agentRunId: input.agentRunId, toolId, args, workspace: input.workspace, pluginIds: selected });
