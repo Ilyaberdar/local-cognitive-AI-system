@@ -147,32 +147,42 @@ export class SynthesisService {
     const target = await containedPath(project.rootPath, relative);
     await fs.access(target); return target;
   }
-  async start(projectId: string, id: string): Promise<SynthesisRun> {
+  /** `runId`: an id reserved by the caller (a paired device's command), so a resend or a restart
+   * finds the run it made instead of making another. */
+  async start(projectId: string, id: string, options: {runId?: string} = {}): Promise<SynthesisRun> {
+    const existing = options.runId ? await this.existing(options.runId) : undefined;
+    if (existing) return existing;
     const module = await this.module(projectId, id);
     if (!module.valid) throw new SynthesisError(module.diagnostics.map(item => `${item.line}:${item.column} ${item.message}`).join("\n"));
-    return this.launch(projectId, id, module.specSource!, module.flowSource!);
+    return this.launch(projectId, id, module.specSource!, module.flowSource!, undefined, options.runId);
   }
-  async restart(id: string): Promise<SynthesisRun> {
+  async restart(id: string, options: {runId?: string} = {}): Promise<SynthesisRun> {
+    const existing = options.runId ? await this.existing(options.runId) : undefined;
+    if (existing) return existing;
     const record = await this.read(id);
     if (activeStatus(record.status) || record.status === "accepted") throw new SynthesisError("Only unsuccessful or interrupted runs may be restarted.", 409);
-    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id);
+    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, options.runId);
+  }
+  /** A run, if one with this id exists. */
+  async existing(id: string): Promise<SynthesisRun | undefined> {
+    try { return await this.get(id); } catch (error) { if (error instanceof SynthesisError && error.statusCode === 404) return undefined; throw error; }
   }
   /** Runs executing now (and starts being prepared): a server drains them before it stops. */
   activeCount(): number { return this.active.size + this.reservations; }
   /** The server is draining: no new run starts; running ones finish. */
   stopAccepting(): void { this.accepting = false; }
-  private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string): Promise<SynthesisRun> {
+  private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string, reservedId?: string): Promise<SynthesisRun> {
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     if (!this.accepting) throw new SynthesisError("The server is shutting down. Try again when it is back.", 409);
     if (this.active.size + this.reservations >= 2) throw new SynthesisError("At most two Synthesis runs may execute concurrently.", 409);
     this.reservations++;
-    const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom).finally(() => {
+    const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom, reservedId).finally(() => {
       this.reservations--; this.pendingStarts.delete(pending);
     });
     this.pendingStarts.add(pending);
     return pending;
   }
-  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string): Promise<SynthesisRun> {
+  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string, reservedId?: string): Promise<SynthesisRun> {
     const project = await this.project(projectId);
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     const compiled = compileProgram(specSource, flowSource);
@@ -186,7 +196,7 @@ export class SynthesisService {
       if (!/\.(?:js|html|css|txt|md)$/.test(file)) throw new SynthesisError("local-files-v1 supports only js, html, css, txt and md artifacts.");
     }
     const record: RunRecord = {
-      version: 1, id: randomUUID(), projectId, moduleId: id, moduleName: compiled.spec.module,
+      version: 1, id: reservedId ? runId(reservedId) : randomUUID(), projectId, moduleId: id, moduleName: compiled.spec.module,
       rootPath: project.rootPath, specSource, flowSource, specHash: hash(specSource), spec: compiled.spec, flow: compiled.flow,
       status: "queued", phase: "queued", iteration: 0, createdAt: stamp(), updatedAt: stamp(), restartedFrom,
       files: {}, baseline: {}, events: [], models: [], usage: {inputTokens: 0, outputTokens: 0, calls: 0}
