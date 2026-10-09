@@ -51,7 +51,9 @@ export function createRemoteRequest({ runtime, hostId, routes, isCurrent = () =>
     const op = typeof route.op === "function" ? route.op(match) : route.op;
     const payload = route.payload?.(match, address.searchParams, body);
     const result = route.send ? await runtime.send(op, payload ?? {}, hostId) : await runtime.request(op, payload, hostId);
-    if (!isCurrent()) throw coded("The selected server changed.", "host_changed");
+    // Sent, but another server is selected now: that server may have acted on it.
+    if (!isCurrent()) throw coded(result?.ok ? "Done on the previous server; another server is selected now."
+      : "Another server was selected before this one answered. The change may have been made there.", "unknown_outcome");
     if (!result?.ok) throw coded(result?.error?.message || "The server did not answer.", result?.error?.code);
     return result.value;
   };

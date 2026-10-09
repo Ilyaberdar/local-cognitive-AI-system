@@ -165,8 +165,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
           ${[['server', 'Default'], ['precise', 'Precise'], ['balanced', 'Balanced'], ['creative', 'Creative'], ['custom', 'Custom']].map(([value, label]) => `<option value="${value}" ${generation.preset === value ? 'selected' : ''}>${label}</option>`).join('')}
         </select></label></header>
       <p class="local-generation-profile-note">${profileNote}</p>
-      <div class="local-generation-grid">${generationFields.map(([key, label, hint, min, max, step]) => `<label><span>${label}</span><input type="number" inputmode="decimal" data-generation-field="${key}" min="${min}" max="${max}" step="${step}" value="${values[key] ?? ''}" placeholder="${placeholder}" aria-label="${label}" /><small>${hint}</small></label>`).join('')}</div>
-      <details class="local-generation-advanced"><summary>Advanced</summary><label><span>Seed</span><input type="number" inputmode="numeric" data-generation-field="seed" min="-1" max="2147483647" step="1" value="${generation.preset === 'custom' && generation.seed !== undefined ? generation.seed : ''}" placeholder="Random" aria-label="Seed" /><small>Leave blank for random sampling. Set a fixed integer to reproduce a run.</small></label></details>
+      <div class="local-generation-grid">${generationFields.map(([key, label, hint, min, max, step]) => `<label><span>${label}</span><input type="number" inputmode="decimal" data-generation-field="${key}" min="${min}" max="${max}" step="${step}" value="${escape(values[key] ?? '')}" placeholder="${placeholder}" aria-label="${label}" /><small>${hint}</small></label>`).join('')}</div>
+      <details class="local-generation-advanced"><summary>Advanced</summary><label><span>Seed</span><input type="number" inputmode="numeric" data-generation-field="seed" min="-1" max="2147483647" step="1" value="${generation.preset === 'custom' && generation.seed !== undefined ? escape(generation.seed) : ''}" placeholder="Random" aria-label="Seed" /><small>Leave blank for random sampling. Set a fixed integer to reproduce a run.</small></label></details>
     </section>`;
   }
   function avatar(user, extraClass = '') {
@@ -465,7 +465,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (!active || placeOf(page).key !== key) return;
     const slot = root.querySelector('.settings-save-status');
     if (slot) { slot.textContent = value.text; slot.classList.toggle('is-error', Boolean(value.error)); slot.classList.toggle('is-success', Boolean(value.success)); }
-    root.querySelectorAll('button[type="submit"], [data-test]').forEach(button => { button.disabled = Boolean(value.busy); });
+    // A server page that went offline stays disabled whatever the save's outcome.
+    const server = serverFor(page), offline = Boolean(server?.loaded() && !server.online());
+    root.querySelectorAll('button[type="submit"], [data-test]').forEach(button => { button.disabled = Boolean(value.busy) || offline; });
     const retry = root.querySelector('[data-retry]'); if (retry) retry.hidden = !value.error;
   }
   async function save({ key, store }) {
@@ -478,7 +480,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       setStatus(key, { text: Object.keys(draft).length ? 'Unsaved changes' : 'Saved' });
       return true;
     } catch (error) {
-      setStatus(key, { text: `Not saved. ${error.message}`, error: true });
+      // The server may have made a change whose answer was lost: say so rather than "Not saved".
+      setStatus(key, { text: error.code === 'unknown_outcome' ? error.message : `Not saved. ${error.message}`, error: true });
       return false;
     }
   }
