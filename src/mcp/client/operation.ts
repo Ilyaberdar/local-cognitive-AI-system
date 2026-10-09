@@ -1,11 +1,14 @@
 import { McpClientError } from "./errors";
 import { McpOperationOptions } from "./types";
 
-/** Bounds even an injected provider that ignores cancellation, and releases timer/listeners. */
+/** Bounds even an injected provider that ignores cancellation, and releases timer/listeners.
+ * With `maxTotalMs` the timeout counts from the last `progressed()` (a server reporting progress
+ * on a long call), and the whole operation still ends at `maxTotalMs`. */
 export async function mcpOperation<T>(
   options: McpOperationOptions,
   defaultTimeoutMs: number,
-  action: (signal: AbortSignal, timeoutMs: number) => Promise<T>
+  action: (signal: AbortSignal, timeoutMs: number, progressed: () => void) => Promise<T>,
+  maxTotalMs?: number
 ): Promise<T> {
   if (options.signal?.aborted) throw new McpClientError("cancelled");
   const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
@@ -23,13 +26,20 @@ export async function mcpOperation<T>(
   };
   const onAbort = () => stop("cancelled");
   options.signal?.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(() => stop("timeout"), timeoutMs);
+  let timer = setTimeout(() => stop("timeout"), timeoutMs);
+  const total = maxTotalMs === undefined ? undefined : setTimeout(() => stop("timeout"), Math.max(maxTotalMs, timeoutMs));
+  const progressed = () => {
+    if (maxTotalMs === undefined || interruption) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => stop("timeout"), timeoutMs);
+  };
   try {
-    return await Promise.race([action(controller.signal, timeoutMs), interrupted]);
+    return await Promise.race([action(controller.signal, timeoutMs, progressed), interrupted]);
   } catch (error) {
     throw interruption ?? error;
   } finally {
     clearTimeout(timer);
+    clearTimeout(total);
     options.signal?.removeEventListener("abort", onAbort);
   }
 }

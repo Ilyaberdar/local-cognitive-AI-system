@@ -39,7 +39,8 @@ export interface McpClientConfigurationPatch {
 export type McpConnectionState = "disconnected" | "connecting" | "connected" | "authentication-required" | "error";
 export type McpErrorCode = "invalid_configuration" | "binding_not_found" | "binding_disabled" |
   "disconnected" | "authentication_required" | "transport_error" | "protocol_error" |
-  "tool_not_found" | "invalid_arguments" | "invalid_schema" | "cancelled" | "timeout" | "disposed";
+  "tool_not_found" | "invalid_arguments" | "invalid_schema" | "cancelled" | "timeout" | "disposed" |
+  "command_not_found" | "server_exited";
 
 export interface McpErrorDetails { code: McpErrorCode; message: string; retryable: boolean }
 
@@ -50,6 +51,10 @@ export interface McpConnectionStatus {
   state: McpConnectionState;
   reconnectAttempt: number;
   error?: McpErrorDetails;
+  /** For the host's own Settings: why the server could not start or stopped, and its last output. */
+  diagnostic?: string;
+  /** Tools left out because their input schema cannot be used; the server's other tools work. */
+  skippedTools?: string[];
 }
 
 export interface McpDiscoveredTool {
@@ -60,7 +65,13 @@ export interface McpDiscoveredTool {
   definition: Tool;
 }
 
-export interface McpOperationOptions { signal?: AbortSignal; timeoutMs?: number }
+export interface McpOperationOptions {
+  signal?: AbortSignal;
+  /** Without progress: a call that reports progress may run longer, up to `MAX_CALL_MS`. */
+  timeoutMs?: number;
+  /** The server reported progress on this call. */
+  onProgress?: () => void;
+}
 
 export interface McpCallRequest {
   bindingId: string;
@@ -109,6 +120,9 @@ export interface McpClientService {
   reconcile(configuration: McpClientConfiguration): Promise<void>;
   subscribe(listener: (event: McpLifecycleEvent) => void): () => void;
   dispose(): Promise<void>;
+  /** Reconnects enabled servers that dropped or failed (an editor opened late or restarted) and
+   * waits for them a short while. */
+  revive?(waitMs?: number): Promise<void>;
 }
 
 export interface McpConnection {
@@ -127,7 +141,8 @@ export interface McpConnector {
     signal: AbortSignal;
     timeoutMs: number;
     credentialProvider?: McpCredentialProvider;
-    onClose(): void;
+    /** The connection ended; for a local process, how it ended. */
+    onClose(error?: unknown): void;
     onError(error: unknown): void;
     onToolsChanged(): void;
   }): Promise<McpConnection>;

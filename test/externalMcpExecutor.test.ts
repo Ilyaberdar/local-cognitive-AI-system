@@ -72,3 +72,26 @@ test("agents receive MCP discovery and invocation dispatchers only when an exter
   assert.deepEqual(agentFunctionTools(true, { mcp: true, pluginOnly: true }).map(tool => tool.action), ["mcp.search"]);
   assert.ok(!agentFunctionTools(false, { pluginOnly: true }).some(tool => tool.action.startsWith("mcp.")));
 });
+
+test("plugin accounts stay out of MCP, and a server that is not connected is named with its problem after one more try", async t => {
+  const f = await fixture(t);
+  const pluginTool: McpDiscoveredTool = { id: "mcp:plugin-notion:search", bindingId: "plugin-notion", serverId: "plugin-notion",
+    definition: { name: "search", inputSchema: { type: "object" } } };
+  let revived = 0;
+  const clients = (f.executor as unknown as { clients: McpClientService }).clients;
+  const base = clients.list();
+  Object.assign(clients, {
+    list: () => [...base, { bindingId: "plugin-notion", serverId: "plugin-notion", enabled: true, state: "connected", reconnectAttempt: 0 },
+      { bindingId: "blender", serverId: "blender", enabled: true, state: "error", reconnectAttempt: 0,
+        error: { code: "command_not_found", message: "The MCP server's command was not found on this computer.", retryable: false } }],
+    tools: () => [{ id: "mcp:unreal:spawn_actor", bindingId: "unreal", serverId: "unreal", definition }, pluginTool],
+    revive: async () => { revived++; }
+  });
+  const found = JSON.parse((await f.executor.execute({ ...f.operation(), tool: "mcp.search", arguments: { query: "" } })).result!.output);
+  assert.equal(revived, 1);
+  assert.deepEqual(found.tools.map((tool: { id: string }) => tool.id), ["mcp:unreal:spawn_actor"]);
+  assert.deepEqual(found.unavailableServers, [{ serverId: "blender", state: "error", problem: "The MCP server's command was not found on this computer." }]);
+  const call = f.operation(); call.arguments = { toolId: pluginTool.id, argumentsJson: "{}" };
+  assert.match((await f.executor.execute(call)).result!.output, /unavailable/);
+  assert.equal(f.calls.length, 0);
+});

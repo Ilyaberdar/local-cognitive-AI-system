@@ -13,16 +13,20 @@ const messages: Record<McpErrorCode, string> = {
   invalid_schema: "MCP tool has an unsupported or invalid JSON Schema.",
   cancelled: "MCP operation was cancelled. An external action may already have occurred.",
   timeout: "MCP operation timed out. An external action may already have occurred.",
+  command_not_found: "The MCP server's command was not found on this computer.",
+  server_exited: "The MCP server process stopped.",
   disposed: "MCP client manager has been disposed."
 };
 
-/** Never copy remote error messages, URLs, stderr, arguments, or credentials into diagnostics. */
+/** Never copy remote error messages, URLs, stderr, arguments, or credentials into diagnostics.
+ * `detail` (a launch failure, a server's last stderr lines with secrets hidden) is for the host's
+ * own Settings only: it is not part of the error's JSON, events or answers to devices. */
 export class McpClientError extends Error implements McpErrorDetails {
   readonly retryable: boolean;
-  constructor(readonly code: McpErrorCode) {
+  constructor(readonly code: McpErrorCode, readonly detail?: string) {
     super(messages[code]);
     this.name = "McpClientError";
-    this.retryable = code === "transport_error" || code === "timeout";
+    this.retryable = code === "transport_error" || code === "timeout" || code === "server_exited";
   }
   toJSON(): McpErrorDetails { return { code: this.code, message: this.message, retryable: this.retryable }; }
 }

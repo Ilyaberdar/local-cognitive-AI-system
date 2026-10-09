@@ -13,6 +13,14 @@ const secretValue = /^(?:Bearer|Basic)\s|-----BEGIN [A-Z ]*PRIVATE KEY-----|^eyJ
 
 function invalid(): never { throw new McpClientError("invalid_configuration"); }
 
+/** How long a server may take to start: a first `uvx`/`npx` run downloads its packages. */
+export const connectTimeoutMs = (server: McpServerDefinition): number =>
+  server.connectTimeoutMs ?? (server.transport === "stdio" ? 60_000 : 15_000);
+/** How long a request may go without an answer or, for a tool call, without progress. */
+export const requestTimeoutMs = (server: McpServerDefinition): number => server.requestTimeoutMs ?? 60_000;
+/** The longest a tool call that keeps reporting progress may run (a render, a compile). */
+export const MAX_CALL_MS = 30 * 60_000;
+
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
   const prototype = Object.getPrototypeOf(value);
