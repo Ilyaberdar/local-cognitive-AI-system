@@ -10,7 +10,7 @@ import { createTestDatabase, databaseSkip } from "./helpers/testDatabase.js";
 test("migrations apply once, including concurrent runs", { skip: databaseSkip }, async (t) => {
   const pool = await createTestDatabase(t);
   const [first, second] = await Promise.all([migrate(pool, MIGRATIONS_DIR), migrate(pool, MIGRATIONS_DIR)]);
-  assert.deepEqual([...first, ...second], ["0001_accounts_identity_links.sql", "0002_identity_display_name.sql", "0003_remote_pairing.sql"]);
+  assert.deepEqual([...first, ...second], ["0001_accounts_identity_links.sql", "0002_identity_display_name.sql", "0003_remote_pairing.sql", "0004_usage.sql"]);
   assert.deepEqual(await migrate(pool, MIGRATIONS_DIR), []);
 });
 

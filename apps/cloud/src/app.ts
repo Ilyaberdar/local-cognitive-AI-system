@@ -6,10 +6,15 @@ import { requireAccount } from "./accounts/requireAccount.js";
 import { requireAuth, type AuthOptions } from "./auth/verifyAccessToken.js";
 import type { Logger } from "./log.js";
 import { createRemoteRouter, type RemoteRouteDependencies } from "./remote/remoteRoutes.js";
+import { createRemoteRepository } from "./remote/remoteRepository.js";
+import { createUsageRepository, type UsageRepository } from "./usage/usageRepository.js";
+import { createUsageRouter, type UsageRouteDependencies } from "./usage/usageRoutes.js";
 
 export interface AppDependencies { pool: Pick<pg.Pool, "query">; auth: AuthOptions; trustProxy?: number; logger?: Logger; accounts?: AccountRepository;
   /** Remote pairing and tickets; the relay itself is attached to the HTTP server's upgrades. */
-  remote?: Pick<RemoteRouteDependencies, "repo" | "relay" | "limits"> }
+  remote?: Pick<RemoteRouteDependencies, "repo" | "relay" | "limits">;
+  /** Usage statistics; built on the pool unless given. */
+  usage?: { repo?: UsageRepository; limits?: UsageRouteDependencies["limits"] } }
 
 export const createApp = (deps: AppDependencies) => {
   const app = express();
@@ -27,6 +32,8 @@ export const createApp = (deps: AppDependencies) => {
     res.set("Cache-Control", "no-store").json(toMeResponse(req.account!.record));
   });
   if (deps.remote) app.use(createRemoteRouter({ ...deps.remote, auth: deps.auth, accounts, ...(deps.logger ? { logger: deps.logger } : {}) }));
+  app.use(createUsageRouter({ repo: deps.usage?.repo ?? createUsageRepository(deps.pool), hosts: deps.remote?.repo ?? createRemoteRepository(deps.pool as pg.Pool),
+    auth: deps.auth, accounts, ...(deps.usage?.limits ? { limits: deps.usage.limits } : {}), ...(deps.logger ? { logger: deps.logger } : {}) }));
 
   app.use((_req, res) => { res.status(404).json({ error: "not_found" }); });
   app.use((error: Error & { status?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
