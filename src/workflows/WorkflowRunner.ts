@@ -177,7 +177,7 @@ export class WorkflowRunner {
       const nodeRun = await this.runStore.appendNodeRun({
         runId, taskId: task?.id, workflowId: workflow.id, nodeId: node.id, status: "running",
         agentRunId: node.type === "agent" ? agentRunId : undefined,
-        operationId: ["file_search", "file_read", "file_write", "command", "web_fetch"].includes(node.type) ? operationId : undefined,
+        operationId: ["file_search", "file_read", "file_write", "command", "web_fetch", "mcp_call"].includes(node.type) ? operationId : undefined,
         input: { taskId: task?.id, nodeConfig: node.config }, startedAt: new Date().toISOString()
       });
       await this.setTaskStatus(task?.id, "in_progress");

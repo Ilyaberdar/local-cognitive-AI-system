@@ -6,6 +6,7 @@ import type { WorkflowEditorProps, WorkflowEditorViewState } from "./types";
 
 export interface WorkflowEditorHandle {
   setPlugins: (plugins: WorkflowEditorProps["plugins"], pluginsError?: string) => void;
+  setMcpTools: (mcpTools: WorkflowEditorProps["mcpTools"]) => void;
   setValidation: (validation: WorkflowEditorProps["validation"]) => void;
   unmount: () => void;
   setColorMode: (colorMode: WorkflowEditorProps["colorMode"]) => void;
@@ -24,6 +25,10 @@ export function mountWorkflowEditor(container: HTMLElement, props: WorkflowEdito
   return {
     setPlugins: (plugins, pluginsError) => {
       currentProps = { ...currentProps, plugins, pluginsError };
+      root.render(<WorkflowEditor {...currentProps} />);
+    },
+    setMcpTools: (mcpTools) => {
+      currentProps = { ...currentProps, mcpTools };
       root.render(<WorkflowEditor {...currentProps} />);
     },
     setValidation: (validation) => {

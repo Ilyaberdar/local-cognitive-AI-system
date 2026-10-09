@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { PluginOption, WorkflowNodeDefinition } from "./types";
+import type { McpToolOption, PluginOption, WorkflowNodeDefinition } from "./types";
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="fsm-field"><span>{label}</span>{children}</label>;
@@ -13,7 +13,8 @@ function outputs(node: WorkflowNodeDefinition): Array<[string, string]> {
     file_read: [["data.content", "File contents"], ["data.path", "File path"]],
     file_write: [["data.path", "Saved file path"]],
     file_search: [["data.results", "Matches"]],
-    command: [["data.stdout", "Standard output"], ["data.stderr", "Errors"], ["data.exitCode", "Exit code"]]
+    command: [["data.stdout", "Standard output"], ["data.stderr", "Errors"], ["data.exitCode", "Exit code"]],
+    mcp_call: [["data.text", "Tool text"], ["data.structured", "Structured result"], ["data.isError", "Tool reported an error"]]
   };
   return [...(data[node.type] ?? []), ["summary", "Summary"]];
 }
@@ -69,8 +70,68 @@ export function PluginFields({ value, plugins, error, onChange }: {
   </fieldset>;
 }
 
-export function NodeConfigFields({ node, nodes, plugins = [], pluginsError, onUpdate }: {
-  node: WorkflowNodeDefinition; nodes: WorkflowNodeDefinition[]; plugins?: PluginOption[]; pluginsError?: string;
+/** Which external MCP servers an agent may use: all (automatic), or only those chosen. */
+export function McpServerFields({ value, tools, onChange }: { value: unknown; tools?: McpToolOption[]; onChange: (ids: string[] | undefined) => void }) {
+  if (!tools) return null;
+  const servers = [...new Map(tools.map(tool => [tool.serverId, tool.serverName])).entries()];
+  const automatic = value === undefined;
+  const ids = Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  const missing = ids.filter(id => !servers.some(([serverId]) => serverId === id));
+  return <fieldset className="fsm-plugin-picker">
+    <legend>MCP servers</legend>
+    <Field label="MCP access"><select aria-label="MCP access" value={automatic ? "automatic" : "selected"}
+      onChange={event => onChange(event.target.value === "automatic" ? undefined : [])}>
+      <option value="automatic">Automatic · all connected MCP servers</option>
+      <option value="selected">Only selected servers</option>
+    </select></Field>
+    <div className="fsm-plugin-list">
+      {servers.map(([serverId, name]) => <label key={serverId} className="fsm-plugin-option">
+        <span><strong>{name}</strong><small>{tools.filter(tool => tool.serverId === serverId).length} tools</small></span>
+        <input type="checkbox" aria-label={name} checked={automatic || ids.includes(serverId)} onChange={event => {
+          const current = automatic ? servers.map(([id]) => id) : ids;
+          onChange(event.target.checked ? [...new Set([...current, serverId])] : current.filter(id => id !== serverId));
+        }} />
+      </label>)}
+      {missing.map(id => <label key={id} className="fsm-plugin-option is-unavailable"><span><strong>{id}</strong><small>Not connected · check Settings → MCP, or uncheck</small></span>
+        <input type="checkbox" checked aria-label={`Remove unavailable ${id}`} onChange={() => onChange(ids.filter(item => item !== id))} />
+      </label>)}
+    </div>
+    <p className="fsm-model-hint">{automatic ? "The agent can use tools of every connected MCP server." : ids.length ? "This agent can use only the selected servers." : "No MCP tools for this agent."} Each server's approval mode still applies.</p>
+  </fieldset>;
+}
+
+/** An MCP step: a server, one of its tools, and arguments as JSON whose strings may use step results. */
+function McpCallFields({ config, tools, nodes, onUpdate }: { config: Record<string, unknown>; tools?: McpToolOption[]; nodes: WorkflowNodeDefinition[]; onUpdate: (patch: Record<string, unknown>) => void }) {
+  const serverId = typeof config.serverId === "string" ? config.serverId : "", toolName = typeof config.toolName === "string" ? config.toolName : "";
+  const servers = [...new Map((tools ?? []).map(tool => [tool.serverId, tool.serverName])).entries()];
+  const serverTools = (tools ?? []).filter(tool => tool.serverId === serverId);
+  const tool = serverTools.find(item => item.name === toolName);
+  const template = typeof config.argumentsTemplate === "string" ? config.argumentsTemplate : "{}";
+  let invalid = false;
+  try { const parsed = template.trim() ? JSON.parse(template) : {}; invalid = !parsed || typeof parsed !== "object" || Array.isArray(parsed); } catch { invalid = true; }
+  const properties = Object.entries(tool?.inputSchema?.properties ?? {});
+  return <>
+    {!tools ? <p className="fsm-model-hint">MCP steps are set up on the computer that runs them, where the MCP servers are.</p> : null}
+    <Field label="MCP server"><select value={serverId} onChange={event => onUpdate({ serverId: event.target.value, toolName: "" })}>
+      <option value="">Choose a server…</option>
+      {servers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+      {serverId && !servers.some(([id]) => id === serverId) ? <option value={serverId}>{serverId} (not connected)</option> : null}
+    </select></Field>
+    <Field label="Tool"><select value={toolName} onChange={event => onUpdate({ toolName: event.target.value })} disabled={!serverId}>
+      <option value="">Choose a tool…</option>
+      {serverTools.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+      {toolName && !tool ? <option value={toolName}>{toolName} (not available)</option> : null}
+    </select></Field>
+    {tool?.description ? <p className="fsm-model-hint">{tool.description}</p> : null}
+    <BindingField label="Arguments (JSON)" value={template} onChange={value => onUpdate({ argumentsTemplate: value })} nodes={nodes} multiline />
+    {invalid ? <p className="fsm-plugin-error" role="status">Arguments must be a JSON object, for example {"{\"code\": \"{{nodes.agent.data.response}}\"}"}.</p> : null}
+    {properties.length ? <p className="fsm-model-hint">Arguments: {properties.map(([name, schema]) => `${name}${tool?.inputSchema?.required?.includes(name) ? " (required)" : ""}${typeof schema?.type === "string" ? `: ${schema.type}` : ""}`).join(", ")}</p> : null}
+    <p className="fsm-model-hint">Step results are inserted inside strings, as text. The result is available as Tool text, Structured result and whether the tool reported an error.</p>
+  </>;
+}
+
+export function NodeConfigFields({ node, nodes, plugins = [], pluginsError, mcpTools, onUpdate }: {
+  node: WorkflowNodeDefinition; nodes: WorkflowNodeDefinition[]; plugins?: PluginOption[]; pluginsError?: string; mcpTools?: McpToolOption[];
   onUpdate: (patch: Record<string, unknown>) => void;
 }) {
   const config = node.config;
@@ -83,6 +144,7 @@ export function NodeConfigFields({ node, nodes, plugins = [], pluginsError, onUp
       <Field label="Prompt"><textarea rows={6} value={text("promptTemplate", "{{input.title}}\n\n{{input.description}}")}
         onChange={event => onUpdate({ promptTemplate: event.target.value })} placeholder="What should this agent do?" /></Field>
       <PluginFields value={config.pluginIds} plugins={plugins} error={pluginsError} onChange={pluginIds => onUpdate({ pluginIds })} />
+      <McpServerFields value={config.mcpServerIds} tools={mcpTools} onChange={mcpServerIds => onUpdate({ mcpServerIds })} />
       {binding("contextTemplate", "Input context", true)}
       <p className="fsm-model-hint">Choose the results this agent should receive. Previous agents’ conversations are not added automatically.</p>
       <BindingField label="Files for agent to read" value={Array.isArray(config.inputFiles) ? config.inputFiles.join("\n") : ""}
@@ -128,6 +190,7 @@ export function NodeConfigFields({ node, nodes, plugins = [], pluginsError, onUp
       {binding("cwd", "Working directory", false, true)}
       <Field label="Timeout (ms)"><input type="number" min={1000} max={120000} value={Number(config.timeoutMs ?? 30000)} onChange={event => onUpdate({ timeoutMs: Number(event.target.value) })} /></Field>
     </>;
+    case "mcp_call": return <McpCallFields config={config} tools={mcpTools} nodes={otherNodes} onUpdate={onUpdate} />;
     case "human_review": return <Field label="Review instructions"><textarea rows={4} value={text("prompt")} onChange={event => onUpdate({ prompt: event.target.value })} /></Field>;
     case "terminal": return <Field label="Final status"><select value={text("runStatus", "done")} onChange={event => onUpdate({ runStatus: event.target.value })}><option value="done">Done</option><option value="failed">Failed</option></select></Field>;
     default: return null;

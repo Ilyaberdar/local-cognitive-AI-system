@@ -529,6 +529,8 @@ export interface ExecutionContext {
 /** Server-owned execution parameters. HTTP/MCP metadata must never populate this. */
 export interface InternalExecutionContext {
   pluginIds?: string[];
+  /** Only these external MCP servers (a workflow agent's choice); [] means none. */
+  mcpServerIds?: string[];
   /** Workflow nodes receive selected inputs, without automatic project/chat recall. */
   contextMode?: "explicit";
   localReasoningBudget?: number;

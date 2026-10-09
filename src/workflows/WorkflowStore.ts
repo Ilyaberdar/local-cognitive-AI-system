@@ -161,6 +161,7 @@ export class WorkflowStore {
       "file_read",
       "file_write",
       "command",
+      "mcp_call",
       "decision",
       "human_review",
       "terminal"
@@ -336,11 +337,24 @@ const validateNodeConfig = (node: WorkflowNode): string[] => {
     case "agent":
       try { parsePluginSelection(node.config.pluginIds); }
       catch { errors.push(`Workflow node ${node.id} pluginIds must be a list of catalog plugin IDs.`); }
+      if (node.config.mcpServerIds !== undefined && (!Array.isArray(node.config.mcpServerIds) || node.config.mcpServerIds.length > 64 ||
+        node.config.mcpServerIds.some((id: unknown) => typeof id !== "string" || !id))) errors.push(`Workflow node ${node.id} mcpServerIds must be a list of MCP server IDs.`);
       if (node.config.reasoningBudget !== undefined && (!Number.isInteger(node.config.reasoningBudget) || Number(node.config.reasoningBudget) < 0 || Number(node.config.reasoningBudget) > 32768)) errors.push(`Workflow node ${node.id} thinking budget must be 0–32768 tokens.`);
       if (node.config.promptTemplate !== undefined && typeof node.config.promptTemplate !== "string") errors.push(`Workflow node ${node.id} prompt must be text.`);
       if (node.config.contextTemplate !== undefined && typeof node.config.contextTemplate !== "string") errors.push(`Workflow node ${node.id} context must be text.`);
       if (node.config.inputFiles !== undefined && (!Array.isArray(node.config.inputFiles) || node.config.inputFiles.some((file: unknown) => typeof file !== "string"))) errors.push(`Workflow node ${node.id} inputFiles must be a list of paths.`);
       break;
+    case "mcp_call": {
+      requireString("serverId");
+      requireString("toolName");
+      const template = node.config.argumentsTemplate;
+      if (template !== undefined) {
+        let parsed: unknown;
+        try { parsed = typeof template === "string" && template.trim() ? JSON.parse(template) : {}; } catch { parsed = undefined; }
+        if (!isRecord(parsed)) errors.push(`Workflow node ${node.id} arguments must be a JSON object.`);
+      }
+      break;
+    }
     case "web_fetch":
       requireString("urlTemplate");
       if (node.config.maxChars !== undefined && (!Number.isInteger(node.config.maxChars) || Number(node.config.maxChars) < 500 || Number(node.config.maxChars) > 100000)) errors.push(`Workflow node ${node.id} text limit must be 500–100000.`);

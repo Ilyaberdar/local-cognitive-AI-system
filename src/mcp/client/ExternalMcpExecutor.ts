@@ -67,9 +67,9 @@ export class ExternalMcpExecutor {
       .map(status => ({ serverId: status.serverId, state: status.state, ...(status.error ? { problem: status.error.message } : {}) }));
   }
 
-  async search(query: string, input: Pick<OperationInput, "accessMode" | "requireApproval"> = { accessMode: "ask" }): Promise<Array<Record<string, unknown>>> {
+  async search(query: string, input: Pick<OperationInput, "accessMode" | "requireApproval" | "mcpServerIds"> = { accessMode: "ask" }): Promise<Array<Record<string, unknown>>> {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return (await this.available())
+    return (await this.available(input.mcpServerIds))
       .map(tool => ({
         tool,
         score: words.reduce((score, word) => score +
@@ -114,8 +114,8 @@ export class ExternalMcpExecutor {
       if (saved?.status === "completed") return { result: saved.result };
       if (saved?.status === "executing" || saved?.status === "unknown") return { result: this.unknown(input.id) };
 
-      let tool = (await this.available()).find(item => item.id === toolId);
-      if (!tool) { await this.clients.revive?.(); tool = (await this.available()).find(item => item.id === toolId); }
+      let tool = (await this.available(input.mcpServerIds)).find(item => item.id === toolId);
+      if (!tool) { await this.clients.revive?.(); tool = (await this.available(input.mcpServerIds)).find(item => item.id === toolId); }
       if (!tool) return { result: failure("This MCP tool is unavailable. Check that its server is enabled and connected.") };
       const problems = compileToolArgumentErrors(tool.definition.inputSchema)(args);
       if (problems.length) {
@@ -233,11 +233,18 @@ export class ExternalMcpExecutor {
     for (const old of files.sort((a, b) => b.at - a.at).slice(MEDIA_KEPT)) await fs.rm(path.join(folder, old.name), { force: true });
   }
 
-  private async available(): Promise<AvailableTool[]> {
+  /** The tool id of a server's tool, for a workflow step that names them (it may revive the server). */
+  async toolIdFor(serverId: string, toolName: string): Promise<string | undefined> {
+    const find = async () => (await this.available([serverId])).find(tool => tool.definition.name === toolName)?.id;
+    return await find() ?? (await this.clients.revive?.(), await find());
+  }
+
+  /** `servers`: only these servers (a workflow agent's choice). */
+  private async available(servers?: string[]): Promise<AvailableTool[]> {
     const statuses = new Map(this.clients.list().filter(status => status.enabled && status.state === "connected" && userBinding(status.bindingId))
       .map(status => [status.bindingId, status]));
     return this.clients.tools().flatMap((tool: McpDiscoveredTool) => {
-      if (!statuses.has(tool.bindingId)) return [];
+      if (!statuses.has(tool.bindingId) || servers && !servers.includes(tool.serverId)) return [];
       // The server's tool filter (Settings, or imported from Codex): a tool left out is not offered.
       const { enabledTools, disabledTools } = this.policy(tool.serverId);
       if (enabledTools && !enabledTools.includes(tool.definition.name) || disabledTools?.includes(tool.definition.name)) return [];

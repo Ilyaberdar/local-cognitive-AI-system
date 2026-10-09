@@ -67,7 +67,8 @@ const LATER = {
   attachments: "Attachments for tasks on the server come in a later update.",
   project: "Projects and folders for work on the server come in a later update.",
   fullAccess: "Full access is not available from a device yet: on the server, steps ask for approval.",
-  plugins: "Plugins in workflows on the server come in a later update."
+  plugins: "Plugins in workflows on the server come in a later update.",
+  mcp: "Steps that call an application's MCP tools are set up and started on the server."
 };
 // What the host set up with full access, or bound to a folder or project chosen there, stays the
 // host's: a device can delete, cancel or pause it, never start, continue or change it.
@@ -97,6 +98,8 @@ export const workflowLimits = (definition: unknown): string[] => {
     const config = record(record(node).config);
     if (config.approval === "never" || config.access === "full") problems.add(LATER.fullAccess);
     if (record(node).type === "agent" && Array.isArray(config.pluginIds) && config.pluginIds.length) problems.add(LATER.plugins);
+    // The host's applications stay the host's: a device's runs have no MCP tools.
+    if (record(node).type === "mcp_call") problems.add(LATER.mcp);
   }
   return [...problems];
 };

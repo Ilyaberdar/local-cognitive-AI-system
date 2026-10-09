@@ -46,6 +46,7 @@ export class AgentNodeExecutor implements NodeExecutor {
       ...(workspace ? { execution: {
         contextMode: "explicit",
         pluginIds: parsePluginSelection(context.node.config.pluginIds),
+        ...(Array.isArray(context.node.config.mcpServerIds) ? { mcpServerIds: context.node.config.mcpServerIds.filter((id): id is string => typeof id === "string") } : {}),
         localReasoningBudget: typeof context.node.config.reasoningBudget === "number" ? context.node.config.reasoningBudget : undefined,
         workspace,
         accessMode: nodeAccess(context).accessMode,

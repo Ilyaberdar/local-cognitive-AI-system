@@ -85,6 +85,7 @@ import { AgentNodeExecutor } from "../workflows/nodes/AgentNodeExecutor";
 import { EntryNodeExecutor } from "../workflows/nodes/EntryNodeExecutor";
 import { HumanReviewNodeExecutor } from "../workflows/nodes/HumanReviewNodeExecutor";
 import { CommandNodeExecutor } from "../workflows/nodes/CommandNodeExecutor";
+import { McpCallNodeExecutor } from "../workflows/nodes/McpCallNodeExecutor";
 import { DecisionNodeExecutor } from "../workflows/nodes/DecisionNodeExecutor";
 import { FileSearchNodeExecutor } from "../workflows/nodes/FileSearchNodeExecutor";
 import { NodeExecutorRegistry } from "../workflows/nodes/NodeExecutor";
@@ -748,6 +749,7 @@ export const buildRuntime = async (
         allowedDirectories: config.filesystem.allowedDirectories,
         workspaceDir: process.cwd()
       },operationExecutor),
+      new McpCallNodeExecutor(operationExecutor),
       new DecisionNodeExecutor(),
       new HumanReviewNodeExecutor(),
       new TerminalNodeExecutor()

@@ -51,8 +51,8 @@ export function createMcpRouter(runtime: RuntimeManager): Router {
     const clients = runtime.getRuntime().mcpClients;
     return {
       connections: clients.list(),
-      tools: clients.tools().map(tool => ({ id: tool.id, bindingId: tool.bindingId, serverId: tool.serverId,
-        name: tool.definition.name, description: tool.definition.description }))
+      tools: clients.tools().filter(tool => !tool.bindingId.startsWith("plugin-")).map(tool => ({ id: tool.id, bindingId: tool.bindingId, serverId: tool.serverId,
+        name: tool.definition.name, description: tool.definition.description, inputSchema: tool.definition.inputSchema }))
     };
   }));
   router.post("/:bindingId/connect", route(async bindingId => {
