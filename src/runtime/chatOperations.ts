@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { z } from "zod";
 import type { RuntimeManager } from "../app/RuntimeManager";
 import { loadSessionMessages } from "../conversations/sessionHistory";
@@ -6,6 +7,7 @@ import { RemoteOperationError, type OperationContext, type RemoteOperation } fro
 import type { SessionIndexStore } from "../session/SessionIndexStore";
 import type { ChatMessage, SessionSettings, SessionSettingsPatch } from "../types";
 import type { EventJournal } from "./EventJournal";
+import { pathScrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 
@@ -13,6 +15,7 @@ const MAX_HISTORY_BYTES = 768 * 1024;
 const MAX_SUBAGENTS = 4, MAX_ADVISORS = 5;
 /** Work the host set up with full access stays there: a device may stop, decline or delete it. */
 export const CHAT_ON_HOST = "This chat has full access on the server, so it can only be used or changed there.";
+const FULL_FROM_DEVICE = "Full access can only be given on the server itself.";
 const id = z.string().min(1).max(200);
 const uuid = z.uuid();
 const target = z.object({ providerId: z.string().min(1).max(100), model: z.string().max(300).optional() }).strict();
@@ -27,6 +30,8 @@ const schemas = {
     reasoningEffort: z.string().refine(isReasoningEffort).optional(),
     language: z.enum(["auto", "ru", "en"]).optional(),
     outputStyle: z.enum(["compact", "balanced", "detailed", "exhaustive"]).optional(),
+    // "full" is refused before the schema, with the reason.
+    defaultAccessMode: z.enum(["ask", "default"]).optional(),
     // Agents run with the chat's access mode: a per-agent mode is not taken from a device.
     codeAgents: z.array(z.object(agentFields).strict()).max(MAX_SUBAGENTS).optional(),
     hypothesisAgents: z.array(z.object({ ...agentFields, role: z.enum(["support", "attack", "judge", "advisor"]) }).strict()).max(3 + MAX_ADVISORS).optional(),
@@ -50,7 +55,7 @@ const known = <T>(task: () => Promise<T> | T): Promise<T> => Promise.resolve().t
   throw error;
 });
 /** Attachments stay on the host: history carries their names and sizes, not their contents. */
-const withoutData = (message: ChatMessage): ChatMessage => message.attachments?.length
+export const withoutAttachmentData = (message: ChatMessage): ChatMessage => message.attachments?.length
   ? { ...message, attachments: message.attachments.map(({ dataUrl: _dataUrl, textContent: _textContent, ...rest }) => rest) }
   : message;
 
@@ -61,7 +66,23 @@ export interface ChatOperationDependencies {
   journal: EventJournal;
   /** Idempotency scope of a caller: commands from different devices never collide. */
   scopeOf(context: OperationContext): string;
+  /** Folders of the host named `<server>` in what a device receives (its data directory). */
+  hostDirectories?: string[];
 }
+
+/** Replaces the host's folders in a chat's history, approvals and events: the chat output folder
+ * (`<output>`), the folders file tools may use (`<folder>`) and the host's data (`<server>`). Paths
+ * elsewhere stay, so an approval still says exactly what it is for. */
+export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostDirectories?: string[] }) => async () => {
+  const filesystem = (await deps.runtimeManager.getSettings()).filesystem;
+  const real = (dir: string) => { try { return fs.realpathSync(dir); } catch { return dir; } };
+  const both = (dir: string | undefined) => dir ? [...new Set([dir, real(dir)])] : [];
+  return pathScrubber([
+    ...both(filesystem?.outputDir).map(dir => [dir, "<output>"] as [string, string]),
+    ...(filesystem?.allowedDirectories ?? []).flatMap(both).map(dir => [dir, "<folder>"] as [string, string]),
+    ...(deps.hostDirectories ?? []).flatMap(both).map(dir => [dir, "<server>"] as [string, string])
+  ]);
+};
 
 /** Chat on the host for a remote device (R4): text turns in ordinary chats, with durable runs,
  * history and an event journal the device polls. Project chats and attachments come in R5. */
@@ -80,6 +101,7 @@ export const requireRemoteSession = async (store: SessionIndexStore, sessionId: 
 export const createChatOperations = (deps: ChatOperationDependencies): Record<string, RemoteOperation> => {
   const runtime = () => deps.runtimeManager.getRuntime();
   const requireSession = (sessionId: string) => requireRemoteSession(deps.sessionIndexStore, sessionId);
+  const scrubber = createChatScrubber(deps);
   /** Refuses using or changing a chat the host gave full access, checked at every use. */
   const requireUsable = async (sessionId: string) => {
     const reason = chatHostOnly(await runtime().sessionSettingsStore.get(sessionId));
@@ -122,9 +144,10 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const unfinished = deps.runService.unfinishedTurns(sessionId);
       const activeRun = deps.runService.activeRun(sessionId);
       const streamId = streamOf(sessionId), { epoch, head } = deps.journal.head(streamId);
-      let merged = [...messages, ...unfinished].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).map(withoutData);
+      const scrub = await scrubber();
+      let merged = scrub([...messages, ...unfinished].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).map(withoutAttachmentData));
       while (merged.length > 2 && JSON.stringify(merged).length > MAX_HISTORY_BYTES) merged = merged.slice(2);
-      return { messages: merged, ...(activeRun ? { activeRun } : {}), cursor: { streamId, epoch, after: head } };
+      return { messages: merged, ...(activeRun ? { activeRun: scrub(activeRun) } : {}), cursor: { streamId, epoch, after: head } };
     },
 
     "sessions.settings.get": async payload => {
@@ -144,6 +167,10 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     },
 
     "sessions.settings.update": async payload => {
+      const raw = (payload as { patch?: Record<string, unknown> } | undefined)?.patch;
+      if (raw && typeof raw === "object" && (raw.defaultAccessMode === "full" || (Array.isArray(raw.codeAgents) && raw.codeAgents.some(agent => agent?.accessMode === "full")))) {
+        throw new RemoteOperationError(FULL_FROM_DEVICE, "unsupported");
+      }
       const { sessionId, patch } = parse(schemas.settingsUpdate, payload);
       await requireSession(sessionId);
       checkProviders(patch);
@@ -152,7 +179,9 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       // The chat type is mode plus debate, as the local chat screen saves it.
       const debate = patch.mode || patch.debate ? { debate: { ...patch.debate, ...(patch.mode ? { enabled: patch.mode === "hypothesis" } : {}) } } : {};
       // Agents take the chat's access mode, which a device cannot make full.
-      const codeAgents = patch.codeAgents ? { codeAgents: patch.codeAgents.map(agent => ({ ...agent, accessMode: current.defaultAccessMode })) } : {};
+      const mode = patch.defaultAccessMode ?? current.defaultAccessMode;
+      const agents = patch.codeAgents ?? (patch.defaultAccessMode ? current.codeAgents : undefined);
+      const codeAgents = agents ? { codeAgents: agents.map(agent => ({ ...agent, accessMode: mode })) } : {};
       return runtime().sessionSettingsStore.update(sessionId, { ...patch, ...debate, ...codeAgents } as SessionSettingsPatch);
     },
 

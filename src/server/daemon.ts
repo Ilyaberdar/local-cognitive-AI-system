@@ -13,7 +13,7 @@ import { CliError, ExitCode } from "./exitCodes";
 import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
-import { createChatOperations, requireRemoteSession } from "../runtime/chatOperations";
+import { createChatOperations, createChatScrubber, requireRemoteSession } from "../runtime/chatOperations";
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
@@ -71,10 +71,10 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   const orchestration = { runtimeManager: backend.runtimeManager, journalEpoch: () => host.journal.epoch, hostDirectories: [path.dirname(config.appDataDir)] };
   const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger,
     operations: {
-      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore,
+      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories,
         runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
       ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId),
-        sources: [createWorkflowRunStreams(orchestration)] }),
+        sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),

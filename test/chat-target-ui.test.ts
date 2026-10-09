@@ -223,11 +223,33 @@ test("a server too old for agent setup says so and sends no agents", async t => 
   assert.deepEqual(settingsUpdates(app), [{ mode: "hypothesis" }]);
 });
 
-test("a chat with full access on the server shows why and cannot be changed here", async t => {
+test("a chat with full access on the server shows why and cannot be used or changed here", async t => {
   const paired = fakeServer({ agents: true, hostOnly: "This chat has full access on the server, so it can only be used or changed there." });
   const app = await bootApp({ remote: { bridge: paired.bridge } });
   t.after(() => app.close());
   await choose(app, HOST);
   assert.match(app.document.querySelector(".remote-setup-note--host").textContent, /full access on the server/);
   assert.equal(app.document.querySelector("#session-settings-form fieldset.remote-setup-fields").disabled, true);
+  assert.match(app.document.querySelector("[data-chat-target-banner]").textContent, /full access on the server/);
+  assert.equal(app.document.querySelector("#chat-access-menu"), null, "no access choices");
+  assert.match(app.document.querySelector(".access-trigger").getAttribute("aria-label"), /Full access · set on fedora/);
+  assert.equal(app.document.querySelector("#chat-form button[type='submit']").disabled, true);
+  type(app, "Do it");
+  submit(app);
+  await settle();
+  assert.deepEqual(ops(app, "send"), [], "nothing is sent");
+});
+
+test("a server chat's access is ask or approve-for-me, saved on the server", async t => {
+  const paired = fakeServer({ agents: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const options = [...app.document.querySelectorAll("#chat-access-menu [data-access-mode]")].map((item: any) => item.dataset.accessMode);
+  assert.deepEqual(options, ["ask", "default"], "full access is set only on the server");
+  assert.match(app.document.querySelector("#chat-access-menu .access-menu__footer").textContent, /its agents on fedora/);
+  app.document.querySelector("#chat-access-menu [data-access-mode='ask']").click();
+  await settle();
+  assert.deepEqual(settingsUpdates(app), [{ defaultAccessMode: "ask" }]);
+  assert.equal(paired.server.settings.defaultAccessMode, "ask");
 });

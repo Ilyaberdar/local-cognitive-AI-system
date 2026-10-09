@@ -1056,7 +1056,7 @@ function renderChatRoute() {
           aria-label="Scroll to latest message"
         >${icon("arrowDown")}</button>
 
-        <div class="chat-approval-slot" data-chat-target-banner>${serverChat ? renderTargetBanner(chatTarget) : ""}</div>
+        <div class="chat-approval-slot" data-chat-target-banner>${serverChat ? renderTargetBanner(chatTarget, state.activeSessionId) : ""}</div>
         <div class="chat-approval-slot" data-chat-approval>${renderChatApproval()}</div>
         <form class="composer liquid-glass" id="chat-form" data-session-key="${escapeAttr(state.activeSessionId)}">
           <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="${ATTACHMENT_ACCEPT}" />
@@ -1077,7 +1077,7 @@ function renderChatRoute() {
               ${renderEffortControl(settings)}
               ${voiceInput.renderButton()}
               ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
-              <button class="primary-button send-button" type="submit" aria-label="Send message" title="${serverChat ? escapeAttr(`Send to ${chatTarget.hostName()}`) : "Send message"}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || (serverChat && chatTarget.blocksSend()) ? "disabled" : ""}>${icon("arrowUp")}</button>
+              <button class="primary-button send-button" type="submit" aria-label="Send message" title="${serverChat ? escapeAttr(`Send to ${chatTarget.hostName()}`) : "Send message"}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || (serverChat && (chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly)) ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -1184,25 +1184,33 @@ function renderChatActivityBar(settings) {
     <div class="chat-activity-bar ${running ? "is-running" : "is-stopped"}" aria-live="polite">
       <span class="activity-scan status-dot" aria-hidden="true"><span></span></span>
       <span class="activity-label">${escapeHtml(label)}</span>
-      ${serverChat ? "" : renderAccessControl(settings)}
+      ${serverChat ? renderServerAccessControl(settings) : renderAccessControl(settings)}
       <span class="activity-model" title="${escapeAttr(`${provider} ${model}`)}">${escapeHtml(activityDetail)}</span>
     </div>
   `;
 }
 
-function renderAccessControl(settings) {
+/** A server chat's access: ask or approve-for-me from here; full access only as set on the server. */
+function renderServerAccessControl(settings) {
+  const setup = chatTarget.setup(state.activeSessionId);
+  if (setup.hostOnly) return `<span class="icon-button access-trigger access-full" role="img" aria-label="${escapeAttr(`Full access · set on ${chatTarget.hostName()}`)}" title="${escapeAttr(setup.hostOnly)}">${icon("shieldAlert")}</span>`;
+  if (!setup.agents) return "";
+  return renderAccessControl(settings, { modes: ACCESS_MODES.filter((item) => setup.modes.includes(item.id)), footer: `Applies to this chat and its agents on ${chatTarget.hostName()}.` });
+}
+
+function renderAccessControl(settings, { modes = ACCESS_MODES, footer = "Applies to this chat and its agents." } = {}) {
   const mode = ACCESS_MODES.find((item) => item.id === settings.defaultAccessMode) || ACCESS_MODES[1];
   const busy = state.accessSaving || state.activeChatRequest?.sessionId === state.activeSessionId;
   return `<button type="button" class="icon-button access-trigger ${mode.id === "full" ? "access-full" : ""}"
     popovertarget="chat-access-menu" aria-label="Access: ${mode.label}" title="${mode.label}" ${busy ? "disabled" : ""}>${icon(mode.icon)}</button>
     <div id="chat-access-menu" class="access-menu" popover="auto" role="group" aria-label="Chat access">
       <div class="access-menu__heading">How should agent actions be approved?</div>
-      ${ACCESS_MODES.map((item) => `<button type="button" class="access-option ${item.id === "full" ? "access-full" : ""}"
+      ${modes.map((item) => `<button type="button" class="access-option ${item.id === "full" ? "access-full" : ""}"
         data-access-mode="${item.id}" aria-pressed="${item.id === mode.id}">
         ${icon(item.icon)}<span><strong>${item.label}</strong><small>${item.description}</small></span>
         <span class="access-option__check">${item.id === mode.id ? icon("check") : ""}</span>
       </button>`).join("")}
-      <div class="access-menu__footer">Applies to this chat and its agents.</div>
+      <div class="access-menu__footer">${escapeHtml(footer)}</div>
     </div>`;
 }
 
@@ -1246,6 +1254,7 @@ function bindChatAccess() {
     if (!option || state.accessSaving || state.activeChatRequest?.sessionId === state.activeSessionId) return;
     const mode = option.dataset.accessMode;
     if (!ACCESS_MODES.some((item) => item.id === mode)) return;
+    if (isServerChat(state.activeSessionId) && !chatTarget.setup(state.activeSessionId).modes.includes(mode)) return;
     menu.hidePopover();
     const sessionId = state.activeSessionId;
     // Finish any older setup save before updating access, then preserve all unsaved setup fields.
@@ -6742,6 +6751,8 @@ async function submitRemoteChat(input, attachments, options = {}) {
     return false;
   }
   if (attachments?.length) { pushToast("Attachments are not available for server chats yet.", "danger"); return false; }
+  const hostOnly = chatTarget.setup(key).hostOnly;
+  if (hostOnly) { pushToast(hostOnly, "danger"); return false; }
   const request = { remote: true, requestId: null, sessionId: key, controller: new AbortController(), cancelled: false, progressTimer: null };
   request.pending = { requestId: null, sessionId: key, remote: true, input, startedAt: new Date().toISOString() };
   state.chatRequests.set(key, request);
@@ -6804,9 +6815,9 @@ function repaintChatTarget() {
     return;
   }
   const banner = document.querySelector(".chat-shell [data-chat-target-banner]");
-  if (banner) { banner.innerHTML = renderTargetBanner(chatTarget); bindChatTargetControls(); }
+  if (banner) { banner.innerHTML = renderTargetBanner(chatTarget, state.activeSessionId); bindChatTargetControls(); }
   const send = document.querySelector("#chat-form button[type='submit']");
-  if (send) send.disabled = Boolean(state.chatSubmitting || state.accessSaving || chatTarget.blocksSend());
+  if (send) send.disabled = Boolean(state.chatSubmitting || state.accessSaving || chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly);
   const slot = document.querySelector("[data-chat-approval]");
   if (slot && state.pendingRequest?.approval) slot.innerHTML = renderChatApproval();
 }
