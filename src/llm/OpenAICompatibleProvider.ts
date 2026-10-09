@@ -14,7 +14,8 @@ import {
   resolveAbortSignal,
   resolveRequestTimeoutMs,
   readUsage,
-  fetchWithRetries
+  fetchWithRetries,
+  countedFetch
 } from "./provider-utils";
 import { unsupportedFeature } from "./provider-utils";
 
@@ -102,7 +103,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const nativeTools = this.id === "openai" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
       const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
       // OpenAI is retried on overload and rate limits as its SDK does; a local server is not.
-      const send = (init: RequestInit) => this.id === "openai" ? fetchWithRetries(this.fetchImpl ?? fetch, url, init) : (this.fetchImpl ?? fetch)(url, init);
+      const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
+      const send = (init: RequestInit) => this.id === "openai" ? fetchWithRetries(fetchImpl, url, init) : fetchImpl(url, init);
       const response = await send({
         method: "POST",
         headers: {

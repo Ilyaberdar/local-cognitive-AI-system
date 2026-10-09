@@ -48,6 +48,7 @@ export class HypothesisAdvisorAgent {
   ): Promise<AgentDebateResponse> {
     const { data, response } = await this.llmService.generateObject<AdvisorPayload>(
       {
+        usagePurpose: "advisor",
         systemPrompt: "You are an independent debate advisor producing only structured JSON.",
         responseFormat: objectFormat("advisor", { stance: { type: "string", enum: ["pro", "contra"] },
           summary: { type: "string" }, arguments: { type: "array", items: { type: "string" } } }),

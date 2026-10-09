@@ -74,6 +74,7 @@ export class Judge {
 
     const { data, response } = await this.llmService.generateObject<JudgePayload>(
       {
+        usagePurpose: "judge",
         systemPrompt: "You are an impartial judge producing only structured JSON.",
         responseFormat: objectFormat("judgment", { verdict: { type: "string", enum: ["support", "attack"] },
           confidence: { type: "number", minimum: 0, maximum: 1 }, reasoning: { type: "string" }, conclusion: { type: "string" } }),

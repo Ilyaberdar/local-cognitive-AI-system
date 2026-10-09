@@ -11,7 +11,7 @@ import {
   resolveRequestTimeoutMs,
   readUsage
 } from "./provider-utils";
-import { unsupportedFeature } from "./provider-utils";
+import { countedFetch, unsupportedFeature } from "./provider-utils";
 
 export class OllamaProvider implements LLMProvider {
   readonly id = "ollama";
@@ -75,7 +75,7 @@ export class OllamaProvider implements LLMProvider {
 
     try {
       const images = validateImages(request.images);
-      const response = await fetch(`${this.options.baseUrl}/api/generate`, {
+      const response = await countedFetch(fetch, request)(`${this.options.baseUrl}/api/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"

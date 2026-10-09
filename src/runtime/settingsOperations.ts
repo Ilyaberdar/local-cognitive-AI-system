@@ -122,7 +122,7 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
       if (!provider.enabled) return { ok: false, providerId: id, message: "Provider is disabled." };
       const secrets = Object.values(settings.providers).map(item => item.apiKey ?? "").filter(Boolean);
       try {
-        const response = await deps.runtimeManager.getRuntime().llmService.generateText({ model: model ?? provider.model, prompt: "Reply exactly with: ok",
+        const response = await deps.runtimeManager.getRuntime().llmService.generateText({ usagePurpose: "provider-test", model: model ?? provider.model, prompt: "Reply exactly with: ok",
           signal: AbortSignal.any([context.signal, AbortSignal.timeout(TEST_TIMEOUT_MS)]) }, id);
         const failed = response.error || !response.text.trim() || response.text.startsWith(`Mock response from ${id}`);
         return failed

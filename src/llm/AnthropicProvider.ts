@@ -3,7 +3,7 @@ import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { anthropicAgentResponse, anthropicContinuation } from "./NativeToolTransport";
-import { fetchWithRetries, unsupportedFeature } from "./provider-utils";
+import { countedFetch, fetchWithRetries, unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -99,7 +99,7 @@ export class AnthropicProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
-      const response = await fetchWithRetries(fetch, `${this.options.baseUrl}/v1/messages`, {
+      const response = await fetchWithRetries(countedFetch(fetch, request), `${this.options.baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

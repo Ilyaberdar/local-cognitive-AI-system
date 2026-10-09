@@ -55,6 +55,7 @@ export class SupportAgent {
   ): Promise<AgentDebateResponse> {
     const { data, response } = await this.llmService.generateObject<DebatePayload>(
       {
+        usagePurpose: "debate",
         systemPrompt: "You are a rigorous analyst producing only structured JSON.",
         responseFormat: debateFormat,
         model: target.model,

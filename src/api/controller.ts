@@ -642,6 +642,7 @@ export const createProviderTestController =
 
       const response = await runtime.llmService.generateText(
         {
+          usagePurpose: "provider-test",
           model: typeof req.body?.model === "string" ? req.body.model : providerSettings.model,
           prompt: "Reply exactly with: ok"
         },

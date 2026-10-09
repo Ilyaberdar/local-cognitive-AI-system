@@ -196,6 +196,24 @@ export const readUsage = (payload: unknown): TokenUsage | undefined => {
   return known.inputTokens === undefined && known.outputTokens === undefined && known.totalTokens === undefined ? undefined : known;
 };
 
+/** A fetch that marks each request it sends on the call's usage hook: every retry and repeat is
+ * a request of its own in the usage ledger. */
+export const countedFetch = (fetchImpl: typeof fetch, request: LLMRequest): typeof fetch => {
+  const hook = request.usageCall;
+  if (!hook) return fetchImpl;
+  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const attempt = hook.attempt();
+    try {
+      const response = await fetchImpl(input, init);
+      attempt.responded(response.status);
+      return response;
+    } catch (error) {
+      attempt.failed(Boolean(request.signal?.aborted));
+      throw error;
+    }
+  }) as typeof fetch;
+};
+
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
 const retryAfterMs = (headers: Headers): number | undefined => {
   const exact = Number(headers.get("retry-after-ms"));

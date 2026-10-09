@@ -44,6 +44,7 @@ export class LanguageEnforcer {
 
     const { data } = await this.llmService.generateObject<TranslationPayload>(
       {
+        usagePurpose: "translation",
         systemPrompt: `You are a precise translator. Translate each item into ${this.languageName(
           language
         )}. Output valid JSON only.`,
