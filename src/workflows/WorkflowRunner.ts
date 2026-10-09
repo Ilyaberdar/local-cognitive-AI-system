@@ -88,7 +88,7 @@ export class WorkflowRunner {
         if (target) nodeTargets[node.id] = target;
       }
       const run = await this.runStore.createRun({ task, workflow, workspace, settings, nodeTargets, executionSessionId, id,
-        deviceOrigin: options.device === true || task.metadata?.deviceOrigin === true });
+        deviceOrigin: options.device === true || task.metadata?.deviceOrigin === true || workflow.deviceOrigin === true });
       WorkflowRunner.ownRuns.add(run.id);
       await this.setTaskStatus(task?.id, "in_progress", { workflowVersion: workflow.version, lastRunId: run.id });
       return run;

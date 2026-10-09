@@ -87,6 +87,7 @@ const refuseLater = (fields: Record<string, unknown>, projects = false): void =>
 /** What a workflow sent from a device may not contain yet (see LATER). */
 /** Tasks and schedules a device makes: their runs get no MCP tools of the host (`WorkflowRun.deviceOrigin`). */
 const DEVICE_ORIGIN = { deviceOrigin: true };
+const MCP_ON_HOST = "This step calls a tool of an application on the server (MCP). Approve it on the server; from here you can reject it.";
 
 export const workflowLimits = (definition: unknown): string[] => {
   const value = record(definition), runDefaults = record(value.runDefaults), problems = new Set<string>();
@@ -374,8 +375,14 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "workflows.runs.review": (payload, context) => known(async () => {
       const input = parse(schemas.review, payload);
       return command(context, "workflows.runs.review", input, async () => {
-        const reason = await runHostOnly(await requireRun(input.runId));
+        const run = await requireRun(input.runId);
+        const reason = await runHostOnly(run);
         if (reason) throw unsupported(reason);
+        // A waiting external MCP call would run in the host's own applications: only the host
+        // approves it (a device may still reject it, which stops the step).
+        if (input.approved && (run.state as { nodeResults?: Record<string, { data?: { tool?: unknown } }> }).nodeResults?.[run.currentNodeId ?? ""]?.data?.tool === "mcp") {
+          throw unsupported(MCP_ON_HOST);
+        }
         return safeRun(await runtime().workflowRunner.review(input.runId, input.approved, input.comment ?? "", true,
           { ...(input.approvalId ? { approvalId: input.approvalId } : {}), ...(input.waitingNodeRunId ? { waitingNodeRunId: input.waitingNodeRunId } : {}) }));
       }, { target: input.runId, allowWhileDraining: true });
@@ -409,7 +416,9 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         const users = [...tasks, ...schedules].filter(item => item.workflowId === definition.id);
         if (users.some(item => item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
         if (users.some(item => item.projectId) || workflows.some(item => item.id === definition.id && hasFolder(item))) throw unsupported(FOLDER_ON_HOST);
-        return safeWorkflow(await runtime().workflowStore.save(definition, { expectedUpdatedAt: input.expectedUpdatedAt }));
+        // What a device wrote runs later without the host's MCP tools (its prompts would drive the
+        // host's applications), until the host saves it in its own editor.
+        return safeWorkflow(await runtime().workflowStore.save({ ...definition, deviceOrigin: true }, { expectedUpdatedAt: input.expectedUpdatedAt }));
       });
     })
   };

@@ -100,7 +100,9 @@ export const createCreateWorkflowController =
         res.status(400).json({ error: validation.errors.join("; "), errors: validation.errors });
         return;
       }
-      const workflow = await runtime.workflowStore.create(req.body as WorkflowDefinition);
+      // Saved in the host's own editor: the host has taken it as its own (see WorkflowDefinition.deviceOrigin).
+      const { deviceOrigin: _deviceOrigin, ...definition } = req.body as WorkflowDefinition;
+      const workflow = await runtime.workflowStore.create(definition as WorkflowDefinition);
       res.status(201).json(workflow);
     } catch (error) {
       next(error);
@@ -117,9 +119,10 @@ export const createUpdateWorkflowController =
         res.status(400).json({ error: validation.errors.join("; "), errors: validation.errors });
         return;
       }
+      const { deviceOrigin: _deviceOrigin, ...definition } = req.body as WorkflowDefinition;
       const workflow = await runtime.workflowStore.update(
         readParam(req.params.workflowId),
-        req.body as WorkflowDefinition
+        definition as WorkflowDefinition
       );
       res.status(200).json(workflow);
     } catch (error) {
