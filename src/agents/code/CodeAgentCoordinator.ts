@@ -9,6 +9,12 @@ import { AgentProgressReporter } from "../../core/AgentProgressReporter";
 export interface WorkspaceOutcome {result:ModeResult;tools:ToolExecutionResult[];pendingApproval?:PendingApproval;agentRunId:string}
 export class CodeAgentCoordinator {
   constructor(private readonly runner:AgentLoopRunner){}
+  /** The operations a turn's agents completed so far (also after it was stopped). */
+  async completedTools(agentRunId:string):Promise<ToolExecutionResult[]>{
+    const budget=await this.runner.store.getBudget(agentRunId);
+    const runs=await Promise.all((budget?.memberIds??[`${agentRunId}:agent:main`]).map(id=>this.runner.store.get(id)));
+    return runs.flatMap(run=>run?.tools??[]);
+  }
   async run(input:string,mode:Mode,context:ExecutionContext,handler:ModeHandler):Promise<WorkspaceOutcome>{
     const baseId=context.execution!.agentRunId;
     const settings=context.sessionSettings;

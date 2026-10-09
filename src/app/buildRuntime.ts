@@ -57,7 +57,8 @@ import {
   LLMRequest,
   ProviderDescriptor,
   SubagentRunSummary,
-  ToolDescriptor
+  ToolDescriptor,
+  ProviderTarget
 } from "../types";
 import { Logger } from "../utils/Logger";
 import { ModelCatalogService } from "../llm/ModelCatalogService";
@@ -506,7 +507,8 @@ export const buildRuntime = async (
   const pluginManager = sharedPlugins ?? new PluginManager(config.appDataDir, `local:${config.appDataDir}`);
   const mcpClients = sharedMcpClients ?? new McpClientManager();
   if (!sharedMcpClients) await mcpClients.reconcile(config.mcp.client ?? emptyMcpConfiguration());
-  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager, mcpClients);
+  const operationExecutor = new OperationExecutor(config.appDataDir, pluginManager, mcpClients,
+    serverId => config.mcp.client?.servers[serverId]?.approval ?? "ask");
 
   const providerRegistry = new LLMRegistry();
   // RuntimeManager supplies the long-lived owner. Direct test/headless builders remain supported.
@@ -687,7 +689,11 @@ export const buildRuntime = async (
 
   const plugins = pluginCatalog;
 
-  const agentLoopRunner = new AgentLoopRunner(llmService,operationExecutor,config.appDataDir,config.agentLimits);
+  // Whether a model sees images: known for the app's own llama.cpp models (their projector).
+  const supportsImages = (target: ProviderTarget) => target.providerId === "llamacpp"
+    ? localModelService.snapshot().models.find(model => model.id === (target.model || config.providers.llamacpp?.model))?.vision
+    : undefined;
+  const agentLoopRunner = new AgentLoopRunner(llmService,operationExecutor,config.appDataDir,config.agentLimits,supportsImages);
   const engine = new CognitiveEngine(
     modeDetector,
     router,
@@ -697,9 +703,7 @@ export const buildRuntime = async (
     new ToolRequestBuilder(),
     logger,
     config.llm.defaultProvider,
-    target => target.providerId === "llamacpp"
-      ? localModelService.snapshot().models.find(model => model.id === (target.model || config.providers.llamacpp?.model))?.vision
-      : undefined,
+    supportsImages,
     workspaceResolver,
     new CodeAgentCoordinator(agentLoopRunner),
     pluginManager,

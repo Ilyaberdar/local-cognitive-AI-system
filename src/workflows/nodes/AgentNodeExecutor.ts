@@ -67,7 +67,9 @@ export class AgentNodeExecutor implements NodeExecutor {
         workflowId: context.workflow.id,
         workflowVersion: context.workflow.version,
         runId: context.run.id,
-        nodeId: context.node.id
+        nodeId: context.node.id,
+        // Started from a paired device: no MCP tools of the host (as in a device's chat turn).
+        ...(context.run.deviceOrigin ? { deviceOrigin: true } : {})
       }
     }));
 

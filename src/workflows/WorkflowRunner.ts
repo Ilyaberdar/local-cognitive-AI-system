@@ -67,7 +67,8 @@ export class WorkflowRunner {
     }
   }
 
-  async startTask(taskId: string): Promise<WorkflowRun> {
+  /** `device`: a paired device starts it (so does a task a device made, or one from its schedule). */
+  async startTask(taskId: string, options: { device?: boolean } = {}): Promise<WorkflowRun> {
     return withFileLock(`workflow-task:${taskId}`, async () => {
       const task = await this.requireTask(taskId);
       if (task.lastRunId) {
@@ -86,7 +87,8 @@ export class WorkflowRunner {
         const target = this.executors.get(node.type).snapshotTarget?.(node, settings);
         if (target) nodeTargets[node.id] = target;
       }
-      const run = await this.runStore.createRun({ task, workflow, workspace, settings, nodeTargets, executionSessionId, id });
+      const run = await this.runStore.createRun({ task, workflow, workspace, settings, nodeTargets, executionSessionId, id,
+        deviceOrigin: options.device === true || task.metadata?.deviceOrigin === true });
       WorkflowRunner.ownRuns.add(run.id);
       await this.setTaskStatus(task?.id, "in_progress", { workflowVersion: workflow.version, lastRunId: run.id });
       return run;
@@ -94,7 +96,7 @@ export class WorkflowRunner {
   }
 
   /** `ids.runId` lets a caller name the run in advance (a remote command reserves it). */
-  async startStandalone(workflow: WorkflowDefinition, options: WorkflowRunOptions = {}, ids: { runId?: string } = {}): Promise<WorkflowRun> {
+  async startStandalone(workflow: WorkflowDefinition, options: WorkflowRunOptions = {}, ids: { runId?: string; device?: boolean } = {}): Promise<WorkflowRun> {
     const validation = this.workflowStore.validate(workflow);
     if (!validation.ok) throw Object.assign(new Error(validation.errors.join("; ")), { statusCode: 400 });
     const errors = validateRunOptions(options);
@@ -112,7 +114,7 @@ export class WorkflowRunner {
     WorkflowRunner.ownRuns.add(id);
     return this.runStore.createRun({ id, workflow, workspace, settings, nodeTargets, executionSessionId,
       input: { title: workflow.name, description: options.description ?? "" },
-      accessMode: options.accessMode ?? "default", maxSteps: options.maxSteps ?? 25 });
+      accessMode: options.accessMode ?? "default", maxSteps: options.maxSteps ?? 25, deviceOrigin: ids.device === true });
   }
 
   runNextStep(runId: string): Promise<WorkflowRun> {

@@ -299,3 +299,29 @@ test("cancel while awaiting approval rejects it, answers 499 and never writes", 
   assert.equal((await h.call("POST", "/process-runs/r-ask-cancel/review", { sessionId: "s-ask-cancel", approvalId: waiting.approval.id, approved: true })).status, 409);
   await assert.rejects(fs.access(path.join(h.outputDir, "never.txt")));
 });
+
+test("a turn stopped after its agent acted stays in the chat with what was done", { timeout: 30_000 }, async (t) => {
+  const h = await startChatHarness(t);
+  // An editor's MCP server: the chat then works through the agent loop.
+  await h.runtime.mcpClients.reconcile({ servers: { editor: { id: "editor", enabled: true, transport: "stdio", command: process.execPath,
+    args: [path.join(__dirname, "fixtures", "mcpEditorLike.js")] } }, bindings: { editor: { id: "editor", serverId: "editor", enabled: true } } });
+  t.after(() => h.runtime.mcpClients.reconcile({ servers: {}, bindings: {} }));
+  await h.runtime.sessionSettingsStore.update("s-stopped", { mode: "general" });
+  const second = deferred();
+  let agentCalls = 0;
+  h.setScript((request) => {
+    if (request.outputPurpose !== "agent-action") return { text: "" };
+    if (++agentCalls === 1) return { text: JSON.stringify({ type: "tool_call", tool: "mcp.call", arguments: { toolId: "mcp:editor:ok", argumentsJson: "{}" } }) };
+    second.resolve();
+    return untilAborted(request.signal);
+  });
+  const pending = h.call("POST", "/chat", { requestId: "r-stopped", input: "Build the scene", sessionId: "s-stopped" });
+  const waiting = await h.waitForRun("r-stopped", run => Boolean(run.approval));
+  assert.equal((await h.call("POST", "/process-runs/r-stopped/review", { sessionId: "s-stopped", approvalId: waiting.approval.id, approved: true })).status, 200);
+  await second.promise;
+  await h.call("POST", "/process-runs/r-stopped/cancel");
+  assert.equal((await pending).status, 499);
+  const messages = (await h.call("GET", "/sessions/s-stopped/messages")).body as Array<{ role: string; content: string }>;
+  assert.equal(messages.find(message => message.role === "user")?.content, "Build the scene");
+  assert.match(messages.find(message => message.role === "assistant")?.content ?? "", /Stopped before the answer\. Completed actions: editor · ok\./);
+});

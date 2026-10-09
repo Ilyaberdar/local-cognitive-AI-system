@@ -1,10 +1,10 @@
 import { hasSecretName } from "../../config/secrets";
 import { McpClientError } from "./errors";
 import type {
-  McpClientConfiguration, McpClientConfigurationPatch, McpConnectionBinding, McpServerDefinition
+  McpApprovalMode, McpClientConfiguration, McpClientConfigurationPatch, McpConnectionBinding, McpServerDefinition
 } from "./types";
 
-const commonServerFields = ["id", "name", "enabled", "connectTimeoutMs", "requestTimeoutMs", "reconnect"];
+const commonServerFields = ["id", "name", "enabled", "approval", "connectTimeoutMs", "requestTimeoutMs", "reconnect"];
 const stdioFields = ["command", "args", "cwd", "env"];
 const bindingFields = ["id", "serverId", "enabled", "name", "accountId", "credentialRef"];
 const reservedIds = new Set(["__proto__", "constructor", "prototype"]);
@@ -61,6 +61,7 @@ function serverDefinition(key: string, input: unknown): McpServerDefinition {
     id: key,
     enabled: boolean(value.enabled),
     ...(value.name === undefined ? {} : { name: text(value.name, 256) }),
+    ...(value.approval === undefined ? {} : { approval: ["ask", "read-only", "trust"].includes(value.approval as string) ? value.approval as McpApprovalMode : invalid() }),
     ...(value.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: integer(value.connectTimeoutMs, 1, 3600000) }),
     ...(value.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: integer(value.requestTimeoutMs, 1, 3600000) })
   };
@@ -149,8 +150,10 @@ export function applyMcpConfigurationPatch(current: McpClientConfiguration, patc
       for (const [bindingId, binding] of Object.entries(result.bindings)) if (binding.serverId === id) delete result.bindings[bindingId];
       continue;
     }
-    const update = record(entry);
+    const update = { ...record(entry) };
     const previous: Record<string, unknown> = { ...(result.servers[id] ?? {}) };
+    // A field set to null is removed (a cleared working directory, environment or argument list).
+    for (const [field, value] of Object.entries(update)) if (value === null) { delete previous[field]; delete update[field]; }
     // Switching transport discards only the old transport's fields; explicit invalid fields still fail validation.
     if (update.transport !== undefined && update.transport !== previous.transport) {
       for (const field of [...stdioFields, "endpoint"]) delete previous[field];

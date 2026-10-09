@@ -38,6 +38,7 @@ export class WorkflowRunStore {
         id,
         taskId: input.task?.id,
         source: input.task ? "task" : "standalone",
+        ...(input.deviceOrigin ? { deviceOrigin: true as const } : {}),
         workflowId: input.workflow.id,
         workflowVersion: input.workflow.version,
         workflowSnapshot: structuredClone(input.workflow),

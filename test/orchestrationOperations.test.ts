@@ -464,3 +464,19 @@ test("work in a project or shared folder a device may use is started from a devi
   await f.call("workflows.runs.cancel", { runId: folderRun.id });
   assert.deepEqual(await f.call("tasks.delete", { taskId: task.id }), { deleted: true }, "deleting and pausing still work");
 });
+
+test("what a device starts or makes runs without the host's MCP tools: its runs, tasks and schedules are marked", async t => {
+  const f = await setup(t);
+  const standalone = await f.call("workflows.runs.start", { commandId: "cmd-start-mcp", workflow: reviewWorkflow() });
+  assert.equal((await f.workflowRunStore.getRun(standalone.id))?.deviceOrigin, true);
+  await f.call("workflows.save", { commandId: "cmd-save-mcp", workflow: reviewWorkflow(), expectedUpdatedAt: null });
+  const task = await f.call("tasks.create", { commandId: "cmd-task-mcp", title: "Scene", workflowId: "review-flow" });
+  assert.equal((await f.taskService.get(task.id))?.metadata?.deviceOrigin, true);
+  // A task the host made, started from a device.
+  const hostTask = await f.taskService.create({ title: "Host task", description: "", workflowId: "review-flow", priority: "normal" });
+  const started = await f.call("tasks.run", { commandId: "cmd-run-mcp", taskId: hostTask.id });
+  assert.equal((await f.workflowRunStore.getRun(started.runId))?.deviceOrigin, true);
+  // The host starting its own task: no mark.
+  const own = await f.taskService.create({ title: "Own", description: "", workflowId: "review-flow", priority: "normal" });
+  assert.equal((await f.workflowRunner.startTask(own.id)).deviceOrigin, undefined);
+});

@@ -116,7 +116,8 @@ export class McpClientManager implements McpClientService {
     }
     for (const binding of Object.values(next.bindings)) {
       const server = next.servers[binding.serverId];
-      const { name: _serverName, ...connectionServer } = server;
+      // A new name or approval mode changes nothing about the connection: the server keeps running.
+      const { name: _serverName, approval: _approval, ...connectionServer } = server;
       const { name: _bindingName, ...connectionBinding } = binding;
       const fingerprint = canonical({ server: connectionServer, binding: connectionBinding });
       const previous = this.entries.get(binding.id);
