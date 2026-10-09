@@ -2,6 +2,7 @@ import { createHash,randomUUID } from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { currentInferenceImages } from "../../llm/InferenceImages";
+import { localThinkingBudgetForEffort } from "../../llm/ReasoningEffort";
 import { MCP_MEDIA_DIR, type McpResultImage } from "../../mcp/client/ExternalMcpExecutor";
 import { LLMService } from "../../llm/LLMService";
 import { parseJsonDocument } from "../../llm/StructuredOutput";
@@ -124,7 +125,10 @@ export class AgentLoopRunner {
       const schema=run.protocol==="schema"?agentActionFormat(input.readOnly,finalOnly, toolOptions):undefined;
       const boundedLocal=input.target.providerId==="llamacpp"&&context.execution?.localReasoningBudget===undefined;
       const localWindow=this.llm.getContextWindow?.(input.target.providerId,input.target.model);
-      const outputBudget=boundedLocal?Math.min(4096,Math.max(128,Math.floor((localWindow??12288)/3))):undefined;
+      // The chat's reasoning effort sets how long a local model may think on each step (Balanced:
+      // 512 tokens); the step's output grows with it so the action still fits after the thinking.
+      const thinking=localThinkingBudgetForEffort(context.sessionSettings.reasoningEffort);
+      const outputBudget=boundedLocal?Math.max(128,Math.min(thinking+4096,Math.floor((localWindow??12288)/3))):undefined;
       const shown=await this.toolImages(run,input.target);
       const generated=await this.generate(input,run,{
         ...(shown.images?{images:shown.images}:{}),
@@ -133,7 +137,7 @@ export class AgentLoopRunner {
         responseFormat:schema??(run.protocol==="text"?null:undefined),
         // A local thinking model must reach its action/answer instead of consuming
         // the entire group deadline in an unrestricted reasoning turn.
-        localReasoningBudget:context.execution?.localReasoningBudget??(boundedLocal?Math.min(512,Math.floor(outputBudget!/2)):undefined),
+        localReasoningBudget:context.execution?.localReasoningBudget??(boundedLocal?Math.min(thinking,Math.floor(outputBudget!/2)):undefined),
         maxTokens:outputBudget,
         model:input.target.model,
         systemPrompt:[

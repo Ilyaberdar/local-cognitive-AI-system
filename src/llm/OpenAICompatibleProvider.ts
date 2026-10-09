@@ -18,6 +18,8 @@ import {
 import { unsupportedFeature } from "./provider-utils";
 
 export class OpenAICompatibleProvider implements LLMProvider {
+  /** Models that refused a reasoning effort (not reasoning models): asked without one from then on. */
+  private readonly withoutEffort = new Set<string>();
   readonly id: string;
   readonly name: string;
   readonly defaultModel: string;
@@ -81,6 +83,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
+      // These APIs take low, medium or high: the app's higher levels ask for the most they offer.
+      const requested = this.id === "llamacpp" || this.withoutEffort.has(model) ? undefined : request.reasoningEffort ?? this.options.reasoningEffort;
+      const effort = requested === "xhigh" || requested === "max" ? "high" : requested;
       const localSampling = this.id === "llamacpp" ? request.sampling : undefined;
       const localTemperature = request.temperature ?? localSampling?.temperature;
       const stream = this.id === "llamacpp" && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
@@ -116,6 +121,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(localSampling?.minP !== undefined ? { min_p: localSampling.minP } : {}),
           ...(localSampling?.repeatPenalty !== undefined ? { repeat_penalty: localSampling.repeatPenalty } : {}),
           ...(localSampling?.seed !== undefined ? { seed: localSampling.seed } : {}),
+          // LM Studio's reasoning models (gpt-oss) take the effort on chat completions too.
+          ...(this.id === "lmstudio" && effort ? { reasoning_effort: effort } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
@@ -129,7 +136,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ] }, ...(request.inputItems ?? [])] : request.prompt,
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
-          ...((request.reasoningEffort ?? this.options.reasoningEffort) ? { reasoning: { effort: request.reasoningEffort ?? this.options.reasoningEffort } } : {}),
+          ...(effort ? { reasoning: { effort } } : {}),
           ...(typeof request.maxTokens === "number"
             ? {
                 max_output_tokens: request.maxTokens
@@ -156,6 +163,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const body = await response.text();
         let detail = body.slice(0, 1500);
         try { detail = readResponseError(JSON.parse(body)) ?? detail; } catch { /* Keep plain HTTP error details. */ }
+        if (effort && response.status === 400 && /reasoning/i.test(detail)) {
+          this.withoutEffort.add(model);
+          return this.generateText(request);
+        }
         const unsupported = unsupportedFeature(response.status, detail, request);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         throw new Error(`${this.id} request failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);

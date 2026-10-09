@@ -5,7 +5,8 @@ import { OutputSanitizer } from "./OutputSanitizer";
 import { LLMRegistry } from "./LLMRegistry";
 import { currentInferenceProgress } from "./InferenceProgress";
 import { currentInferenceImages, validateImages } from "./InferenceImages";
-import { currentLocalThinkingBudget } from "./InferenceThinking";
+import { currentLocalThinkingBudget, currentReasoningEffort } from "./InferenceThinking";
+import { localThinkingBudgetForEffort } from "./ReasoningEffort";
 import { parseJsonDocument, validateStructuredObject } from "./StructuredOutput";
 
 export class LLMService {
@@ -38,8 +39,9 @@ export class LLMService {
     const images = validateImages(request.images ?? currentInferenceImages());
     const onProgress = request.onProgress ?? currentInferenceProgress();
     if (targetProviderId !== "llamacpp") onProgress?.({ phase: "waiting", model: request.model ?? provider.defaultModel });
-    const response = await provider.generateText({ ...request, images, onProgress,
-      localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() });
+    const effort = request.reasoningEffort ?? currentReasoningEffort();
+    const response = await provider.generateText({ ...request, images, onProgress, ...(effort ? { reasoningEffort: effort } : {}),
+      localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() ?? (effort ? localThinkingBudgetForEffort(effort) : undefined) });
     request.signal?.throwIfAborted();
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
     const text = request.outputPurpose === "agent-action"
