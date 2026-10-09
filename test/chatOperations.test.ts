@@ -26,7 +26,13 @@ async function setup(t: TestContext) {
   const sessions: Record<string, { id: string; title?: string; updatedAt?: string; projectId?: string }> = { chat: { id: "chat" }, full: { id: "full" }, busy: { id: "busy" } };
   const calls: string[] = [];
   const runService = {
-    start: async (_scope: string, request: { sessionId: string }) => { calls.push(`start ${request.sessionId}`); return { runId: RUN, status: "accepted" }; },
+    // A resent command ("resent-…") gets its first answer before anything is checked, as in RunService.
+    start: async (_scope: string, request: { sessionId: string; commandId: string }, admit?: () => Promise<void>) => {
+      if (request.commandId.startsWith("resent-")) return { runId: RUN, status: "accepted", replayed: true };
+      await admit?.();
+      calls.push(`start ${request.sessionId}`);
+      return { runId: RUN, status: "accepted" };
+    },
     get: (runId: string) => runId === RUN ? { runId, sessionId: "full", status: "waiting_approval" } : undefined,
     cancel: (runId: string) => { calls.push(`cancel ${runId}`); return { cancelled: true }; },
     resolveApproval: (_runId: string, _approvalId: string, approved: boolean) => { calls.push(`approval ${approved}`); return { accepted: true }; },
@@ -146,4 +152,30 @@ test("a device renames a server chat, and deletes one with its settings, memory,
   assert.equal(f.sessions.full, undefined);
   await assert.rejects(fs.access(f.file("full")), "its settings are gone");
   await assert.rejects(f.call("sessions.delete", { sessionId: "full" }), code("session_unknown"));
+});
+
+test("agent ids and names must be usable and unique; agents saved on the host are taken as they are", async t => {
+  const f = await setup(t);
+  const agent = (id: string, name: string) => ({ id, name, providerId: "openai" });
+  for (const codeAgents of [[agent("main-model", "Nova")], [agent("a>>>b", "Nova")], [agent("a", "two words")], [agent("a", "Nova"), agent("a", "Atlas")],
+    [agent("a", "Nova"), agent("b", "nova")]]) {
+    await assert.rejects(f.call("sessions.settings.update", { sessionId: "chat", patch: { codeAgents } }), code("invalid_request"), JSON.stringify(codeAgents));
+  }
+  await f.store.update("chat", { codeAgents: [{ id: "host", name: "Host helper", providerId: "gone", accessMode: "default" }] });
+  const saved = await f.call("sessions.settings.update", { sessionId: "chat", patch: { codeAgents: [{ id: "host", name: "Host helper", providerId: "gone" }, agent("b", "Nova")] } });
+  assert.deepEqual(saved.codeAgents.map((item: any) => item.name), ["Host helper", "Nova"], "the host's own agent does not block a change");
+});
+
+test("a resent send gets its first answer even after the chat became the host's", async t => {
+  const f = await setup(t);
+  assert.deepEqual(await f.call("chat.runs.start", { commandId: "resent-command-1", sessionId: "full", input: "hi" }), { runId: RUN, status: "accepted", replayed: true });
+  await assert.rejects(f.call("chat.runs.start", { commandId: "new-command-1", sessionId: "full", input: "hi" }), code("unsupported"));
+});
+
+test("chat settings saved at the same time keep both changes, and no partial file is ever read", async t => {
+  const f = await setup(t);
+  await Promise.all([f.store.update("chat", { language: "ru" }), f.store.update("chat", { outputStyle: "detailed" }), f.store.update("chat", { mode: "code" })]);
+  const settings = await f.store.get("chat");
+  assert.deepEqual([settings.language, settings.outputStyle, settings.mode], ["ru", "detailed", "code"]);
+  assert.deepEqual((await fs.readdir(f.root)).filter(name => name.endsWith(".tmp")), [], "no temporary file is left");
 });

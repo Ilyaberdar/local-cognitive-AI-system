@@ -74,6 +74,9 @@ export class CognitiveEngine {
     } as const;
     const sessionSettings = structuredClone(request.execution?.settings??await this.sessionSettingsStore.get(actor.sessionId));
     if(request.execution)sessionSettings.defaultAccessMode=request.execution.accessMode;
+    // A paired device's turn never runs with full access, even when the host gives it after the
+    // turn was accepted: such a chat is used only on the host.
+    if(request.metadata?.deviceRun===true&&sessionSettings.defaultAccessMode==="full")throw new Error("This chat has full access on the server, so it can only be used there.");
     const activeTarget = resolveProviderTarget(request, sessionSettings.defaultTarget ?? { providerId: this.defaultProviderId });
     const providerId = activeTarget.providerId;
     const explicitContext = request.execution?.contextMode === "explicit";
