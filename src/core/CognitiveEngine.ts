@@ -19,6 +19,7 @@ import { PluginError } from "../plugins/contracts";
 import { parseMentionedSubagentNames } from "../agents/code/codeAgentRouting";
 import { withoutHostMcp } from "../agents/runtime/AgentLoopRunner";
 import { withReasoningEffort } from "../llm/InferenceThinking";
+import { currentUsageScope, withUsageScope } from "../usage/UsageScope";
 import { ActivityTrace } from "./ActivityTrace";
 
 export class CognitiveEngine {
@@ -130,11 +131,14 @@ export class CognitiveEngine {
       }
       throw error;
     };
-    const result = await withReasoningEffort(sessionSettings.reasoningEffort, () =>
+    // A workflow's agent step keeps its workflow origin and run in the usage ledger.
+    const usageScope = currentUsageScope();
+    const result = await withUsageScope({ origin: usageScope.origin ?? "chat", sessionId: actor.sessionId,
+      runId: usageScope.runId ?? context.execution?.agentRunId }, () => withReasoningEffort(sessionSettings.reasoningEffort, () =>
       withInferenceImages(attachments.filter(file => file.kind === "image" && file.dataUrl).map(file => ({ name: file.name, dataUrl: file.dataUrl! })), async () => {
         if(workspace&&this.workspaceAgents&&!request.metadata?.reviewSelection){workspaceOutcome=await this.workspaceAgents.run(normalizedInput,mode,context,handler);return workspaceOutcome.result;}
         return handler(normalizedInput,context);
-      })).catch(stopped);
+      }))).catch(stopped);
     if(workspaceOutcome?.pendingApproval)return {input:normalizedInput,mode,providerId,result,tools:workspaceOutcome.tools,memory,conversationSize:conversation.length,sessionSettings,
       pendingApproval:workspaceOutcome.pendingApproval,agentRunId:workspaceOutcome.agentRunId};
     if (request.signal?.aborted) await stopped(request.signal.reason);

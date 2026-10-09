@@ -8,13 +8,16 @@ import { currentInferenceImages, validateImages } from "./InferenceImages";
 import { currentLocalThinkingBudget, currentReasoningEffort } from "./InferenceThinking";
 import { localThinkingBudgetForEffort } from "./ReasoningEffort";
 import { parseJsonDocument, validateStructuredObject } from "./StructuredOutput";
+import { UsageCall, UsageRecorder } from "../usage/UsageCall";
+import { currentUsageScope } from "../usage/UsageScope";
 
 export class LLMService {
   constructor(
     private readonly registry: LLMRegistry,
     private readonly defaultProviderId: string,
     private readonly logger: Logger,
-    private readonly sanitizer: OutputSanitizer
+    private readonly sanitizer: OutputSanitizer,
+    private readonly usage?: UsageRecorder
   ) {}
 
   getContextWindow(providerId: string, modelId?: string): number | undefined {
@@ -40,8 +43,18 @@ export class LLMService {
     const onProgress = request.onProgress ?? currentInferenceProgress();
     if (targetProviderId !== "llamacpp") onProgress?.({ phase: "waiting", model: request.model ?? provider.defaultModel });
     const effort = request.reasoningEffort ?? currentReasoningEffort();
-    const response = await provider.generateText({ ...request, images, onProgress, ...(effort ? { reasoningEffort: effort } : {}),
-      localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() ?? (effort ? localThinkingBudgetForEffort(effort) : undefined) });
+    // Every request this call sends is recorded, before a cancellation can discard its answer.
+    const usageCall = this.usage ? new UsageCall(this.usage, provider.id, request.model ?? provider.defaultModel ?? "", { ...currentUsageScope(), ...(request.usagePurpose ? { purpose: request.usagePurpose } : {}) }) : undefined;
+    let response: LLMResponse;
+    try {
+      response = await provider.generateText({ ...request, images, onProgress, ...(effort ? { reasoningEffort: effort } : {}),
+        localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() ?? (effort ? localThinkingBudgetForEffort(effort) : undefined),
+        ...(usageCall ? { usageCall } : {}) });
+    } catch (error) {
+      this.endUsage(usageCall, undefined, request);
+      throw error;
+    }
+    this.endUsage(usageCall, response, request);
     request.signal?.throwIfAborted();
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
     const text = request.outputPurpose === "agent-action"
@@ -53,6 +66,12 @@ export class LLMService {
       text,
       error: response.error || (!text && !response.agentAction && !response.protocolError ? "The model returned an empty response." : undefined)
     };
+  }
+
+  /** The ledger never stops a model call: a failed write is logged, the answer still returned. */
+  private endUsage(call: UsageCall | undefined, response: LLMResponse | undefined, request: LLMRequest): void {
+    try { call?.end(response, Boolean(request.signal?.aborted)); }
+    catch (error) { this.logger.warn("Usage was not recorded", { error: error instanceof Error ? error.message : String(error) }); }
   }
 
   async generateObject<T extends object>(

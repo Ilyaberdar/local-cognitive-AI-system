@@ -188,6 +188,7 @@ const runCodeAgent = async (
     signal?.throwIfAborted();
     const response = await llmService.generateText(
       {
+        usagePurpose: "agent",
         model: agent.model,
         systemPrompt: [systemPrompt, commandInstruction(commandInput || "")].filter(Boolean).join("\n\n"),
         prompt,
@@ -331,6 +332,7 @@ const runCodeSwarm = async (
     const repair = await withInferenceProgress(progress.inference(mainAgent.id), () => llmService.generateObject<{
       assignments?: Array<{ id?: string; task?: string }>;
     }>({
+      usagePurpose: "agent",
       model: mainAgent.model,
       systemPrompt: "You are the main model assigning bounded review tasks to the selected agents. Output JSON only.",
       responseFormat: objectFormat("assignments", { assignments: { type: "array", items: {
@@ -636,6 +638,7 @@ export const buildRuntime = async (
       let answer = "";
       const response = await llmService.generateText(
         {
+          usagePurpose: "answer",
           model: context.activeTarget.model,
           systemPrompt: commandInstruction(input) || undefined,
           prompt: buildTextPrompt(

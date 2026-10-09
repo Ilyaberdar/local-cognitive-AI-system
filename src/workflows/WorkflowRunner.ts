@@ -10,6 +10,7 @@ import { WorkflowRunStore } from "./WorkflowRunStore";
 import { WorkflowStore } from "./WorkflowStore";
 import { buildAgentInput } from "./template";
 import { validateRunOptions } from "./runOptions";
+import { withUsageScope } from "../usage/UsageScope";
 import { ProviderTarget } from "../types";
 import {
   NodeResult,
@@ -192,7 +193,7 @@ export class WorkflowRunner {
     let result: NodeResult;
     try {
       controller.signal.throwIfAborted();
-      result = await this.executors.get(node.type).execute({
+      result = await withUsageScope({ origin: "workflow", runId }, () => this.executors.get(node.type).execute({
         task, workflow, run, node, previousNodeRuns, signal: controller.signal,
         workspace: run.workspace, accessMode: run.executionSnapshot?.accessMode ?? task?.accessMode ?? "default",
         settings: run.executionSnapshot?.settings, agentRunId, operationId, agentInput,
@@ -216,7 +217,7 @@ export class WorkflowRunner {
           }).catch(error => { console.warn("Could not update workflow progress", error instanceof Error ? error.message : "unknown error"); });
         },
         approval: run.state.approvedNodeId === node.id ? readRecord(run.state.approvedOperation) : undefined
-      });
+      }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown_error";
       result = { status: "failed", event: "node.failed", summary: message, data: {}, error: message };

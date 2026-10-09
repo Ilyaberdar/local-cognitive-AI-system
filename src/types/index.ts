@@ -493,8 +493,17 @@ export type LLMResponseFormat = { type: "json_object" } | {
   type: "json_schema"; name: string; schema: Record<string, unknown>; strict: true;
 };
 
+/** Marks each HTTP request a provider sends for one call, for the usage ledger. */
+export interface UsageAttemptHook {
+  attempt(): { responded(status: number): void; failed(cancelled: boolean): void };
+}
+
 export interface LLMRequest {
   outputPurpose?: "agent-action";
+  /** What this call is for in the usage ledger (judge, translation…); the scope gives the rest. */
+  usagePurpose?: string;
+  /** Set by LLMService; providers pass it to `countedFetch`. */
+  usageCall?: UsageAttemptHook;
   /** Per-request thinking token budget for the bundled llama.cpp runtime. */
   localReasoningBudget?: number;
   prompt: string;

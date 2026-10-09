@@ -291,7 +291,7 @@ export class AgentLoopRunner {
           prompt:`${prefix}${this.transcript(run,available-supporting.length-2-(inputItems?continuationSize:0))}${suffix}`};
         // Reserve before inference: an interrupted request cannot regain a consumed turn.
         run.steps++;await this.store.save(run);started=Date.now();
-        const {response}=await this.llm.generateObject<Record<string,unknown>>(request,input.target.providerId);
+        const {response}=await this.llm.generateObject<Record<string,unknown>>({...request,usagePurpose:"agent"},input.target.providerId);
         const elapsed=Math.max(0,Date.now()-started);run.activeMs+=elapsed;started=undefined;
         for(const key of ["inputTokens","outputTokens","totalTokens"] as const)run.usage[key]=(run.usage[key]??0)+(response.usage?.[key]??0);
         await this.store.save(run);
