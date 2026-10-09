@@ -72,9 +72,9 @@ test("signed out, offline and failing pages say what they show", async () => {
   const local = mount({ overview: async () => ({ ok: true, value: overview({ state: "local", asOf: null, sources: [] }) }) });
   await until(() => /Lifetime/.test(local.text()), "local");
   assert.match(local.text(), /Signed out: this shows only what ran on this computer/);
-  const offline = mount({ overview: async () => ({ ok: true, value: overview({ state: "offline", asOf: null, unsentHere: 3 }) }) });
+  const offline = mount({ overview: async () => ({ ok: true, value: overview({ state: "offline", asOf: null, unsentHere: 3, error: "The Cloud answered HTTP 503." }) }) });
   await until(() => /Lifetime/.test(offline.text()), "offline");
-  assert.match(offline.text(), /The Cloud could not be reached/);
+  assert.match(offline.text(), /could not be loaded from the Cloud \(The Cloud answered HTTP 503\): this shows only what ran on this computer/);
   assert.match(offline.text(), /3 requests from this computer are not sent yet/);
   const failing = mount({ overview: async () => ({ ok: false, error: { message: "Usage is not recorded on this computer." } }) });
   await until(() => /could not be loaded/.test(failing.text()), "error");

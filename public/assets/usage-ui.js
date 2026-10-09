@@ -73,7 +73,8 @@ function heatmap(days, today) {
   const months = [];
   for (let week = 0; week < 53; week++) {
     const monday = shiftDate(start, week * 7), previous = shiftDate(monday, -7);
-    if (week === 0 || monday.slice(5, 7) !== previous.slice(5, 7)) months.push(`<span style="grid-column:${week + 1}">${escape(new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' }).format(new Date(`${monday}T00:00:00Z`)))}</span>`);
+    // A month's name needs about three weeks of room; the last weeks have none to their right.
+    if ((week === 0 || monday.slice(5, 7) !== previous.slice(5, 7)) && week <= 50) months.push(`<span style="grid-column:${week + 1}">${escape(new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' }).format(new Date(`${monday}T00:00:00Z`)))}</span>`);
   }
   return `<div class="usage-heatmap-scroll"><div class="usage-heatmap"><div class="usage-heatmap-months">${months.join('')}</div><div class="usage-heatmap-days" aria-hidden="true"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div><div class="usage-heatmap-grid" role="img" aria-label="Tokens by day over the last year">${cells.join('')}</div></div></div>
     <div class="usage-heatmap-legend" aria-hidden="true"><span>Less</span>${[0, 1, 2, 3, 4].map(level => `<span class="usage-cell" data-level="${level}"></span>`).join('')}<span>More</span></div>`;
@@ -99,7 +100,7 @@ function statusText(view) {
   const { overview, server } = view;
   const parts = [];
   if (overview.state === 'cloud') parts.push(`Your account on every computer and server, as of ${new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(overview.asOf))}.`);
-  else if (overview.state === 'offline') parts.push('The Cloud could not be reached: this shows only what ran on this computer.');
+  else if (overview.state === 'offline') parts.push(`Your account's totals could not be loaded from the Cloud${overview.error ? ` (${overview.error.replace(/\.$/, '')})` : ''}: this shows only what ran on this computer.`);
   else parts.push('Signed out: this shows only what ran on this computer. Sign in to see your account across computers and servers.');
   if (overview.unsentHere) parts.push(`${formatTokens(overview.unsentHere)} ${overview.unsentHere === 1 ? 'request' : 'requests'} from this computer ${overview.unsentHere === 1 ? 'is' : 'are'} not sent yet and ${overview.unsentHere === 1 ? 'is' : 'are'} included.`);
   if (server?.error) parts.push(`${server.name} could not be asked for what it has not sent yet; that part is missing.`);
@@ -147,7 +148,13 @@ export function mountUsagePage(container, { usage = window.desktopUsage, remote 
   const choice = { period: '7d', activity: 'daily' };
   const view = { loading: true, overview: null, error: '', server: null };
   let disposed = false, generation = 0;
-  const paint = () => { if (!disposed) container.innerHTML = usagePageHtml(view, choice); };
+  const paint = () => {
+    if (disposed) return;
+    container.innerHTML = usagePageHtml(view, choice);
+    // On a narrow window the year scrolls: start at the latest weeks.
+    const scroll = container.querySelector('.usage-heatmap-scroll');
+    if (scroll) scroll.scrollLeft = scroll.scrollWidth;
+  };
   const load = async () => {
     const mine = ++generation;
     view.loading = true; paint();

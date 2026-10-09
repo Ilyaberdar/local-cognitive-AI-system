@@ -24,7 +24,6 @@ const totals = (row: TotalsRow | undefined): UsageTotals => ({
 export type UsageRepository = ReturnType<typeof createUsageRepository>;
 
 export const createUsageRepository = (pool: Pick<pg.Pool, "query">) => {
-  const zones = new Map<string, boolean>();
   return {
     /** The database's clock: receipt times come from it, so a cut-off must too. */
     async now(): Promise<Date> {
@@ -60,15 +59,6 @@ export const createUsageRepository = (pool: Pick<pg.Pool, "query">) => {
       return result;
     },
 
-    /** A time zone Postgres knows, checked once per name. */
-    async validTimeZone(name: string): Promise<boolean> {
-      const known = zones.get(name);
-      if (known !== undefined) return known;
-      const { rowCount } = await pool.query("SELECT 1 FROM pg_timezone_names WHERE name = $1", [name]);
-      if (zones.size < 1000) zones.set(name, Boolean(rowCount));
-      return Boolean(rowCount);
-    },
-
     /** Everything received by `asOf`, and the part that ran in [from, to); by runtime as well. */
     async summary(accountId: string, from: Date, to: Date, asOf: Date) {
       const lifetime = await pool.query<TotalsRow & { first_event_at: Date | null }>(
@@ -87,17 +77,20 @@ export const createUsageRepository = (pool: Pick<pg.Pool, "query">) => {
       };
     },
 
-    /** Calendar days, or weeks from Monday, in the viewer's time zone; `before` is everything
-     * that ran before the first one, so a cumulative line starts at the right height. */
-    async activity(accountId: string, timeZone: string, from: string, to: string, granularity: "day" | "week", asOf: Date) {
-      const local = "(occurred_at AT TIME ZONE $2)";
+    /** Calendar days, or weeks from Monday, in the viewer's zone: each event's UTC time moved by
+     * the offset of the segment it falls in. `before` is everything before the first segment, so a
+     * cumulative line starts at the right height. */
+    async activity(accountId: string, segments: Array<{ start: Date; offsetMinutes: number }>, end: Date, granularity: "day" | "week", asOf: Date) {
+      const starts = segments.map(segment => segment.start), ends = [...segments.slice(1).map(segment => segment.start), end];
+      const local = "((occurred_at AT TIME ZONE 'UTC') + make_interval(mins => z.offset_minutes))";
       const bucket = granularity === "day" ? `${local}::date` : `date_trunc('week', ${local})::date`;
       const { rows } = await pool.query<TotalsRow & { start: string }>(
-        `SELECT to_char(${bucket}, 'YYYY-MM-DD') AS start, ${TOTALS} FROM usage_events
-         WHERE account_id = $1 AND received_at <= $3 AND ${local} >= $4::date AND ${local} < $5::date + 1
-         GROUP BY 1 ORDER BY 1`, [accountId, timeZone, asOf, from, to]);
-      const before = await pool.query<TotalsRow>(`SELECT ${TOTALS} FROM usage_events WHERE account_id = $1 AND received_at <= $3 AND ${local} < $4::date`,
-        [accountId, timeZone, asOf, from]);
+        `WITH z AS (SELECT * FROM unnest($3::timestamptz[], $4::timestamptz[], $5::int[]) AS z(start_at, end_at, offset_minutes))
+         SELECT to_char(${bucket}, 'YYYY-MM-DD') AS start, ${TOTALS} FROM usage_events JOIN z ON occurred_at >= z.start_at AND occurred_at < z.end_at
+         WHERE account_id = $1 AND received_at <= $2 GROUP BY 1 ORDER BY 1`,
+        [accountId, asOf, starts, ends, segments.map(segment => segment.offsetMinutes)]);
+      const before = await pool.query<TotalsRow>(`SELECT ${TOTALS} FROM usage_events WHERE account_id = $1 AND received_at <= $2 AND occurred_at < $3`,
+        [accountId, asOf, starts[0]]);
       return { buckets: rows.map(row => ({ start: row.start, ...totals(row) })), before: totals(before.rows[0]) };
     }
   };

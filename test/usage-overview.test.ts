@@ -12,7 +12,7 @@ import { UsageAttemptRecord } from "../src/usage/UsageCall";
 import { UsageAttribution, UsageLedger } from "../src/usage/UsageLedger";
 import { accountUsageSender, UsageOutbox } from "../src/usage/UsageOutbox";
 import { usageOverview } from "../src/usage/UsageOverview";
-import { daysFromQuarters, localDate, mergeDays } from "../src/usage/UsageProjection";
+import { daysFromQuarters, localDate, mergeDays, zoneSegments } from "../src/usage/UsageProjection";
 import { remoteStackSkip, startCloud } from "./fixtures/remoteStack";
 
 const ledgerFor = (t: TestContext, who: () => UsageAttribution) => {
@@ -37,6 +37,17 @@ test("days are calendar days of the viewer's zone, quarter hours keep half-hour 
   assert.deepEqual(kolkata.days.map(day => [day.date, day.totalTokens]), [["2026-03-08", 10], ["2026-03-09", 20]]);
   assert.equal(kolkata.before.totalTokens, 5, "before the first day: the cumulative baseline");
   assert.deepEqual(mergeDays(kolkata.days, [{ ...kolkata.days[0]!, totalTokens: 1 }]).map(day => day.totalTokens), [11, 20]);
+});
+
+test("a zone goes to the Cloud as offsets with the exact minute of each change, under any name the platform knows", () => {
+  const text = (zone: ReturnType<typeof zoneSegments>) => [...zone.segments.map(segment => `${new Date(segment.start).toISOString()}~${segment.offsetMinutes}`), new Date(zone.end).toISOString()];
+  assert.deepEqual(text(zoneSegments("America/New_York", "2026-03-02", "2026-03-15")),
+    ["2026-03-02T05:00:00.000Z~-300", "2026-03-08T07:00:00.000Z~-240", "2026-03-16T04:00:00.000Z"]);
+  assert.deepEqual(text(zoneSegments("Europe/Kiev", "2026-03-28", "2026-03-30")),
+    ["2026-03-27T22:00:00.000Z~120", "2026-03-29T01:00:00.000Z~180", "2026-03-30T21:00:00.000Z"], "a name an older database lacks");
+  assert.deepEqual(text(zoneSegments("Asia/Kathmandu", "2026-01-01", "2026-12-31")), ["2025-12-31T18:15:00.000Z~345", "2026-12-31T18:15:00.000Z"]);
+  assert.deepEqual(text(zoneSegments("Australia/Lord_Howe", "2026-04-01", "2026-04-10")),
+    ["2026-03-31T13:00:00.000Z~660", "2026-04-04T15:00:00.000Z~630", "2026-04-10T13:30:00.000Z"], "a half-hour change");
 });
 
 test("signed out, the page shows this computer only; a Cloud out of reach, this computer's part of the account", async (t) => {

@@ -1,6 +1,6 @@
 import type { UsageLedger } from "./UsageLedger";
 import type { UsageOutbox } from "./UsageOutbox";
-import { addTotals, daysFromQuarters, emptyTotals, knownTimeZone, localDate, mergeDays, dateBefore, type UsageDay, type UsageTotals } from "./UsageProjection";
+import { addTotals, daysFromQuarters, emptyTotals, knownTimeZone, localDate, mergeDays, dateBefore, zoneSegments, type UsageDay, type UsageTotals } from "./UsageProjection";
 
 /** About a year of days: the Daily heatmap's 53 weeks. */
 export const OVERVIEW_DAYS = 370;
@@ -64,7 +64,9 @@ export async function usageOverview(input: { ledger: UsageLedger; outbox?: Usage
       return await response.json() as T;
     };
     const summary = await get<CloudSummary>(`/v1/usage/summary?from=${encodeURIComponent(new Date(now.getTime() - (OVERVIEW_DAYS + 1) * 86_400_000).toISOString())}&to=${encodeURIComponent(now.toISOString())}`);
-    const activity = await get<CloudActivity>(`/v1/usage/activity?tz=${encodeURIComponent(timeZone)}&from=${from}&to=${to}&granularity=day&asOf=${encodeURIComponent(summary.asOf)}`);
+    const zone = zoneSegments(timeZone, from, to);
+    const activity = await get<CloudActivity>(`/v1/usage/activity?zone=${encodeURIComponent(zone.segments.map(segment => `${new Date(segment.start).toISOString()}~${segment.offsetMinutes}`).join(","))}`
+      + `&end=${encodeURIComponent(new Date(zone.end).toISOString())}&granularity=day&asOf=${encodeURIComponent(summary.asOf)}`);
     // What this computer ran that the Cloud's numbers above do not include yet.
     const extra = ledger.quarters({ accountId: input.accountId, missingFromCloudAt: summary.asOf });
     const missing = daysFromQuarters(extra.quarters, timeZone, from);
