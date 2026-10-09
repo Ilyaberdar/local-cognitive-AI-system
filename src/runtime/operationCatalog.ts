@@ -23,6 +23,11 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "sessions.setup.get": { kind: "request", timeoutMs: 15_000 },
   "sessions.rename": { kind: "request", timeoutMs: 15_000 },
   "sessions.delete": { kind: "request", timeoutMs: 60_000 },
+  // Attachments: chunks are requests (never in the command ledger); the upload id makes them repeatable.
+  "uploads.begin": { kind: "request", timeoutMs: 15_000 },
+  "uploads.chunk": { kind: "request", timeoutMs: 30_000 },
+  "uploads.commit": { kind: "request", timeoutMs: 30_000 },
+  "uploads.cancel": { kind: "request", timeoutMs: 15_000 },
   "sessions.settings.update": { kind: "request", timeoutMs: 30_000 },
   "models.available": { kind: "request", timeoutMs: 45_000 },
   "chat.runs.start": { kind: "command", timeoutMs: 30_000 },

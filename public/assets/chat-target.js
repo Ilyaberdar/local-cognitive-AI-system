@@ -249,8 +249,31 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       settings.set(key, saved);
       return saved;
     },
-    async send(key, input) {
-      const result = await runtime.send("chat.runs.start", { sessionId: serverId(key), input }, hostOf(key));
+    /** Sends a chat's prepared attachments to its server in chunks and answers their ids for the
+     * turn. An attachment remembers its upload, so sending the message again resumes or reuses it. */
+    async upload(key, attachments) {
+      const host = hostOf(key), sessionId = serverId(key), ids = [];
+      for (const attachment of attachments) {
+        const content = attachment.kind === "image" ? attachment.dataUrl : attachment.textContent;
+        if (!["image", "text"].includes(attachment.kind) || typeof content !== "string" || !content) throw new Error(`${attachment.name} cannot be sent to the server.`);
+        const sent = attachment.remoteUpload?.host === host && attachment.remoteUpload.sessionId === sessionId ? attachment.remoteUpload : undefined;
+        const uploadId = sent?.uploadId ?? crypto.randomUUID();
+        const sha256 = sent?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))]
+          .map(byte => byte.toString(16).padStart(2, "0")).join("");
+        attachment.remoteUpload = { host, sessionId, uploadId, sha256 };
+        const begun = await call("uploads.begin", { uploadId, sessionId, name: attachment.name, mimeType: attachment.mimeType, kind: attachment.kind,
+          sizeBytes: attachment.sizeBytes, length: content.length, sha256, ...(attachment.truncated ? { truncated: true } : {}), ...(attachment.warning ? { warning: attachment.warning } : {}) }, host);
+        const size = begun.chunkChars;
+        for (let index = 0; index < Math.ceil(content.length / size); index++) {
+          if (!begun.received.includes(index)) await call("uploads.chunk", { uploadId, index, data: content.slice(index * size, (index + 1) * size) }, host);
+        }
+        await call("uploads.commit", { uploadId }, host);
+        ids.push(uploadId);
+      }
+      return ids;
+    },
+    async send(key, input, attachmentIds = []) {
+      const result = await runtime.send("chat.runs.start", { sessionId: serverId(key), input, ...(attachmentIds.length ? { attachmentIds } : {}) }, hostOf(key));
       if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The message was not sent."), { code: result?.error?.code });
       return result.value;
     },
@@ -303,6 +326,16 @@ export function renderTargetSwitch(target) {
       ${rows}
       <a class="access-menu__footer chat-target-manage" href="#/remote">Manage servers</a>
     </div></span>`;
+}
+
+/** Whether a server chat's images can be read: refused when the server says the chat's model sees text only. */
+export function remoteImageGuidance(attachments, settings, models, hostName) {
+  if (!attachments?.some(attachment => attachment.kind === "image")) return { blocked: false, message: "" };
+  const target = settings?.defaultTarget ?? {};
+  const model = (models?.allManagedModels ?? []).find(item => item.providerId === target.providerId && (item.libraryId || item.id) === target.model);
+  return model?.vision === false
+    ? { blocked: true, message: `${model.displayName || target.model} on ${hostName} reads text only. Remove the image or choose a model that can see images.` }
+    : { blocked: false, message: "" };
 }
 
 /** Shown above the composer while a selected server is not connected, or when the chat on screen
@@ -384,8 +417,7 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
   const providers = (models?.providers ?? []).filter(provider => provider.id !== "local");
   const providerId = settings.defaultTarget?.providerId;
   const model = settings.defaultTarget?.model ?? "";
-  const note = hostOnly || (agents ? "Attachments for server chats arrive in a later update."
-    : `Update Local Cognitive on ${hostName} to add subagents and debate agents to its chats.`);
+  const note = hostOnly || (agents ? "" : `Update Local Cognitive on ${hostName} to add subagents and debate agents to its chats.`);
   return `<form class="panel chat-settings form-grid ${collapsed ? "chat-settings--collapsed" : ""}" id="session-settings-form" data-session-id="${escape(sessionKey)}" data-remote-setup="true" data-setup-mode="${escape(mode)}">
       <div class="session-resize-handle" data-action="resize-right-panel" title="Resize panel"></div>
       ${reviewTabs}
@@ -409,7 +441,7 @@ export function renderRemoteSetupPanel({ settings, sessionKey, title, hostName, 
         </section>
         ${agents ? renderRemoteAgents({ mode, settings, providers, models, hostName }) : ""}
         </fieldset>
-        ${hostOnly ? "" : `<p class="subtle remote-setup-note">${escape(note)}</p>`}
+        ${hostOnly || !note ? "" : `<p class="subtle remote-setup-note">${escape(note)}</p>`}
         <div class="subtle setup-save-status" data-autosave-status aria-live="polite">${escape(autosaveLabel)}</div>
       </div>
     </form>`;

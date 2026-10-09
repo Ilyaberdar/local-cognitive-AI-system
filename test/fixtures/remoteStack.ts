@@ -109,7 +109,7 @@ export async function startDaemon(t: TestContext, origin: string, extraEnv: Reco
 
 /** An OpenAI-compatible model whose answers (`state.answer`) wait for `release()` while `held` is true. */
 export async function startStubModel(t: TestContext, answer = "Paris is the capital of France.") {
-  const state = { held: false, requests: 0, aborted: 0, waiting: [] as Array<() => void>, authorizations: [] as string[], answer };
+  const state = { held: false, requests: 0, aborted: 0, waiting: [] as Array<() => void>, authorizations: [] as string[], bodies: [] as string[], answer };
   const server = http.createServer((request, response) => {
     if (request.method === "GET") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "fixture" }] })); return; }
     let body = "";
@@ -117,6 +117,7 @@ export async function startStubModel(t: TestContext, answer = "Paris is the capi
     request.on("end", () => {
       state.requests++;
       state.authorizations.push(String(request.headers.authorization ?? ""));
+      state.bodies.push(body);
       let answered = false;
       const reply = () => {
         if (answered || response.destroyed) return;

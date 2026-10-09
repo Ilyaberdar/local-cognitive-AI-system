@@ -10,6 +10,7 @@ import type { EventJournal } from "./EventJournal";
 import { pathScrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
+import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore";
 
 const MAX_HISTORY_BYTES = 768 * 1024;
 const MAX_SUBAGENTS = 4, MAX_ADVISORS = 5;
@@ -42,7 +43,14 @@ const schemas = {
     debate: z.object({ profile: z.enum(["general", "technical", "product", "research", "security"]).optional(),
       support: target.optional(), attack: target.optional(), judge: target.optional() }).strict().optional()
   }).strict() }).strict(),
-  start: z.object({ commandId: z.string().min(8).max(100), sessionId: id, input: z.string().min(1).max(MAX_INPUT_CHARS) }).strict(),
+  start: z.object({ commandId: z.string().min(8).max(100), sessionId: id, input: z.string().min(1).max(MAX_INPUT_CHARS),
+    attachmentIds: z.array(uuid).max(5).optional() }).strict(),
+  uploadBegin: z.object({ uploadId: uuid, sessionId: id, name: z.string().trim().min(1).max(255).refine(value => !/[\u0000-\u001f\u007f]/.test(value)),
+    mimeType: z.string().regex(/^[\w.+-]{1,100}\/[\w.+-]{1,100}$/), kind: z.enum(["image", "text"]), sizeBytes: z.number().int().min(0).max(5 * 1024 ** 2),
+    length: z.number().int().min(1).max(MAX_CONTENT_CHARS), sha256: z.string().regex(/^[a-f0-9]{64}$/i), truncated: z.boolean().optional(),
+    warning: z.string().max(1000).optional() }).strict(),
+  uploadChunk: z.object({ uploadId: uuid, index: z.number().int().min(0), data: z.string().min(1).max(CHUNK_CHARS) }).strict(),
+  upload: z.object({ uploadId: uuid }).strict(),
   run: z.object({ runId: uuid }).strict(),
   approval: z.object({ runId: uuid, approvalId: uuid, approved: z.boolean() }).strict()
 };
@@ -71,6 +79,8 @@ export interface ChatOperationDependencies {
   scopeOf(context: OperationContext): string;
   /** Folders of the host named `<server>` in what a device receives (its data directory). */
   hostDirectories?: string[];
+  /** Attachments devices send for their next turn; without it, chats take text only. */
+  uploads?: UploadStore;
 }
 
 /** Replaces the host's folders in a chat's history, approvals and events: the chat output folder
@@ -138,6 +148,24 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     }
     if (roles.filter(role => role === "advisor").length > MAX_ADVISORS) throw new RemoteOperationError(`A debate has at most ${MAX_ADVISORS} advisors.`, "invalid_request");
   };
+  /** Attachments for a device's next turn (R5-4d): begun for a chat the device may use, sent in
+   * chunks, then checked and validated as a whole. Requests, not commands: chunks never enter the
+   * command ledger, and an upload id makes each step safe to repeat. */
+  const uploadOperations = (uploads: UploadStore): Record<string, RemoteOperation> => ({
+    "uploads.begin": async (payload, context) => {
+      const { uploadId, sessionId, ...meta } = parse(schemas.uploadBegin, payload);
+      await requireSession(sessionId);
+      await requireUsable(sessionId);
+      return uploads.begin(deps.scopeOf(context), uploadId, sessionId, meta);
+    },
+    "uploads.chunk": async (payload, context) => {
+      const { uploadId, index, data } = parse(schemas.uploadChunk, payload);
+      return uploads.chunk(deps.scopeOf(context), uploadId, index, data);
+    },
+    "uploads.commit": async (payload, context) => uploads.commit(deps.scopeOf(context), parse(schemas.upload, payload).uploadId),
+    "uploads.cancel": async (payload, context) => uploads.cancel(deps.scopeOf(context), parse(schemas.upload, payload).uploadId)
+  });
+
   return {
     "sessions.list": async () => (await deps.sessionIndexStore.list()).filter(session => !session.projectId).map(session => ({
       id: session.id, title: session.title, updatedAt: session.updatedAt, ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {})
@@ -241,9 +269,18 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "chat.runs.start": (payload, context) => known(async () => {
       const request = parse(schemas.start, payload);
       await requireSession(request.sessionId);
+      const owner = deps.scopeOf(context), ids = request.attachmentIds ?? [];
+      if (ids.length && !deps.uploads) throw new RemoteOperationError("This server takes text messages only.", "unsupported");
       // Checked after a resent command got its first answer, and again by the engine when it runs.
-      return deps.runService.start(deps.scopeOf(context), request, () => requireUsable(request.sessionId));
+      const ack = await deps.runService.start(owner, request, async () => {
+        await requireUsable(request.sessionId);
+        return { attachments: ids.length ? deps.uploads!.attachments(owner, request.sessionId, ids) : [] };
+      });
+      if (ack.status === "accepted" && !ack.replayed && ids.length) deps.uploads!.remove(ids);
+      return ack;
     }),
+
+    ...(deps.uploads ? uploadOperations(deps.uploads) : {}),
 
     "chat.runs.get": payload => known(() => {
       const run = deps.runService.get(parse(schemas.run, payload).runId);

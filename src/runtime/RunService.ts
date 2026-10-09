@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import type { ApprovalOperation, ChatMessage, ProcessProgressEvent } from "../types";
+import type { ApprovalOperation, ChatAttachment, ChatMessage, ProcessProgressEvent } from "../types";
 import type { Logger } from "../utils/Logger";
 import { canonical, sha256 } from "./canonical";
 import type { HostDatabase } from "./db/HostDatabase";
@@ -25,7 +25,7 @@ export interface RunServiceDependencies {
   host: HostDatabase;
   journal: EventJournal;
   /** Runs one chat turn with the shared engine; resolves with the engine's error text, if any. */
-  execute(run: { runId: string; sessionId: string; input: string }, hooks: ExecuteHooks): Promise<{ error?: string }>;
+  execute(run: { runId: string; sessionId: string; input: string; attachments?: ChatAttachment[] }, hooks: ExecuteHooks): Promise<{ error?: string }>;
   /** The completed turn as history shows it (from memory), for `message.completed`. */
   completedTurn?(sessionId: string, runId: string): Promise<ChatMessage[] | undefined>;
   sessionExists(sessionId: string): Promise<boolean>;
@@ -36,7 +36,7 @@ export interface RunServiceDependencies {
 }
 
 interface ActiveRun {
-  runId: string; sessionId: string; assistantMessageId: string; controller: AbortController;
+  runId: string; sessionId: string; assistantMessageId: string; controller: AbortController; attachments?: ChatAttachment[];
   text: string; pendingText?: { offset: number; text: string; replace?: boolean }; progress?: Omit<ProcessProgressEvent, "answer">; progressDirty: boolean;
   timer?: NodeJS.Timeout; approval?: { view: PendingApprovalView; decide: (approved: boolean) => void };
 }
@@ -58,22 +58,29 @@ export class RunService {
 
   /** Accepts a chat turn. `scope` is who asks (account and device, or the local profile); the
    * client's `commandId` is the idempotency key within that scope. */
-  /** `admit` refuses a new turn (it throws) after a resent command has had its first answer. */
-  async start(scope: string, request: { commandId: string; sessionId: string; input: string }, admit?: () => Promise<void>): Promise<CommandAck> {
+  /** `admit` refuses a new turn (it throws) after a resent command has had its first answer, and
+   * hands over the turn's attachments (their ids are part of the command). */
+  async start(scope: string, request: { commandId: string; sessionId: string; input: string; attachmentIds?: string[] },
+    admit?: () => Promise<{ attachments?: ChatAttachment[] } | void>): Promise<CommandAck> {
     const input = request.input.trim();
     if (!input) throw new RunServiceError("The message is empty.", "invalid_input");
     if (input.length > MAX_INPUT_CHARS) throw new RunServiceError("The message is too long.", "invalid_input");
-    const replay = this.replay(scope, request.commandId, { sessionId: request.sessionId, input });
+    // A text-only turn is hashed exactly as before attachments existed.
+    const ids = request.attachmentIds ?? [];
+    const command = { sessionId: request.sessionId, input, ...(ids.length ? { attachmentIds: ids } : {}) };
+    const replay = this.replay(scope, request.commandId, command);
     if (replay) return replay;
     if (!this.accepting) throw new RunServiceError("The server is shutting down. Try again when it is back.", "host_draining");
     if (!await this.deps.sessionExists(request.sessionId)) throw new RunServiceError("The chat does not exist on the server.", "session_unknown");
-    await admit?.();
+    const attachments = (await admit?.())?.attachments ?? [];
+    // History shows what was attached (names and sizes), never the contents.
+    const summaries = attachments.map(({ id, name, mimeType, sizeBytes, kind }) => ({ id, name, mimeType, sizeBytes, kind }));
     const legacyBusy = this.deps.legacyBusy?.(request.sessionId) ?? false;
-    const payloadJson = canonical({ sessionId: request.sessionId, input });
+    const payloadJson = canonical(command);
     const at = this.now().toISOString();
     const { ack, appended } = this.deps.host.transaction(db => {
       // Checked again inside the transaction: the async checks above may have interleaved.
-      const existing = this.replay(scope, request.commandId, { sessionId: request.sessionId, input });
+      const existing = this.replay(scope, request.commandId, command);
       if (existing) return { ack: existing, appended: [] };
       const commandId = randomUUID(), runId = randomUUID(), userMessageId = randomUUID(), assistantMessageId = randomUUID();
       db.prepare(`INSERT INTO commands(command_id, scope, idempotency_key, operation, target, payload_sha256, payload_json, status, accepted_at, updated_at)
@@ -95,15 +102,15 @@ export class RunService {
       const ack: CommandAck = { commandId: request.commandId, status: "accepted", runId, userMessageId, assistantMessageId };
       db.prepare("UPDATE commands SET run_id = ?, result_json = ? WHERE command_id = ?").run(runId, JSON.stringify(ack), commandId);
       db.prepare("INSERT INTO messages(message_id, session_id, run_id, role, status, content_json, created_at, updated_at) VALUES (?, ?, ?, 'user', 'accepted', ?, ?, ?)")
-        .run(userMessageId, request.sessionId, runId, JSON.stringify({ text: input }), at, at);
+        .run(userMessageId, request.sessionId, runId, JSON.stringify({ text: input, ...(summaries.length ? { attachments: summaries } : {}) }), at, at);
       const event = this.deps.journal.append(db, streamOf(request.sessionId), { type: "message.accepted", runId,
-        payload: { runId, assistantMessageId, message: { id: userMessageId, role: "user", content: input, createdAt: at } } });
+        payload: { runId, assistantMessageId, message: { id: userMessageId, role: "user", content: input, createdAt: at, ...(summaries.length ? { attachments: summaries } : {}) } } });
       return { ack, appended: [event] };
     });
     this.deps.journal.publish(appended);
     if (ack.status === "accepted" && !ack.replayed) {
       this.active.set(ack.runId!, { runId: ack.runId!, sessionId: request.sessionId, assistantMessageId: ack.assistantMessageId!, controller: new AbortController(),
-        text: "", progressDirty: false });
+        ...(attachments.length ? { attachments } : {}), text: "", progressDirty: false });
       setImmediate(() => this.execute(ack.runId!, input).catch(error =>
         this.deps.logger?.error("Chat run could not be recorded", { runId: ack.runId, error: error instanceof Error ? error.message : String(error) })));
     }
@@ -163,8 +170,11 @@ export class RunService {
       WHERE r.session_id = ? AND r.kind = 'chat' AND r.status <> 'completed'
         AND r.run_id IN (SELECT run_id FROM runs WHERE session_id = ? AND kind = 'chat' AND status <> 'completed' ORDER BY created_at DESC LIMIT ?)
       ORDER BY m.created_at, m.role DESC`).all(sessionId, sessionId, limit);
-    return rows.map(row => ({ id: String(row.message_id), role: row.role as "user" | "assistant", content: String((JSON.parse(String(row.content_json)) as { text?: string }).text ?? ""),
-      createdAt: String(row.created_at), runId: String(row.run_id), runStatus: row.status as RunStatus, ...(row.error_code && row.role === "assistant" ? { runError: String(row.error_code) } : {}) }));
+    return rows.map(row => {
+      const content = JSON.parse(String(row.content_json)) as { text?: string; attachments?: ChatAttachment[] };
+      return { id: String(row.message_id), role: row.role as "user" | "assistant", content: String(content.text ?? ""), ...(content.attachments?.length ? { attachments: content.attachments } : {}),
+        createdAt: String(row.created_at), runId: String(row.run_id), runStatus: row.status as RunStatus, ...(row.error_code && row.role === "assistant" ? { runError: String(row.error_code) } : {}) };
+    });
   }
 
   /** After a restart: runs that were active are interrupted with their partial answers; nothing is re-run.
@@ -205,7 +215,7 @@ export class RunService {
     this.disposed = true;
   }
 
-  private replay(scope: string, key: string, payload: { sessionId: string; input: string }): CommandAck | undefined {
+  private replay(scope: string, key: string, payload: { sessionId: string; input: string; attachmentIds?: string[] }): CommandAck | undefined {
     const row = this.deps.host.db.prepare("SELECT payload_sha256, result_json FROM commands WHERE scope = ? AND idempotency_key = ?").get(scope, key);
     if (!row) return undefined;
     if (row.payload_sha256 !== sha256(canonical(payload))) throw new RunServiceError("This command id was already used for a different message.", "idempotency_conflict");
@@ -227,7 +237,7 @@ export class RunService {
       });
       this.deps.journal.publish(started);
       run.controller.signal.throwIfAborted();
-      const result = await this.deps.execute({ runId, sessionId, input }, {
+      const result = await this.deps.execute({ runId, sessionId, input, ...(run.attachments ? { attachments: run.attachments } : {}) }, {
         signal: run.controller.signal,
         onProgress: event => this.onProgress(run, event),
         requestApproval: operation => this.requestApproval(run, operation)

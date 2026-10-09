@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { bootApp, flush, SESSION_ID, sessionSettings, type Harness } from "./fixtures/appHarness";
 
@@ -7,15 +8,19 @@ const RUN = "0b6a3f0e-7f1d-4b9e-8a52-1f2c3d4e5f60";
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 40)); await flush(10); };
 
 /** A paired server behind the desktop bridge, with one chat; `agents`: a server that offers agent setup (R5-4). */
-function fakeServer({ agents = false, hostOnly = "", manage = false } = {}) {
+function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = false } = {}) {
   let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0",
-    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : [])] };
+    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : []), ...(uploads ? ["uploads.begin"] : [])] };
+  const received: Record<string, { meta: any; chunks: string[] }> = {};
   const chats = [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }, ...(manage ? [{ id: "srv-3", title: "Older chat", updatedAt: "2026-10-07T10:00:00.000Z" }] : [])];
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
   const server = { messages: [] as unknown[], settings: { ...sessionSettings(), defaultTarget: { providerId: "llamacpp", model: "qwen" } }, head: 0 };
   const ok = (value: unknown) => ({ ok: true, value });
   const handlers: Record<string, (payload: any) => unknown> = {
     "sessions.list": () => chats,
+    "uploads.begin": payload => { received[payload.uploadId] = { meta: payload, chunks: [] }; return { uploadId: payload.uploadId, chunkChars: 8, received: [] }; },
+    "uploads.chunk": payload => { received[payload.uploadId]!.chunks[payload.index] = payload.data; return { received: received[payload.uploadId]!.chunks.length }; },
+    "uploads.commit": payload => { const { meta } = received[payload.uploadId]!; return { id: payload.uploadId, name: meta.name, mimeType: meta.mimeType, sizeBytes: meta.sizeBytes, kind: meta.kind }; },
     "sessions.rename": payload => Object.assign(chats.find(chat => chat.id === payload.sessionId)!, { title: payload.title }),
     "sessions.delete": payload => { chats.splice(chats.findIndex(chat => chat.id === payload.sessionId), 1); return { deleted: true }; },
     "sessions.create": () => ({ id: "srv-2", title: "New chat" }),
@@ -40,7 +45,7 @@ function fakeServer({ agents = false, hostOnly = "", manage = false } = {}) {
       onEvent: (listener: (value: unknown) => void) => { eventListeners.push(listener); }
     }
   };
-  return { bridge, server, setStatus(next: Record<string, unknown>) { status = { ...status, ...next }; statusListeners.forEach(listener => listener(status)); },
+  return { bridge, server, received, setStatus(next: Record<string, unknown>) { status = { ...status, ...next }; statusListeners.forEach(listener => listener(status)); },
     emit(events: unknown[]) { eventListeners.forEach(listener => listener({ streamId: "session:srv-1", events })); } };
 }
 
@@ -294,4 +299,35 @@ test("a server without rename and delete keeps its chats' titles read-only and o
   await choose(app, HOST);
   assert.equal(app.document.querySelector("#session-settings-form [data-remote-title]"), null);
   assert.equal(app.document.querySelector(".sidebar-chats [data-action='delete-session-quick']"), null);
+});
+
+test("a server chat sends attachments to the server in chunks, then the message with their ids", async t => {
+  const paired = fakeServer({ uploads: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const localBefore = app.requests.length;
+  const input = app.document.querySelector("#chat-attachment-input");
+  assert.ok(app.document.querySelector("[data-action='attach-files']"), "attach is offered");
+  const text = "Ship the plan on Friday.";
+  // JSDOM's File has no text(); the browser's does.
+  const file = Object.assign(new app.window.File([text], "plan.txt", { type: "text/plain" }), { text: async () => text });
+  Object.defineProperty(input, "files", { configurable: true, value: [file] });
+  input.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+  await settle();
+  assert.match(app.document.querySelector(".composer-attachments").textContent, /plan\.txt/);
+  type(app, "Read the plan");
+  submit(app);
+  await settle();
+  const calls = [...ops(app, "request").filter(([op]: [string]) => op.startsWith("uploads.")), ...ops(app, "send")];
+  const [begin] = calls;
+  const uploadId = begin[1].uploadId;
+  assert.deepEqual(calls.map(([op]: [string]) => op), ["uploads.begin", "uploads.chunk", "uploads.chunk", "uploads.chunk", "uploads.commit", "chat.runs.start"]);
+  assert.deepEqual({ ...begin[1], uploadId: "<id>" }, { uploadId: "<id>", sessionId: "srv-1", name: "plan.txt", mimeType: "text/plain", kind: "text", sizeBytes: text.length,
+    length: text.length, sha256: createHash("sha256").update(text).digest("hex") });
+  assert.equal(paired.received[uploadId]!.chunks.join(""), text, "the text arrives whole, in order");
+  assert.deepEqual(calls.at(-1), ["chat.runs.start", { sessionId: "srv-1", input: "Read the plan", attachmentIds: [uploadId] }, HOST]);
+  assert.ok(calls.every((call: unknown[]) => call.at(-1) === HOST));
+  assert.equal(app.document.querySelector(".composer-attachments"), null, "the draft's attachments are sent");
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => /^(POST|PUT) /.test(entry)), [], "nothing went to this computer");
 });

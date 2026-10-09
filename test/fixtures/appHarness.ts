@@ -1,3 +1,5 @@
+import { webcrypto } from "node:crypto";
+import { TextEncoder } from "node:util";
 import path from "node:path";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { buildSync } = require("esbuild");
@@ -79,6 +81,9 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   window.HTMLDialogElement.prototype.showModal = function (this: any) { this.setAttribute("open", ""); };
   window.HTMLDialogElement.prototype.close = function (this: any) { this.removeAttribute("open"); };
   window.confirm = () => true;
+  // Web Crypto digests and TextEncoder, as Electron's renderer (a secure context) has them.
+  if (!window.crypto.subtle) Object.defineProperty(window.crypto, "subtle", { value: webcrypto.subtle });
+  if (!window.TextEncoder) window.TextEncoder = TextEncoder;
   window.__workflowEditorModule = { mountWorkflowEditor: (_container: unknown, props: any) => {
     const handle = { unmounted: false, validations: [] as unknown[], executions: [] as unknown[], setPlugins() {}, setColorMode() {}, setNodeRuns() {}, setStarting() {},
       setValidation(value: unknown) { handle.validations.push(value); }, setExecution(value: unknown) { handle.executions.push(value); },
