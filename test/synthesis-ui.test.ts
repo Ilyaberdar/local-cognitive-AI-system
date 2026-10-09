@@ -387,3 +387,31 @@ test("removing a module only hides it in that project and can be restored", asyn
     assert.equal(writes.length, 0, 'view changes make no file or run mutation requests');
   } finally { ui.close(); }
 });
+
+test("on a server the screen reaches Synthesis through its transport, with no editor or preview of this computer", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
+  const fetched: string[] = [], asked: string[] = [];
+  dom.window.fetch = async (path: string) => { fetched.push(path); return { ok: true, json: async () => ({}) }; };
+  dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
+  const transport = { remote: { hostName: "fedora" }, request: async (path: string, options: RequestInit = {}) => {
+    asked.push(`${options.method ?? "GET"} ${path}`);
+    if (path.endsWith("/runs") && !options.method) return [runEntry("r1", "accepted")];
+    if (path.endsWith("/modules")) return { modules: [{ ...moduleEntry(), specPath: "Synthesis/Calculator/Calculator.lcspec" }] };
+    if (path.endsWith("/modules/Calculator")) return moduleEntry();
+    if (path.startsWith("/runs/r1")) return runEntry("r1", "accepted");
+    return {};
+  } };
+  const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"),
+    { projects: [{ id: "p1", name: "Calc", rootPath: "fedora › Projects › calc" }], active: true, transport, storageKey: "host-1" });
+  try {
+    const text = () => dom.window.document.body.textContent;
+    await until(() => text().includes("module Calculator"), "server module");
+    assert.match(text(), /The source is edited on fedora/);
+    const buttons = [...dom.window.document.querySelectorAll("button")].map((item: any) => item.textContent);
+    assert.equal(buttons.some(label => /Open in editor|Open project/.test(label)), false, "no editor of this computer");
+    assert.equal(buttons.includes("Preview"), false, "no preview of a server's candidate");
+    assert.deepEqual(fetched, [], "this computer's API is not asked");
+    assert.ok(asked.includes("GET /projects/p1/modules") && asked.includes("GET /projects/p1/runs"));
+    assert.equal(dom.window.localStorage.getItem("lcai.synthesis.project.v1:host-1"), "p1", "this server's view is kept apart");
+  } finally { handle.unmount(); dom.window.close(); }
+});

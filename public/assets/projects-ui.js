@@ -342,6 +342,8 @@ export function createProjectsUi(options) {
   return {
     sidebar, bind,
     openCreateProject: onCreated => projectDialog(undefined, onCreated),
+    /** A new project on the selected server, in a folder chosen among its shared folders. */
+    openCreateServerProject: () => serverProjectDialog(),
     revealSession: projectId => {
       setSectionExpanded(projectId ? "projects" : "chats", true);
       if (projectId) collapsed.delete(projectId);

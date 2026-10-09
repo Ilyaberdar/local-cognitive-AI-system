@@ -5,9 +5,11 @@ import type { SynthesisModule, SynthesisProject } from "./types";
 
 export interface NewModuleInput { name: string; template: "empty" | "calculator"; directory: string }
 
-export function NewModuleDialog({ project, modules, onCreated, onClose }: {
+export function NewModuleDialog({ project, modules, onCreated, onClose, request = synthesisRequest }: {
   project: SynthesisProject; modules: SynthesisModule[];
   onCreated: (module: SynthesisModule) => void; onClose: () => void;
+  /** This computer's API, or the server's operations. */
+  request?: <T>(path: string, options?: RequestInit) => Promise<T>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
@@ -44,7 +46,7 @@ export function NewModuleDialog({ project, modules, onCreated, onClose }: {
     if (!browsing) return;
     const controller = new AbortController();
     setLoading(true); setFolderError(""); setFolders([]);
-    synthesisRequest<{directory: string; folders: string[]}>(`/projects/${encode(project.id)}/folders?directory=${encode(location)}`, {signal: controller.signal})
+    request<{directory: string; folders: string[]}>(`/projects/${encode(project.id)}/folders?directory=${encode(location)}`, {signal: controller.signal})
       .then(result => { if (!controller.signal.aborted) setFolders(result.folders); })
       .catch(reason => { if (!controller.signal.aborted && !isAbort(reason)) setFolderError(errorMessage(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -55,7 +57,7 @@ export function NewModuleDialog({ project, modules, onCreated, onClose }: {
     if (pending.current || !cleanName || nameError || pathError || conflict) return;
     pending.current = true; setBusy(true); setError("");
     try {
-      const created = await synthesisRequest<SynthesisModule>(`/projects/${encode(project.id)}/modules`, {
+      const created = await request<SynthesisModule>(`/projects/${encode(project.id)}/modules`, {
         method: "POST", body: JSON.stringify({name: cleanName, template, directory: parent} satisfies NewModuleInput)
       });
       if (alive.current) onCreated(created);

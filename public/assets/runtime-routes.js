@@ -247,3 +247,26 @@ export const SETTINGS_ROUTES = [
   { method: "PUT", pattern: /^\/app\/settings$/, op: "settings.update", payload: (_match, _query, body) => hostSettingsPatch(body) },
   { method: "POST", pattern: /^\/providers\/([^/]+)\/test$/, op: "providers.test", payload: (match, _query, body) => ({ providerId: segment(match[1]), ...pick(body, ["model"]) }) }
 ];
+
+/** The Synthesis screen's routes (frontend/synthesis, paths without its `/synthesis` prefix) →
+ * src/runtime/synthesisOperations.ts. "Open in editor" and the preview are not here: they stay on
+ * the server's own screen. */
+export const SYNTHESIS_ROUTES = [
+  { method: "GET", pattern: /^\/projects\/([^/]+)\/modules$/, op: "synthesis.modules.list", payload: match => ({ projectId: segment(match[1]) }) },
+  { method: "GET", pattern: /^\/projects\/([^/]+)\/modules\/([^/]+)$/, op: "synthesis.modules.get", payload: match => ({ projectId: segment(match[1]), moduleId: segment(match[2]) }) },
+  { method: "GET", pattern: /^\/projects\/([^/]+)\/folders$/, op: "synthesis.folders.list",
+    payload: (match, query) => ({ projectId: segment(match[1]), ...(query.get("directory") ? { directory: query.get("directory") } : {}) }) },
+  { method: "POST", pattern: /^\/projects\/([^/]+)\/modules$/, op: "synthesis.modules.create", send: true,
+    payload: (match, _query, body) => ({ projectId: segment(match[1]), ...pick(body, ["name", "template", "directory"]) }) },
+  { method: "GET", pattern: /^\/projects\/([^/]+)\/runs$/, op: "synthesis.runs.list", payload: match => ({ projectId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/projects\/([^/]+)\/runs$/, op: "synthesis.runs.start", send: true,
+    payload: (match, _query, body) => ({ projectId: segment(match[1]), moduleId: body?.moduleId }) },
+  { method: "GET", pattern: /^\/runs\/([^/]+)$/, op: "synthesis.runs.get", payload: (match, query) => ({ runId: segment(match[1]), ...(query.get("after") ? { after: Number(query.get("after")) } : {}) }) },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/sources$/, op: "synthesis.runs.sources", payload: match => ({ runId: segment(match[1]) }) },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/diff$/, op: "synthesis.runs.diff", payload: match => ({ runId: segment(match[1]) }) },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/file$/, op: "synthesis.runs.file",
+    payload: (match, query) => ({ runId: segment(match[1]), path: query.get("path") ?? "", side: query.get("side") ?? "after" }) },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, op: "synthesis.runs.cancel", payload: match => ({ runId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, op: "synthesis.runs.resume", send: true, payload: match => ({ runId: segment(match[1]) }) },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/apply$/, op: "synthesis.runs.apply", send: true, payload: match => ({ runId: segment(match[1]) }) }
+];

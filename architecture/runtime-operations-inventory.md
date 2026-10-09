@@ -266,3 +266,10 @@ Telegram and MCP stdio call runtime services directly; both go through `processR
 7. Chat run API (§7.3) replacing the open `/chat` request and the 600 ms poll.
 8. Electron: app protocol, origin checks, `setWindowOpenHandler`, decouple `ScheduleRunner`, stop
    listening on TCP in the desktop build (Express stays for tests).
+
+## Synthesis (R5-5)
+
+Done: `synthesis.modules.list/get`, `synthesis.folders.list`, `synthesis.runs.list/get/sources/diff/file/cancel`
+(requests) and `synthesis.modules.create`, `synthesis.runs.start/resume/apply` (commands, run ids reserved), mapped
+from the Synthesis screen's paths by `SYNTHESIS_ROUTES` (public/assets/runtime-routes.js). `POST /synthesis/projects/:id/open`
+and `GET /synthesis/runs/:id/preview/*` stay on the host's own screen.
