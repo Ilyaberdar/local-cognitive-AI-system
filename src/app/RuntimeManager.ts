@@ -1,4 +1,5 @@
 import { MCP_CREDENTIAL_PREFIX, VaultMcpCredentialProvider } from "../mcp/client/credentials";
+import type { UsageRecorder } from "../usage/UsageCall";
 import path from "path";
 import { SynthesisService } from "../synthesis/SynthesisService";
 import { buildRuntime, AppRuntime } from "./buildRuntime";
@@ -15,7 +16,9 @@ import { McpClientManager, McpClientManagerOptions } from "../mcp/client/McpClie
 import { emptyMcpConfiguration } from "../mcp/client/configuration";
 import { validateSettingsPatch } from "./settingsValidation";
 
-export interface IntegrationRuntimeOptions { vault?: CredentialVault; openExternal?: (url: string) => Promise<void>; oauthClients?: OAuthClientRegistrations; }
+export interface IntegrationRuntimeOptions { vault?: CredentialVault; openExternal?: (url: string) => Promise<void>; oauthClients?: OAuthClientRegistrations;
+  /** Records every model call of this runtime (the usage ledger in host.db). */
+  usage?: UsageRecorder; }
 
 export class RuntimeManager {
   private runtime: AppRuntime | null = null;
@@ -153,7 +156,7 @@ export class RuntimeManager {
       await synthesis.init();
       this.synthesis = synthesis;
     }
-    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService, this.mcpClients, this.plugins, this.synthesis);
+    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService, this.mcpClients, this.plugins, this.synthesis, this.integrations.usage);
     if (this.disposed) throw new Error("Runtime has been disposed");
     await this.mcpClients.reconcile(settings.mcp.client ?? emptyMcpConfiguration());
     if (this.disposed) throw new Error("Runtime has been disposed");

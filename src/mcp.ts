@@ -10,6 +10,10 @@ import { DataRootLock, DataRootLockedError } from "./runtime/db/DataRootLock";
 import { appVersion } from "./utils/appVersion";
 import { bridgeStdio } from "./server/mcpBridge";
 import { controlSocketPathFor } from "./server/dataRoot";
+import path from "node:path";
+import { HostDatabase } from "./runtime/db/HostDatabase";
+import { hostMigrations } from "./runtime/db/hostSchema";
+import { UsageLedger } from "./usage/UsageLedger";
 
 class StderrLogger extends Logger {
   override log(level: "info" | "warn" | "error" | "debug", message: string, meta?: Record<string, unknown>): void {
@@ -38,9 +42,13 @@ const bootstrapMcp = async (): Promise<void> => {
     throw new Error(`${error.message} Run the MCP server with its own APP_DATA_DIR, SESSION_DIR, MEMORY_DIR and LOCAL_MODELS_DIR.`);
   }
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
-  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger);
+  // Its model calls are recorded too, on this computer only: it knows no signed-in account.
+  let database: HostDatabase | undefined;
+  try { database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations); }
+  catch (error) { logger.warn("Usage is not recorded: host.db could not be opened", { message: error instanceof Error ? error.message : String(error) }); }
+  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, database ? { usage: new UsageLedger(database, () => ({}), logger) } : {});
   try { await runtimeManager.init(); }
-  catch (error) { lock.release(); throw error; }
+  catch (error) { database?.close(); lock.release(); throw error; }
 
   const settings = await appSettingsStore.get();
   const sessionIndexStore = runtimeManager.getRuntime().sessionIndexStore;
@@ -58,7 +66,7 @@ const bootstrapMcp = async (): Promise<void> => {
   });
 
   const transport = new StdioServerTransport();
-  const dispose = async () => { await runtimeManager.dispose(); await server.close(); lock.release(); };
+  const dispose = async () => { await runtimeManager.dispose(); await server.close(); database?.close(); lock.release(); };
   process.once("SIGINT", () => { void dispose().finally(() => process.exit(0)); });
   process.once("SIGTERM", () => { void dispose().finally(() => process.exit(0)); });
   process.stdin.once("end", () => { void dispose(); });

@@ -112,7 +112,9 @@ const startBackend = async (appRoot, vault) => {
   let oauthClients = {};
   try { oauthClients = await loadOAuthClientRegistrations(oauthClientsFile); }
   catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
-  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop" });
+  // Model calls are recorded for the account signed in when they run; none signed in, they stay on this computer.
+  const usageAccount = () => { const status = account?.service.status(); return status?.state === "signed-in" ? status.profile.accountId : undefined; };
+  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount });
 };
 
 const createWindow = async (url) => {

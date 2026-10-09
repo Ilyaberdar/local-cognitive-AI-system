@@ -1,4 +1,5 @@
 import { CommandTool, commandInstruction } from "../tools/CommandTool";
+import type { UsageRecorder } from "../usage/UsageCall";
 import fs from "fs/promises";
 import path from "path";
 import { AttackAgent } from "../agents/AttackAgent";
@@ -496,7 +497,9 @@ export const buildRuntime = async (
   sharedMcpClients?: McpClientService,
   sharedPlugins?: PluginManager,
   /** Kept across rebuilds (settings changes): its runs must not be interrupted by them. */
-  sharedSynthesis?: SynthesisService
+  sharedSynthesis?: SynthesisService,
+  /** The runtime's usage ledger; every model call is recorded in it. */
+  usage?: UsageRecorder
 ): Promise<AppRuntime> => {
   await fs.mkdir(config.memory.baseDir, { recursive: true });
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
@@ -552,7 +555,8 @@ export const buildRuntime = async (
     providerRegistry,
     config.llm.defaultProvider,
     logger,
-    new OutputSanitizer()
+    new OutputSanitizer(),
+    usage
   );
   const languageEnforcer = new LanguageEnforcer(llmService);
   const modelCatalog = new ModelCatalogService(providerRegistry);
