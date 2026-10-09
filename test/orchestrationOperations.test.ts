@@ -14,6 +14,8 @@ import { createEventStreamOperations } from "../src/runtime/eventStreams";
 import { EventJournal } from "../src/runtime/EventJournal";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../src/runtime/orchestrationOperations";
+import { addAdminFolder, HostFolders, removeAdminFolder } from "../src/runtime/hostFolders";
+import { createProjectAccess } from "../src/runtime/projectOperations";
 import { ScheduleService } from "../src/schedules/ScheduleService";
 import { ScheduleStore } from "../src/schedules/ScheduleStore";
 import { SessionIndexStore } from "../src/session/SessionIndexStore";
@@ -49,13 +51,17 @@ const until = async <T>(read: () => Promise<T>, done: (value: T) => boolean, tim
 };
 const code = (expected: string) => (error: unknown) => error instanceof RemoteOperationError && error.code === expected;
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, { withProjects = false } = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "orchestration-ops-")));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const taskStore = new TaskStore(path.join(root, "tasks"));
   const workflowStore = new WorkflowStore(path.join(root, "workflows"));
   const workflowRunStore = new WorkflowRunStore(path.join(root, "runs"));
-  const resolver = new WorkspaceResolver({ appDataDir: root }, new ProjectStore(root), new SessionIndexStore(root));
+  const projectStore = new ProjectStore(root);
+  const resolver = new WorkspaceResolver({ appDataDir: root }, projectStore, new SessionIndexStore(root));
+  const folders = new HostFolders(path.join(root, "data"));
+  await fs.mkdir(path.join(root, "data"), { recursive: true });
+  folders.ensureManaged();
   new OperationExecutor(root);
   const registry = new NodeExecutorRegistry([new EntryNodeExecutor(), new TerminalNodeExecutor(), new HumanReviewNodeExecutor()]);
   const settings = new SessionSettingsStore({ baseDir: path.join(root, "settings") }, { providerId: "fake", model: "model" }, {});
@@ -66,13 +72,14 @@ async function setup(t: TestContext) {
   t.after(() => host.close());
   const state = { draining: false };
   const agentRuns = new AgentRunStore(path.join(root, "agents"));
-  const runtimeManager = { getRuntime: () => ({ taskService, scheduleService, workflowStore, workflowRunStore, workflowRunner, agentLoopRunner: { store: agentRuns } }) } as unknown as RuntimeManager;
-  const operations = (ledger = new CommandLedger(host)) => createOrchestrationOperations({ runtimeManager, ledger,
+  const runtimeManager = { getRuntime: () => ({ taskService, scheduleService, workflowStore, workflowRunStore, workflowRunner, agentLoopRunner: { store: agentRuns }, projectStore }) } as unknown as RuntimeManager;
+  const projectAccess = withProjects ? { projects: createProjectAccess({ runtimeManager, folders }), folders } : {};
+  const operations = (ledger = new CommandLedger(host)) => createOrchestrationOperations({ runtimeManager, ledger, ...projectAccess,
     scopeOf: ({ accountId, deviceId }) => `remote:${accountId}:${deviceId}`, isDraining: () => state.draining, journalEpoch: () => "epoch-1", hostDirectories: [root] });
   const ops = { ...operations(), ...createEventStreamOperations({ journal: new EventJournal(host), requireSession: async () => undefined,
     sources: [createWorkflowRunStreams({ runtimeManager, journalEpoch: () => "epoch-1", hostDirectories: [root] })] }) };
   const call = <T = any>(op: string, payload?: unknown, ctx = context()) => Promise.resolve(ops[op]!(payload, ctx)) as Promise<T>;
-  return { root, host, state, ops, operations, call, resolver, taskService, workflowStore, workflowRunStore, workflowRunner, agentRuns };
+  return { root, host, state, ops, operations, call, resolver, taskService, workflowStore, workflowRunStore, workflowRunner, agentRuns, projectStore, folders };
 }
 
 test("every orchestration operation is in the catalog; what creates or starts work is a command", () => {
@@ -419,4 +426,41 @@ test("a task, schedule, workflow or run bound to a folder or project chosen on t
   assert.deepEqual(waiting.run.workspace, { kind: "workflow" }, "the folder itself is not shown");
   assert.equal((await f.call("workflows.runs.cancel", { runId: hostRun.id })).status, "cancelled", "cancelling stays possible");
   assert.deepEqual(await f.call("tasks.delete", { taskId: bound.id }), { deleted: true }, "and so does deleting");
+});
+
+test("work in a project or shared folder a device may use is started from a device; once unshared it stays on the host", async t => {
+  const f = await setup(t, { withProjects: true });
+  await f.call("workflows.save", { commandId: "cmd-save-p", workflow: reviewWorkflow(), expectedUpdatedAt: null });
+  const shared = path.join(f.root, "shared");
+  await fs.mkdir(path.join(shared, "repo"), { recursive: true });
+  const work = addAdminFolder(path.join(f.root, "data"), shared, { label: "Work" });
+  const project = await f.projectStore.create({ name: "Repo", rootPath: path.join(shared, "repo") });
+  const hostProject = await f.projectStore.create({ name: "Host", rootPath: path.join(f.root, "elsewhere-project") }).catch(async () => {
+    await fs.mkdir(path.join(f.root, "elsewhere-project")); return f.projectStore.create({ name: "Host", rootPath: path.join(f.root, "elsewhere-project") }); });
+
+  const task = await f.call("tasks.create", { commandId: "cmd-task-p", title: "In the repo", workflowId: "review-flow", projectId: project.id });
+  assert.equal(task.projectId, project.id);
+  await assert.rejects(f.call("tasks.create", { commandId: "cmd-task-h", title: "On the host", workflowId: "review-flow", projectId: hostProject.id }), code("unsupported"));
+  await assert.rejects(f.call("tasks.create", { commandId: "cmd-task-r", title: "A path", workflowId: "review-flow", rootPath: "/etc" }), code("unsupported"), "a folder of the host is never sent");
+  const schedule = await f.call("schedules.create", { commandId: "cmd-schedule-p", title: "Nightly", workflowId: "review-flow", time: "02:00", timezone: "UTC", projectId: project.id });
+  assert.equal(schedule.projectId, project.id);
+  const { runId } = await f.call("tasks.run", { commandId: "cmd-run-p", taskId: task.id });
+  const waiting = await until(() => f.call("workflows.runs.get", { runId }), detail => detail.run.status === "waiting");
+  const step = waiting.nodeRuns.find((item: { status: string }) => item.status === "waiting");
+  await f.call("workflows.runs.review", { commandId: "cmd-review-p", runId, approved: true, waitingNodeRunId: step.id });
+
+  const folderRun = await f.call("workflows.runs.start", { commandId: "cmd-start-folder", workflow: reviewWorkflow(), options: { folder: { rootId: work.id, path: ["repo"] } } });
+  const folderWaiting = await until(() => f.call("workflows.runs.get", { runId: folderRun.id }), detail => detail.run.status === "waiting");
+  const folderStep = folderWaiting.nodeRuns.find((item: { status: string }) => item.status === "waiting");
+  assert.equal(JSON.stringify(await f.call("workflows.runs.get", { runId: folderRun.id })).includes(shared), false, "the folder is not named");
+  await assert.rejects(f.call("workflows.runs.start", { commandId: "cmd-start-escape", workflow: reviewWorkflow(), options: { folder: { rootId: work.id, path: [".."] } } }), code("invalid_path"));
+  await assert.rejects(f.call("workflows.runs.start", { commandId: "cmd-start-path", workflow: reviewWorkflow(), options: { rootPath: "/etc" } }), code("unsupported"));
+
+  // The admin stops sharing the folder: the project's work and the run in it are the host's now.
+  removeAdminFolder(path.join(f.root, "data"), work.id);
+  await assert.rejects(f.call("tasks.run", { commandId: "cmd-run-p2", taskId: task.id }), code("unsupported"));
+  await assert.rejects(f.call("workflows.runs.review", { commandId: "cmd-review-f", runId: folderRun.id, approved: true, waitingNodeRunId: folderStep.id }), code("unsupported"));
+  await f.call("schedules.update", { scheduleId: schedule.id, patch: { enabled: false } });
+  await f.call("workflows.runs.cancel", { runId: folderRun.id });
+  assert.deepEqual(await f.call("tasks.delete", { taskId: task.id }), { deleted: true }, "deleting and pausing still work");
 });

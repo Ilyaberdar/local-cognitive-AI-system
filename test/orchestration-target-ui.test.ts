@@ -194,6 +194,8 @@ function fedoraWithTasks({ name = "fedora", capabilities = ["chat.runs.start", "
   const ok = (value: unknown) => ({ ok: true, value });
   const handlers: Record<string, (payload: any) => unknown> = {
     "sessions.list": () => [],
+    "projects.list": () => [{ id: "srv-project", name: "Site", folder: { rootId: "projects", rootLabel: "Projects", path: ["site"] }, archived: false },
+      { id: "host-project", name: "Host work", hostOnly: true, archived: false }],
     "models.available": () => ({ providers: [], availableModels: [], loadedModels: [], allManagedModels: [], appSettings: { llm: {}, providers: {} } }),
     "orchestration.snapshot": payload => payload?.revision === `r${db.revision}` ? { revision: payload.revision, unchanged: true }
       : copy({ revision: `r${db.revision}`, workflows: [WORKFLOW, SERVER_FLOW], tasks: db.tasks, schedules: db.schedules, workflowRuns: db.runs }),
@@ -461,4 +463,22 @@ test("on fedora the workflow editor offers its models without folders or full ac
   assert.deepEqual(calls.find(call => call[1] === "workflows.runs.review")![2], { runId: RUN_ID, approved: true, waitingNodeRunId: "step-1" });
   assert.ok(calls.some(call => call[1] === "workflows.runs.cancel"));
   assert.ok(app.bridgeCalls.slice(callsBefore).some(call => call.op === "runtime.subscribe" && call.payload[0].streamId === `workflow-run:${RUN_ID}`), "the run's log is followed");
+});
+
+test("on a server that offers projects, a task can work in one of its projects a device may use", async t => {
+  const local = localOrchestration();
+  const fedora = fedoraWithTasks({ capabilities: ["chat.runs.start", "events.poll", "orchestration.snapshot", "tasks.create", "projects.list"] });
+  const app = await bootApp({ ...local, remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  const callsBefore = app.bridgeCalls.length;
+  await onFedoraTasks(app);
+  const select = app.document.querySelector("#task-server-project");
+  assert.ok(select, "the server's projects are offered");
+  assert.deepEqual([...select.options].map((item: { textContent: string }) => item.textContent), ["No project · separate task folder on fedora", "Site"], "not a project set up on the server");
+  assert.equal(app.document.querySelector("#task-form [data-workspace-project]"), null, "not this computer's projects");
+  fill(app, { "#task-title": "Build the page", "#task-description": "In the site", "#task-server-project": "srv-project" });
+  submit(app, "#task-form");
+  await settle();
+  const created = runtimeCalls(app, callsBefore).find(call => call[1] === "tasks.create")![2] as Record<string, unknown>;
+  assert.equal(created.projectId, "srv-project");
 });

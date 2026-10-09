@@ -1926,11 +1926,17 @@ function workspaceHint(projectId) {
 function renderWorkspaceFields(prefix, value = {}, disabled = false) {
   const server = state.orchestration;
   if (server) {
-    // Projects, folders and full access on a server come later: its managed folder, with approvals.
-    return `<div class="field">
+    // A server's projects that a device may use (R5-4h); folders chosen on the server and full access stay there.
+    const projects = chatTarget.supports("projects.list") ? chatTarget.projectList().filter((project) => !project.archived && !project.hostOnly) : [];
+    const chosen = projects.find((project) => project.id === value.projectId);
+    const projectField = projects.length || value.projectId ? `<div class="field">
+    <label for="${escapeAttr(prefix)}-server-project">Project</label>
+    <select id="${escapeAttr(prefix)}-server-project" name="projectId" data-server-project ${disabled ? "disabled" : ""}><option value="">${escapeHtml(`No project · separate task folder on ${server.hostName()}`)}</option>${projects.map((project) => option(project.id, value.projectId || "", project.name)).join("")}${value.projectId && !chosen ? option(value.projectId, value.projectId, `Set up on ${server.hostName()}`) : ""}</select>
+  </div>` : "";
+    return `${projectField}<div class="field">
     <label for="${escapeAttr(prefix)}-access">Access</label>
     <select id="${escapeAttr(prefix)}-access" name="accessMode" ${disabled ? "disabled" : ""}>${ACCESS_MODES.filter(mode => mode.id !== "full").map(mode => option(mode.id, value.accessMode || "default", mode.label)).join("")}</select>
-  </div><p class="field--full workspace-hint" data-workspace-hint>${escapeHtml(`Uses a separate, persistent task folder on ${server.hostName()}.`)}</p>`;
+  </div><p class="field--full workspace-hint" data-workspace-hint>${escapeHtml(chosen ? `Works in ${chosen.name} on ${server.hostName()}.` : `Uses a separate, persistent task folder on ${server.hostName()}.`)}</p>`;
   }
   return `<div class="field">
     <div class="workspace-project-label"><label for="${escapeAttr(prefix)}-project">Project</label><button id="${escapeAttr(prefix)}-add-project" class="icon-button" type="button" data-action="add-workspace-project" data-project-select-id="${escapeAttr(prefix)}-project" aria-label="Add project" title="Add project" ${disabled ? "disabled" : ""}>${icon("plus")}</button></div>

@@ -13,6 +13,8 @@ import type { CommandLedger, CommandRecord, LedgerCommand } from "./CommandLedge
 import type { JournalEvent } from "./EventJournal";
 import type { StreamSource } from "./eventStreams";
 import { agentTraceDto, orchestrationLists, runDetail, safeRun, safeSchedule, safeTask, safeWorkflow, scrubberFor } from "./orchestrationDto";
+import { FolderError, type HostFolders } from "./hostFolders";
+import type { ProjectAccess } from "./projectOperations";
 import { publicError } from "./publicError";
 
 const MAX_WORKFLOW_BYTES = 200 * 1024;
@@ -25,18 +27,18 @@ const priority = z.enum(["low", "normal", "high"]);
 const access = z.enum(["ask", "default"]);
 const taskFields = {
   title: z.string().trim().min(1).max(500), description: z.string().max(100_000),
-  workflowId: id, priority, accessMode: access
+  workflowId: id, priority, accessMode: access, projectId: id.nullable()
 };
 const scheduleFields = {
   title: z.string().trim().min(1).max(500), description: z.string().max(100_000), workflowId: id, priority,
   frequency: z.enum(["daily", "weekly"]), weekday: z.number().int().min(0).max(6).transform(day => day as ScheduleWeekday), time: z.string().min(1).max(10), timezone: z.string().min(1).max(100),
-  enabled: z.boolean(), accessMode: access
+  enabled: z.boolean(), accessMode: access, projectId: id.nullable()
 };
 const workflow = z.record(z.string(), z.unknown()).refine(value => Buffer.byteLength(JSON.stringify(value)) <= MAX_WORKFLOW_BYTES, "The workflow is too large.");
 const schemas = {
   snapshot: z.object({ revision: z.string().max(100).optional() }).strict().optional(),
   taskCreate: z.object({ commandId, ...taskFields, description: taskFields.description.optional(), workflowId: id.optional(), priority: priority.optional(),
-    accessMode: access.optional() }).strict(),
+    accessMode: access.optional(), projectId: id.nullable().optional() }).strict(),
   taskUpdate: z.object({ taskId: id, patch: z.object({ ...taskFields,
     status: z.enum(["todo", "in_progress", "backlog", "queued", "running", "waiting", "interrupted", "blocked", "done", "failed", "cancelled"]) }).partial().strict() }).strict(),
   task: z.object({ taskId: id }).strict(),
@@ -44,13 +46,15 @@ const schemas = {
   runNext: z.object({ commandId }).strict(),
   scheduleCreate: z.object({ commandId, ...scheduleFields, description: scheduleFields.description.optional(), workflowId: id.optional(),
     priority: priority.optional(), frequency: scheduleFields.frequency.optional(), weekday: scheduleFields.weekday.optional(),
-    enabled: z.boolean().optional(), accessMode: access.optional() }).strict(),
+    enabled: z.boolean().optional(), accessMode: access.optional(), projectId: id.nullable().optional() }).strict(),
   scheduleUpdate: z.object({ scheduleId: id, patch: z.object(scheduleFields).partial().strict() }).strict(),
   schedule: z.object({ scheduleId: id }).strict(),
   validate: z.object({ workflow }).strict(),
   save: z.object({ commandId, workflow, expectedUpdatedAt: z.string().max(40).nullable() }).strict(),
+  // A run works in a project a device may use, or a folder among the server's shared ones (never a path).
   runStart: z.object({ commandId, workflow, options: z.object({ description: z.string().max(100_000).optional(), accessMode: access.optional(),
-    maxSteps: z.number().int().min(1).max(250).optional() }).strict().optional() }).strict(),
+    maxSteps: z.number().int().min(1).max(250).optional(), projectId: id.optional(),
+    folder: z.object({ rootId: z.string().min(1).max(100), path: z.array(z.string().min(1).max(255)).max(32) }).strict().optional() }).strict().optional() }).strict(),
   run: z.object({ runId }).strict(),
   runEvents: z.object({ runId, after: z.number().int().nonnegative().optional() }).strict(),
   review: z.object({ commandId, runId, approved: z.boolean(), comment: z.string().max(4000).optional(), approvalId: z.string().max(200).optional(),
@@ -72,10 +76,11 @@ const FOLDER_ON_HOST = "This runs in a folder or project chosen on the server, s
 const unsupported = (message: string) => new RemoteOperationError(message, "unsupported");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-/** Settings a device cannot make on the host yet, checked before the schema so the answer says why. */
-const refuseLater = (fields: Record<string, unknown>): void => {
+/** Settings a device cannot make on the host (yet), checked before the schema so the answer says
+ * why. A folder of the host is never sent; a project only to a server that offers projects. */
+const refuseLater = (fields: Record<string, unknown>, projects = false): void => {
   if (Array.isArray(fields.attachments) && fields.attachments.length) throw unsupported(LATER.attachments);
-  if ((fields.projectId !== undefined && fields.projectId !== null) || (fields.rootPath !== undefined && fields.rootPath !== null)) throw unsupported(LATER.project);
+  if ((fields.rootPath !== undefined && fields.rootPath !== null) || (!projects && fields.projectId !== undefined && fields.projectId !== null)) throw unsupported(LATER.project);
   if (fields.accessMode === "full") throw unsupported(LATER.fullAccess);
 };
 
@@ -98,14 +103,8 @@ const skipsApproval = (workflow: WorkflowDefinition | null | undefined, accessMo
 /** A run continues with what it started with: its own access and its snapshot of the workflow. */
 const runSkipsApproval = (run: WorkflowRun): boolean => skipsApproval(run.workflowSnapshot, run.executionSnapshot?.accessMode);
 const hasFolder = (workflow: WorkflowDefinition | null | undefined) => workflow?.runDefaults?.rootPath !== undefined || workflow?.runDefaults?.projectId !== undefined;
-/** Why only the host may start or continue this run, if it may not be done from a device. */
-const runHostOnly = (run: WorkflowRun): string | undefined => {
-  if (runSkipsApproval(run)) return FULL_ON_HOST;
-  const workspace = run.workspace;
-  // A managed run folder is <data>/workspaces/workflow-runs/<run id>; any other one was chosen on the host.
-  const chosen = workspace?.kind === "project" || (workspace?.kind === "workflow" && !(path.basename(workspace.rootPath) === run.id && path.basename(path.dirname(workspace.rootPath)) === "workflow-runs"));
-  return chosen || hasFolder(run.workflowSnapshot) ? FOLDER_ON_HOST : undefined;
-};
+/** A run's folder chosen beyond its own managed one (<data>/workspaces/workflow-runs/<run id>). */
+const chosenFolder = (run: WorkflowRun) => run.workspace?.kind === "workflow" && !(path.basename(run.workspace.rootPath) === run.id && path.basename(path.dirname(run.workspace.rootPath)) === "workflow-runs");
 
 const parse = <T>(schema: z.ZodType<T>, payload: unknown): T => {
   const result = schema.safeParse(payload);
@@ -120,6 +119,7 @@ const known = async <T>(task: () => Promise<T>): Promise<T> => {
   try { return await task(); }
   catch (error) {
     if (error instanceof RemoteOperationError) throw error;
+    if (error instanceof FolderError) throw new RemoteOperationError(error.message, error.code);
     const status = (error as { statusCode?: unknown }).statusCode;
     const expected = error instanceof TaskValidationError || error instanceof ScheduleValidationError || error instanceof WorkflowConflictError
       || error instanceof WorkflowRunConflictError || (typeof status === "number" && status >= 400 && status < 500);
@@ -135,6 +135,10 @@ export interface OrchestrationOperationDependencies {
   ledger: CommandLedger;
   /** Idempotency scope of a caller: commands from different devices never collide. */
   scopeOf(context: OperationContext): string;
+  /** Projects a device may use and the server's shared folders (R5-4h); without them, work bound
+   * to a project or folder stays on the host. */
+  projects?: ProjectAccess;
+  folders?: HostFolders;
   /** True while the host drains: new work is refused; reads, cancels and reviews still answer. */
   isDraining(): boolean;
   /** The event journal's epoch: workflow run streams use it, so their cursors survive restarts. */
@@ -159,9 +163,30 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     if (!versions.length) throw notFound("workflow");
     if (versions.some(workflow => skipsApproval(workflow))) throw unsupported(FULL_ON_HOST);
   };
+  /** Whether a device may use this project now (checked at every use: archived or unshared ends it). */
+  const projectUsable = async (projectId: string) => {
+    if (!deps.projects) return false;
+    try { return !(await deps.projects.usable(projectId)).reason; } catch { return false; }
+  };
+  const requireProject = async (projectId: string | null | undefined) => {
+    if (!projectId) return;
+    if (!deps.projects) throw unsupported(LATER.project);
+    const { reason } = await deps.projects.usable(projectId);
+    if (reason) throw unsupported(reason);
+  };
   /** Why only the host may start or change this task or schedule, if so. */
   const hostOnly = async (item: { workflowId: string; workflowVersion?: number; accessMode?: string; projectId?: string }) =>
-    skipsApproval(await workflowOf(item.workflowId, item.workflowVersion), item.accessMode) ? FULL_ON_HOST : item.projectId ? FOLDER_ON_HOST : undefined;
+    skipsApproval(await workflowOf(item.workflowId, item.workflowVersion), item.accessMode) ? FULL_ON_HOST
+      : item.projectId && !await projectUsable(item.projectId) ? FOLDER_ON_HOST : undefined;
+  /** Why only the host may continue this run, if so: its access, or a project or folder that is not
+   * (or no longer) one a device may use. */
+  const runHostOnly = async (run: WorkflowRun): Promise<string | undefined> => {
+    if (runSkipsApproval(run)) return FULL_ON_HOST;
+    if (hasFolder(run.workflowSnapshot)) return FOLDER_ON_HOST;
+    if (run.workspace?.kind === "project") return run.workspace.projectId && await projectUsable(run.workspace.projectId) ? undefined : FOLDER_ON_HOST;
+    if (chosenFolder(run)) return deps.folders?.locate(run.workspace!.rootPath) ? undefined : FOLDER_ON_HOST;
+    return undefined;
+  };
   const requireRun = async (id: string) => {
     const run = await runtime().workflowRunStore.getRun(id);
     if (!run) throw notFound("run");
@@ -192,17 +217,18 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     }),
 
     "tasks.create": (payload, context) => known(async () => {
-      refuseLater(record(payload));
+      refuseLater(record(payload), Boolean(deps.projects));
       const input = parse(schemas.taskCreate, payload);
       const workflowId = input.workflowId || DEFAULT_TASK_WORKFLOW_ID;
       return command(context, "tasks.create", input, async () => {
         await allowedWorkflow(workflowId);
+        await requireProject(input.projectId);
         return safeTask(await runtime().taskService.create({ title: input.title, description: (input.description ?? "").trim(), workflowId,
-          priority: input.priority ?? "normal", accessMode: input.accessMode ?? "default" }));
+          priority: input.priority ?? "normal", accessMode: input.accessMode ?? "default", ...(input.projectId ? { projectId: input.projectId } : {}) }));
       });
     }),
     "tasks.update": payload => known(async () => {
-      refuseLater(record(record(payload).patch));
+      refuseLater(record(record(payload).patch), Boolean(deps.projects));
       const { taskId, patch } = parse(schemas.taskUpdate, payload);
       mutable();
       const current = await runtime().taskService.get(taskId);
@@ -211,6 +237,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const reason = await hostOnly(current);
       if (reason) throw unsupported(reason);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
+      await requireProject(patch.projectId);
       const task = await runtime().taskService.update(taskId, { ...patch, ...(patch.description === undefined ? {} : { description: patch.description.trim() }) });
       if (!task) throw notFound("task");
       return safeTask(task);
@@ -250,17 +277,19 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     }),
 
     "schedules.create": (payload, context) => known(async () => {
-      refuseLater(record(payload));
+      refuseLater(record(payload), Boolean(deps.projects));
       const input = parse(schemas.scheduleCreate, payload);
       const { commandId: _commandId, ...fields } = input;
       const workflowId = fields.workflowId || DEFAULT_TASK_WORKFLOW_ID;
       return command(context, "schedules.create", input, async () => {
         await allowedWorkflow(workflowId);
-        return safeSchedule(await runtime().scheduleService.create({ ...fields, description: fields.description ?? "", workflowId }));
+        await requireProject(fields.projectId);
+        const { projectId, ...rest } = fields;
+        return safeSchedule(await runtime().scheduleService.create({ ...rest, description: fields.description ?? "", workflowId, ...(projectId ? { projectId } : {}) }));
       });
     }),
     "schedules.update": payload => known(async () => {
-      refuseLater(record(record(payload).patch));
+      refuseLater(record(record(payload).patch), Boolean(deps.projects));
       const { scheduleId, patch } = parse(schemas.scheduleUpdate, payload);
       mutable();
       const current = await runtime().scheduleService.get(scheduleId);
@@ -269,6 +298,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const reason = pausing ? undefined : await hostOnly(current);
       if (reason) throw unsupported(reason);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
+      await requireProject(patch.projectId);
       const schedule = await runtime().scheduleService.update(scheduleId, patch);
       if (!schedule) throw notFound("schedule");
       return safeSchedule(schedule);
@@ -288,7 +318,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     }),
     /** Starts a workflow from the editor; returns once it is queued, its progress is followed separately. */
     "workflows.runs.start": (payload, context) => known(async () => {
-      refuseLater(record(record(payload).options));
+      refuseLater(record(record(payload).options), Boolean(deps.projects));
       const input = parse(schemas.runStart, payload);
       const limits = workflowLimits(input.workflow);
       if (limits.length) throw unsupported(limits[0]!);
@@ -296,7 +326,13 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const validation = runtime().workflowStore.validate(definition);
       if (!validation.ok) throw new RemoteOperationError(publicError(validation.errors.join("; ")), "invalid_request");
       return command(context, "workflows.runs.start", input, async reserved => {
-        const run = await runtime().workflowRunner.startStandalone(definition, input.options ?? {}, { runId: reserved.runId });
+        const { folder, projectId, ...options } = input.options ?? {};
+        if (folder && projectId) throw new RemoteOperationError("Choose a project or a folder, not both.", "invalid_request");
+        await requireProject(projectId);
+        if (folder && !deps.folders) throw unsupported(LATER.project);
+        const rootPath = folder ? (await deps.folders!.resolve(folder.rootId, folder.path)).real : undefined;
+        const run = await runtime().workflowRunner.startStandalone(definition, { ...options, ...(projectId ? { projectId } : {}), ...(rootPath ? { rootPath } : {}) },
+          { runId: reserved.runId });
         runtime().workflowRunner.runInBackground(run.id);
         return safeRun(run);
       }, { reserveRunId: true,
@@ -334,7 +370,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "workflows.runs.review": (payload, context) => known(async () => {
       const input = parse(schemas.review, payload);
       return command(context, "workflows.runs.review", input, async () => {
-        const reason = runHostOnly(await requireRun(input.runId));
+        const reason = await runHostOnly(await requireRun(input.runId));
         if (reason) throw unsupported(reason);
         return safeRun(await runtime().workflowRunner.review(input.runId, input.approved, input.comment ?? "", true,
           { ...(input.approvalId ? { approvalId: input.approvalId } : {}), ...(input.waitingNodeRunId ? { waitingNodeRunId: input.waitingNodeRunId } : {}) }));
@@ -343,7 +379,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "workflows.runs.resume": (payload, context) => known(async () => {
       const input = parse(schemas.runCommand, payload);
       return command(context, "workflows.runs.resume", input, async () => {
-        const reason = runHostOnly(await requireRun(input.runId));
+        const reason = await runHostOnly(await requireRun(input.runId));
         if (reason) throw unsupported(reason);
         return safeRun(await runtime().workflowRunner.resume(input.runId, true));
       }, { target: input.runId });
