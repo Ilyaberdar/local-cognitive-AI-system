@@ -10,6 +10,8 @@ interface ProcessRunState {
   updatedAt: string;
   error?: string;
   sessionId?: string;
+  /** What was asked, so a window that did not start the turn can show it while it runs. */
+  input?: string;
   approval?: PendingApproval;
 }
 
@@ -17,12 +19,13 @@ export class ProcessRunRegistry {
   private readonly runs = new Map<string, ProcessRunState>();
   private readonly decisions = new Map<string, (approved: boolean) => void>();
 
-  start(id: string, sessionId?: string): ProcessRunState {
+  start(id: string, sessionId?: string, input?: string): ProcessRunState {
     if (this.runs.has(id)) throw new Error("Process request id already exists.");
     const now = new Date().toISOString();
     const run: ProcessRunState = {
       id,
       sessionId,
+      ...(input ? { input: input.slice(0, 20_000) } : {}),
       status: "running",
       controller: new AbortController(),
       startedAt: now,
@@ -114,6 +117,11 @@ export class ProcessRunRegistry {
     const running = [...this.runs.values()].filter(run => run.status === "running");
     for (const run of running) this.cancel(run.id);
     return running.length;
+  }
+
+  /** Turns running now (any window, Telegram or an API client may have started them). */
+  running(): Array<Omit<ProcessRunState, "controller">> {
+    return [...this.runs.keys()].map(id => this.get(id)!).filter(run => run.status === "running");
   }
 
   get(id: string): Omit<ProcessRunState, "controller"> | undefined {
