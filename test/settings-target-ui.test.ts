@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { hostSettingsView } from "../src/runtime/settingsDto";
 import { bootApp, flush, SESSION_ID, type Harness } from "./fixtures/appHarness";
 
@@ -159,12 +161,14 @@ function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start"
     mcp: { server: { enabled: false }, client: { servers: {}, bindings: {} } }
   };
   const ok = (value: unknown) => ({ ok: true, value });
+  const gate = { held: false, waiting: [] as Array<() => void> };
   const handlers: Record<string, (payload: any) => unknown> = {
     "sessions.list": () => [],
     "models.available": () => ({ providers: [], availableModels: [{ providerId: "openai", id: "gpt-4.1" }], loadedModels: [],
       allManagedModels: [{ providerId: "llamacpp", id: "qwen-14b", libraryId: "qwen-14b", displayName: "Qwen 14B", loaded: true }], appSettings: { llm: {}, providers: {} } }),
     "settings.get": () => ({ settings: hostSettingsView(raw), runtimeStatus: "running" }),
-    "settings.update": payload => {
+    "settings.update": async payload => {
+      if (gate.held) await new Promise<void>(resolve => gate.waiting.push(resolve));
       const patch = copy(payload);
       for (const provider of Object.values<any>(patch.providers ?? {})) if (provider.apiKey) provider.apiKey = provider.apiKey.set ?? "";
       merge(raw, patch);
@@ -178,12 +182,15 @@ function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start"
     connect: async () => ok(status), disconnect: async () => ok({ state: "idle" }), hostStatus: async () => ok({}),
     onChange: (listener: (value: unknown) => void) => { statusListeners.push(listener); return () => undefined; },
     runtime: {
-      request: async (op: string, payload: unknown) => handlers[op] ? ok(handlers[op]!(payload)) : { ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } },
+      request: async (op: string, payload: unknown) => handlers[op] ? ok(await handlers[op]!(payload)) : { ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } },
       send: async (op: string) => ({ ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } }),
       subscribe: async () => ok(undefined), unsubscribe: async () => ok(undefined), watch: async () => ok(undefined), unwatch: async () => ok(undefined), onEvent() {}
     }
   };
-  return { bridge, raw, setStatus(next: Record<string, unknown>, notify = true) { status = { ...status, ...next }; if (notify) statusListeners.forEach(listener => listener(status)); } };
+  return { bridge, raw,
+    hold() { gate.held = true; },
+    release() { gate.held = false; for (const resolve of gate.waiting.splice(0)) resolve(); },
+    setStatus(next: Record<string, unknown>, notify = true) { status = { ...status, ...next }; if (notify) statusListeners.forEach(listener => listener(status)); } };
 }
 
 const text = (app: Harness, selector: string) => String(app.document.querySelector(selector)?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -289,6 +296,15 @@ test("offline, fedora's settings stay readable and nothing is sent; Use This com
 
   fedora.setStatus({ state: "online" }); await settle();
   assert.equal(app.document.querySelector("#settings-root .settings-content.is-offline"), null);
+  // The connection drops while a save is on its way: the page stays disabled when it finishes.
+  open(app, "agents"); await settle();
+  fedora.hold();
+  change(app, "#setting-agentLimits-maxSteps", "45", "input"); submitSettings(app); await settle();
+  fedora.setStatus({ state: "reconnecting" }); await settle();
+  fedora.release(); await settle();
+  assert.equal(fedora.raw.agentLimits.maxSteps, 45);
+  assert.equal(inRoot(app, '#settings-entity-form button[type="submit"]').disabled, true, "nothing can be sent while offline");
+  fedora.setStatus({ state: "online" }); await settle();
   open(app, "mcp"); await settle();
   const localBefore = app.requests.length;
   inRoot(app, '[data-server-action="use-local"]').click(); await settle();
@@ -324,9 +340,10 @@ test("fedora not connected, or too old for its settings: the page says so and of
   assert.ok(old.document.querySelector('#settings-root [data-appearance-theme="light"]'), "this computer's pages still work");
 });
 
-test("a server's name is shown as text in Settings", async t => {
+test("a server's name and values are shown as text in Settings", async t => {
   const name = '<img src=x onerror="window.injected=1">';
   const fedora = fedoraWithSettings({ name });
+  fedora.raw.localModels.generation = { preset: "custom", temperature: '"><img src=x id=injected-value>', seed: '"><img src=x id=injected-seed>' };
   const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
   t.after(() => app.close());
   await selectFedora(app);
@@ -335,4 +352,21 @@ test("a server's name is shown as text in Settings", async t => {
     assert.equal(app.document.querySelector("#settings-root img[src='x']"), null, route);
   }
   assert.ok(text(app, ".settings-target-note").includes(name));
+  assert.equal(app.document.querySelector("#injected-value, #injected-seed"), null);
+});
+
+test("a change sent before another server was selected is not reported as not saved", async () => {
+  const importModule = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
+  const { createRemoteRequest, SETTINGS_ROUTES } = await importModule(pathToFileURL(path.resolve("public/assets/runtime-routes.js")).href);
+  let current = true, answer: unknown = { ok: true, value: { settings: {} } };
+  const sent: unknown[] = [];
+  const runtime = { request: async (...args: unknown[]) => { sent.push(args); current = false; return answer; } };
+  const request = createRemoteRequest({ runtime, hostId: HOST, routes: SETTINGS_ROUTES, isCurrent: () => current });
+  const save = () => request("/app/settings", { method: "PUT", body: JSON.stringify({ providers: { openai: { apiKey: "" } } }) });
+  await assert.rejects(save(), (error: any) => error.code === "unknown_outcome" && /Done on the previous server/.test(error.message));
+  assert.deepEqual(copy(sent), [["settings.update", { providers: { openai: { apiKey: { clear: true } } } }, HOST]]);
+  current = true; answer = { ok: false, error: { code: "not_connected", message: "Lost." } };
+  await assert.rejects(save(), (error: any) => error.code === "unknown_outcome" && /may have been made there/.test(error.message));
+  await assert.rejects(save(), (error: any) => error.code === "host_changed" && /Nothing was sent/.test(error.message));
+  assert.equal(sent.length, 2, "nothing is sent once another server is selected");
 });

@@ -61,7 +61,9 @@ function createSource({ target, runtime, onChange, onStatus }) {
   const saveWorkflow = async (workflow, base) => {
     if (!online()) throw Object.assign(new Error(`${name()} is not connected. Nothing was sent.`), { code: "not_connected" });
     const result = await runtime.send("workflows.save", { workflow, expectedUpdatedAt: base ?? null }, hostId);
-    if (!isCurrent()) throw Object.assign(new Error("The selected server changed."), { code: "host_changed" });
+    // Sent, but another server is selected now: say what is known about the save on this one.
+    if (!isCurrent()) throw Object.assign(new Error(result?.ok ? `Saved on ${name()}; another server is selected now.`
+      : `Another server was selected before ${name()} answered. The workflow may have been saved there.`), { code: "unknown_outcome" });
     if (!result?.ok) throw Object.assign(new Error(result?.error?.message || `${name()} did not save the workflow.`), { code: result?.error?.code });
     return result.value;
   };
