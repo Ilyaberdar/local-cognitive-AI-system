@@ -9,6 +9,7 @@ import { controlRequest } from "./ControlServer";
 import { checkDataRoot, controlSocketPathFor, dataDirectories, initDataRoot, readServerConfig } from "./dataRoot";
 import { CliError, ExitCode } from "./exitCodes";
 import { selectInference } from "./inference";
+import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from "../runtime/hostFolders";
 import { serverEnvironment } from "./serverEnv";
 
 // Only modules that do not read the application configuration are imported above: the
@@ -124,6 +125,31 @@ const devices = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** Shared folders are a file in the data directory, read at every use: no restart is needed. */
+const folders = (args: ServerArgs) => {
+  const root = path.resolve(args.dataDir!);
+  checkDataRoot(root);
+  const request = args.folders!;
+  try {
+    if (request.action === "add") {
+      const added = addAdminFolder(root, request.path, { label: request.label, allowCreate: request.allowCreate });
+      print(args, `Shared ${added.path} as "${added.label ?? path.basename(added.path)}" (id ${added.id})${added.allowCreate ? ", folders may be made in it" : ""}.`, added);
+    } else if (request.action === "remove") {
+      const removed = removeAdminFolder(root, request.id);
+      print(args, removed ? "No longer shared. Computers lose access at once." : "No shared folder has this id.", { removed });
+      return removed ? ExitCode.ok : ExitCode.failure;
+    } else {
+      const list = listAdminFolders(root);
+      print(args, list.length ? list.map(folder => `${folder.id}  ${folder.label ?? path.basename(folder.path)}  ${folder.path}${folder.allowCreate ? "  (new folders allowed)" : ""}`).join("\n")
+        : "No folders are shared. Computers can use the server's Projects folder; share more with: folders add <path>", { folders: list });
+    }
+    return ExitCode.ok;
+  } catch (error) {
+    if (error instanceof FolderError) throw new CliError(error.message, ExitCode.config);
+    throw error;
+  }
+};
+
 export const main = async (argv: string[]): Promise<number> => {
   try {
     const args = parseServerArgs(argv);
@@ -136,6 +162,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "drain": return await drain(args);
       case "connect-key": return await connectKey(args);
       case "devices": return await devices(args);
+      case "folders": return folders(args);
       case "revoke-device": {
         const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
         print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });

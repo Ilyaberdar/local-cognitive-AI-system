@@ -142,3 +142,25 @@ test("init → start → status → MCP bridge → drain, with a second start re
   assert.equal(fs.existsSync(path.join(root, "app", "runtime", "data-root.owner.json")), false, "the lock is released");
   assert.equal(run("status", "--data-dir", root).status, 3);
 });
+
+test("folders: an admin shares, lists and stops sharing folders for connected computers", t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lc-folders-")));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "data"), keyFile = path.join(base, "key", "vault.key"), shared = path.join(base, "shared");
+  fs.mkdirSync(shared);
+  const env = { PATH: process.env.PATH ?? "", HOME: base };
+  const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args, "--data-dir", root], { env, encoding: "utf8" });
+  assert.equal(run("init", "--vault-key-file", keyFile).status, 0);
+  assert.match(run("folders").stdout, /No folders are shared/);
+  const added = run("folders", "add", shared, "--label", "Work", "--allow-create", "--json");
+  assert.equal(added.status, 0, added.stderr);
+  const folder = JSON.parse(added.stdout) as { id: string; path: string; label: string; allowCreate: boolean };
+  assert.deepEqual([folder.path, folder.label, folder.allowCreate], [shared, "Work", true]);
+  assert.match(run("folders", "list").stdout, new RegExp(`${folder.id}  Work  ${shared.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  const refused = run("folders", "add", root);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /data directory/);
+  assert.notEqual(run("folders", "add").status, 0, "a path is required");
+  assert.equal(run("folders", "remove", folder.id).status, 0);
+  assert.equal(run("folders", "remove", folder.id).status, 1);
+});

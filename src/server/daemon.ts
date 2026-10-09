@@ -15,6 +15,8 @@ import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
 import { createChatOperations, createChatScrubber, requireRemoteSession } from "../runtime/chatOperations";
 import { UploadStore } from "../runtime/uploadStore";
+import { createFolderOperations } from "../runtime/folderOperations";
+import { HostFolders } from "../runtime/hostFolders";
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
@@ -70,6 +72,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   const sessionIndexStore = backend.runtimeManager.getRuntime().sessionIndexStore;
   // Run outputs and events a device receives name no folder of this server.
   const orchestration = { runtimeManager: backend.runtimeManager, journalEpoch: () => host.journal.epoch, hostDirectories: [path.dirname(config.appDataDir)] };
+  // The folders devices may browse and use: the server's own "Projects" and those its admin shared.
+  const folders = new HostFolders(path.dirname(config.appDataDir));
+  folders.ensureManaged();
   // Attachments devices send for their next turn; expired ones are dropped even when none arrive.
   const uploads = new UploadStore();
   setInterval(() => uploads.sweep(), 60 * 60 * 1000).unref();
@@ -82,7 +87,8 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
-      ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" })
+      ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),
+      ...createFolderOperations({ folders })
     },
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();
