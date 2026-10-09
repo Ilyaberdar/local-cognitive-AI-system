@@ -147,6 +147,20 @@ export interface SamplingSettings {
   seed?: number;
 }
 
+/** How models use several GPUs (Settings → Local models → GPUs). Absent: as before. */
+export interface MultiGpuSettings {
+  /** auto: a model is split only when it does not fit one GPU; always: over every allowed GPU
+   * with room; never: one GPU at most (the rest of a large model on the CPU). */
+  split?: "auto" | "always" | "never";
+  /** How a split model is divided: by layers (any GPU), or each matrix by rows (CUDA only; the
+   * main GPU also holds the context cache). */
+  mode?: "layer" | "row";
+  /** The GPUs models may use (device ids); all when absent. */
+  devices?: string[];
+  /** A model's own GPUs, over `devices`. */
+  pins?: Record<string, string[]>;
+}
+
 export interface LocalModelSettings {
   modelsDir: string;
   contextSize: number;
@@ -156,6 +170,7 @@ export interface LocalModelSettings {
   generationTimeoutMs: number;
   memoryLimitPercent: number;
   generation: LocalGenerationSettings;
+  multiGpu?: MultiGpuSettings;
 }
 
 export interface PluginRuntimeSettings {

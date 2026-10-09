@@ -166,3 +166,38 @@ test("inventory never spawns on macOS and falls back to nvidia-smi when listing 
   assert.deepEqual(cpuSnapshot.devices, [], "a CPU build is never launched with --device CUDA0");
   assert.equal(cpuSnapshot.fallbackReason, undefined);
 });
+
+test("multi-GPU settings: always split, never split, chosen GPUs and a model's own", () => {
+  const two = [gpu(0, 8000), gpu(1, 8000)];
+  assert.equal(ok(plan({ devices: two })).kind, "single-gpu", "auto: a model that fits one GPU stays on one");
+  const always = ok(plan({ devices: two, multiGpu: { split: "always" } }));
+  assert.equal(always.kind, "multi-gpu");
+  assert.deepEqual(always.launch.args.slice(0, 6), ["--device", "CUDA0,CUDA1", "--split-mode", "layer", "--tensor-split", "6720,6720"]);
+  // Never: a model too large for one GPU goes partly to the CPU instead of over two GPUs.
+  const never = ok(plan({ estimate: estimate(10000), devices: [gpu(0, 8000), gpu(1, 8000)], multiGpu: { split: "never" } }));
+  assert.equal(never.kind, "partial");
+  assert.equal(never.devices.length, 1);
+  assert.equal(never.launch.args.includes("--tensor-split"), false);
+  // Chosen GPUs bound the choice; a model's pin overrides them.
+  assert.deepEqual(ok(plan({ devices: [gpu(0, 24000), gpu(1, 8000)], multiGpu: { devices: ["GPU-0"] } })).devices.map(device => device.index), [0]);
+  assert.deepEqual(ok(plan({ devices: [gpu(0, 8000), gpu(1, 8000)], multiGpu: { devices: ["GPU-0"], pins: { m: ["GPU-1"] } } })).devices.map(device => device.index), [1]);
+  const gone = ok(plan({ devices: two, multiGpu: { pins: { m: ["GPU-9"] } } }));
+  assert.match(gone.warnings[0] ?? "", /were not found/);
+});
+
+test("row split runs on CUDA with the context cache on the GPU with most room, and falls back to layers elsewhere", () => {
+  const cached = { ...estimate(10000), kvCacheBytes: 1000 * MiB };
+  const row = ok(plan({ estimate: cached, devices: [gpu(0, 8000), gpu(1, 9000)], multiGpu: { mode: "row" } }));
+  assert.equal(row.kind, "multi-gpu");
+  const args = row.launch.args;
+  assert.deepEqual(args.slice(args.indexOf("--split-mode"), args.indexOf("--split-mode") + 6), ["--split-mode", "row", "--tensor-split", "6720,6720", "--main-gpu", "1"]);
+  assert.match(row.label, /row split/);
+  const vulkan = (index: number) => ({ ...gpu(index, 8000), backendName: `Vulkan${index}` });
+  const layered = ok(plan({ estimate: estimate(10000), devices: [vulkan(0), vulkan(1)], multiGpu: { mode: "row" } }));
+  assert.equal(layered.launch.args[layered.launch.args.indexOf("--split-mode") + 1], "layer");
+  assert.match(layered.warnings.join(" "), /Row split needs CUDA/);
+  // Apple Silicon and an explicit CPU choice ignore the setting.
+  const unified: InventoryDevice = { id: "metal", backendName: "Metal", index: 0, name: "Apple", kind: "unified", totalBytes: 32 * GiB, freeBytes: 30 * GiB };
+  assert.deepEqual(ok(plan({ devices: [unified], multiGpu: { split: "always", mode: "row" } })).launch.args, ["--n-gpu-layers", "99"]);
+  assert.equal(ok(plan({ devices: [gpu(0, 8000), gpu(1, 8000)], gpuLayers: 0, multiGpu: { split: "always" } })).kind, "cpu");
+});

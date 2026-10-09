@@ -2,7 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
-import { LLMRequest, LLMResponse, LocalGenerationSettings } from "../types";
+import { LLMRequest, LLMResponse, LocalGenerationSettings, MultiGpuSettings } from "../types";
 import { Logger } from "../utils/Logger";
 import { LocalModelManager } from "../llm/LocalModelManager";
 import { HuggingFaceCatalog, groupVariants } from "./HuggingFaceCatalog";
@@ -95,6 +95,15 @@ export class LocalModelService implements LocalModelManager {
   }
 
   /** Sampling is evaluated per request, so changing it must not restart loaded weights. */
+  /** How models use several GPUs: the next load follows it; loaded models keep their place
+   * until they are loaded again (nothing is unloaded for it). */
+  async setPlacementSettings(multiGpu: MultiGpuSettings | undefined): Promise<void> {
+    await this.init();
+    this.options = { ...this.options, multiGpu };
+    this.runtime.setPlacementSettings(multiGpu);
+    this.emit();
+  }
+
   async setGenerationSettings(generation: LocalGenerationSettings): Promise<void> {
     await this.init();
     this.options = { ...this.options, generation: normalizeLocalGenerationSettings(generation) };

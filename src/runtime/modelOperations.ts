@@ -13,7 +13,10 @@ const MAX_WATCH_MS = 20_000;
  * Shared with the Settings screen's operations (settingsOperations.ts). */
 export const localModelSettingsSchema = z.object({
   contextSize: z.number().int().optional(), gpuLayers: z.union([z.number().int(), z.literal("auto")]).optional(), memoryLimitPercent: z.number().optional(),
-  loadTimeoutMs: z.number().int().optional(), generationTimeoutMs: z.number().int().optional(), generation: z.record(z.string(), z.unknown()).optional()
+  loadTimeoutMs: z.number().int().optional(), generationTimeoutMs: z.number().int().optional(), generation: z.record(z.string(), z.unknown()).optional(),
+  // How the server's models use its GPUs (checked again by the settings validation).
+  multiGpu: z.object({ split: z.enum(["auto", "always", "never"]).optional(), mode: z.enum(["layer", "row"]).optional(),
+    devices: z.array(z.string().max(100)).max(16).optional(), pins: z.record(z.string().max(200), z.array(z.string().max(100)).max(16)).optional() }).strict().optional()
 }).strict();
 const id = z.string().min(1).max(300);
 const schemas = {

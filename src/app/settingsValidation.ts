@@ -61,6 +61,25 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
       modelsDir: "string", contextSize: [512, 131072], memoryLimitPercent: [10, 90],
       loadTimeoutMs: [10000, 1800000], generationTimeoutMs: [10000, 3600000]
     });
+    if (localModels.multiGpu !== undefined) {
+      const multiGpu = object(localModels.multiGpu, "localModels.multiGpu");
+      for (const key of Object.keys(multiGpu)) if (!["split", "mode", "devices", "pins"].includes(key)) throw new SettingsValidationError(`Invalid localModels.multiGpu.${key}.`);
+      if (multiGpu.split !== undefined && !["auto", "always", "never"].includes(multiGpu.split as string)) throw new SettingsValidationError("Invalid localModels.multiGpu.split.");
+      if (multiGpu.mode !== undefined && !["layer", "row"].includes(multiGpu.mode as string)) throw new SettingsValidationError("Invalid localModels.multiGpu.mode.");
+      const deviceIds = (value: unknown, name: string) => {
+        if (!Array.isArray(value) || value.length > 16 || value.some(id => typeof id !== "string" || !/^[\w:.-]{1,100}$/.test(id)) || new Set(value).size !== value.length) throw new SettingsValidationError(`Invalid ${name}.`);
+      };
+      if (multiGpu.devices !== undefined) deviceIds(multiGpu.devices, "localModels.multiGpu.devices");
+      if (multiGpu.pins !== undefined) {
+        const pins = object(multiGpu.pins, "localModels.multiGpu.pins");
+        const entries = Object.entries(pins);
+        if (entries.length > 64) throw new SettingsValidationError("Invalid localModels.multiGpu.pins.");
+        for (const [model, ids] of entries) {
+          if (["__proto__", "constructor", "prototype"].includes(model) || model.length > 200) throw new SettingsValidationError("Invalid localModels.multiGpu.pins.");
+          deviceIds(ids, "localModels.multiGpu.pins");
+        }
+      }
+    }
     const gpuLayers = localModels.gpuLayers;
     if (gpuLayers !== undefined && gpuLayers !== "auto" && !(typeof gpuLayers === "number" && Number.isInteger(gpuLayers) && gpuLayers >= 0 && gpuLayers <= 999)) {
       throw new SettingsValidationError("Invalid localModels.gpuLayers.");
