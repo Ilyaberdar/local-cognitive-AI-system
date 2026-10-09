@@ -215,9 +215,9 @@ test("a device reads a chat's files by the paths it was shown: in the chat's own
 
   const report = await call("files.read", { sessionId: "chat", path: "<output>/report.md", as: "text" });
   assert.deepEqual({ ...report, version: typeof report.version }, { path: "<output>/report.md", name: "report.md", sizeBytes: 9, content: "# Report\n", version: "string" });
-  assert.equal((await call("files.read", { sessionId: "other", path: "<output>/other.md", as: "text" })).content, "not written by this chat", "the chat output folder is every plain chat's");
-  // A folder file tools may use is not readable as a whole; a missing file and another's answer alike.
-  for (const [sessionId, ref] of [["chat", "<folder>/notes.txt"], ["chat", `${elsewhere}/secret.txt`], ["chat", "<output>/../elsewhere/secret.txt"], ["chat", "report.md"],
+  // Neither the output folder plain chats share nor a folder file tools may use is readable as a
+  // whole; another chat's file, a missing one and one outside alike get one answer.
+  for (const [sessionId, ref] of [["chat", "<output>/other.md"], ["other", "<output>/report.md"], ["chat", "<folder>/notes.txt"], ["chat", `${elsewhere}/secret.txt`], ["chat", "<output>/../elsewhere/secret.txt"], ["chat", "report.md"],
     ["chat", "<output>/gone.md"], ["chat", `${elsewhere}/missing.txt`], ["chat", "/etc/hosts"]]) {
     await assert.rejects(call("files.read", { sessionId, path: ref, as: "text" }), code("file_unavailable"), `${sessionId} ${ref}`);
   }

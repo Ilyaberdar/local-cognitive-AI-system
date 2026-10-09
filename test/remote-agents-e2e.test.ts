@@ -142,16 +142,11 @@ test("a server chat's attachment arrives in chunks across a dropped connection a
   assert.equal(JSON.stringify(updates).includes("ship the release on Friday"), false, "no event carried the contents");
   assert.equal(await failure(runtime.send("chat.runs.start", { sessionId: session.id, input: "Again", attachmentIds: [uploadId] })), "attachment_unknown", "a turn takes an upload once");
 
-  // A file in the chats' output folder: read for Review and copied, under the label the device sees.
+  // Files this chat did not create or open are not its own, even in the output folder chats share.
   fs.mkdirSync(path.join(server.root, "output"), { recursive: true });
-  fs.writeFileSync(path.join(server.root, "output", "notes.md"), "# Notes\nFriday.\n");
+  fs.writeFileSync(path.join(server.root, "output", "notes.md"), "# Another chat's notes\n");
   fs.writeFileSync(path.join(server.root, "private.txt"), "not for chats");
-  const review = await runtime.request<{ path: string; content: string }>("files.read", { sessionId: session.id, path: "<output>/notes.md", as: "text" });
-  assert.deepEqual([review.path, review.content], ["<output>/notes.md", "# Notes\nFriday.\n"]);
-  const stat = await runtime.request<{ sha256: string; sizeBytes: number }>("files.stat", { sessionId: session.id, path: "<output>/notes.md" });
-  const part = await runtime.request<{ data: string; eof: boolean }>("files.read", { sessionId: session.id, path: "<output>/notes.md", as: "base64" });
-  assert.equal(createHash("sha256").update(Buffer.from(part.data, "base64")).digest("hex"), stat.sha256);
-  for (const ref of ["<server>/private.txt", "<output>/../private.txt", "<server>/missing.txt"]) {
+  for (const ref of ["<output>/notes.md", "<server>/private.txt", "<output>/../private.txt", "<server>/missing.txt"]) {
     assert.equal(await failure(runtime.request("files.read", { sessionId: session.id, path: ref, as: "text" })), "file_unavailable", ref);
   }
 });

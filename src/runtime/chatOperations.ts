@@ -164,9 +164,8 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     const scrub = await scrubber();
     const label = /^(<[a-z]+>)(?=[\\/]|$)/.exec(ref)?.[1];
     const candidates = label ? scrub.pairs.filter(([, name]) => name === label).map(([dir]) => dir + ref.slice(label.length)) : path.isAbsolute(ref) ? [ref] : [];
-    const output = scrub.pairs.filter(([, name]) => name === "<output>").map(([dir]) => dir);
     for (const candidate of candidates) {
-      try { return await resolveChatFileForDevice(deps.runtimeManager, candidate, sessionId, output); }
+      try { return await resolveChatFileForDevice(deps.runtimeManager, candidate, sessionId); }
       catch { /* The next folder with this label, if any. */ }
     }
     // One answer whether the file is missing or not this chat's: a device learns nothing about
