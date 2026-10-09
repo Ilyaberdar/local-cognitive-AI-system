@@ -216,6 +216,7 @@ const api = {
       method: "POST", body: JSON.stringify({ sessionId, approvalId, approved })
     }),
   getProcessRun: (requestId) => request(`/process-runs/${encodeURIComponent(requestId)}`),
+  listRunningProcessRuns: () => request("/process-runs?status=running"),
   cancelProcessRun: (requestId) =>
     request(`/process-runs/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
   readWorkspaceFile: (filePath, sessionId) => isServerChat(sessionId) ? chatTarget.readFile(sessionId, filePath) :
@@ -578,6 +579,42 @@ async function init() {
   render();
   settingsShell.route(window.location.hash);
   syncSystemMetricsPolling();
+  followExternalRuns();
+}
+
+/** Turns on this computer that this window did not start (an API client, another window, a
+ * script): their question, progress and approvals show while they run, their answer once they end. */
+let externalRunsTimer = 0, externalRunsBusy = false;
+function followExternalRuns() {
+  if (externalRunsTimer) return;
+  externalRunsTimer = window.setInterval(async () => {
+    if (externalRunsBusy || document.hidden) return;
+    externalRunsBusy = true;
+    try {
+      const { runs = [] } = await api.listRunningProcessRuns();
+      let newChat = false;
+      for (const run of runs) {
+        // This window's own turn (or one already followed) has its entry.
+        if (!run.sessionId || isServerChat(run.sessionId) || state.chatRequests.has(run.sessionId)) continue;
+        newChat ||= !(state.bootstrap?.sessions ?? []).some((session) => session.id === run.sessionId);
+        const followed = { requestId: run.id, sessionId: run.sessionId, controller: new AbortController(), cancelled: false, progressTimer: null, external: true };
+        followed.pending = { requestId: run.id, sessionId: run.sessionId, input: run.input || "", startedAt: run.startedAt, progress: run.progress, approval: run.approval };
+        state.chatRequests.set(run.sessionId, followed);
+        startProcessProgressPolling(followed);
+        if (state.activeSessionId === run.sessionId) render();
+      }
+      if (newChat) { await refreshBootstrap(); render(); }
+    } catch { /* Tried again on the next tick. */ }
+    finally { externalRunsBusy = false; }
+  }, 1500);
+}
+
+async function finishExternalRun(active) {
+  stopProcessProgressPolling(active);
+  if (state.chatRequests.get(active.sessionId) !== active) return;
+  state.chatRequests.delete(active.sessionId);
+  if (state.activeSessionId === active.sessionId) await loadActiveSession().catch(() => undefined);
+  render();
 }
 
 function syncRouteFromHash() {
@@ -1389,9 +1426,12 @@ function startProcessProgressPolling(active) {
       }
       if (run?.status && run.status !== "running") {
         stopProcessProgressPolling(active);
+        if (active.external) void finishExternalRun(active);
       }
-    } catch {
+    } catch (error) {
       // The first poll can race request registration; keep polling until the chat request settles.
+      // A followed turn that is gone (pruned) has ended.
+      if (active.external && /not found/i.test(error?.message ?? "")) void finishExternalRun(active);
     } finally {
       active.pollInFlight = false;
     }

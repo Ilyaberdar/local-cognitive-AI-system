@@ -31,6 +31,7 @@ import {
   createMetadataController,
   createModelsController,
   createProcessController,
+  createListProcessRunsController,
   createProviderTestController,
   createProcessRunStatusController,
   createReviewProcessRunController,
@@ -181,6 +182,7 @@ export const createApiRouter = (
   router.post("/chat", createProcessController(runtimeManager, sessionIndexStore));
   router.post("/process", createProcessController(runtimeManager, sessionIndexStore));
   router.post("/process-runs/:requestId/review", createReviewProcessRunController());
+  router.get("/process-runs", createListProcessRunsController());
   router.get("/process-runs/:requestId", createProcessRunStatusController());
   router.post("/process-runs/:requestId/cancel", createCancelProcessRunController());
   router.post("/workspace/editor", createOpenWorkspaceEditorController(runtimeManager));

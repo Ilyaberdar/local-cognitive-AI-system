@@ -29,7 +29,7 @@ export const createProcessController =
       return;
     }
     const processSessionId = typeof req.body?.sessionId === "string" && req.body.sessionId.trim() ? req.body.sessionId.trim() : randomUUID();
-    const processRun = processRunRegistry.start(requestId, processSessionId);
+    const processRun = processRunRegistry.start(requestId, processSessionId, typeof req.body?.input === "string" ? req.body.input : undefined);
     req.once("aborted", () => processRunRegistry.cancel(requestId));
     res.once("close", () => {
       if (!res.writableEnded) processRunRegistry.cancel(requestId);
@@ -95,6 +95,12 @@ export const createProcessController =
       }
       next(error);
     }
+  };
+
+/** The turns running now, for a window to show those it did not start (`?status=running`). */
+export const createListProcessRunsController = () =>
+  (_req: Request, res: Response): void => {
+    res.status(200).json({ runs: processRunRegistry.running() });
   };
 
 export const createProcessRunStatusController = () =>
