@@ -32,7 +32,9 @@ const logger = new Logger();
 
 export interface ActiveWork { processRuns: number; workflowRuns: number; inferenceBusy: boolean; inferenceQueued: number; scheduleTick: boolean; total: number;
   /** Durable chat turns (headless server). */
-  chatRuns?: number }
+  chatRuns?: number;
+  /** Synthesis runs: a drain waits for them too. */
+  synthesisRuns?: number }
 
 /** The host's durable store and the services on it (headless server only in R4). */
 export interface HostServices { database: HostDatabase; journal: EventJournal; runService: RunService; ledger: CommandLedger }
@@ -98,11 +100,12 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     lock.release();
   })();
   const activeWork = (): ActiveWork => {
-    let inference = { busy: false, queued: 0 };
+    let inference = { busy: false, queued: 0 }, synthesisRuns = 0;
     try { inference = runtimeManager.getRuntime().localModelService.activity(); } catch { /* Runtime not built. */ }
+    try { synthesisRuns = runtimeManager.getRuntime().synthesis.activeCount(); } catch { /* Runtime not built. */ }
     const work = { processRuns: processRunRegistry.activeCount(), workflowRuns: WorkflowRunner.activeRunIds().length, inferenceBusy: inference.busy,
-      inferenceQueued: inference.queued, scheduleTick: scheduler?.busy ?? false, chatRuns: host?.runService.activeCount() ?? 0 };
-    return { ...work, total: work.processRuns + work.workflowRuns + (work.inferenceBusy ? 1 : 0) + work.inferenceQueued + (work.scheduleTick ? 1 : 0) + work.chatRuns };
+      inferenceQueued: inference.queued, scheduleTick: scheduler?.busy ?? false, chatRuns: host?.runService.activeCount() ?? 0, synthesisRuns };
+    return { ...work, total: work.processRuns + work.workflowRuns + (work.inferenceBusy ? 1 : 0) + work.inferenceQueued + (work.scheduleTick ? 1 : 0) + work.chatRuns + synthesisRuns };
   };
 
   try {
@@ -192,7 +195,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     return { phase: draining ? "draining" : "running", http: address && typeof address === "object" ? { host: address.address, port: address.port } : undefined,
       ui: Boolean(server) && config.ui.serve !== false, scheduler: scheduler?.running ?? false, telegram: Boolean(telegram), activeWork: activeWork() };
   };
-  const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting(); };
+  const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting();
+    try { runtimeManager.getRuntime().synthesis.stopAccepting(); } catch { /* Runtime not built. */ } };
   const interruptActiveWork = () => processRunRegistry.cancelAll() + (host?.runService.interruptAll() ?? 0);
   return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}) };
   } catch (error) { await dispose(); throw error; }

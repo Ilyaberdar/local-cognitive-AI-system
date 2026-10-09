@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { previewDocument } from "./preview";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { ProjectStore } from "../projects/ProjectStore";
@@ -21,6 +22,28 @@ interface Services {
   loadModel: (model: ManagedModel, signal: AbortSignal) => Promise<void>;
   llm: Pick<LLMService, "generateObject" | "generateText">;
 }
+/** What this runtime (V1, local files) can run, as diagnostics: Run refuses the errors, and a
+ * module shows them as soon as it is opened. */
+function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPath: string, flowPath: string) {
+  const found: Array<{severity: "error" | "warning"; code: string; message: string; file: string; line: number; column: number}> = [];
+  const add = (severity: "error" | "warning", code: string, message: string, file: string) => found.push({severity, code, message, file, line: 1, column: 1});
+  if (!compiled.spec || !compiled.flow) return found;
+  if (compiled.flow.limits.iterations < 1 || compiled.flow.limits.iterations > 32 || compiled.flow.limits.timeMs > 7200000) {
+    add("error", "FLOW_LIMIT_RANGE", "V1 supports at most 32 iterations and 120 minutes per run.", flowPath);
+  }
+  if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare between 1 and 12 artifact files.", specPath);
+  for (const file of compiled.spec.artifacts) {
+    try { relativePath(file); }
+    catch { add("error", "SPEC_ARTIFACT_PATH", `${file}: use a project-relative path without spaces, hidden folders or "..".`, specPath); continue; }
+    if (!/\.(?:js|html|css|txt|md)$/.test(file)) add("error", "SPEC_ARTIFACT_TYPE", `${file}: local-files-v1 supports only js, html, css, txt and md artifacts.`, specPath);
+  }
+  for (const gate of compiled.spec.gates) {
+    if (compiled.spec.evaluator !== "calculator-v1" || !supportedEvaluators.has(gate.evaluatorId)) {
+      add("warning", "SPEC_EVALUATOR_UNREGISTERED", `No trusted evaluator is registered for ${gate.evaluatorId}: the gate ${gate.id} will be Unknown and cannot pass.`, specPath);
+    }
+  }
+  return found;
+}
 const activeStatus = (status: RunStatus) => status === "running" || status === "queued";
 const stamp = () => new Date().toISOString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -36,6 +59,7 @@ function publicRun(record: RunRecord): SynthesisRun {
 export class SynthesisService {
   private readonly directory: string;
   private readonly active = new Map<string, {controller: AbortController; done: Promise<void>; interruption: boolean}>();
+  private accepting = true;
   private readonly pendingStarts = new Set<Promise<SynthesisRun>>();
   private reservations = 0;
   private disposed = false;
@@ -72,21 +96,27 @@ export class SynthesisService {
   async folders(projectId: string, directory: unknown = "") {
     const project = await this.project(projectId);
     const relative = moduleDirectory(directory);
-    return {directory: relative, folders: await moduleFolders(project.rootPath, relative)};
+    try { return {directory: relative, folders: await moduleFolders(project.rootPath, relative)}; }
+    catch (error) { if (isMissingFile(error)) throw new SynthesisError("Folder not found.", 404); throw error; }
   }
   async module(projectId: string, id: string): Promise<SynthesisModule> {
     const project = await this.project(projectId);
     const {name, specPath, flowPath} = moduleSources(id);
-    let specSource = "", flowSource = "";
+    let specSource = "", flowSource = "", reading = specPath;
     try {
       specSource = await readText(await containedPath(project.rootPath, specPath));
+      reading = flowPath;
       flowSource = await readText(await containedPath(project.rootPath, flowPath));
     } catch (error) {
+      // The project-relative file, never the host's full path (it may reach a paired device).
+      const message = isMissingFile(error) ? `Missing ${reading}.` : error instanceof SynthesisError ? error.message : `${reading} could not be read.`;
       return {id, name, specPath, flowPath, specSource, flowSource, valid: false,
-        diagnostics: [{severity: "error", code: "SOURCE_READ", message: errorText(error), line: 1, column: 1}]};
+        diagnostics: [{severity: "error", code: "SOURCE_READ", message, file: reading, line: 1, column: 1}]};
     }
     const compiled = compileProgram(specSource, flowSource, {specPath, flowPath});
-    const diagnostics = compiled.diagnostics.map(item => ({severity: item.severity, code: item.code, message: item.message, file: item.path, line: item.span.start.line, column: item.span.start.column}));
+    const diagnostics = [...compiled.diagnostics.map(item => ({severity: item.severity, code: item.code, message: item.message, file: item.path, line: item.span.start.line, column: item.span.start.column})),
+      // What Run would refuse is shown before it: the module is not "valid" only to fail at Run.
+      ...(compiled.diagnostics.some(item => item.severity === "error") ? [] : profileDiagnostics(compiled, specPath, flowPath))];
     if (compiled.spec?.module !== name) diagnostics.push({severity: "error", code: "MODULE_NAME", message: "Filename and module declaration must match.", file: specPath, line: 1, column: 1});
     return {id, name: compiled.spec?.module ?? name, specPath, flowPath, specSource, flowSource, valid: !diagnostics.some(item => item.severity === "error"), diagnostics};
   }
@@ -127,8 +157,13 @@ export class SynthesisService {
     if (activeStatus(record.status) || record.status === "accepted") throw new SynthesisError("Only unsuccessful or interrupted runs may be restarted.", 409);
     return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id);
   }
+  /** Runs executing now (and starts being prepared): a server drains them before it stops. */
+  activeCount(): number { return this.active.size + this.reservations; }
+  /** The server is draining: no new run starts; running ones finish. */
+  stopAccepting(): void { this.accepting = false; }
   private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom?: string): Promise<SynthesisRun> {
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
+    if (!this.accepting) throw new SynthesisError("The server is shutting down. Try again when it is back.", 409);
     if (this.active.size + this.reservations >= 2) throw new SynthesisError("At most two Synthesis runs may execute concurrently.", 409);
     this.reservations++;
     const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom).finally(() => {
@@ -142,6 +177,8 @@ export class SynthesisService {
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     const compiled = compileProgram(specSource, flowSource);
     if (!compiled.spec || !compiled.flow || compiled.diagnostics.some(item => item.severity === "error")) throw new SynthesisError("Frozen DSL source is invalid. Fix diagnostics before running.");
+    const refusal = profileDiagnostics(compiled, "", "").find(item => item.severity === "error");
+    if (refusal) throw new SynthesisError(refusal.message);
     if (compiled.flow.limits.iterations > 32 || compiled.flow.limits.timeMs > 7200000) throw new SynthesisError("V1 supports at most 32 iterations and 120 minutes per run.");
     if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) throw new SynthesisError("Declare between 1 and 12 artifact files.");
     for (const file of compiled.spec.artifacts) {
@@ -278,19 +315,26 @@ export class SynthesisService {
         }
         case "evaluate": {
           requireCandidate(args[0]); requireSpec(args[1]);
+          // Every gate judges one snapshot, and the evidence names that snapshot's hash.
+          const files = {...record.files};
           const gates: Evidence["gates"] = [];
           for (const gate of record.spec.gates) {
             signal.throwIfAborted();
             const result = record.spec.evaluator === "calculator-v1" && supportedEvaluators.has(gate.evaluatorId)
-              ? await evaluateCalculator(record.files, gate.evaluatorId)
+              ? await evaluateCalculator(files, gate.evaluatorId)
               : {status: "Unknown" as const, message: `No trusted evaluator registered for ${gate.evaluatorId}.`};
             gates.push({id: gate.id, evaluator: gate.evaluatorId, severity: gate.severity, ...result});
             await this.event(record, `gate.${gate.id}`, `${result.status}: ${result.message}`, result.status === "Pass" ? "ok" : "failed");
           }
           if (!gates.some(gate => gate.severity === "hard")) gates.push({id: "acceptance", evaluator: "registry", severity: "hard", status: "Unknown", message: "At least one trusted hard evaluator is required."});
+          // A candidate is complete only with every declared file: the gates may judge only some.
+          const missing = record.spec.artifacts.filter(file => !Object.hasOwn(files, file) || !files[file]!.trim());
+          gates.push({id: "artifacts", evaluator: "registry", severity: "hard", status: missing.length ? "Fail" : "Pass",
+            message: missing.length ? `Declared files are missing or empty: ${missing.join(", ")}.` : "Every declared file is present."});
+          if (missing.length) await this.event(record, "gate.artifacts", `Fail: missing ${missing.join(", ")}`, "failed");
           const hard = gates.filter(gate => gate.severity === "hard");
           const status = hard.some(gate => gate.status === "Fail") ? "Fail" : hard.some(gate => gate.status === "Unknown") ? "Unknown" : "Pass";
-          lastEvidence = {candidateHash: filesHash(record.files), specHash: record.specHash, evaluatorVersion, status, gates};
+          lastEvidence = {candidateHash: filesHash(files), specHash: record.specHash, evaluatorVersion, status, gates};
           evaluationSignatures.push(hash(JSON.stringify(gates.map(gate => [gate.id, gate.status, gate.message]))));
           record.evidence = lastEvidence; value = lastEvidence; break;
         }
@@ -449,10 +493,12 @@ export class SynthesisService {
       record.appliedAt = stamp(); await this.event(record, "apply", `${targets.length} candidate files applied to ${record.outputPath}.`, "ok");
     });
   }
-  async preview(id: string, file: string): Promise<string> {
+  /** The candidate's page as one self-contained document (its styles and scripts inlined): it loads
+   * nothing else, so it runs in a sandboxed frame here and on a paired device alike. */
+  async preview(id: string, file = "index.html"): Promise<string> {
     const record = await this.read(id); relativePath(file);
-    if (!/\.(html|css|js)$/.test(file) || !Object.hasOwn(record.files, file)) throw new SynthesisError("Preview artifact not found.", 404);
-    return record.files[file];
+    if (!/\.html$/.test(file) || !Object.hasOwn(record.files, file)) throw new SynthesisError("Preview artifact not found.", 404);
+    return previewDocument(record.files, file);
   }
   private async event(record: RunRecord, step: string, message: string, status: ActivityEvent["status"], extra: Partial<ActivityEvent> = {}): Promise<void> {
     record.phase = step; record.updatedAt = stamp();

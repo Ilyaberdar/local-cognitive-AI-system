@@ -211,3 +211,14 @@ test("invalid entity fields reject without publishing settings; serialized prefe
   assert.equal(saved.ui?.theme, "system");
   assert.equal(saved.ui?.animations, false);
 });
+
+test("saving settings keeps the same Synthesis service, so its runs are not interrupted", async (t) => {
+  const { manager } = await fixture(t);
+  const before = manager.getRuntime().synthesis;
+  const disposed = t.mock.method(before, "dispose");
+  await manager.updateSettings({ agentLimits: { maxSteps: 12 } });
+  assert.notEqual(manager.getRuntime().localModelService, undefined);
+  assert.equal(manager.getRuntime().synthesis, before, "the runtime was rebuilt around the same service");
+  assert.equal(disposed.mock.callCount(), 0, "nothing was interrupted");
+  assert.equal(before.activeCount(), 0);
+});

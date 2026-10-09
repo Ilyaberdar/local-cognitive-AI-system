@@ -31,7 +31,7 @@ const fixture = (): Record<string, string> => ({
 });
 
 test("trusted calculator evaluator passes arithmetic and semantic DOM interactions", async () => {
-  assert.equal(evaluatorVersion, "calculator-v1.1");
+  assert.equal(evaluatorVersion, "calculator-v1.2");
   for (const evaluator of supportedEvaluators) {
     const result = await evaluateCalculator(fixture(), evaluator);
     assert.equal(result.status, "Pass", result.message);
