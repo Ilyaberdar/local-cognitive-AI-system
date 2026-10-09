@@ -228,3 +228,20 @@ export function createRunEventsSource({ runtime, hostId, isCurrent = () => true,
     }
   };
 }
+
+/** A settings patch as the server takes it: a provider key is written ({set}) or, as an empty
+ * string from "Remove key", cleared ({clear: true}); it is never read back. */
+const hostSettingsPatch = body => {
+  const patch = JSON.parse(JSON.stringify(body ?? {}));
+  for (const provider of Object.values(patch.providers ?? {})) {
+    if (provider && typeof provider.apiKey === "string") provider.apiKey = provider.apiKey === "" ? { clear: true } : { set: provider.apiKey };
+  }
+  return patch;
+};
+
+/** The Settings screen's host pages (public/assets/settings-data.js) → src/runtime/settingsOperations.ts.
+ * MCP clients and integrations are not here: on a server they are refused before anything is sent. */
+export const SETTINGS_ROUTES = [
+  { method: "PUT", pattern: /^\/app\/settings$/, op: "settings.update", payload: (_match, _query, body) => hostSettingsPatch(body) },
+  { method: "POST", pattern: /^\/providers\/([^/]+)\/test$/, op: "providers.test", payload: (match, _query, body) => ({ providerId: segment(match[1]), ...pick(body, ["model"]) }) }
+];

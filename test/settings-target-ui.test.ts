@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { hostSettingsView } from "../src/runtime/settingsDto";
 import { bootApp, flush, SESSION_ID, type Harness } from "./fixtures/appHarness";
 
 const HOST = "6f1c2c3e-58a4-4c55-9a0e-3c7f5b1d2e90";
@@ -136,4 +137,202 @@ test("this computer's Settings make exactly the same requests with or without a 
   t.after(() => paired.close());
   assert.deepEqual(await walkSettings(paired), LOCAL_SETTINGS_TRACE);
   assert.deepEqual(paired.bridgeCalls.filter(call => call.op.startsWith("runtime.")), [], "nothing went to the server");
+});
+
+/** fedora's settings behind the host operations, as a device sees them (the real view). */
+function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start", "settings.get", "settings.update", "providers.test"] } = {}) {
+  let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: name, serverVersion: "0.2.0", capabilities };
+  const statusListeners: Array<(value: unknown) => void> = [];
+  const raw: any = {
+    ui: { language: "ru", outputStyle: "detailed", mode: "code", theme: "midnight" },
+    llm: { defaultProvider: "llamacpp" },
+    providers: {
+      llamacpp: { enabled: true, model: "qwen-14b" },
+      openai: { enabled: true, baseUrl: "https://user:pass@api.openai.com/v1?token=abc", apiKey: "", model: "gpt-4o-mini", timeoutMs: 60000 },
+      anthropic: { enabled: false, baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-saved-on-fedora-123", model: "claude", timeoutMs: 60000, version: "2023-06-01", maxTokens: 4096 }
+    },
+    localModels: { modelsDir: "/srv/lc/models", contextSize: 16384, gpuLayers: "auto", memoryLimitPercent: 80, loadTimeoutMs: 300000, generationTimeoutMs: 600000, generation: { preset: "server" } },
+    agentLimits: { maxSteps: 50, advisorMaxSteps: 10, maxTotalSteps: 0, maxActiveMs: 0 },
+    memory: { adapter: "world-partition", topK: 6, baseDir: "/srv/lc/memory", worldPartition: { strategy: "auto", activationThreshold: 100, chunkCapacity: 512, initialRadius: 1,
+      maxRadius: 4, fallbackToGlobalSearch: true, migrateLegacyOnStart: false, crossSessionRecall: true }, openMemory: { enabled: false, dbPath: "/srv/lc/om.db" } },
+    filesystem: { outputDir: "/srv/lc/output", accessMode: "restricted", allowedDirectories: ["/srv/lc/a", "/srv/lc/b"] },
+    mcp: { server: { enabled: false }, client: { servers: {}, bindings: {} } }
+  };
+  const ok = (value: unknown) => ({ ok: true, value });
+  const handlers: Record<string, (payload: any) => unknown> = {
+    "sessions.list": () => [],
+    "models.available": () => ({ providers: [], availableModels: [{ providerId: "openai", id: "gpt-4.1" }], loadedModels: [],
+      allManagedModels: [{ providerId: "llamacpp", id: "qwen-14b", libraryId: "qwen-14b", displayName: "Qwen 14B", loaded: true }], appSettings: { llm: {}, providers: {} } }),
+    "settings.get": () => ({ settings: hostSettingsView(raw), runtimeStatus: "running" }),
+    "settings.update": payload => {
+      const patch = copy(payload);
+      for (const provider of Object.values<any>(patch.providers ?? {})) if (provider.apiKey) provider.apiKey = provider.apiKey.set ?? "";
+      merge(raw, patch);
+      return { settings: hostSettingsView(raw) };
+    },
+    "providers.test": payload => ({ ok: true, providerId: payload.providerId, model: payload.model, message: `Provider responded successfully with model ${payload.model}.` })
+  };
+  const bridge = {
+    status: async () => ok(status),
+    hosts: async () => ok([{ hostId: HOST, name, online: true, appVersion: "0.2.0", paired: true, devices: [] }]),
+    connect: async () => ok(status), disconnect: async () => ok({ state: "idle" }), hostStatus: async () => ok({}),
+    onChange: (listener: (value: unknown) => void) => { statusListeners.push(listener); return () => undefined; },
+    runtime: {
+      request: async (op: string, payload: unknown) => handlers[op] ? ok(handlers[op]!(payload)) : { ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } },
+      send: async (op: string) => ({ ok: false, error: { code: "unknown_operation", message: `No ${op} here.` } }),
+      subscribe: async () => ok(undefined), unsubscribe: async () => ok(undefined), watch: async () => ok(undefined), unwatch: async () => ok(undefined), onEvent() {}
+    }
+  };
+  return { bridge, raw, setStatus(next: Record<string, unknown>, notify = true) { status = { ...status, ...next }; if (notify) statusListeners.forEach(listener => listener(status)); } };
+}
+
+const text = (app: Harness, selector: string) => String(app.document.querySelector(selector)?.textContent ?? "").replace(/\s+/g, " ").trim();
+/** Bridge calls as [operation, payload, server], plain values of the test's realm. */
+const runtimeCalls = (app: Harness, from = 0) => copy(app.bridgeCalls.slice(from).filter(call => /^runtime\.(request|send)$/.test(call.op)).map(call => call.payload)) as unknown[][];
+const updates = (app: Harness, from = 0) => runtimeCalls(app, from).filter(call => call[0] === "settings.update").map(call => call[1]);
+async function selectFedora(app: Harness) {
+  const button = app.document.querySelector(`[data-chat-target="${HOST}"]`);
+  assert.ok(button, "the switch offers fedora");
+  button.click();
+  await settle();
+}
+
+test("with fedora selected, host pages show and change fedora's settings; appearance and profile stay on this computer", async t => {
+  const local = localSettings();
+  const fedora = fedoraWithSettings();
+  const app = await bootApp({ ...local, remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  const localBefore = app.requests.length, callsBefore = app.bridgeCalls.length;
+
+  open(app, "general"); await settle();
+  assert.equal(inRoot(app, "#setting-ui-language").value, "ru", "fedora's chat defaults, not this computer's");
+  assert.match(text(app, ".settings-target-note"), /Defaults for new chats on fedora/);
+  assert.equal(text(app, 'a[href="#/settings/general"] .settings-nav-scope'), "fedora");
+  assert.equal(app.document.querySelector('#settings-root a[href="#/settings/appearance"] .settings-nav-scope'), null);
+  change(app, "#setting-ui-language", "en"); await settle();
+
+  open(app, "providers/openai"); await settle();
+  assert.equal(app.document.querySelector('#settings-root [name="providers.openai.baseUrl"]'), null, "the address is set on fedora");
+  assert.equal(text(app, '[data-setting="providers.openai.baseUrl"] .settings-control'), "https://api.openai.com · set on fedora");
+  assert.equal(inRoot(app, "#setting-providers-openai-apiKey").placeholder, "Enter API key");
+  change(app, "#setting-providers-openai-apiKey", "sk-server-key-123", "input"); submitSettings(app); await settle();
+  assert.equal(fedora.raw.providers.openai.apiKey, "sk-server-key-123");
+  inRoot(app, "[data-test]").click(); await settle();
+  assert.match(text(app, ".settings-test-result"), /Test succeeded[\s\S]*gpt-4o-mini/);
+  open(app, "providers"); await settle();
+  open(app, "providers/openai"); await settle();
+  assert.equal(inRoot(app, "#setting-providers-openai-apiKey").placeholder, "Saved key · leave blank to keep");
+  inRoot(app, '[data-clear="providers.openai.apiKey"]').click(); submitSettings(app); await settle();
+  assert.equal(fedora.raw.providers.openai.apiKey, "");
+  open(app, "providers/anthropic"); await settle();
+  assert.equal(inRoot(app, "#setting-providers-anthropic-apiKey").placeholder, "Saved key · leave blank to keep");
+  open(app, "providers/llamacpp"); await settle();
+  assert.equal(app.document.querySelector("#settings-root [data-test]"), null, "fedora's own models are tested from Models");
+  assert.match(text(app, "#setting-providers-llamacpp-model"), /Qwen 14B · Loaded/);
+
+  open(app, "runtime"); await settle();
+  assert.match(text(app, ".settings-runtime-overview"), /Runtime status\s*running/);
+  assert.equal(text(app, '[data-setting="localModels.modelsDir"] .settings-control'), "Set on fedora");
+  change(app, "#setting-localModels-contextSize", "8192", "input"); submitSettings(app); await settle();
+  open(app, "memory"); await settle();
+  assert.equal(text(app, '[data-setting="memory.baseDir"] .settings-control'), "Set on fedora");
+  change(app, "#setting-memory-topK", "12", "input"); submitSettings(app); await settle();
+  open(app, "data"); await settle();
+  assert.equal(app.document.querySelector("#settings-entity-form, #settings-root [data-open-data]"), null, "nothing on Data can be changed from here");
+  assert.match(text(app, ".settings-content"), /Restricted · set on fedora[\s\S]*2 folders · set on fedora/);
+  for (const route of ["mcp", "plugins", "connections"]) {
+    open(app, route); await settle();
+    assert.match(text(app, ".settings-content"), /Plugins and MCP on fedora come in a later update/);
+    assert.ok(app.document.querySelector('#settings-root [data-server-action="use-local"]'));
+  }
+  open(app, "about"); await settle();
+  assert.match(text(app, ".settings-content"), /Selected server\s*fedora · 0\.2\.0/);
+  open(app, "appearance"); await settle();
+  assert.match(text(app, ".settings-target-note"), /kept on this device\. fedora has its own/);
+  inRoot(app, '[data-appearance-theme="light"]').click(); await settle();
+  open(app, "profile"); await settle();
+  inRoot(app, "#local-profile-name").value = "Ilya B";
+  inRoot(app, "#settings-profile-form").dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
+  await settle();
+
+  assert.deepEqual(updates(app, callsBefore), [
+    { ui: { language: "en" } }, { providers: { openai: { apiKey: { set: "sk-server-key-123" } } } }, { providers: { openai: { apiKey: { clear: true } } } },
+    { localModels: { contextSize: 8192 } }, { memory: { topK: 12 } }
+  ]);
+  assert.deepEqual(runtimeCalls(app, callsBefore).filter(call => call[0] === "providers.test").map(call => call[1]), [{ providerId: "openai", model: "gpt-4o-mini" }]);
+  assert.ok(runtimeCalls(app, callsBefore).every(call => call.at(-1) === HOST), "every call names fedora");
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => /^(PUT|POST) |\/mcp\/|GET \/integrations$/.test(entry)),
+    ['PUT /app/settings {"ui":{"theme":"light"}}', 'PUT /app/settings {"profile":{"displayName":"Ilya B"}}'], "only appearance and profile went to this computer");
+  assert.deepEqual([local.settings.ui.language, local.settings.localModels.contextSize, local.settings.memory.topK], ["auto", 4096, 8], "this computer's values are untouched");
+  assert.equal(fedora.raw.ui.theme, "midnight", "fedora's appearance is not changed from here");
+  assert.equal(app.document.body.innerHTML.includes("/srv/lc"), false, "no folder of fedora reaches the page");
+});
+
+test("offline, fedora's settings stay readable and nothing is sent; Use This computer shows this computer's pages", async t => {
+  const local = localSettings();
+  const fedora = fedoraWithSettings();
+  const app = await bootApp({ ...local, remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  open(app, "general"); await settle();
+  fedora.setStatus({ state: "reconnecting" }); await settle();
+  assert.ok(app.document.querySelector("#settings-root .settings-content.is-offline"));
+  assert.match(text(app, ".settings-target-note"), /fedora is not connected\. These are its last known settings/);
+  assert.equal(inRoot(app, "#setting-ui-language").disabled, true);
+  assert.equal(inRoot(app, "#setting-ui-language").value, "ru");
+  const callsBefore = app.bridgeCalls.length;
+  inRoot(app, "#setting-ui-language").disabled = false;
+  change(app, "#setting-ui-language", "en"); await settle();
+  assert.deepEqual(updates(app, callsBefore), [], "nothing is sent while offline");
+  assert.match(text(app, ".settings-save-status"), /Not saved\. fedora is not connected/);
+
+  fedora.setStatus({ state: "online" }); await settle();
+  assert.equal(app.document.querySelector("#settings-root .settings-content.is-offline"), null);
+  open(app, "mcp"); await settle();
+  const localBefore = app.requests.length;
+  inRoot(app, '[data-server-action="use-local"]').click(); await settle();
+  assert.equal(app.window.location.hash, "#/settings/mcp", "Settings stay open");
+  assert.ok(app.requests.slice(localBefore).includes("GET /mcp/clients"), "this computer's MCP servers are shown");
+  assert.equal(app.document.querySelector("#settings-root .settings-nav-scope"), null);
+  open(app, "general"); await settle();
+  assert.equal(inRoot(app, "#setting-ui-language").value, "auto");
+});
+
+test("fedora not connected, or too old for its settings: the page says so and offers what can be done", async t => {
+  const fedora = fedoraWithSettings();
+  const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  fedora.setStatus({ state: "reconnecting" }); await settle();
+  open(app, "providers"); await settle();
+  assert.match(text(app, ".settings-content"), /fedora is not connected[\s\S]*Its settings appear once it reconnects/);
+  assert.equal(runtimeCalls(app).filter(call => call[0] === "settings.get").length, 0);
+  // Back by the time "Try again" reconnects.
+  fedora.setStatus({ state: "online" }, false);
+  inRoot(app, '[data-server-action="retry"]').click(); await settle();
+  assert.equal(inRoot(app, "#setting-llm-defaultProvider").value, "llamacpp");
+
+  const older = fedoraWithSettings({ capabilities: ["chat.runs.start"] });
+  const old = await bootApp({ ...localSettings(), remote: { bridge: older.bridge } });
+  t.after(() => old.close());
+  await selectFedora(old);
+  open(old, "general"); await settle();
+  assert.match(text(old, ".settings-content"), /Update Local Cognitive on fedora/);
+  assert.equal(runtimeCalls(old).filter(call => call[0] === "settings.get").length, 0, "an older server is not asked");
+  open(old, "appearance"); await settle();
+  assert.ok(old.document.querySelector('#settings-root [data-appearance-theme="light"]'), "this computer's pages still work");
+});
+
+test("a server's name is shown as text in Settings", async t => {
+  const name = '<img src=x onerror="window.injected=1">';
+  const fedora = fedoraWithSettings({ name });
+  const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  for (const route of ["general", "data", "mcp", "appearance"]) {
+    open(app, route); await settle();
+    assert.equal(app.document.querySelector("#settings-root img[src='x']"), null, route);
+  }
+  assert.ok(text(app, ".settings-target-note").includes(name));
 });
