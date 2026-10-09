@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { SynthesisService } from "../synthesis/SynthesisService";
+import { PREVIEW_POLICY } from "../synthesis/preview";
 import { SynthesisError } from "../synthesis/types";
 import { openWorkspaceEditor } from "./workspaceReview";
 
@@ -35,17 +36,13 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
   router.post("/runs/:id/apply", route(async (req, res) => { await service().apply(param(req, "id")); res.json({ok: true}); }));
   router.get("/runs/:id/preview/*", route(async (req, res) => {
     const file = param(req, "0");
+    // One self-contained page: an opaque origin (even when opened outside the sandboxed frame),
+    // its own inline code and styles only, no network or API access.
     const source = await service().preview(param(req, "id"), file);
-    // Enforce an opaque origin even when preview is opened outside our sandboxed iframe.
-    // Only this run's artifact subdirectory may supply scripts/styles; network/API access is denied.
-    const base = `/synthesis/runs/${encodeURIComponent(param(req, "id"))}/preview/`;
-    const host = req.get("host");
-    if (!host || !/^[A-Za-z0-9.:[\]-]+$/.test(host)) throw new SynthesisError("Invalid preview origin.");
-    const sourcePath = `${req.protocol}://${host}${base}`;
-    res.setHeader("Content-Security-Policy", `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' ${sourcePath}; style-src 'unsafe-inline' ${sourcePath}; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; worker-src 'none'`);
+    res.setHeader("Content-Security-Policy", `sandbox allow-scripts; ${PREVIEW_POLICY}; frame-ancestors 'self'`);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "no-store");
-    res.type(file.endsWith(".js") ? "application/javascript" : file.endsWith(".css") ? "text/css" : "text/html").send(source);
+    res.type("text/html").send(source);
   }));
   return router;
 }

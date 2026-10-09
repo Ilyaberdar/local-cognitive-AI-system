@@ -54,7 +54,12 @@ export class Interpreter {
         if (Object.hasOwn(this.host.globals, expression.name)) return this.host.globals[expression.name];
         throw new SynthesisError(`Unknown variable '${expression.name}'.`);
       }
-      case "array": return Promise.all(expression.items.map(item => this.expression(item)));
+      case "array": {
+        // Statements and their parts run in order: no authored parallelism (lc-language).
+        const values: unknown[] = [];
+        for (const item of expression.items) values.push(await this.expression(item));
+        return values;
+      }
       case "await": return this.expression(expression.expression);
       case "member": {
         const object = await this.expression(expression.object);

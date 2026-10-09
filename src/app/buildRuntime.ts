@@ -490,7 +490,9 @@ export const buildRuntime = async (
   logger: Logger,
   sharedLocalModelService?: LocalModelService,
   sharedMcpClients?: McpClientService,
-  sharedPlugins?: PluginManager
+  sharedPlugins?: PluginManager,
+  /** Kept across rebuilds (settings changes): its runs must not be interrupted by them. */
+  sharedSynthesis?: SynthesisService
 ): Promise<AppRuntime> => {
   await fs.mkdir(config.memory.baseDir, { recursive: true });
   await fs.mkdir(config.sessions.baseDir, { recursive: true });
@@ -747,11 +749,11 @@ export const buildRuntime = async (
   await workflowRunner.recoverInterruptedRuns();
   const taskService = new TaskService(taskStore, workflowRunStore, workflowRunner,workspaceResolver);
   const scheduleService = new ScheduleService(scheduleStore, taskService,workspaceResolver);
-  const synthesis = new SynthesisService(config.appDataDir, {
+  const synthesis = sharedSynthesis ?? new SynthesisService(config.appDataDir, {
     projects: projectStore, models: localModelManager, llm: llmService,
     loadModel: (model, signal) => localModelService.loadModel(model.id, signal)
   });
-  await synthesis.init();
+  if (!sharedSynthesis) await synthesis.init();
 
   return {
     synthesis,

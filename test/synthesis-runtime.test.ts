@@ -136,7 +136,8 @@ test("DSL lists/selects/loads a tiny local model, repairs failed evidence, and a
   assert.ok(result.events.some(item => item.step === "gate.arithmetic" && item.status === "failed"));
   assert.ok(result.events.some(item => item.step === "gate.arithmetic" && item.status === "ok"));
   assert.equal(result.evidence?.status, "Pass");
-  assert.equal(result.evidence?.gates.length, 2);
+  assert.equal(result.evidence?.gates.length, 3, "two declared gates and the implicit artifacts gate");
+  assert.equal(result.evidence?.gates.find(gate => gate.id === "artifacts")?.status, "Pass");
   assert.ok(result.events.every((event, index) => index === 0 || event.sequence > result.events[index - 1].sequence));
   await assert.rejects(fs.access(path.join(f.root, "calculator")), {code: "ENOENT"});
   assert.equal(await fs.readFile(path.join(f.root, f.module.flowPath), "utf8"), f.module.flowSource);
@@ -144,7 +145,9 @@ test("DSL lists/selects/loads a tiny local model, repairs failed evidence, and a
   assert.equal(diff.canApply, true);
   assert.equal(diff.files.length, 3);
   assert.ok(diff.files.every(item => item.before === null));
-  assert.equal(await f.service.preview(result.id, "index.html"), workingFiles["index.html"]);
+  const page = await f.service.preview(result.id, "index.html");
+  assert.match(page, /<meta http-equiv="Content-Security-Policy"/);
+  assert.doesNotMatch(page, /<script[^>]+src=/, "the preview is one self-contained page");
 });
 
 test("Apply writes only an accepted candidate, preserves unrelated files and prevents repeated application", async (t) => {
@@ -455,4 +458,48 @@ test("the default focused template selects the tested local coder and accepts pe
   assert.equal(f.textRequests.length, 3);
   assert.deepEqual(new Set(f.textRequests.map(item => item.file)), new Set(Object.keys(workingFiles)));
   await assert.rejects(fs.access(path.join(f.root, "calculator")), {code: "ENOENT"});
+});
+
+test("a candidate missing a declared file is never accepted, even when every declared gate passes", { timeout: 20_000 }, async t => {
+  // The gates check only calculator.js; the model never writes index.html or style.css.
+  const f = await fixture(t, { content: file => file === "calculator.js" ? workingFiles[file] : "" });
+  const result = await f.run();
+  assert.notEqual(result.status, "accepted");
+  const artifacts = result.evidence?.gates.find(gate => gate.id === "artifacts");
+  assert.equal(artifacts?.status, "Fail");
+  assert.match(String(artifacts?.message), /index\.html, style\.css/);
+});
+
+test("module discovery skips a file it cannot name instead of failing the whole list, and errors name project files only", async t => {
+  const f = await fixture(t);
+  // Each folder is short enough to be searched; the file's whole path is over the 240-character limit.
+  const deep = path.join(f.root, ...Array.from({ length: 5 }, (_, index) => `a-folder-with-quite-a-long-descriptive-name-${index}`));
+  await fs.mkdir(deep, { recursive: true });
+  await fs.writeFile(path.join(deep, "VeryLongModuleNameThatPushesThePathOverTheLimit.lcspec"), "module Long {}");
+  assert.ok((await f.service.modules(f.project.id)).some(module => module.id === "Calculator"), "the other modules are still listed");
+  await fs.mkdir(path.join(f.root, "Synthesis", "Half"), { recursive: true });
+  await fs.writeFile(path.join(f.root, "Synthesis", "Half", "Half.lcspec"), "module Half {}");
+  const half = await f.service.module(f.project.id, "Half");
+  assert.equal(half.valid, false);
+  assert.equal(half.diagnostics[0]!.message, "Missing Synthesis/Half/Half.lcflow.");
+  assert.equal(JSON.stringify(half).includes(f.temp), false, "no folder of the host");
+  await assert.rejects(f.service.folders(f.project.id, "Nope"), (error: unknown) => (error as { statusCode?: number }).statusCode === 404);
+});
+
+test("what Run would refuse is shown on the module before Run, and an unregistered evaluator is a warning", async t => {
+  const f = await fixture(t);
+  const files = Array.from({ length: 13 }, (_, index) => `        file "part${index}.js";`).join("\n");
+  await f.writeSources({
+    spec: `module Calculator version "1" {\n    description = "Too much.";\n\n    artifacts {\n${files}\n        file "main.ts";\n        file "my file.js";\n    }\n\n    evaluate "calculator-v1" {\n        hard arithmetic = Pass("calculator-arithmetic-v1");\n    }\n}\n`,
+    flow: calculatorTemplate("Calculator", "compact").flow.replace("limit iterations 6, time 15m", "limit iterations 40, time 180m")
+  });
+  const module = await f.service.module(f.project.id, "Calculator");
+  assert.equal(module.valid, false);
+  const codes = new Set(module.diagnostics.map(item => item.code));
+  for (const expected of ["SPEC_ARTIFACT_LIMIT", "SPEC_ARTIFACT_TYPE", "SPEC_ARTIFACT_PATH", "FLOW_LIMIT_RANGE"]) assert.ok(codes.has(expected), expected);
+  await assert.rejects(f.service.start(f.project.id, "Calculator"), /invalid|Declare|iterations/i);
+
+  const empty = await f.service.createModule(f.project.id, "Starter", { template: "empty" });
+  assert.equal(empty.valid, true, "a starter module stays runnable");
+  assert.ok(empty.diagnostics.some(item => item.code === "SPEC_EVALUATOR_UNREGISTERED" && item.severity === "warning"));
 });

@@ -8,7 +8,7 @@ import { NewModuleDialog } from "./NewModuleDialog";
 import type { CandidateDiff, RunSources, SynthesisModule, SynthesisRun, SynthesisWorkspaceProps } from "./types";
 
 const activeStatuses = new Set(["running", "queued"]);
-const recoverableStatuses = new Set(["interrupted", "blocked", "unresolved", "cancelled"]);
+const recoverableStatuses = new Set(["interrupted", "blocked", "unresolved", "cancelled", "needs_review"]);
 type SourceTab = "contract" | "flow" | "changes" | "preview";
 function storedProject() { try { return localStorage.getItem("lcai.synthesis.project.v1") ?? ""; } catch { return ""; } }
 const hiddenModulesKey = "lcai.synthesis.hiddenModules.v1";

@@ -1,4 +1,5 @@
 import path from "path";
+import { SynthesisService } from "../synthesis/SynthesisService";
 import { buildRuntime, AppRuntime } from "./buildRuntime";
 import { AppConfig, localModelOptions } from "../config/config";
 import { Logger } from "../utils/Logger";
@@ -19,6 +20,7 @@ export class RuntimeManager {
   private runtime: AppRuntime | null = null;
   private operations: Promise<unknown> = Promise.resolve();
   private localModelService?: LocalModelService;
+  private synthesis?: SynthesisService;
   private readonly mcpClients: McpClientManager;
   private disposed = false;
   private disposing?: Promise<void>;
@@ -111,7 +113,6 @@ export class RuntimeManager {
 
   private async build(settings: AppSettings): Promise<AppRuntime> {
     if (this.disposed) throw new Error("Runtime has been disposed");
-    await this.runtime?.synthesis.dispose();
     const mergedConfig = this.applySettings(settings);
     if (!this.plugins) {
       const ownerId = this.integrationOwner ?? `local:${settings.memory.localProfileId}`;
@@ -126,7 +127,20 @@ export class RuntimeManager {
       this.localModelService = service;
     } else await this.localModelService.reconfigure(localModelOptions(mergedConfig));
     if (this.disposed) throw new Error("Runtime has been disposed");
-    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService, this.mcpClients, this.plugins);
+    // Synthesis is made once and reaches the current runtime's services: saving settings (which
+    // rebuilds the runtime) must not interrupt its runs.
+    if (!this.synthesis) {
+      const current = () => this.runtime ?? (() => { throw new Error("Runtime is not ready"); })();
+      const synthesis = new SynthesisService(mergedConfig.appDataDir, {
+        get projects() { return current().projectStore; },
+        models: { listAllModels: (...args) => current().localModelManager.listAllModels(...args) },
+        llm: { generateObject: (...args) => current().llmService.generateObject(...args), generateText: (...args) => current().llmService.generateText(...args) },
+        loadModel: (model, signal) => current().localModelService.loadModel(model.id, signal)
+      });
+      await synthesis.init();
+      this.synthesis = synthesis;
+    }
+    const runtime = await buildRuntime(mergedConfig, this.logger, this.localModelService, this.mcpClients, this.plugins, this.synthesis);
     if (this.disposed) throw new Error("Runtime has been disposed");
     await this.mcpClients.reconcile(settings.mcp.client ?? emptyMcpConfiguration());
     if (this.disposed) throw new Error("Runtime has been disposed");
@@ -138,7 +152,7 @@ export class RuntimeManager {
     if (this.disposing) return this.disposing;
     this.disposed = true;
     // Abort active inference before awaiting a settings operation queued behind it.
-    const disposing = Promise.all([this.runtime?.synthesis.dispose(), this.localModelService?.dispose(),
+    const disposing = Promise.all([this.synthesis?.dispose(), this.localModelService?.dispose(),
       (async () => { await this.plugins?.dispose(); await this.mcpClients.dispose(); })()]);
     this.disposing = (async () => { await this.operations; await disposing; })();
     return this.disposing;

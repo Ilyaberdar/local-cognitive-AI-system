@@ -51,7 +51,8 @@ export async function discoverModules(root: string): Promise<string[]> {
       } else if (item.isFile() && /\.(lcspec|lcflow)$/.test(item.name)) {
         const name = item.name.replace(/\.(lcspec|lcflow)$/, "");
         if (!MODULE_NAME.test(name)) continue;
-        relativePath(relative);
+        // A path outside the naming rules (too long, say) is skipped, not fatal to the whole list.
+        try { relativePath(relative); } catch { continue; }
         found.add(sourceId(relative.replace(/\.(lcspec|lcflow)$/, "")));
         if (found.size > 100) throw new SynthesisError("A project can expose at most 100 Synthesis modules. Select a more specific project folder.");
       }

@@ -1,7 +1,8 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 import { getQuickJS, type QuickJSContext, type QuickJSHandle } from "quickjs-emscripten";
 
-export const evaluatorVersion = "calculator-v1.1";
+// 1.2: every declared file must be present (an implicit hard "artifacts" gate).
+export const evaluatorVersion = "calculator-v1.2";
 export const supportedEvaluators = new Set(["calculator-arithmetic-v1", "calculator-ui-v1"]);
 export interface CalculatorEvaluation { status: "Pass" | "Fail" | "Unknown"; message: string }
 
