@@ -73,7 +73,7 @@ export async function startCloud(t: TestContext) {
     const me = await (await fetch(`${origin}/v1/me`, { headers: { authorization: `Bearer ${accessToken}` } })).json() as { accountId: string };
     return { accountId: me.accountId, accessToken };
   };
-  return { origin, account };
+  return { origin, account, pool };
 }
 
 /** A daemon on its own data directory; `restart` kills it (optionally with SIGKILL) and starts it again. */

@@ -204,6 +204,11 @@ export class HostAgent extends EventEmitter {
     });
   }
 
+  /** Signs a usage batch for the Cloud (spec §10); nothing before the identity is loaded. */
+  signUsage(payload: Buffer): Buffer | undefined {
+    return this.identity ? signFor(this.identity.signing, SIGNATURE_CONTEXT.usageBatch, payload) : undefined;
+  }
+
   private sendClaim(receipt: ClaimReceipt): void {
     const payload = Buffer.from(JSON.stringify(receipt));
     this.send({ type: "claim.confirm", payload: payload.toString("base64url"), signature: signFor(this.identity!.signing, SIGNATURE_CONTEXT.claim, payload).toString("base64url") });

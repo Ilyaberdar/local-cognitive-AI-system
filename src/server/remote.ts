@@ -4,6 +4,7 @@ import type { CredentialVault } from "../plugins/contracts";
 import { HostAgent } from "../remote/host/HostAgent";
 import type { RemoteOperation } from "../remote/host/RemoteHost";
 import { RemoteHostStore } from "../remote/host/RemoteHostStore";
+import { hostUsageSender, type UsageOutbox } from "../usage/UsageOutbox";
 import { appVersion } from "../utils/appVersion";
 import type { Logger } from "../utils/Logger";
 
@@ -23,7 +24,7 @@ export interface RemoteRuntime { agent?: HostAgent; disabledReason?: string; clo
 /** Starts Remote on a headless server: the host database, its identity in the vault and the
  * Cloud connection. Without credential storage or with LOCAL_COGNITIVE_REMOTE=off it stays off. */
 export const startRemote = async (input: { host: HostServices; vault: CredentialVault; vaultConfigured: boolean; env: NodeJS.ProcessEnv; logger: Logger;
-  status: () => Record<string, unknown>; operations?: Record<string, RemoteOperation> }): Promise<RemoteRuntime> => {
+  status: () => Record<string, unknown>; operations?: Record<string, RemoteOperation>; usage?: UsageOutbox }): Promise<RemoteRuntime> => {
   const off = (disabledReason: string): RemoteRuntime => { input.logger.warn(`Remote is off: ${disabledReason}`); return { disabledReason, close() {} }; };
   if (input.env.LOCAL_COGNITIVE_REMOTE === "off") return { disabledReason: "Remote is turned off (LOCAL_COGNITIVE_REMOTE=off).", close() {} };
   if (!input.vaultConfigured) return off("credential storage is not configured; run local-cognitive-server init.");
@@ -37,8 +38,11 @@ export const startRemote = async (input: { host: HostServices; vault: Credential
     "host.status": () => input.status(),
     ...input.operations
   };
-  const agent = new HostAgent({ cloudUrl, store: new RemoteHostStore(input.host.database), vault: input.vault, hostName, serverVersion: appVersion(), operations, logger: input.logger });
+  const store = new RemoteHostStore(input.host.database);
+  const agent = new HostAgent({ cloudUrl, store, vault: input.vault, hostName, serverVersion: appVersion(), operations, logger: input.logger });
   try { await agent.start(); } catch (error) { return off(error instanceof Error ? error.message : String(error)); }
+  // Usage goes to the Cloud signed by this server, for its owner only.
+  input.usage?.setSender(hostUsageSender({ cloudUrl, hostId: () => store.hostId(), owner: () => store.owner(), sign: payload => agent.signUsage(payload) }));
   // The backend owns the database and closes it after the agent stopped.
   return { agent, close() { agent.stop(); } };
 };
