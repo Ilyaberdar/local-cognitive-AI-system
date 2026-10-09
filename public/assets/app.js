@@ -10,6 +10,7 @@ import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuid
 import { createServerModels } from "./server-models.js";
 import { createServerOrchestration } from "./server-orchestration.js";
 import { createServerSettings } from "./server-settings.js";
+import { createServerSynthesis } from "./server-synthesis.js";
 import { chooseServerFolder } from "./folder-browser.js";
 import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
@@ -33,6 +34,10 @@ let workflowEditorMountGeneration = 0;
 let synthesisWorkspaceHandle = null;
 let synthesisWorkspaceModulePromise = null;
 let synthesisWorkspaceMountGeneration = 0;
+// The Synthesis screen of the selected server (R5-5): its own React root, made again for another server.
+let serverSynthesis = null;
+let serverSynthesisHandle = null;
+let serverSynthesisKey = "";
 let workflowLiveConnection = null;
 const workflowEventCache = new Map();
 const workflowWorkspaces = new Map();
@@ -512,6 +517,7 @@ chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountSt
   onEvent: (key, update) => handleRemoteUpdate(key, update) });
 serverOrchestration = createServerOrchestration({ target: chatTarget,
   onChange: () => { if (state.route === "orchestration" && !state.loading) render(); } });
+serverSynthesis = createServerSynthesis({ target: chatTarget });
 // Null on this computer: the screen's local code paths are the fallback everywhere it is read.
 Object.defineProperty(state, "orchestration", { get: () => (chatTarget?.isRemote() ? serverOrchestration?.source() ?? null : null) });
 serverModels = createServerModels({ target: chatTarget, createModelManager, onUse: useServerModel,
@@ -536,7 +542,7 @@ const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
 });
 systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") applyTheme("system", false); });
 
-window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); serverOrchestration?.dispose(); serverSettings?.dispose(); });
+window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); serverOrchestration?.dispose(); serverSettings?.dispose(); serverSynthesisHandle?.unmount(); });
 
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
@@ -737,6 +743,7 @@ function applyTheme(theme, persist = true) {
   window.desktopAppearance?.setTheme(resolveTheme(nextTheme));
   workflowEditorHandle?.setColorMode(resolveTheme(nextTheme));
   synthesisWorkspaceHandle?.setColorMode(resolveTheme(nextTheme));
+  serverSynthesisHandle?.setColorMode(resolveTheme(nextTheme));
   document.querySelectorAll("[data-action='set-theme']").forEach((button) => {
     button.classList.toggle("active", button.dataset.theme === nextTheme);
     button.setAttribute("aria-pressed", String(button.dataset.theme === nextTheme));
@@ -762,6 +769,8 @@ function render(options = {}) {
   // Keep the React tree, selections and activity scroll intact when the shell refreshes.
   const synthesisHost = synthesisWorkspaceHandle ? document.querySelector("#synthesis-workspace") : null;
   synthesisHost?.remove();
+  const serverSynthesisHost = serverSynthesisHandle ? document.querySelector("#server-synthesis-workspace") : null;
+  serverSynthesisHost?.remove();
   synthesisWorkspaceMountGeneration += 1;
 
   app.innerHTML = `
@@ -782,7 +791,7 @@ function render(options = {}) {
             ${renderOrchestrationRoute()}
           </section>
           <section class="route route--synthesis ${state.route === "synthesis" ? "active" : ""}">
-            ${chatTarget?.isRemote() ? renderNotOnServer("Synthesis") : ""}<div id="synthesis-workspace"></div>
+            ${chatTarget?.isRemote() ? renderServerSynthesisState() : ""}<div id="synthesis-workspace"></div><div id="server-synthesis-workspace"></div>
           </section>
           <section class="route route--remote ${state.route === "remote" ? "active" : ""}">
             ${remoteUi.render()}
@@ -794,6 +803,7 @@ function render(options = {}) {
   `;
 
   if (synthesisHost) document.querySelector("#synthesis-workspace")?.replaceWith(synthesisHost);
+  if (serverSynthesisHost) document.querySelector("#server-synthesis-workspace")?.replaceWith(serverSynthesisHost);
   bindEvents();
   bindChatTargetControls();
   projectsUi.bind();
@@ -2268,10 +2278,12 @@ function connectWorkflowRun(detail, generation, workspace, lists) {
 }
 
 async function mountActiveSynthesisWorkspace() {
-  // Synthesis stays on this computer: while a server is selected it is hidden, not unmounted.
+  // This computer's Synthesis is hidden, not unmounted, while a server is selected; the server's
+  // has its own root.
   const remote = Boolean(chatTarget?.isRemote());
   const host = document.querySelector("#synthesis-workspace");
   if (host) host.hidden = remote;
+  void mountServerSynthesisWorkspace();
   if (synthesisWorkspaceHandle) {
     synthesisWorkspaceHandle.setProjects(state.bootstrap?.projects ?? []);
     synthesisWorkspaceHandle.setActive(state.route === "synthesis" && !remote);
@@ -2300,6 +2312,53 @@ async function mountActiveSynthesisWorkspace() {
     if (generation === synthesisWorkspaceMountGeneration && container.isConnected) {
       container.innerHTML = `<div class="empty">Unable to load Synthesis: ${escapeHtml(error.message)}</div>`;
     }
+  }
+}
+
+/** A server's projects the Synthesis screen may use: its own, not archived, named by their place. */
+function serverSynthesisProjects() {
+  if (!chatTarget?.supports("projects.list")) return [];
+  return chatTarget.projectList().filter((project) => !project.archived && !project.hostOnly && project.folder)
+    .map((project) => ({ id: project.id, name: project.name, rootPath: [chatTarget.hostName(), project.folder.rootLabel, ...project.folder.path].join(" › ") }));
+}
+
+/** What the Synthesis route says about the selected server: an older one, or one not yet connected. */
+function renderServerSynthesisState() {
+  const name = chatTarget.hostName();
+  if (serverSynthesis?.unsupported()) return `<div class="project-landing server-unavailable">${icon("remote")}<h2>${escapeHtml(`Update Local Cognitive on ${name}`)}</h2>
+    <p>${escapeHtml(`The version on ${name} cannot run Synthesis from here yet.`)}</p><button class="primary-button" type="button" data-chat-target="local">Use This computer</button></div>`;
+  if (!serverSynthesisHandle && !chatTarget.online()) return `<div class="project-landing server-unavailable">${icon("remote")}<h2>${escapeHtml(`${name} is not connected`)}</h2>
+    <p>${escapeHtml("Its Synthesis appears once it reconnects.")}</p></div>`;
+  return "";
+}
+
+/** The selected server's Synthesis screen: the same screen with the server's transport and projects. */
+async function mountServerSynthesisWorkspace() {
+  const remote = Boolean(chatTarget?.isRemote()) && !serverSynthesis?.unsupported();
+  const container = document.querySelector("#server-synthesis-workspace");
+  const key = remote ? serverSynthesis.key() : "";
+  if (serverSynthesisHandle && serverSynthesisKey !== key) { serverSynthesisHandle.unmount(); serverSynthesisHandle = null; if (container) container.innerHTML = ""; }
+  if (container) container.hidden = !remote;
+  if (serverSynthesisHandle) {
+    serverSynthesisHandle.setProjects(serverSynthesisProjects());
+    serverSynthesisHandle.setActive(state.route === "synthesis" && remote);
+    return;
+  }
+  if (!container || !remote || state.route !== "synthesis" || !chatTarget.online()) return;
+  serverSynthesisKey = key;
+  try {
+    synthesisWorkspaceModulePromise ??= import("/assets/synthesis-workspace.js");
+    const module = await synthesisWorkspaceModulePromise;
+    if (serverSynthesisKey !== key || serverSynthesisHandle || !container.isConnected || state.route !== "synthesis") return;
+    container.innerHTML = "";
+    serverSynthesisHandle = module.mountSynthesisWorkspace(container, {
+      projects: serverSynthesisProjects(), colorMode: resolveTheme(state.ui.theme), active: true,
+      transport: serverSynthesis.transport(), storageKey: chatTarget.hostId(),
+      onCreateProject: () => projectsUi.openCreateServerProject()
+    });
+  } catch (error) {
+    synthesisWorkspaceModulePromise = null;
+    if (container.isConnected) container.innerHTML = `<div class="empty">Unable to load Synthesis: ${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -6855,6 +6914,8 @@ function repaintChatTarget() {
   }
   if (state.route === "models" && serverModels?.statusChanged()) { render(); return; }
   if (state.route === "orchestration" && serverOrchestration?.statusChanged()) { render(); return; }
+  // Synthesis follows the selected server and its connection (its screen is kept across renders).
+  if (state.route === "synthesis" && (chatTarget?.isRemote() || serverSynthesisHandle)) { render(); return; }
   if (state.route !== "chat") return;
   if (!isServerChat(state.activeSessionId)) {
     if (chatTarget?.isRemote() && !state.activeSessionId) render();

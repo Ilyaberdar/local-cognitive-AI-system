@@ -10,11 +10,13 @@ import type { CandidateDiff, RunSources, SynthesisModule, SynthesisRun, Synthesi
 const activeStatuses = new Set(["running", "queued"]);
 const recoverableStatuses = new Set(["interrupted", "blocked", "unresolved", "cancelled", "needs_review"]);
 type SourceTab = "contract" | "flow" | "changes" | "preview";
-function storedProject() { try { return localStorage.getItem("lcai.synthesis.project.v1") ?? ""; } catch { return ""; } }
-const hiddenModulesKey = "lcai.synthesis.hiddenModules.v1";
-function storedHiddenModules(): Record<string, string[]> {
+// Each machine keeps its own view preferences (a server's screen passes its key).
+const projectKey = (machine = "") => `lcai.synthesis.project.v1${machine ? `:${machine}` : ""}`;
+const hiddenModulesKey = (machine = "") => `lcai.synthesis.hiddenModules.v1${machine ? `:${machine}` : ""}`;
+function storedProject(machine?: string) { try { return localStorage.getItem(projectKey(machine)) ?? ""; } catch { return ""; } }
+function storedHiddenModules(machine?: string): Record<string, string[]> {
   try {
-    const value = JSON.parse(localStorage.getItem(hiddenModulesKey) ?? "{}");
+    const value = JSON.parse(localStorage.getItem(hiddenModulesKey(machine)) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter(([, ids]) => Array.isArray(ids)).map(([project, ids]) => [project, (ids as unknown[]).filter((id): id is string => typeof id === "string")]));
   } catch { return {}; }
@@ -27,13 +29,16 @@ function SourcePreview({ source, name }: { source: string; name: string }) {
   </span>)}</code></pre>;
 }
 
-export function SynthesisWorkspace({ projects, colorMode = "dark", active = true, onCreateProject, selectedProjectId }: SynthesisWorkspaceProps) {
+export function SynthesisWorkspace({ projects, colorMode = "dark", active = true, onCreateProject, selectedProjectId, transport, storageKey }: SynthesisWorkspaceProps) {
+  // This computer's API, or the paired server's operations (R5-5).
+  const request = <T,>(path: string, options: RequestInit = {}): Promise<T> => transport ? transport.request<T>(path, options) : synthesisRequest<T>(path, options);
+  const remote = transport?.remote;
   const availableProjects = projects.filter(project => !project.archivedAt);
   const [projectId, setProjectId] = useState(() => {
-    const saved = storedProject(); return availableProjects.some(project => project.id === saved) ? saved : availableProjects[0]?.id ?? "";
+    const saved = storedProject(storageKey); return availableProjects.some(project => project.id === saved) ? saved : availableProjects[0]?.id ?? "";
   });
   const [modules, setModules] = useState<SynthesisModule[]>([]);
-  const [hiddenModules, setHiddenModules] = useState(storedHiddenModules);
+  const [hiddenModules, setHiddenModules] = useState(() => storedHiddenModules(storageKey));
   const [moduleId, setModuleId] = useState("");
   const [module, setModule] = useState<SynthesisModule | null>(null);
   const [runs, setRuns] = useState<SynthesisRun[]>([]);
@@ -74,7 +79,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const hideModule = (id: string) => {
     setHiddenModules(current => ({ ...current, [projectId]: [...new Set([...(current[projectId] ?? []), id])] }));
   };
-  useEffect(() => { try { localStorage.setItem(hiddenModulesKey, JSON.stringify(hiddenModules)); } catch { /* Optional view preference. */ } }, [hiddenModules]);
+  useEffect(() => { try { localStorage.setItem(hiddenModulesKey(storageKey), JSON.stringify(hiddenModules)); } catch { /* Optional view preference. */ } }, [hiddenModules]);
   useEffect(() => {
     const visible = modules.filter(item => !hiddenModules[projectId]?.includes(item.id));
     setModuleId(current => visible.some(item => item.id === current) ? current : visible[0]?.id ?? "");
@@ -85,7 +90,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   }, [projects, projectId]);
   useEffect(() => { if (selectedProjectId) setProjectId(selectedProjectId); }, [selectedProjectId]);
   useEffect(() => {
-    try { localStorage.setItem("lcai.synthesis.project.v1", projectId); } catch { /* Storage may be unavailable. */ }
+    try { localStorage.setItem(projectKey(storageKey), projectId); } catch { /* Storage may be unavailable. */ }
     setModules([]); setModuleId(""); setModule(null); setRuns([]); setRunId(""); setRun(null); setDiff(null); setError(""); setNotice("");
     setCreatingModule(false);
   }, [projectId]);
@@ -94,8 +99,8 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     const controller = new AbortController();
     setLoading(true);
     Promise.all([
-      synthesisRequest<{ modules: SynthesisModule[] }>(`/projects/${encode(projectId)}/modules`, { signal: controller.signal }),
-      synthesisRequest<SynthesisRun[]>(`/projects/${encode(projectId)}/runs`, { signal: controller.signal })
+      request<{ modules: SynthesisModule[] }>(`/projects/${encode(projectId)}/modules`, { signal: controller.signal }),
+      request<SynthesisRun[]>(`/projects/${encode(projectId)}/runs`, { signal: controller.signal })
     ]).then(([moduleList, runList]) => {
       if (controller.signal.aborted) return;
       setModules(moduleList.modules); setRuns(runList);
@@ -112,7 +117,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   useEffect(() => {
     if (!moduleId || !projectId || !active) return;
     const controller = new AbortController();
-    synthesisRequest<SynthesisModule>(`/projects/${encode(projectId)}/modules/${encode(moduleId)}`, { signal: controller.signal })
+    request<SynthesisModule>(`/projects/${encode(projectId)}/modules/${encode(moduleId)}`, { signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) setModule(result); })
       .catch(reason => { if (!isAbort(reason) && !controller.signal.aborted) setError(errorMessage(reason)); });
     return () => controller.abort();
@@ -128,7 +133,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     const poll = async () => {
       let shouldContinue = true;
       try {
-        const result = await synthesisRequest<SynthesisRun>(`/runs/${encode(runId)}`, { signal: controller.signal });
+        const result = await request<SynthesisRun>(`/runs/${encode(runId)}`, { signal: controller.signal });
         if (controller.signal.aborted) return;
         if (result.projectId !== projectId || result.moduleId !== moduleId) return;
         setRun(result);
@@ -147,7 +152,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     if (sourceOrigin !== "snapshot" || !sourceTab || !runId || !active) return;
     const controller = new AbortController();
     setRunSources(null); setSourceError("");
-    synthesisRequest<RunSources>(`/runs/${encode(runId)}/sources`, { signal: controller.signal })
+    request<RunSources>(`/runs/${encode(runId)}/sources`, { signal: controller.signal })
       .then(result => {
         if (!controller.signal.aborted && selection.current.runId === runId) setRunSources({ ...result, runId });
       })
@@ -162,7 +167,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     if (tab !== "changes" || !runId || !active || running) return;
     const controller = new AbortController();
     setDiffLoading(true);
-    synthesisRequest<CandidateDiff>(`/runs/${encode(runId)}/diff`, { signal: controller.signal })
+    request<CandidateDiff>(`/runs/${encode(runId)}/diff`, { signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) setDiff(result); })
       .catch(reason => { if (!isAbort(reason) && !controller.signal.aborted) setError(errorMessage(reason)); })
       .finally(() => { if (!controller.signal.aborted) setDiffLoading(false); });
@@ -176,27 +181,27 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     finally { if (mounted.current) setBusy(""); }
   }, [busy]);
   const open = (file?: "spec" | "flow") => void perform("open", async () => {
-    await synthesisRequest(`/projects/${encode(projectId)}/open`, { method: "POST", body: JSON.stringify(file ? { moduleId, file } : {}) });
+    await request(`/projects/${encode(projectId)}/open`, { method: "POST", body: JSON.stringify(file ? { moduleId, file } : {}) });
     setNotice(file ? `Opened ${file === "spec" ? ".lcspec" : ".lcflow"} in your editor.` : "Opened project in your editor.");
   });
   const closeNewModule = () => { setCreatingModule(false); newModuleTrigger.current?.focus(); };
   const moduleCreated = (created: SynthesisModule) => {
     setModules(current => [...current.filter(item => item.id !== created.id), created]); restoreModule(created.id); setTab("contract");
-    setRevision(current => current + 1); setNotice(`${created.name} created at ${created.specPath}. Open in editor to define its contract and flow.`);
+    setRevision(current => current + 1); setNotice(`${created.name} created at ${created.specPath}. ${remote ? `Edit its contract and flow on ${remote.hostName}, then Refresh.` : "Open in editor to define its contract and flow."}`);
     closeNewModule();
   };
   const startRun = () => void perform("run", async () => {
-    const created = await synthesisRequest<SynthesisRun>(`/projects/${encode(projectId)}/runs`, { method: "POST", body: JSON.stringify({ moduleId }) });
+    const created = await request<SynthesisRun>(`/projects/${encode(projectId)}/runs`, { method: "POST", body: JSON.stringify({ moduleId }) });
     if (selection.current.projectId !== projectId || selection.current.moduleId !== moduleId) return;
     setRuns(current => [created, ...current.filter(item => item.id !== created.id)]); setRunId(created.id); setRun(created);
   });
   const runAction = (action: "cancel" | "resume") => void perform(action, async () => {
-    const updated = await synthesisRequest<SynthesisRun>(`/runs/${encode(runId)}/${action}`, { method: "POST" });
+    const updated = await request<SynthesisRun>(`/runs/${encode(runId)}/${action}`, { method: "POST" });
     if (selection.current.runId !== runId) return;
     setRunId(updated.id); setRun(updated); setRuns(current => [updated, ...current.filter(item => item.id !== updated.id)]);
   });
   const apply = () => void perform("apply", async () => {
-    await synthesisRequest(`/runs/${encode(runId)}/apply`, { method: "POST" });
+    await request(`/runs/${encode(runId)}/apply`, { method: "POST" });
     if (selection.current.runId !== runId) return;
     setNotice("Verified candidate applied to the project."); setRevision(current => current + 1);
   });
@@ -205,7 +210,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     <header className="synthesis-toolbar">
       <div className="synthesis-toolbar__heading"><h2>Synthesis</h2></div>
       <div className="synthesis-toolbar__actions">
-        <button type="button" disabled={!project || Boolean(busy)} onClick={() => open()}>Open in editor <SynthesisIcon name="external" /></button>
+        {remote ? null : <button type="button" disabled={!project || Boolean(busy)} onClick={() => open()}>Open in editor <SynthesisIcon name="external" /></button>}
         <button type="button" disabled={!project || loading || Boolean(busy)} onClick={() => setRevision(current => current + 1)}><SynthesisIcon name="refresh" />{loading ? "Refreshing…" : "Refresh"}</button>
         <button ref={diagnosticsTrigger} type="button" className="synthesis-diagnostics-toggle" disabled={!project} aria-label={`Project diagnostics: ${diagnostics.label}`} aria-expanded={diagnosticsOpen && Boolean(project)} aria-controls="synthesis-diagnostics" onClick={() => setDiagnosticsOpen(open => !open)}><SynthesisIcon name="diagnostics" /><span>Diagnostics</span><span className={`synthesis-status-dot status-${diagnostics.tone}`} /></button>
         {running ? <button type="button" className="synthesis-stop" disabled={Boolean(busy)} onClick={() => runAction("cancel")}>{busy === "cancel" ? "Stopping…" : "Stop"}</button>
@@ -230,11 +235,11 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
           </button>)}{!moduleRuns.length ? <p className="synthesis-empty">Runs for this module appear here.</p> : null}</div>
         </aside>
         <main className="synthesis-main-pane">
-          <header className="synthesis-module-header"><div><h2>{module?.name ?? (moduleId ? "Loading module…" : "Your first synthesis")}</h2><span>{module ? "Edit the source in your IDE. Refresh to validate saved changes." : "Create a module or save matching .lcspec and .lcflow files in your project, then Refresh."}</span></div>
+          <header className="synthesis-module-header"><div><h2>{module?.name ?? (moduleId ? "Loading module…" : "Your first synthesis")}</h2><span>{module ? remote ? `The source is edited on ${remote.hostName}. Refresh to see saved changes.` : "Edit the source in your IDE. Refresh to validate saved changes." : "Create a module or save matching .lcspec and .lcflow files in your project, then Refresh."}</span></div>
             {run ? <span className={`synthesis-badge status-${run.status}`}>{statusLabel(run.status)}</span> : null}</header>
-          <div className="synthesis-tabs" role="tablist" aria-label="Module views">{([['contract', 'Contract'], ['flow', 'Flow'], ['changes', 'Changes'], ['preview', 'Preview']] as const).map(([id, label]) =>
+          <div className="synthesis-tabs" role="tablist" aria-label="Module views">{([['contract', 'Contract'], ['flow', 'Flow'], ['changes', 'Changes'], ...(remote ? [] : [['preview', 'Preview']])] as Array<[SourceTab, string]>).map(([id, label]) =>
             <button role="tab" type="button" key={id} id={`synthesis-tab-${id}`} aria-selected={tab === id} aria-controls="synthesis-source-panel" disabled={!module && !run} onClick={() => setTab(id)}>{label}</button>)}
-            {sourceTab && module ? <button type="button" className="synthesis-open-source" disabled={Boolean(busy)} onClick={() => open(tab === "contract" ? "spec" : "flow")}>Open project .{tab === "contract" ? "lcspec" : "lcflow"} ↗</button> : null}
+            {sourceTab && module && !remote ? <button type="button" className="synthesis-open-source" disabled={Boolean(busy)} onClick={() => open(tab === "contract" ? "spec" : "flow")}>Open project .{tab === "contract" ? "lcspec" : "lcflow"} ↗</button> : null}
           </div>
           {sourceTab ? <div className="synthesis-source-origin">
             {run ? <div role="group" aria-label="Source version"><button type="button" aria-pressed={sourceOrigin === "project"} onClick={() => setSourceOrigin("project")}>Project source</button><button type="button" aria-pressed={sourceOrigin === "snapshot"} onClick={() => setSourceOrigin("snapshot")}>Run snapshot</button></div> : <span>Project source</span>}
@@ -250,9 +255,9 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
           {run && recoverableStatuses.has(run.status) ? <div className="synthesis-recovery"><span>Start a new run from this frozen snapshot. The existing run and its history stay available.</span><button type="button" disabled={Boolean(busy)} onClick={() => runAction("resume")}>{busy === "resume" ? "Restarting…" : "Restart from snapshot"}</button></div> : null}
           </SynthesisOutput>
         </main>
-        {diagnosticsOpen ? <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} onOpenSource={open} onClose={closeDiagnostics} /> : null}
+        {diagnosticsOpen ? <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} onOpenSource={remote ? undefined : open} onClose={closeDiagnostics} /> : null}
       </div>}
     <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
-    {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} /> : null}
+    {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} request={request} /> : null}
   </div>;
 }

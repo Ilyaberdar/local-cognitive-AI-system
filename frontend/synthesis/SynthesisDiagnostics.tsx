@@ -14,7 +14,8 @@ export function diagnosticSummary(module: SynthesisModule | null) {
 
 export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose }: {
   module: SynthesisModule | null; run: SynthesisRun | null; busy: boolean;
-  onOpenSource: (file: "spec" | "flow") => void; onClose: () => void;
+  /** Absent on a server's screen: its files are not opened in an editor here. */
+  onOpenSource?: (file: "spec" | "flow") => void; onClose: () => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, []);
@@ -31,8 +32,8 @@ export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose 
       <section className="synthesis-diagnostic-section" aria-labelledby="synthesis-validation-title">
         <header><h3 id="synthesis-validation-title">Current source</h3><span className={`synthesis-status status-${summary.tone}`}>{summary.label}</span></header>
         {module ? module.diagnostics.length ? <div className="synthesis-diagnostics">{module.diagnostics.map((item, index) =>
-          <button key={index} type="button" disabled={busy} className={`synthesis-diagnostic ${item.severity === "warning" ? "is-warning" : "is-error"}`} onClick={() => onOpenSource(item.file?.endsWith(".lcflow") ? "flow" : "spec")}>
-            <SynthesisIcon name="warning" /><span><strong>{item.message}</strong><small>{item.file ?? "DSL source"}{item.line ? `:${item.line}${item.column ? `:${item.column}` : ""}` : ""}</small><span className="synthesis-diagnostic__action">Open in editor <SynthesisIcon name="external" /></span></span>
+          <button key={index} type="button" disabled={busy || !onOpenSource} className={`synthesis-diagnostic ${item.severity === "warning" ? "is-warning" : "is-error"}`} onClick={() => onOpenSource?.(item.file?.endsWith(".lcflow") ? "flow" : "spec")}>
+            <SynthesisIcon name="warning" /><span><strong>{item.message}</strong><small>{item.file ?? "DSL source"}{item.line ? `:${item.line}${item.column ? `:${item.column}` : ""}` : ""}</small>{onOpenSource ? <span className="synthesis-diagnostic__action">Open in editor <SynthesisIcon name="external" /></span> : null}</span>
           </button>)}</div>
           : <p className={`synthesis-validation-result status-${summary.tone}`}><SynthesisIcon name={module.valid ? "check" : "warning"} />{module.valid ? "Spec and flow are valid" : "Source validation is incomplete. Refresh to check the saved files."}</p>
           : <p className="synthesis-section-note">Select a module to validate its source.</p>}
