@@ -100,6 +100,19 @@ const focusWindow = () => {
   if (process.platform === "darwin") app.focus({ steal: true });
 };
 
+// Model calls are recorded for the account signed in when they run; none signed in, they stay on this computer.
+const usageAccount = () => { const status = account?.service.status(); return status?.state === "signed-in" ? status.profile.accountId : undefined; };
+
+// The ledger goes to the Cloud with the signed-in account's token, which never leaves this process.
+const startUsageSync = (handle) => {
+  const { resolveAccountConfig } = require("../dist/src/account/accountConfig.js");
+  const { accountUsageSender } = require("../dist/src/usage/UsageOutbox.js");
+  const { cloudUrl } = resolveAccountConfig({ env: process.env, packaged: app.isPackaged });
+  if (!cloudUrl || !handle.usage || !handle.usageOutbox) return;
+  handle.usageOutbox.setSender(accountUsageSender({ cloudUrl, runtimeId: handle.usage.runtimeId, account: usageAccount,
+    token: () => account.service.getAccessToken() }));
+};
+
 const startBackend = async (appRoot, vault) => {
   const entry = path.join(appRoot, "dist", "src", "index.js");
   const { loadOAuthClientRegistrations } = require(path.join(appRoot, "dist", "src", "plugins", "OAuthConnections.js"));
@@ -112,8 +125,6 @@ const startBackend = async (appRoot, vault) => {
   let oauthClients = {};
   try { oauthClients = await loadOAuthClientRegistrations(oauthClientsFile); }
   catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
-  // Model calls are recorded for the account signed in when they run; none signed in, they stay on this computer.
-  const usageAccount = () => { const status = account?.service.status(); return status?.state === "signed-in" ? status.profile.accountId : undefined; };
   return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount });
 };
 
@@ -205,6 +216,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       root: path.join(runtime.dataRoot, "speech"),
       runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
     backendHandle = await startBackend(runtime.appRoot, vault);
+    startUsageSync(backendHandle);
     await waitForServer(runtime.url);
     await createWindow(runtime.url);
     const { isDeepLinkArgument } = require("./account.cjs");

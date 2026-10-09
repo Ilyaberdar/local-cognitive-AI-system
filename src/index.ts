@@ -22,6 +22,7 @@ import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
 import { RemoteHostStore } from "./remote/host/RemoteHostStore";
 import { UsageLedger } from "./usage/UsageLedger";
+import { UsageOutbox } from "./usage/UsageOutbox";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
 import { createChatScrubber, withoutAttachmentData } from "./runtime/chatOperations";
@@ -63,6 +64,8 @@ export interface BackendHandle {
   host?: HostServices;
   /** This runtime's usage ledger; absent when host.db could not be opened on a desktop. */
   usage?: UsageLedger;
+  /** Sends the ledger to the Cloud once a sender is set (the account's, or the server's). */
+  usageOutbox?: UsageOutbox;
 }
 
 export interface BackendOptions {
@@ -88,17 +91,18 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const usage = database ? new UsageLedger(database, () => remoteStore
     ? { accountId: remoteStore.owner(), hostId: remoteStore.hostId() }
     : { accountId: options.usageAccount?.() }, logger) : undefined;
+  const usageOutbox = usage ? new UsageOutbox(usage, logger) : undefined;
   const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, { ...integrations, ...(usage ? { usage } : {}) });
   let runtime;
   try { runtime = await runtimeManager.init(); }
-  catch (error) { database?.close(); lock.release(); throw error; }
+  catch (error) { usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = runtime.sessionIndexStore;
   // The server keeps chat turns durable across disconnects and restarts (R4); the desktop does not yet.
   let host: HostServices | undefined;
   if (options.runtimeKind === "server") {
     try { host = openHostServices(database!, config, runtimeManager, sessionIndexStore); }
-    catch (error) { await runtimeManager.dispose(); database?.close(); lock.release(); throw error; }
+    catch (error) { await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   }
 
   let server: Server | undefined;
@@ -113,6 +117,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     const closed = server ? new Promise<void>((resolve) => server!.close(() => resolve())) : Promise.resolve();
     await host?.runService.dispose();
     await runtimeManager.dispose();
+    usageOutbox?.stop();
     database?.close();
     server?.closeAllConnections();
     await closed;
@@ -217,7 +222,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting();
     try { runtimeManager.getRuntime().synthesis.stopAccepting(); } catch { /* Runtime not built. */ } };
   const interruptActiveWork = () => processRunRegistry.cancelAll() + (host?.runService.interruptAll() ?? 0);
-  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}) };
+  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}), ...(usageOutbox ? { usageOutbox } : {}) };
   } catch (error) { await dispose(); throw error; }
 };
 

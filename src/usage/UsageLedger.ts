@@ -8,6 +8,24 @@ import type { UsageAttemptRecord, UsageRecorder } from "./UsageCall";
 export interface UsageAttribution { accountId?: string; hostId?: string }
 
 const META = { runtimeId: "usage.runtime_id", salt: "usage.id_salt", startedAt: "usage.ledger_started_at" } as const;
+
+/** An event as the Cloud receives it (apps/cloud/src/usage/usageEvent.ts): counts and references. */
+export interface UsageWireEvent {
+  eventId: string; accountId: string; callId: string; attempt: number; runRef: string | null; sessionRef: string | null;
+  origin: string | null; purpose: string | null; provider: string; model: string; startedAt: string; occurredAt: string;
+  outcome: string; httpStatus: number | null; usageSource: string; inputTokens: number | null; outputTokens: number | null;
+  totalTokens: number | null; cachedInputTokens: number | null; cacheWriteTokens: number | null; reasoningTokens: number | null;
+}
+const wire = (row: Record<string, unknown>): UsageWireEvent => {
+  const text = (value: unknown) => value === null || value === undefined ? null : String(value);
+  const number = (value: unknown) => value === null || value === undefined ? null : Number(value);
+  return { eventId: String(row.event_id), accountId: String(row.account_id), callId: String(row.call_id), attempt: Number(row.attempt),
+    runRef: text(row.run_ref), sessionRef: text(row.session_ref), origin: text(row.origin), purpose: text(row.purpose),
+    provider: String(row.provider), model: String(row.model), startedAt: String(row.started_at), occurredAt: String(row.occurred_at),
+    outcome: String(row.outcome), httpStatus: number(row.http_status), usageSource: String(row.usage_source),
+    inputTokens: number(row.input_tokens), outputTokens: number(row.output_tokens), totalTokens: number(row.total_tokens),
+    cachedInputTokens: number(row.cached_input_tokens), cacheWriteTokens: number(row.cache_write_tokens), reasoningTokens: number(row.reasoning_tokens) };
+};
 const SOURCE = new Set(["reported", "estimated", "unknown"]);
 
 /** The executing runtime's usage ledger in host.db. Each request to a model is one row, written
@@ -30,6 +48,10 @@ export class UsageLedger implements UsageRecorder {
     this.salt = meta(META.salt);
     this.startedAt = meta(META.startedAt);
   }
+
+  private readonly listeners = new Set<() => void>();
+  /** Called after new events are written (the outbox sends them soon). */
+  onRecord(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 
   /** The same id gives the same reference, so a run's calls stay together without naming it. */
   reference(id: string | undefined): string | null {
@@ -59,5 +81,51 @@ export class UsageLedger implements UsageRecorder {
           accountId ? "pending" : "local_only");
       }
     });
+    if (accountId) for (const listener of this.listeners) listener();
+  }
+
+  /** A batch interrupted by a restart was maybe received, maybe not: it is sent again (a resend
+   * of a received event is acknowledged as a duplicate). */
+  recoverSent(): number {
+    return Number(this.host.db.prepare("UPDATE usage_events SET sync_state = 'pending' WHERE sync_state = 'sent'").run().changes);
+  }
+
+  /** The oldest waiting events of one account, recorded under one runtime id, marked as sent. */
+  claim(accountId: string, executionHostId: string, limit: number): UsageWireEvent[] {
+    return this.host.transaction(db => {
+      const rows = db.prepare(`SELECT * FROM usage_events WHERE sync_state = 'pending' AND account_id = ? AND execution_host_id = ?
+        ORDER BY occurred_at, event_id LIMIT ?`).all(accountId, executionHostId, limit) as Array<Record<string, unknown>>;
+      const mark = db.prepare("UPDATE usage_events SET sync_state = 'sent', sync_attempts = sync_attempts + 1 WHERE event_id = ?");
+      for (const row of rows) mark.run(String(row.event_id));
+      return rows.map(wire);
+    });
+  }
+
+  /** The Cloud's answer: acknowledged events keep its receipt time; refused ones stay on this
+   * computer with the reason; any it did not mention wait for the next attempt. */
+  settle(eventIds: string[], acked: Array<{ eventId: string; receivedAt: string }>, rejected: Array<{ eventId: string; code: string }>): void {
+    const done = new Set<string>();
+    this.host.transaction(db => {
+      const ack = db.prepare("UPDATE usage_events SET sync_state = 'acked', cloud_received_at = ?, sync_error = NULL WHERE event_id = ? AND sync_state = 'sent'");
+      const refuse = db.prepare("UPDATE usage_events SET sync_state = 'local_only', sync_error = ? WHERE event_id = ? AND sync_state = 'sent'");
+      const wait = db.prepare("UPDATE usage_events SET sync_state = 'pending' WHERE event_id = ? AND sync_state = 'sent'");
+      const sent = new Set(eventIds);
+      for (const item of acked) if (sent.has(item.eventId) && Number.isFinite(Date.parse(item.receivedAt))) { ack.run(new Date(item.receivedAt).toISOString(), item.eventId); done.add(item.eventId); }
+      for (const item of rejected) if (sent.has(item.eventId) && !done.has(item.eventId)) { refuse.run(String(item.code).slice(0, 64), item.eventId); done.add(item.eventId); }
+      for (const eventId of eventIds) if (!done.has(eventId)) wait.run(eventId);
+    });
+  }
+
+  /** A failed send: the events wait for the next attempt. */
+  release(eventIds: string[], error: string): void {
+    this.host.transaction(db => {
+      const wait = db.prepare("UPDATE usage_events SET sync_state = 'pending', sync_error = ? WHERE event_id = ? AND sync_state = 'sent'");
+      for (const eventId of eventIds) wait.run(error.slice(0, 200), eventId);
+    });
+  }
+
+  /** How many of an account's events have not reached the Cloud yet. */
+  pendingCount(accountId: string): number {
+    return Number(this.host.db.prepare("SELECT count(*) AS n FROM usage_events WHERE account_id = ? AND sync_state IN ('pending', 'sent')").get(accountId)?.n ?? 0);
   }
 }
