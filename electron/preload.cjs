@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld("desktopAccount", {
   }
 });
 
+// The Usage page's numbers, put together in the main process with the account token.
+contextBridge.exposeInMainWorld("desktopUsage", {
+  overview: request => ipcRenderer.invoke("usage:overview", request)
+});
+
 // Remote statuses and host summaries; keys, tickets and tokens stay in the main process.
 // Each call resolves with { ok, value } or { ok: false, error: { code, message } }.
 contextBridge.exposeInMainWorld("desktopRemote", {
