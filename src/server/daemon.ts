@@ -17,6 +17,7 @@ import { createChatOperations, requireRemoteSession } from "../runtime/chatOpera
 import { createEventStreamOperations } from "../runtime/eventStreams";
 import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
+import { createSettingsOperations } from "../runtime/settingsOperations";
 import { publicError } from "../runtime/publicError";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
@@ -76,7 +77,8 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
         sources: [createWorkflowRunStreams(orchestration)] }),
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger,
-        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" })
+        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
+      ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" })
     },
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();
