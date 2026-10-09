@@ -166,7 +166,9 @@ export function createMcpRouter(runtime: RuntimeManager): Router {
     const existing = new Map(Object.values(client.servers).map(server => [connectionOf(server), server.id]));
     const candidates: McpImportCandidate[] = [];
     for (const [key, value] of Object.entries(servers).slice(0, 64)) {
-      const candidate = importCandidate(key, value, taken, process.env);
+      // A pasted snippet (from a web page) gets no value from this computer's environment: only the
+      // user's own app configs refer to it, as their apps do.
+      const candidate = importCandidate(key, value, taken, source === "text" ? {} : process.env);
       if (!candidate) continue;
       // Checked as Settings would check it, so one unusable server does not stop the others.
       if (!candidate.unsupported) {
@@ -184,7 +186,7 @@ export function createMcpRouter(runtime: RuntimeManager): Router {
       key: candidate.key, id: candidate.id, server: candidate.server, ignored: candidate.ignored,
       ...(candidate.unsupported ? { unsupported: candidate.unsupported } : {}),
       ...(existing.has(connectionOf(candidate.server)) ? { alreadyAdded: existing.get(connectionOf(candidate.server)) } : {}),
-      secrets: candidate.secrets.map(({ kind, name, value }) => ({ kind, name, found: value !== undefined }))
+      secrets: candidate.secrets.map(({ kind, name, value, from }) => ({ kind, name, found: value !== undefined, ...(from ? { from } : {}) }))
     })) };
   }));
   router.post("/import/apply", secretRoute(async req => {
