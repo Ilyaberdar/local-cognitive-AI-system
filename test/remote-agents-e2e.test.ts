@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import { RemoteClient } from "../src/remote/client/RemoteClient";
 import { RemoteRuntime, type StreamCursor, type StreamUpdate } from "../src/remote/client/RemoteRuntime";
@@ -98,4 +99,42 @@ test("a server chat's subagents and debate agents are set from a device; a chat 
   assert.equal((await runtime.request<Array<{ id: string }>>("sessions.list", {})).some(item => item.id === other.id), false);
   // The chat the server keeps for itself can still be deleted from here.
   assert.deepEqual(await runtime.request("sessions.delete", { sessionId: session.id }), { deleted: true });
+});
+
+test("a server chat's attachment arrives in chunks across a dropped connection and reaches the model; history keeps only its name", { skip: remoteStackSkip, timeout: 180_000 }, async t => {
+  const cloud = await startCloud(t);
+  const model = await startStubModel(t, "The plan says Friday.");
+  const server = await startDaemon(t, cloud.origin, { DEFAULT_PROVIDER: "lmstudio", LMSTUDIO_BASE_URL: model.url, LMSTUDIO_MODEL: "fixture" });
+  const alice = await cloud.account("auth0|alice");
+  const mac = new RemoteClient({ cloudUrl: cloud.origin, vault: memoryVault(), account: async () => alice, deviceName: "Mac", platform: "macos", backoff: { baseMs: 50, maxMs: 300 } });
+  t.after(() => mac.dispose());
+  const paired = await mac.pair(server.connectKey());
+  assert.ok(paired.capabilities?.includes("uploads.begin"));
+  const runtime = new RemoteRuntime(mac);
+  t.after(() => runtime.dispose());
+  const updates: StreamUpdate[] = [];
+  runtime.on("update", (update: StreamUpdate) => updates.push(update));
+  const failure = async (promise: Promise<unknown>) => { try { await promise; return "ok"; } catch (error) { return (error as { code?: string }).code; } };
+  const session = await runtime.request<{ id: string }>("sessions.create", { title: "Files" });
+
+  const text = "Secret plan: ship the release on Friday, after the review.";
+  const uploadId = randomUUID();
+  const begin = { uploadId, sessionId: session.id, name: "plan.txt", mimeType: "text/plain", kind: "text", sizeBytes: text.length, length: text.length,
+    sha256: createHash("sha256").update(text).digest("hex") };
+  assert.deepEqual((await runtime.request<{ received: number[] }>("uploads.begin", begin)).received, []);
+  mac.disconnect();
+  assert.equal((await mac.connect(paired.hostId!)).state, "online");
+  assert.deepEqual((await runtime.request<{ received: number[] }>("uploads.begin", begin)).received, [], "the upload is still there after the drop");
+  await runtime.request("uploads.chunk", { uploadId, index: 0, data: text });
+  assert.deepEqual(await runtime.request("uploads.commit", { uploadId }), { id: uploadId, name: "plan.txt", mimeType: "text/plain", sizeBytes: text.length, kind: "text" });
+
+  runtime.subscribe((await runtime.request<Snapshot>("sessions.messages.list", { sessionId: session.id })).cursor);
+  await runtime.send("chat.runs.start", { sessionId: session.id, input: "When do we ship?", attachmentIds: [uploadId] });
+  await until(() => updates.flatMap(update => "events" in update ? update.events.map(event => event.type) : []), types => types.includes("run.completed") || types.includes("run.failed"), 60_000);
+  assert.ok(model.state.bodies.some(body => body.includes("ship the release on Friday")), "the attachment's text reached the model");
+  const history = await runtime.request<Snapshot>("sessions.messages.list", { sessionId: session.id });
+  const asked = history.messages.find(message => message.role === "user")!;
+  assert.deepEqual(asked.attachments?.map(item => [item.name, item.kind, "textContent" in item]), [["plan.txt", "text", false]], "history shows the file, not its contents");
+  assert.equal(JSON.stringify(updates).includes("ship the release on Friday"), false, "no event carried the contents");
+  assert.equal(await failure(runtime.send("chat.runs.start", { sessionId: session.id, input: "Again", attachmentIds: [uploadId] })), "attachment_unknown", "a turn takes an upload once");
 });

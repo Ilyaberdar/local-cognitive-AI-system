@@ -6,7 +6,7 @@ import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
-import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
+import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuidance, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
 import { createServerModels } from "./server-models.js";
 import { createServerOrchestration } from "./server-orchestration.js";
 import { createServerSettings } from "./server-settings.js";
@@ -1035,8 +1035,10 @@ function renderChatRoute() {
     ...state.messages,
     ...pendingMessages
   ];
-  const draftAttachments = serverChat ? [] : getActiveDraftAttachments();
-  const attachmentGuidance = serverChat ? { blocked: false, message: "" } : getImageAttachmentGuidance(draftAttachments, settings);
+  // A server chat attaches files where the server takes them (R5-4d).
+  const remoteAttachments = serverChat && chatTarget.supports("uploads.begin");
+  const draftAttachments = serverChat && !remoteAttachments ? [] : getActiveDraftAttachments();
+  const attachmentGuidance = serverChat ? remoteImageGuidance(draftAttachments, settings, chatTarget.cachedModels(), chatTarget.hostName()) : getImageAttachmentGuidance(draftAttachments, settings);
   const preparingAttachments = Boolean(state.attachmentImports[`chat:${state.activeSessionId}`]);
 
   return `
@@ -1072,7 +1074,7 @@ function renderChatRoute() {
           ${voiceInput.renderStrip()}
           <div class="mention-menu" data-mention-menu hidden></div>
           <div class="composer-footer">
-            ${serverChat ? "" : `<button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files" ${preparingAttachments ? "disabled" : ""}>${icon("plus")}</button>`}
+            ${serverChat && !remoteAttachments ? "" : `<button class="icon-button composer-attach" type="button" data-action="attach-files" aria-label="Attach files" title="Attach files" ${preparingAttachments ? "disabled" : ""}>${icon("plus")}</button>`}
             ${renderChatActivityBar(settings)}
             <div class="composer-actions">
               ${renderEffortControl(settings)}
@@ -4393,7 +4395,7 @@ function bindEvents() {
     const files = [...(input.files ?? [])];
     const sessionId = state.activeSessionId;
     input.value = "";
-    if (files.length && sessionId) await addChatAttachments(files, sessionId);
+    if (files.length && sessionId) await (isServerChat(sessionId) ? addRemoteChatAttachments(files, sessionId) : addChatAttachments(files, sessionId));
   });
 
   document.querySelectorAll("[data-action='attach-task-files']").forEach((button) => {
@@ -6755,20 +6757,24 @@ async function submitRemoteChat(input, attachments, options = {}) {
     render();
     return false;
   }
-  if (attachments?.length) { pushToast("Attachments are not available for server chats yet.", "danger"); return false; }
+  if (attachments?.length && !chatTarget.supports("uploads.begin")) { pushToast(`Update Local Cognitive on ${chatTarget.hostName()} to send attachments.`, "danger"); return false; }
+  const guidance = remoteImageGuidance(attachments, state.sessionSettings, chatTarget.cachedModels(), chatTarget.hostName());
+  if (guidance.blocked) { pushToast(guidance.message, "danger"); return false; }
   const hostOnly = chatTarget.setup(key).hostOnly;
   if (hostOnly) { pushToast(hostOnly, "danger"); return false; }
   const request = { remote: true, requestId: null, sessionId: key, controller: new AbortController(), cancelled: false, progressTimer: null };
   request.pending = { requestId: null, sessionId: key, remote: true, input, startedAt: new Date().toISOString() };
   state.chatRequests.set(key, request);
-  const draft = state.drafts[key] ?? "";
-  if (!options.fromReview) state.drafts[key] = "";
+  const draft = state.drafts[key] ?? "", draftFiles = state.draftAttachments[key];
+  if (!options.fromReview) { state.drafts[key] = ""; if (attachments?.length) delete state.draftAttachments[key]; }
   const wasNearBottom = state.ui.messageStreamPinnedToBottom || isMessageStreamNearBottom();
   render();
   if (wasNearBottom) requestAnimationFrame(() => scrollChatToBottom("auto"));
   const restore = (message) => {
     if (state.chatRequests.get(key) === request) state.chatRequests.delete(key);
     if (!state.drafts[key]) state.drafts[key] = draft;
+    // The files stay attached (with their uploads), so sending again resumes or reuses them.
+    if (draftFiles?.length && !state.draftAttachments[key]?.length) state.draftAttachments[key] = draftFiles;
     if (message) pushToast(message, "danger");
     render();
   };
@@ -6776,7 +6782,8 @@ async function submitRemoteChat(input, attachments, options = {}) {
     window.clearTimeout(state.ui.autosaveTimer);
     await state.ui.autosavePromise.catch(() => undefined);
     await persistActiveSessionSetup({ refreshBootstrap: false, sessionId: key });
-    const ack = await chatTarget.send(key, input);
+    const attachmentIds = attachments?.length ? await chatTarget.upload(key, attachments) : [];
+    const ack = await chatTarget.send(key, input, attachmentIds);
     if (ack.status === "rejected") {
       restore(ack.code === "session_busy" ? "This chat is already answering on the server." : "The server did not accept the message.");
       await reloadRemoteChat();
@@ -6874,6 +6881,25 @@ function bindRemoteSetupSync(form) {
     const select = [...form.querySelectorAll("[data-remote-model]")].find((item) => item.name === name);
     if (select) select.outerHTML = remoteModelSelect(name, event.target.value, "", chatTarget.cachedModels());
   }));
+}
+
+/** Prepares files for a server chat as for this computer's (documents are read here); they are sent
+ * to the server with the message. */
+async function addRemoteChatAttachments(files, key) {
+  const importKey = `chat:${key}`;
+  if (state.attachmentImports[importKey]) return;
+  state.attachmentImports[importKey] = true;
+  render();
+  try {
+    const attachments = await buildAttachments(files, 5 - (state.draftAttachments[key] || []).length);
+    if (!chatTarget.owns(key)) return;
+    state.draftAttachments[key] = [...(state.draftAttachments[key] || []), ...attachments].slice(0, 5);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : "Failed to read attachments", "danger");
+  } finally {
+    delete state.attachmentImports[importKey];
+    render();
+  }
 }
 
 /** Renames a server chat from its setup panel; the field shows the saved title again on failure. */
