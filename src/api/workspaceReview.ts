@@ -48,25 +48,33 @@ export async function resolveReviewPath(manager: RuntimeManager, requestedPath: 
   throw new ReviewError(403, "This file is outside the workspace and has no completed file action for this owner.");
 }
 
-/** A file of a chat a paired device may open: inside the chat's own workspace (a project's), or one
- * a file action of this chat completed. Unlike Review here, neither the folders the host lets file
- * tools use nor the output folder every plain chat shares are readable as a whole from a device:
- * another chat's files there are not this chat's. Throws when it is not. */
-export async function resolveChatFileForDevice(manager: RuntimeManager, requestedPath: string, sessionId: string): Promise<string> {
+/** What of a chat a paired device may open (R5-4e): files inside its own (project) workspace, and
+ * files the chat's file actions read, wrote or appended (`filePath`; never a deleted path or a
+ * folder). Neither the folders the host lets file tools use nor the output folder every plain chat
+ * shares count as a whole. Built before the requested path is looked at, so how long an answer
+ * takes says nothing about which paths exist on the host. */
+export async function chatFileGrants(manager: RuntimeManager, sessionId: string): Promise<{ workspaceRoot?: string; files: Set<string> }> {
   const runtime = manager.getRuntime();
   const workspace = await runtime.workspaceResolver?.forSession(sessionId, { allowArchived: true });
   if (workspace) await runtime.workspaceResolver.validate(workspace);
-  const target = await fs.realpath(path.resolve(requestedPath));
-  if (workspace && await isWorkspacePath(target, [await fs.realpath(workspace.rootPath)])) return target;
   const settings = await manager.getSettings();
   const entries = await runtime.memoryService.recent({
     actor: { sessionId, userId: settings.memory.localProfileId, channel: "http", memoryScope: workspace?.memoryScope }, limit: 500
   });
+  const files = new Set<string>();
   for (const entry of entries) {
     const tools = entry.metadata?.tools;
-    if (Array.isArray(tools) && tools.some(tool => completedFileAction(tool, target))) return target;
+    if (!Array.isArray(tools)) continue;
+    for (const value of tools) {
+      const tool = value as { tool?: string; ok?: boolean; metadata?: { files?: unknown[]; filePath?: unknown } };
+      if (!(tool?.tool === "file" || tool?.tool?.startsWith?.("file.")) || tool.ok !== true) continue;
+      for (const file of [tool.metadata, ...(Array.isArray(tool.metadata?.files) ? tool.metadata.files : [])]) {
+        const filePath = (file as { filePath?: unknown } | undefined)?.filePath;
+        if (typeof filePath === "string" && path.isAbsolute(filePath)) files.add(filePath);
+      }
+    }
   }
-  throw new ReviewError(403, "This file is not one this chat can open.");
+  return { workspaceRoot: workspace ? await fs.realpath(workspace.rootPath) : undefined, files };
 }
 
 function completedFileAction(value: unknown, target: string): boolean {

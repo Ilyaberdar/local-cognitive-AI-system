@@ -25,7 +25,7 @@ export interface StreamSource {
 export const createEventStreamOperations = (deps: { journal: EventJournal; requireSession(sessionId: string): Promise<unknown>; sources?: StreamSource[];
   /** Chat events are written scrubbed (RunService); events from before that are scrubbed as they
    * are read, and a streamed part that would change sends the device to reload instead. */
-  scrubSession?(): Promise<<T>(value: T) => T> }): Record<string, RemoteOperation> => ({
+  scrubSession?(sessionId: string): Promise<<T>(value: T) => T> }): Record<string, RemoteOperation> => ({
   "events.poll": async (payload, context) => {
     const parsed = schema.safeParse(payload);
     if (!parsed.success) throw new RemoteOperationError("The request is not valid.", "invalid_request");
@@ -43,9 +43,11 @@ export const createEventStreamOperations = (deps: { journal: EventJournal; requi
     const stops = kinds.flatMap(kind => "source" in kind ? [kind.source!.subscribe(kind.id!, wake)] : []);
     context.signal.addEventListener("abort", wake, { once: true });
     try {
-      const scrub = kinds.some(kind => "session" in kind) && deps.scrubSession ? await deps.scrubSession() : undefined;
+      const scrubs = new Map<string, <T>(value: T) => T>();
+      for (const kind of kinds) if ("session" in kind && deps.scrubSession && !scrubs.has(kind.session!)) scrubs.set(kind.session!, await deps.scrubSession(kind.session!));
       const chat = (stream: { streamId: string; epoch: string; after: number }) => {
         const result = deps.journal.read(stream.streamId, stream, { maxEvents });
+        const scrub = scrubs.get(stream.streamId.slice("session:".length));
         if (!scrub || !("events" in result)) return result;
         const events = result.events.map(event => ({ ...event, payload: scrub(event.payload) }));
         const shifted = events.some((event, index) => event.type === "message.delta" && event.payload.text !== result.events[index]!.payload.text);

@@ -112,7 +112,7 @@ export function remoteModelOptions(models, providerId) {
 
 export function createChatTarget({ bridge = window.desktopRemote, account, onChange = () => {}, onEvent = () => {} } = {}) {
   const runtime = bridge?.runtime;
-  let target = "local", status = { state: runtime ? "idle" : "unavailable" }, hosts = [], sessions = [], sessionsLoaded = false, models;
+  let target = "local", status = { state: runtime ? "idle" : "unavailable" }, hosts = [], sessions = [], sessionsLoaded = false, models, projects = [];
   const refs = new Map(), keysByRef = new Map(), settings = new Map(), setups = new Map(), views = new Map(), lastSession = new Map();
   let subscribed, generation = 0, modelsStale = false;
 
@@ -182,7 +182,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       api.release();
       target = next || "local";
       generation++;
-      sessions = []; sessionsLoaded = false; models = undefined; modelsStale = false;
+      sessions = []; sessionsLoaded = false; models = undefined; modelsStale = false; projects = [];
       if (target !== "local" && !(status.state === "online" && status.hostId === target)) {
         const result = await bridge.connect(target).catch(() => undefined);
         if (result?.ok) status = result.value;
@@ -194,10 +194,13 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     sessionsLoaded: () => sessionsLoaded,
     lastSessionKey: () => lastSession.get(target),
     rememberSession: key => { if (api.owns(key)) lastSession.set(refs.get(key).hostId, key); },
+    /** The server's projects (R5-4g), where it offers them: listed with its chats. */
+    projectList: () => projects,
     async refreshSessions() {
       const host = target;
-      const list = await call("sessions.list");
+      const [list, projectList] = await Promise.all([call("sessions.list"), api.supports("projects.list") ? call("projects.list") : Promise.resolve([])]);
       if (host !== target) return sessions;
+      projects = projectList;
       sessions = list.map(session => ({ ...session, id: keyFor(session.id, host), serverId: session.id, running: Boolean(session.activeRunId) }));
       sessionsLoaded = true;
       return sessions;
@@ -219,8 +222,8 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       if (subscribed?.key === key) api.release();
       for (const [host, last] of lastSession) if (last === key) lastSession.delete(host);
     },
-    async createSession(title = "New chat") {
-      const session = await call("sessions.create", { title });
+    async createSession(title = "New chat", projectId) {
+      const session = await call("sessions.create", { title, ...(projectId ? { projectId } : {}) });
       return { ...session, id: keyFor(session.id), serverId: session.id };
     },
     /** History, the turn in progress and the cursor to follow the chat from. */
@@ -277,6 +280,20 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     /** Drops what was sent of a draft attachment that will not be sent after all. */
     cancelUpload: (key, attachment) => attachment.remoteUpload?.host === hostOf(key)
       ? call("uploads.cancel", { uploadId: attachment.remoteUpload.uploadId }, hostOf(key)) : Promise.resolve(),
+    /** Asks the selected server (folder choices, projects). */
+    call: (op, payload) => call(op, payload),
+    /** Creates a project in a shared folder, once per command even if sent again. */
+    async createProject(input) {
+      const result = await runtime.send("projects.create", input, target);
+      if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The project was not created."), { code: result?.error?.code });
+      projects = [result.value, ...projects.filter(project => project.id !== result.value.id)];
+      return result.value;
+    },
+    async updateProject(projectId, patch) {
+      const saved = await call("projects.update", { projectId, ...patch });
+      projects = projects.map(project => project.id === saved.id ? saved : project);
+      return saved;
+    },
     /** A file of a server chat as Review shows it: its text, under the path the chat showed. */
     readFile: (key, filePath) => call("files.read", { sessionId: serverId(key), path: filePath, as: "text" }, hostOf(key)),
     /** A copy of a server chat's file, read in parts and checked against the server's hash. */

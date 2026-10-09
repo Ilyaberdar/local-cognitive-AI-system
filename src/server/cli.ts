@@ -126,13 +126,26 @@ const devices = async (args: ServerArgs) => {
 };
 
 /** Shared folders are a file in the data directory, read at every use: no restart is needed. */
-const folders = (args: ServerArgs) => {
+const folders = async (args: ServerArgs) => {
+  // Run as the server's user: a list root writes is one the server cannot read (it would share nothing).
+  if (process.getuid?.() === 0 && !args.allowRoot) throw new CliError("Run folders as the server's user (sudo -u <user> …), or pass --allow-root.", ExitCode.config);
   const root = path.resolve(args.dataDir!);
   checkDataRoot(root);
   const request = args.folders!;
+  // One change at a time, across processes.
+  const lock = path.join(root, "folders.json.lock");
+  for (let attempt = 0; ; attempt++) {
+    try { fs.closeSync(fs.openSync(lock, "wx", 0o600)); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (attempt > 50) throw new CliError(`Another folders command is running (or ${lock} was left behind; remove it).`, ExitCode.failure);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
   try {
     if (request.action === "add") {
-      const added = addAdminFolder(root, request.path, { label: request.label, allowCreate: request.allowCreate });
+      const keyFile = path.resolve(process.env.LOCAL_COGNITIVE_VAULT_KEY_FILE || defaultKeyFile());
+      const added = addAdminFolder(root, request.path, { label: request.label, allowCreate: request.allowCreate, protectedFiles: [keyFile] });
       print(args, `Shared ${added.path} as "${added.label ?? path.basename(added.path)}" (id ${added.id})${added.allowCreate ? ", folders may be made in it" : ""}.`, added);
     } else if (request.action === "remove") {
       const removed = removeAdminFolder(root, request.id);
@@ -147,7 +160,7 @@ const folders = (args: ServerArgs) => {
   } catch (error) {
     if (error instanceof FolderError) throw new CliError(error.message, ExitCode.config);
     throw error;
-  }
+  } finally { fs.rmSync(lock, { force: true }); }
 };
 
 export const main = async (argv: string[]): Promise<number> => {
@@ -162,7 +175,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "drain": return await drain(args);
       case "connect-key": return await connectKey(args);
       case "devices": return await devices(args);
-      case "folders": return folders(args);
+      case "folders": return await folders(args);
       case "revoke-device": {
         const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
         print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });

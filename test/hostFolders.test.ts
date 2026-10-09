@@ -56,7 +56,8 @@ test("a device sees roots by name and browses inside them; links out and travers
   assert.deepEqual((await f.call("fs.browse", { rootId: work.id, hidden: true })).entries.map((entry: any) => entry.name), ["app", "inner", ".env"]);
   assert.deepEqual((await f.call("fs.browse", { rootId: work.id, path: ["app"] })).entries.map((entry: any) => [entry.name, entry.kind, entry.sizeBytes]),
     [["src", "dir", undefined], ["README.md", "file", 5]]);
-  for (const [request, expected] of [[{ rootId: work.id, path: ["escape"] }, "forbidden"], [{ rootId: work.id, path: [".."] }, "invalid_path"],
+  for (const [request, expected] of [[{ rootId: work.id, path: ["escape"] }, "not_found"], [{ rootId: work.id, path: ["escape", "secret.txt"] }, "not_found"],
+    [{ rootId: work.id, path: ["escape", "missing.txt"] }, "not_found"], [{ rootId: work.id, path: [".."] }, "invalid_path"],
     [{ rootId: work.id, path: ["app/../.."] }, "invalid_path"], [{ rootId: work.id, path: ["a\u0000b"] }, "invalid_path"], [{ rootId: work.id, path: ["a\\b"] }, "invalid_path"],
     [{ rootId: work.id, path: ["missing"] }, "not_found"], [{ rootId: "other", path: [] }, "not_found"], [{ rootId: work.id, path: ["app", "README.md"] }, "invalid_path"],
     [{ rootId: work.id, path: f.outside.split(path.sep).filter(Boolean) }, "not_found"]] as const) {
@@ -64,6 +65,30 @@ test("a device sees roots by name and browses inside them; links out and travers
   }
   removeAdminFolder(f.data, work.id);
   await assert.rejects(f.call("fs.browse", { rootId: work.id }), code("not_found"), "a folder no longer shared is refused at once");
+});
+
+test("a shared folder later replaced by a link, or a managed folder that is a link, is not served", async t => {
+  const f = setup(t);
+  const drop = path.join(f.base, "drop");
+  fs.mkdirSync(drop);
+  const shared = addAdminFolder(f.data, drop);
+  assert.ok(await f.call("fs.browse", { rootId: shared.id }));
+  fs.rmSync(drop, { recursive: true });
+  fs.symlinkSync("/", drop);
+  await assert.rejects(f.call("fs.browse", { rootId: shared.id }), code("not_found"), "the folder now leads elsewhere");
+  assert.equal(f.folders.locate("/etc"), undefined);
+  fs.rmSync(path.join(f.data, "projects"), { recursive: true });
+  fs.symlinkSync(f.outside, path.join(f.data, "projects"));
+  await assert.rejects(f.call("fs.browse", { rootId: "projects" }), code("not_found"));
+  await assert.rejects(f.call("fs.mkdir", { rootId: "projects", path: [], name: "x" }), code("not_found"));
+});
+
+test("a folder holding the credential key cannot be shared", t => {
+  const f = setup(t);
+  const keys = path.join(f.base, "keys");
+  fs.mkdirSync(keys);
+  assert.throws(() => addAdminFolder(f.data, f.base.replace(/^\//, "/"), { protectedFiles: [path.join(keys, "vault.key")] }), FolderError);
+  assert.throws(() => addAdminFolder(f.data, keys, { protectedFiles: [path.join(keys, "vault.key")] }), FolderError);
 });
 
 test("folders are made only where the root allows, one at a time", async t => {

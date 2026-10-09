@@ -34,7 +34,7 @@ export interface RunServiceDependencies {
   legacyBusy?(sessionId: string): boolean;
   /** What a device may see of a turn: the host's folders replaced. Applied as events are written,
    * so streamed offsets count the text the device receives. */
-  scrubber?(): Promise<Scrubber>;
+  scrubber?(sessionId: string): Promise<Scrubber>;
   logger?: Logger;
   now?: () => Date;
 }
@@ -260,7 +260,7 @@ export class RunService {
       });
       this.deps.journal.publish(started);
       // Without its scrubber a turn does not run: nothing unscrubbed is written for a device.
-      run.scrub = await this.deps.scrubber?.();
+      run.scrub = await this.deps.scrubber?.(sessionId);
       run.controller.signal.throwIfAborted();
       const result = await this.deps.execute({ runId, sessionId, input, ...(run.attachments ? { attachments: run.attachments } : {}) }, {
         signal: run.controller.signal,

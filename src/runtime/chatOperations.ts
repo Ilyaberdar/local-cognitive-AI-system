@@ -3,7 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { resolveChatFileForDevice } from "../api/workspaceReview";
+import { chatFileGrants } from "../api/workspaceReview";
 import type { RuntimeManager } from "../app/RuntimeManager";
 import { loadSessionMessages } from "../conversations/sessionHistory";
 import { isReasoningEffort } from "../llm/ReasoningEffort";
@@ -15,11 +15,15 @@ import { pathScrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore";
+import type { ProjectAccess } from "./projectOperations";
 
 const MAX_HISTORY_BYTES = 768 * 1024;
 const MAX_SUBAGENTS = 4, MAX_ADVISORS = 5;
-/** A file's text for Review (as on this computer), and bytes per read of a copy being saved. */
-const TEXT_LIMIT = 5 * 1024 * 1024, FILE_CHUNK_BYTES = 512 * 1024, COPY_LIMIT = 100 * 1024 * 1024;
+/** A file's text for Review (its answer must fit one 1 MiB frame, escapes included), and bytes per
+ * read of a copy being saved. */
+const TEXT_LIMIT = 400 * 1024, FILE_CHUNK_BYTES = 512 * 1024, COPY_LIMIT = 100 * 1024 * 1024;
+const UNAVAILABLE = "The file is not available to this chat: it was moved or deleted, or this chat did not create or open it.";
+const inside = (child: string, parent: string) => child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
 /** Work the host set up with full access stays there: a device may stop, decline or delete it. */
 export const CHAT_ON_HOST = "This chat has full access on the server, so it can only be used or changed there.";
 const FULL_FROM_DEVICE = "Full access can only be given on the server itself.";
@@ -31,7 +35,7 @@ const agentFields = { id: z.string().trim().min(1).max(100), name: z.string().tr
 // An agent's id names its task and progress row; its name is how a message @mentions it.
 const AGENT_ID = /^[A-Za-z0-9_-]{1,100}$/, AGENT_NAME = /^[\p{L}\p{N}_-]{1,60}$/u;
 const schemas = {
-  sessionsCreate: z.object({ title: z.string().max(200).optional() }).strict().optional(),
+  sessionsCreate: z.object({ title: z.string().max(200).optional(), projectId: z.string().min(1).max(200).optional() }).strict().optional(),
   session: z.object({ sessionId: id }).strict(),
   rename: z.object({ sessionId: id, title: z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f\u007f]/.test(value)) }).strict(),
   settingsUpdate: z.object({ sessionId: id, patch: z.object({
@@ -90,16 +94,23 @@ export interface ChatOperationDependencies {
   hostDirectories?: string[];
   /** Attachments devices send for their next turn; without it, chats take text only. */
   uploads?: UploadStore;
+  /** Projects a device may use (R5-4g); without it, project chats stay on the host. */
+  projects?: ProjectAccess;
 }
 
-/** Replaces the host's folders in a chat's history, approvals and events: the chat output folder
- * (`<output>`), the folders file tools may use (`<folder>`) and the host's data (`<server>`). Paths
- * elsewhere stay, so an approval still says exactly what it is for. */
-export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostDirectories?: string[] }) => async () => {
+/** Replaces the host's folders in a chat's history, approvals and events: a project chat's project
+ * folder (`<workspace>`), the chat output folder (`<output>`), the folders file tools may use
+ * (`<folder>`) and the host's data (`<server>`). Paths elsewhere stay, so an approval still says
+ * exactly what it is for. */
+export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostDirectories?: string[] }) => async (sessionId?: string) => {
   const filesystem = (await deps.runtimeManager.getSettings()).filesystem;
   const real = (dir: string) => { try { return fs.realpathSync(dir); } catch { return dir; } };
   const both = (dir: string | undefined) => dir ? [...new Set([dir, path.resolve(dir), real(path.resolve(dir))])] : [];
+  const runtime = sessionId ? deps.runtimeManager.getRuntime() : undefined;
+  const projectId = sessionId ? (await runtime!.sessionIndexStore.get(sessionId))?.projectId : undefined;
+  const project = projectId ? await runtime!.projectStore.get(projectId) : undefined;
   return pathScrubber([
+    ...both(project?.rootPath).map(dir => [dir, "<workspace>"] as [string, string]),
     ...both(filesystem?.outputDir).map(dir => [dir, "<output>"] as [string, string]),
     ...(filesystem?.allowedDirectories ?? []).flatMap(both).map(dir => [dir, "<folder>"] as [string, string]),
     ...(deps.hostDirectories ?? []).flatMap(both).map(dir => [dir, "<server>"] as [string, string])
@@ -112,11 +123,11 @@ export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostD
 export const chatHostOnly = (settings: Pick<SessionSettings, "defaultAccessMode" | "codeAgents">): string | undefined =>
   settings.defaultAccessMode === "full" || settings.codeAgents?.some(agent => agent.accessMode === "full") ? CHAT_ON_HOST : undefined;
 
-/** A chat a device may use: it exists and is not a project chat (R4). */
+/** A chat a device may read. Whether it may also use it is `requireUsable` (full access, and for a
+ * project chat whether the project is one a device may use). */
 export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string) => {
   const session = await store.get(sessionId);
   if (!session) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
-  if (session.projectId) throw new RemoteOperationError("Project chats are not available remotely yet.", "unsupported");
   return session;
 };
 
@@ -124,9 +135,18 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
   const runtime = () => deps.runtimeManager.getRuntime();
   const requireSession = (sessionId: string) => requireRemoteSession(deps.sessionIndexStore, sessionId);
   const scrubber = createChatScrubber(deps);
-  /** Refuses using or changing a chat the host gave full access, checked at every use. */
-  const requireUsable = async (sessionId: string) => {
+  /** Why a device may not use or change a chat, if it may not: the host gave it full access, or
+   * it belongs to a project set up on the server (or archived). Checked at every use. */
+  const hostOnlyReason = async (sessionId: string): Promise<string | undefined> => {
     const reason = chatHostOnly(await runtime().sessionSettingsStore.get(sessionId));
+    if (reason) return reason;
+    const projectId = (await deps.sessionIndexStore.get(sessionId))?.projectId;
+    if (!projectId) return undefined;
+    if (!deps.projects) return "Project chats on this server are used there.";
+    return (await deps.projects.usable(projectId)).reason;
+  };
+  const requireUsable = async (sessionId: string) => {
+    const reason = await hostOnlyReason(sessionId);
     if (reason) throw new RemoteOperationError(reason, "unsupported");
   };
   /** Every model an agent names must be one of the host's providers ("local" only judges); ids and
@@ -157,26 +177,40 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     }
     if (roles.filter(role => role === "advisor").length > MAX_ADVISORS) throw new RemoteOperationError(`A debate has at most ${MAX_ADVISORS} advisors.`, "invalid_request");
   };
+  /** What a chat's file actions reached, kept briefly: a saved copy reads a file in many parts. */
+  const grantCache = new Map<string, { at: number; grants: Promise<Awaited<ReturnType<typeof chatFileGrants>>> }>();
+  const grantsOf = (sessionId: string) => {
+    const cached = grantCache.get(sessionId);
+    if (cached && Date.now() - cached.at < 15_000) return cached.grants;
+    const grants = chatFileGrants(deps.runtimeManager, sessionId);
+    grantCache.set(sessionId, { at: Date.now(), grants });
+    if (grantCache.size > 100) grantCache.delete(grantCache.keys().next().value!);
+    return grants;
+  };
   /** A file a chat's agents wrote or read, as the device saw it in the chat (`<output>/report.md`):
-   * its labels are mapped back to this host's folders and the result must pass the same check as
-   * Review on this computer (inside the chat's workspace, or a file action the chat completed). */
-  const chatFile = async (sessionId: string, ref: string): Promise<string> => {
-    const scrub = await scrubber();
+   * its labels are mapped back to this host's folders, and it must be one the chat's grants name.
+   * It is opened once, without following a link, and must still be the file that was granted. One
+   * answer for a missing file and one that is not the chat's: nothing tells which paths exist. */
+  const openChatFile = async (sessionId: string, ref: string) => {
+    const [scrub, grants] = await Promise.all([scrubber(sessionId), grantsOf(sessionId)]);
     const label = /^(<[a-z]+>)(?=[\\/]|$)/.exec(ref)?.[1];
     const candidates = label ? scrub.pairs.filter(([, name]) => name === label).map(([dir]) => dir + ref.slice(label.length)) : path.isAbsolute(ref) ? [ref] : [];
-    for (const candidate of candidates) {
-      try { return await resolveChatFileForDevice(deps.runtimeManager, candidate, sessionId); }
-      catch { /* The next folder with this label, if any. */ }
+    const granted = (file: string) => (grants.workspaceRoot && inside(file, grants.workspaceRoot)) || grants.files.has(file);
+    for (const candidate of candidates.map(item => path.resolve(item))) {
+      if (!granted(candidate)) continue;
+      let real: string;
+      try { real = await fsp.realpath(candidate); } catch { continue; }
+      if (!granted(real)) continue;
+      let handle: fsp.FileHandle;
+      try { handle = await fsp.open(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch { continue; }
+      try {
+        const [stat, now] = await Promise.all([handle.stat(), fsp.stat(await fsp.realpath(real))]);
+        if (stat.dev !== now.dev || stat.ino !== now.ino) { await handle.close(); continue; }
+        if (!stat.isFile()) { await handle.close(); throw new RemoteOperationError("This is a folder, not a file.", "invalid_request"); }
+        return { handle, stat, path: scrub(real), name: path.basename(real) };
+      } catch (error) { await handle.close().catch(() => undefined); throw error; }
     }
-    // One answer whether the file is missing or not this chat's: a device learns nothing about
-    // other paths on the host.
-    throw new RemoteOperationError("The file is not available to this chat: it was moved or deleted, or this chat did not create or open it.", "file_unavailable");
-  };
-  const fileView = async (sessionId: string, ref: string) => {
-    const file = await chatFile(sessionId, ref);
-    const stat = await fsp.stat(file);
-    if (!stat.isFile()) throw new RemoteOperationError("This is a folder, not a file.", "invalid_request");
-    return { file, stat, path: (await scrubber())(file), name: path.basename(file) };
+    throw new RemoteOperationError(UNAVAILABLE, "file_unavailable");
   };
   const fileOperations: Record<string, RemoteOperation> = {
     /** Size, time and hash of a chat's file, so a saved copy can be checked. */
@@ -185,24 +219,32 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       await requireSession(sessionId);
       // A chat with full access may have touched any file of the host: its files stay there.
       await requireUsable(sessionId);
-      const { file, stat, path: shown, name } = await fileView(sessionId, ref);
-      if (stat.size > COPY_LIMIT) throw new RemoteOperationError("The file is larger than 100 MB.", "too_large");
-      const hash = createHash("sha256");
-      for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
-      return { path: shown, name, sizeBytes: stat.size, modifiedAt: stat.mtime.toISOString(), sha256: hash.digest("hex") };
+      const { handle, stat, path: shown, name } = await openChatFile(sessionId, ref);
+      try {
+        if (stat.size > COPY_LIMIT) throw new RemoteOperationError("The file is larger than 100 MB.", "too_large");
+        // Through the opened file and up to its size: a file swapped meanwhile is not followed.
+        const hash = createHash("sha256"), buffer = Buffer.alloc(FILE_CHUNK_BYTES);
+        for (let offset = 0; offset < stat.size;) {
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+          if (!bytesRead) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          offset += bytesRead;
+        }
+        return { path: shown, name, sizeBytes: stat.size, modifiedAt: stat.mtime.toISOString(), sha256: hash.digest("hex") };
+      } finally { await handle.close(); }
     },
     /** A chat's file as text for Review (5 MB, no binary), or a part of it for a saved copy. */
     "files.read": async payload => {
       const { sessionId, path: ref, as, offset = 0, length = FILE_CHUNK_BYTES } = parse(schemas.fileRead, payload);
       await requireSession(sessionId);
       await requireUsable(sessionId);
-      const { file, stat, path: shown, name } = await fileView(sessionId, ref);
-      const handle = await fsp.open(file, "r");
+      const { handle, stat, path: shown, name } = await openChatFile(sessionId, ref);
       try {
         if (as === "text") {
-          if (stat.size > TEXT_LIMIT) throw new RemoteOperationError("The file is larger than the 5 MB viewer limit.", "too_large");
+          const tooLarge = () => new RemoteOperationError("Review shows files up to 400 KB from a server. Save a copy to open this one.", "too_large");
+          if (stat.size > TEXT_LIMIT) throw tooLarge();
           const { buffer, bytesRead } = await handle.read(Buffer.alloc(TEXT_LIMIT + 1), 0, TEXT_LIMIT + 1, 0);
-          if (bytesRead > TEXT_LIMIT) throw new RemoteOperationError("The file is larger than the 5 MB viewer limit.", "too_large");
+          if (bytesRead > TEXT_LIMIT) throw tooLarge();
           const bytes = buffer.subarray(0, bytesRead);
           if (bytes.includes(0)) throw new RemoteOperationError("Review shows text files. Save a copy to open this one.", "binary_file");
           return { path: shown, name, sizeBytes: bytesRead, content: bytes.toString("utf8"), version: createHash("sha256").update(bytes).digest("hex") };
@@ -233,16 +275,23 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
   return {
     // A title is the start of a message, which may name a folder of the host.
-    "sessions.list": async () => (await scrubber())((await deps.sessionIndexStore.list()).filter(session => !session.projectId).map(session => ({
-      id: session.id, title: session.title, updatedAt: session.updatedAt, ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {})
+    // Project chats are listed where the server offers projects (R5-4g).
+    "sessions.list": async () => (await scrubber())((await deps.sessionIndexStore.list()).filter(session => deps.projects || !session.projectId).map(session => ({
+      id: session.id, title: session.title, updatedAt: session.updatedAt, ...(session.projectId ? { projectId: session.projectId } : {}),
+      ...(deps.runService.activeRun(session.id) ? { activeRunId: deps.runService.activeRun(session.id)!.runId } : {})
     }))),
 
     "sessions.create": async payload => {
-      const { title } = parse(schemas.sessionsCreate, payload) ?? {};
-      const session = await deps.sessionIndexStore.create(title, "http");
+      const { title, projectId } = parse(schemas.sessionsCreate, payload) ?? {};
+      if (projectId) {
+        if (!deps.projects) throw new RemoteOperationError("Project chats on this server are used there.", "unsupported");
+        const { reason } = await deps.projects.usable(projectId);
+        if (reason) throw new RemoteOperationError(reason, "unsupported");
+      }
+      const session = await deps.sessionIndexStore.create(title, "http", projectId);
       const defaults = (await deps.runtimeManager.getSettings()).ui;
       if (defaults) await runtime().sessionSettingsStore.update(session.id, { language: defaults.language, outputStyle: defaults.outputStyle, mode: defaults.mode });
-      return { id: session.id, title: session.title, updatedAt: session.updatedAt };
+      return { id: session.id, title: session.title, updatedAt: session.updatedAt, ...(session.projectId ? { projectId: session.projectId } : {}) };
     },
 
     /** A snapshot plus the cursor to follow it: the async history read happens first, so events
@@ -254,7 +303,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const unfinished = deps.runService.unfinishedTurns(sessionId);
       const activeRun = deps.runService.activeRun(sessionId);
       const streamId = streamOf(sessionId), { epoch, head } = deps.journal.head(streamId);
-      const scrub = await scrubber();
+      const scrub = await scrubber(sessionId);
       let merged = scrub([...messages, ...unfinished].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).map(withoutAttachmentData));
       while (merged.length > 2 && JSON.stringify(merged).length > MAX_HISTORY_BYTES) merged = merged.slice(2);
       return { messages: merged, ...(activeRun ? { activeRun: scrub(activeRun) } : {}), cursor: { streamId, epoch, after: head } };
@@ -300,7 +349,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const { sessionId } = parse(schemas.session, payload);
       await requireSession(sessionId);
       const settings = await runtime().sessionSettingsStore.get(sessionId);
-      const hostOnly = chatHostOnly(settings);
+      const hostOnly = await hostOnlyReason(sessionId);
       return { settings, access: { modes: ["ask", "default"], ...(hostOnly ? { hostOnly } : {}) }, limits: { subagents: MAX_SUBAGENTS, advisors: MAX_ADVISORS } };
     },
 
@@ -312,7 +361,8 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const { sessionId, patch } = parse(schemas.settingsUpdate, payload);
       await requireSession(sessionId);
       const current = await runtime().sessionSettingsStore.get(sessionId);
-      if (chatHostOnly(current)) throw new RemoteOperationError(CHAT_ON_HOST, "unsupported");
+      const reason = await hostOnlyReason(sessionId);
+      if (reason) throw new RemoteOperationError(reason, "unsupported");
       checkAgents(patch, current);
       // The chat type is mode plus debate, as the local chat screen saves it.
       const debate = patch.mode || patch.debate ? { debate: { ...patch.debate, ...(patch.mode ? { enabled: patch.mode === "hypothesis" } : {}) } } : {};
