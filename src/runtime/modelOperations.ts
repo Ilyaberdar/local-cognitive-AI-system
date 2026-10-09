@@ -9,6 +9,12 @@ import { boundedCatalogPage, safeDownload, safeModelSnapshot } from "./modelDto"
 import { publicError } from "./publicError";
 
 const MAX_WATCH_MS = 20_000;
+/** The host's runtime settings a device may change: never the models directory or the backend.
+ * Shared with the Settings screen's operations (settingsOperations.ts). */
+export const localModelSettingsSchema = z.object({
+  contextSize: z.number().int().optional(), gpuLayers: z.union([z.number().int(), z.literal("auto")]).optional(), memoryLimitPercent: z.number().optional(),
+  loadTimeoutMs: z.number().int().optional(), generationTimeoutMs: z.number().int().optional(), generation: z.record(z.string(), z.unknown()).optional()
+}).strict();
 const id = z.string().min(1).max(300);
 const schemas = {
   search: z.object({ query: z.string().max(200).optional(), cursor: z.string().max(2000).optional(), source: z.enum(["recommended", "search"]).optional() }).strict().optional(),
@@ -16,11 +22,7 @@ const schemas = {
   download: z.object({ repoId: id, revision: z.string().min(1).max(100), variantId: id, projectorPath: z.string().max(300).optional(), commandId: z.string().max(100).optional() }).strict(),
   job: z.object({ downloadId: id }).strict(),
   libraryModel: z.object({ modelId: id }).strict(),
-  // The host's runtime settings a device may change: never the models directory or the backend.
-  settings: z.object({ localModels: z.object({
-    contextSize: z.number().int().optional(), gpuLayers: z.union([z.number().int(), z.literal("auto")]).optional(), memoryLimitPercent: z.number().optional(),
-    loadTimeoutMs: z.number().int().optional(), generationTimeoutMs: z.number().int().optional(), generation: z.record(z.string(), z.unknown()).optional()
-  }).strict() }).strict(),
+  settings: z.object({ localModels: localModelSettingsSchema }).strict(),
   watch: z.object({ epoch: z.string().max(100).optional(), after: z.number().int().nonnegative().optional(), waitMs: z.number().int().min(0).max(MAX_WATCH_MS).optional() }).strict().optional()
 };
 

@@ -62,7 +62,12 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "workflows.runs.cancel": { kind: "request", timeoutMs: 15_000 },
   "workflows.runs.review": { kind: "command", timeoutMs: 30_000 },
   "workflows.runs.resume": { kind: "command", timeoutMs: 30_000 },
-  "workflows.runs.agentTrace.get": { kind: "request", timeoutMs: 30_000 }
+  "workflows.runs.agentTrace.get": { kind: "request", timeoutMs: 30_000 },
+  // Settings (R5-3). A settings change is a field patch, safe to repeat: not a command, so no
+  // hash of a key is ever stored in the command ledger.
+  "settings.get": { kind: "request", timeoutMs: 15_000 },
+  "settings.update": { kind: "request", timeoutMs: 120_000 },
+  "providers.test": { kind: "request", timeoutMs: 330_000 }
 };
 
 export const operationsOfKind = (kind: OperationKind): string[] => Object.entries(OPERATIONS).filter(([, spec]) => spec.kind === kind).map(([name]) => name);
