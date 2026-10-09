@@ -228,3 +228,10 @@ test("deleting a chat refuses new turns while it goes, and removes its turns, co
   f.service.forgotSession("s1", false);
   assert.equal((await f.service.start("remote:a:d1", { commandId: "c3", sessionId: "s1", input: "kept" })).status, "accepted", "a delete that failed leaves the chat usable");
 });
+
+test("a turn whose scrubber cannot be built fails instead of writing what a device may not see", async t => {
+  const f = setup(t, undefined, async () => { throw new Error("settings unreadable"); });
+  const ack = await f.service.start("remote:a:d1", { commandId: "c1", sessionId: "s1", input: "hi" });
+  await until(() => f.service.get(ack.runId!)?.status === "failed");
+  assert.equal(f.script.calls.length, 0, "the engine never ran");
+});
