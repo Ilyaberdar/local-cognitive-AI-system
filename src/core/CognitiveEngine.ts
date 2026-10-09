@@ -2,7 +2,7 @@ import { MemoryService } from "../memory/MemoryService";
 import { SessionSettingsStore } from "../session/SessionSettingsStore";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { Logger } from "../utils/Logger";
-import { ProcessInput, ProcessResult, ProviderTarget, SessionSettings, ToolExecutionResult } from "../types";
+import { Mode, ProcessInput, ProcessResult, ProviderTarget, SessionSettings, ToolExecutionResult } from "../types";
 import { ModeDetector } from "./ModeDetector";
 import { Router } from "./Router";
 import { ToolRequestBuilder } from "./ToolRequestBuilder";
@@ -17,6 +17,7 @@ import type { PluginManager } from "../plugins/PluginManager";
 import { mentionedPluginIds, parsePluginSelection, withoutPluginMentions } from "../plugins/PluginSelection";
 import { PluginError } from "../plugins/contracts";
 import { parseMentionedSubagentNames } from "../agents/code/codeAgentRouting";
+import { withoutHostMcp } from "../agents/runtime/AgentLoopRunner";
 import { ActivityTrace } from "./ActivityTrace";
 
 export class CognitiveEngine {
@@ -62,7 +63,8 @@ export class CognitiveEngine {
     await this.pluginManager?.validateSelection(pluginIds);
 
     const sessionId=request.actor?.sessionId ?? "default-session";
-    const needsToolWorkspace = Boolean(await this.pluginManager?.hasEnabled()) || Boolean(await this.externalMcpAvailable?.());
+    const needsToolWorkspace = Boolean(await this.pluginManager?.hasEnabled()) ||
+      (!withoutHostMcp(request.metadata) && Boolean(await this.externalMcpAvailable?.()));
     const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId) ??
       (needsToolWorkspace ? await this.workspaceResolver?.forPluginChat(sessionId) : undefined);
     if(workspace)await this.workspaceResolver?.validate(workspace);
@@ -117,13 +119,23 @@ export class CognitiveEngine {
       execution:request.execution??(workspace?{workspace,accessMode:sessionSettings.defaultAccessMode,agentRunId:randomUUID()}:undefined)
     };
     let workspaceOutcome:WorkspaceOutcome|undefined;
+    // A turn stopped after its agents acted (a scene built in an editor, a file written) stays in the
+    // chat with what was done; one stopped before any action leaves nothing.
+    const stopped = async (error: unknown): Promise<never> => {
+      const agentRunId = context.execution?.agentRunId;
+      if (request.signal?.aborted && agentRunId && this.workspaceAgents) {
+        await this.recordStopped(normalizedInput, mode, actor, providerId, activeTarget.model, sessionSettings, trace, request.metadata,
+          await this.workspaceAgents.completedTools(agentRunId)).catch(() => undefined);
+      }
+      throw error;
+    };
     const result = await withInferenceImages(attachments.filter(file => file.kind === "image" && file.dataUrl).map(file => ({ name: file.name, dataUrl: file.dataUrl! })), async () => {
       if(workspace&&this.workspaceAgents&&!request.metadata?.reviewSelection){workspaceOutcome=await this.workspaceAgents.run(normalizedInput,mode,context,handler);return workspaceOutcome.result;}
       return handler(normalizedInput,context);
-    });
+    }).catch(stopped);
     if(workspaceOutcome?.pendingApproval)return {input:normalizedInput,mode,providerId,result,tools:workspaceOutcome.tools,memory,conversationSize:conversation.length,sessionSettings,
       pendingApproval:workspaceOutcome.pendingApproval,agentRunId:workspaceOutcome.agentRunId};
-    request.signal?.throwIfAborted();
+    if (request.signal?.aborted) await stopped(request.signal.reason);
     const tools = workspaceOutcome?.tools ?? (result.error ? [] : await this.executeTools(normalizedInput, mode, result, {
       actor,
       memory,
@@ -169,7 +181,7 @@ export class CognitiveEngine {
         : command.output;
       delete result.toolPayload;
     }
-    request.signal?.throwIfAborted();
+    if (request.signal?.aborted) await stopped(request.signal.reason);
     request.onProgress?.({
       phase: result.error ? "failed" : "complete",
       label: result.error ? "Failed" : "Complete",
@@ -222,6 +234,21 @@ export class CognitiveEngine {
     const mode = metadata?.mode;
 
     return mode === "general" || mode === "code" || mode === "hypothesis" ? mode : undefined;
+  }
+
+  /** Records a stopped turn with the operations its agents completed, so the chat shows them. */
+  private async recordStopped(input: string, mode: Mode, actor: Parameters<MemoryService["save"]>[0]["actor"], providerId: string, model: string | undefined,
+    sessionSettings: SessionSettings, trace: ActivityTrace, requestMetadata: Record<string, unknown> | undefined, tools: ToolExecutionResult[]): Promise<void> {
+    if (!tools.length) return;
+    const russian = sessionSettings.language === "ru" || (sessionSettings.language === "auto" && /[А-Яа-яЁё]/.test(input));
+    const done = tools.map(tool => tool.metadata?.operation ? `${tool.metadata.serverId ?? tool.tool} · ${tool.metadata.operation}` : tool.tool).join(", ");
+    const text = russian ? `Остановлено до ответа. Выполненные действия: ${done}.` : `Stopped before the answer. Completed actions: ${done}.`;
+    const at = new Date().toISOString();
+    await this.memoryService.save({
+      input, mode, actor, scope: `agent_${mode}`, tags: [mode, "stopped"],
+      output: { response: text, error: text, provider: providerId, model: model ?? "default", metrics: { startedAt: at, completedAt: at, durationMs: 0 } },
+      metadata: { toolCount: tools.length, tools, activity: trace.snapshot(), providerId, model, sessionSettings, requestMetadata, stopped: true }
+    });
   }
 
   private attachMetrics(

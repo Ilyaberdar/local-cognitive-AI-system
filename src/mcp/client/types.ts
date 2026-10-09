@@ -1,10 +1,16 @@
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 
+/** When a tool call waits for the user's approval (as in Codex): every call (default); only calls of
+ * tools not marked read-only (`readOnlyHint`); or none — the user trusts this server. A chat whose
+ * access mode is "ask" always asks. */
+export type McpApprovalMode = "ask" | "read-only" | "trust";
+
 /** Persisted definitions contain configuration only, never credentials or connection state. */
 interface McpServerBase {
   id: string;
   name?: string;
   enabled: boolean;
+  approval?: McpApprovalMode;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
   reconnect?: { maxAttempts: number; initialDelayMs: number; maxDelayMs: number };

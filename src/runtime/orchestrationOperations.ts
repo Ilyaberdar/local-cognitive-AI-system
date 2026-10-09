@@ -85,6 +85,9 @@ const refuseLater = (fields: Record<string, unknown>, projects = false): void =>
 };
 
 /** What a workflow sent from a device may not contain yet (see LATER). */
+/** Tasks and schedules a device makes: their runs get no MCP tools of the host (`WorkflowRun.deviceOrigin`). */
+const DEVICE_ORIGIN = { deviceOrigin: true };
+
 export const workflowLimits = (definition: unknown): string[] => {
   const value = record(definition), runDefaults = record(value.runDefaults), problems = new Set<string>();
   if (runDefaults.accessMode === "full") problems.add(LATER.fullAccess);
@@ -224,7 +227,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         await allowedWorkflow(workflowId);
         await requireProject(input.projectId);
         return safeTask(await runtime().taskService.create({ title: input.title, description: (input.description ?? "").trim(), workflowId,
-          priority: input.priority ?? "normal", accessMode: input.accessMode ?? "default", ...(input.projectId ? { projectId: input.projectId } : {}) }));
+          priority: input.priority ?? "normal", accessMode: input.accessMode ?? "default", ...(input.projectId ? { projectId: input.projectId } : {}), metadata: DEVICE_ORIGIN }));
       });
     }),
     "tasks.update": payload => known(async () => {
@@ -259,7 +262,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         if (!task) throw notFound("task");
         const reason = await hostOnly(task);
         if (reason) throw unsupported(reason);
-        const started = await runtime().taskService.startTask(input.taskId);
+        const started = await runtime().taskService.startTask(input.taskId, { device: true });
         return { task: safeTask(started.task), runId: started.runId };
       }, { target: input.taskId,
         // A restart after the run was created: that run is the answer.
@@ -271,7 +274,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
     "tasks.runNext": (payload, context) => known(async () => {
       const input = parse(schemas.runNext, payload);
       return command(context, "tasks.runNext", input, async () => {
-        const started = await runtime().taskService.startNextQueued(async task => !await hostOnly(task));
+        const started = await runtime().taskService.startNextQueued(async task => !await hostOnly(task), { device: true });
         return started ? { task: safeTask(started.task), runId: started.runId } : { task: null, runId: null };
       });
     }),
@@ -285,7 +288,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         await allowedWorkflow(workflowId);
         await requireProject(fields.projectId);
         const { projectId, ...rest } = fields;
-        return safeSchedule(await runtime().scheduleService.create({ ...rest, description: fields.description ?? "", workflowId, ...(projectId ? { projectId } : {}) }));
+        return safeSchedule(await runtime().scheduleService.create({ ...rest, description: fields.description ?? "", workflowId, ...(projectId ? { projectId } : {}), metadata: DEVICE_ORIGIN }));
       });
     }),
     "schedules.update": payload => known(async () => {
@@ -299,7 +302,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       if (reason) throw unsupported(reason);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       await requireProject(patch.projectId);
-      const schedule = await runtime().scheduleService.update(scheduleId, patch);
+      // What a device changes runs later unattended: its tasks are the device's (no host MCP tools).
+      const schedule = await runtime().scheduleService.update(scheduleId, pausing ? patch : { ...patch, metadata: { ...current.metadata, ...DEVICE_ORIGIN } });
       if (!schedule) throw notFound("schedule");
       return safeSchedule(schedule);
     }),
@@ -332,7 +336,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         if (folder && !deps.folders) throw unsupported(LATER.project);
         const rootPath = folder ? (await deps.folders!.resolve(folder.rootId, folder.path)).real : undefined;
         const run = await runtime().workflowRunner.startStandalone(definition, { ...options, ...(projectId ? { projectId } : {}), ...(rootPath ? { rootPath } : {}) },
-          { runId: reserved.runId });
+          { runId: reserved.runId, device: true });
         runtime().workflowRunner.runInBackground(run.id);
         return safeRun(run);
       }, { reserveRunId: true,

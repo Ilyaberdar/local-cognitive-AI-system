@@ -78,6 +78,8 @@ export interface WorkflowRun {
   id: string;
   taskId?: string;
   source?: "task" | "standalone";
+  /** A paired device started it, or its task came from one: its agents get no MCP tools of the host. */
+  deviceOrigin?: true;
   workflowId: string;
   workflowVersion: number;
   workflowSnapshot?: WorkflowDefinition;
@@ -151,6 +153,7 @@ export interface CreateWorkflowRunInput {
   executionSessionId?: string;
   settings?: SessionSettings;
   nodeTargets?: Record<string, ProviderTarget>;
+  deviceOrigin?: boolean;
 }
 
 export interface WorkflowInput { title: string; description: string; }

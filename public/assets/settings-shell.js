@@ -325,7 +325,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const connection = externalMcpStatus(server?.id)[0];
     const state = server ? externalMcpState(server) : '';
     return `<p class="settings-description">${isNew ? 'Add a server configuration. Saving an enabled server connects it and discovers its tools.' : 'Edit this server or reconnect it. Tools become available to agents only after the connection is successful.'}</p>
-      ${!isNew ? `<div class="settings-connection-status ${connection?.state === 'connected' ? 'is-connected' : ''}"><strong>${escape(state)}</strong><small>${connection?.error?.message ? escape(connection.error.message) : 'External calls always require confirmation.'}</small></div>` : ''}
+      ${!isNew ? `<div class="settings-connection-status ${connection?.state === 'connected' ? 'is-connected' : ''}"><strong>${escape(state)}</strong><small>${connection?.error?.message ? escape(connection.error.message) : server?.approval === 'trust' ? 'Calls run without confirmation.' : server?.approval === 'read-only' ? 'Read-only tools run without confirmation.' : 'Every call asks for confirmation.'}</small></div>` : ''}
       ${connection?.diagnostic ? `<details class="mcp-diagnostic" open><summary>What the server reported</summary><pre>${escape(connection.diagnostic)}</pre></details>` : ''}
       ${connection?.skippedTools?.length ? `<p class="settings-description mcp-skipped">Left out because their input schema cannot be used: ${connection.skippedTools.map(name => `<code>${escape(name)}</code>`).join(', ')}. The server's other tools work.</p>` : ''}
       <form id="external-mcp-form" class="settings-form" data-mcp-server-id="${escape(id)}"><div class="settings-rows">
@@ -336,6 +336,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-args">Arguments (JSON array)</label><p>For example: ["-y", "your-mcp-server"]. Do not put credentials here.</p></div><div class="settings-control"><textarea id="external-mcp-args" data-mcp-field="args" rows="3" ${http ? 'disabled' : ''} placeholder='["-y", "your-mcp-server"]'>${escape(args)}</textarea></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-cwd">Working directory</label><p>Optional absolute path used only when starting the command.</p></div><div class="settings-control"><input id="external-mcp-cwd" data-mcp-field="cwd" ${http ? 'disabled' : ''} value="${escape(server?.transport === 'stdio' ? server.cwd || '' : '')}" /></div></div>
         <div class="settings-row" data-mcp-stdio ${http ? 'hidden' : ''}><div><label for="external-mcp-env">Environment (JSON object)</label><p>Optional non-secret variables. Keys and values containing credentials are rejected.</p></div><div class="settings-control"><textarea id="external-mcp-env" data-mcp-field="env" rows="3" ${http ? 'disabled' : ''} placeholder='{"LOG_LEVEL":"info"}'>${escape(env)}</textarea></div></div>
+        <div class="settings-row"><div><label for="external-mcp-approval">Approval</label><p>When a tool call waits for your confirmation. A chat set to ask first always asks.</p></div><div class="settings-control"><select id="external-mcp-approval" data-mcp-field="approval">${[['ask', 'Ask for every call'], ['read-only', 'Ask unless the tool is read-only'], ['trust', 'Trust this server (never ask)']].map(([value, label]) => `<option value="${value}" ${(server?.approval || 'ask') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>
         <div class="settings-row"><div><label for="external-mcp-enabled">Enabled</label><p>When on, the app connects and discovers tools. Turning it off stops all bindings for this server.</p></div><div class="settings-control"><input id="external-mcp-enabled" data-mcp-field="enabled" type="checkbox" role="switch" ${server?.enabled !== false ? 'checked' : ''} /></div></div>
       </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>`;
   }
@@ -513,11 +514,16 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const enabled = form.querySelector('[data-mcp-field="enabled"]').checked;
     if (!name) throw new Error('Enter a name for this MCP server.');
     const id = previous?.id || newMcpId(name);
+    const approval = form.querySelector('[data-mcp-field="approval"]').value;
     const server = { ...(previous || {}), id, name, enabled, transport };
+    // Saving merges into the stored server: a field it had and the form cleared is sent as null (removed).
+    const clear = field => { if (previous?.[field] !== undefined) server[field] = null; else delete server[field]; };
+    if (approval === 'ask') clear('approval'); else server.approval = approval;
     if (transport === 'streamable-http') {
       const endpoint = form.querySelector('[data-mcp-field="endpoint"]').value.trim();
       if (!endpoint) throw new Error('Enter an MCP endpoint.');
       Object.assign(server, { endpoint });
+      // The stdio fields of a server switched to HTTP are dropped when it is saved.
       delete server.command; delete server.args; delete server.cwd; delete server.env;
     } else {
       const command = form.querySelector('[data-mcp-field="command"]').value.trim();
@@ -532,10 +538,10 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       if (args !== undefined && (!Array.isArray(args) || args.some(value => typeof value !== 'string'))) throw new Error('Arguments must be a JSON array of strings.');
       if (env !== undefined && (!env || Array.isArray(env) || Object.values(env).some(value => typeof value !== 'string'))) throw new Error('Environment must be a JSON object with string values.');
       Object.assign(server, { command });
-      if (args === undefined) delete server.args; else server.args = args;
-      if (env === undefined) delete server.env; else server.env = env;
+      if (args === undefined) clear('args'); else server.args = args;
+      if (env === undefined) clear('env'); else server.env = env;
       const cwd = form.querySelector('[data-mcp-field="cwd"]').value.trim();
-      if (cwd) server.cwd = cwd; else delete server.cwd;
+      if (cwd) server.cwd = cwd; else clear('cwd');
       delete server.endpoint;
     }
     const related = previous ? externalMcpBindings(previous.id) : [];
