@@ -1039,7 +1039,8 @@ function renderChatRoute() {
   ];
   // A server chat attaches files where the server takes them (R5-4d).
   const remoteAttachments = serverChat && chatTarget.supports("uploads.begin");
-  const draftAttachments = serverChat && !remoteAttachments ? [] : getActiveDraftAttachments();
+  // Shown even where the server takes none (an older one), so they can be removed.
+  const draftAttachments = getActiveDraftAttachments();
   const attachmentGuidance = serverChat ? remoteImageGuidance(draftAttachments, settings, chatTarget.cachedModels(), chatTarget.hostName()) : getImageAttachmentGuidance(draftAttachments, settings);
   const preparingAttachments = Boolean(state.attachmentImports[`chat:${state.activeSessionId}`]);
 
@@ -4424,9 +4425,12 @@ function bindEvents() {
         return;
       }
 
+      const removed = getActiveDraftAttachments().find((attachment) => attachment.id === button.dataset.attachmentId);
       state.draftAttachments[state.activeSessionId] = getActiveDraftAttachments().filter(
         (attachment) => attachment.id !== button.dataset.attachmentId
       );
+      // Its upload to a server, if one began, goes too.
+      if (removed?.remoteUpload && isServerChat(state.activeSessionId)) void chatTarget.cancelUpload(state.activeSessionId, removed).catch(() => undefined);
       render();
     });
   });
@@ -6765,7 +6769,7 @@ async function submitRemoteChat(input, attachments, options = {}) {
     return false;
   }
   if (attachments?.length && !chatTarget.supports("uploads.begin")) { pushToast(`Update Local Cognitive on ${chatTarget.hostName()} to send attachments.`, "danger"); return false; }
-  const guidance = remoteImageGuidance(attachments, state.sessionSettings, chatTarget.cachedModels(), chatTarget.hostName());
+  const guidance = remoteImageGuidance(attachments, readSessionSetupSnapshot()?.settings ?? state.sessionSettings, chatTarget.cachedModels(), chatTarget.hostName());
   if (guidance.blocked) { pushToast(guidance.message, "danger"); return false; }
   const hostOnly = chatTarget.setup(key).hostOnly;
   if (hostOnly) { pushToast(hostOnly, "danger"); return false; }
@@ -6780,8 +6784,9 @@ async function submitRemoteChat(input, attachments, options = {}) {
   const restore = (message) => {
     if (state.chatRequests.get(key) === request) state.chatRequests.delete(key);
     if (!state.drafts[key]) state.drafts[key] = draft;
-    // The files stay attached (with their uploads), so sending again resumes or reuses them.
-    if (draftFiles?.length && !state.draftAttachments[key]?.length) state.draftAttachments[key] = draftFiles;
+    // The files stay attached (with their uploads), so sending again resumes or reuses them; files
+    // attached meanwhile stay too.
+    if (draftFiles?.length) state.draftAttachments[key] = [...draftFiles, ...(state.draftAttachments[key] ?? []).filter((file) => !draftFiles.includes(file))].slice(0, 5);
     if (message) pushToast(message, "danger");
     render();
   };
@@ -6790,6 +6795,8 @@ async function submitRemoteChat(input, attachments, options = {}) {
     await state.ui.autosavePromise.catch(() => undefined);
     await persistActiveSessionSetup({ refreshBootstrap: false, sessionId: key });
     const attachmentIds = attachments?.length ? await chatTarget.upload(key, attachments) : [];
+    // Stopped while the files were sent: the message is not.
+    if (request.cancelled) { restore(); return false; }
     const ack = await chatTarget.send(key, input, attachmentIds);
     if (ack.status === "rejected") {
       restore(ack.code === "session_busy" ? "This chat is already answering on the server." : "The server did not accept the message.");
@@ -6811,8 +6818,8 @@ async function submitRemoteChat(input, attachments, options = {}) {
 
 async function cancelRemoteRun(active) {
   if (chatTarget.blocksSend()) { pushToast("The server is not connected. Stop works once it reconnects.", "danger"); render(); return; }
-  if (!active.requestId) return;
   active.cancelled = true;
+  if (!active.requestId) return;
   try { await chatTarget.cancel(active.requestId); }
   catch (error) { active.cancelled = false; pushToast(error instanceof Error ? error.message : "Could not stop the answer", "danger"); }
 }

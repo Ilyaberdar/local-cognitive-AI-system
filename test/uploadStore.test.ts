@@ -38,7 +38,7 @@ test("damaged, oversized, misplaced and invalid uploads are refused", () => {
   store.chunk("mac", wrong, 0, text);
   assert.throws(() => store.commit("mac", wrong), code("upload_corrupt"));
   const missing = randomUUID();
-  store.begin("mac", missing, "chat", meta("x".repeat(CHUNK_CHARS + 5), { kind: "text", mimeType: "text/plain" }));
+  store.begin("mac", missing, "chat", meta("x".repeat(CHUNK_CHARS + 5)));
   assert.throws(() => store.chunk("mac", missing, 2, "x"), code("invalid_request"), "outside the upload");
   assert.throws(() => store.chunk("mac", missing, 1, "xx"), code("invalid_request"), "the wrong size");
   store.chunk("mac", missing, 1, "xxxxx");
@@ -57,12 +57,22 @@ test("damaged, oversized, misplaced and invalid uploads are refused", () => {
   assert.equal(store.cancel("phone", blank).cancelled, false);
 });
 
-test("a device has a quota of waiting uploads, and they expire after a day", () => {
+test("a device's oldest waiting uploads make room for new ones; they expire after a day and go with their chat", () => {
   let now = 0;
   const store = new UploadStore(() => now);
-  for (let index = 0; index < 20; index++) store.begin("mac", randomUUID(), "chat", meta(PNG));
-  assert.throws(() => store.begin("mac", randomUUID(), "chat", meta(PNG)), code("quota_exceeded"));
-  store.begin("phone", randomUUID(), "chat", meta(PNG));
-  now = 25 * 60 * 60 * 1000;
+  const ids = Array.from({ length: 20 }, (_, index) => { now = index; const id = randomUUID(); store.begin("mac", id, "chat", meta(PNG)); return id; });
+  now = 100;
   store.begin("mac", randomUUID(), "chat", meta(PNG));
+  assert.throws(() => store.chunk("mac", ids[0]!, 0, PNG), code("upload_unknown"), "the oldest went, not the device");
+  store.chunk("mac", ids[1]!, 0, PNG);
+  store.begin("phone", randomUUID(), "chat", meta(PNG));
+  store.dropSession("chat");
+  assert.throws(() => store.chunk("mac", ids[1]!, 0, PNG), code("upload_unknown"), "a deleted chat's uploads go");
+  const late = randomUUID();
+  store.begin("mac", late, "other", meta(PNG));
+  now = 25 * 60 * 60 * 1000;
+  store.sweep();
+  assert.throws(() => store.chunk("mac", late, 0, PNG), code("upload_unknown"), "expired");
+  assert.throws(() => store.begin("mac", randomUUID(), "chat", meta("x".repeat(20_001), { kind: "text", mimeType: "text/plain" })), code("invalid_request"),
+    "text longer than an attachment may be is refused at once");
 });

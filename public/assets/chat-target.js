@@ -274,6 +274,9 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       }
       return ids;
     },
+    /** Drops what was sent of a draft attachment that will not be sent after all. */
+    cancelUpload: (key, attachment) => attachment.remoteUpload?.host === hostOf(key)
+      ? call("uploads.cancel", { uploadId: attachment.remoteUpload.uploadId }, hostOf(key)) : Promise.resolve(),
     /** A file of a server chat as Review shows it: its text, under the path the chat showed. */
     readFile: (key, filePath) => call("files.read", { sessionId: serverId(key), path: filePath, as: "text" }, hostOf(key)),
     /** A copy of a server chat's file, read in parts and checked against the server's hash. */

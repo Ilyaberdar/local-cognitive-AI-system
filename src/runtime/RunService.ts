@@ -78,7 +78,15 @@ export class RunService {
     if (replay) return replay;
     if (!this.accepting) throw new RunServiceError("The server is shutting down. Try again when it is back.", "host_draining");
     if (!await this.deps.sessionExists(request.sessionId)) throw new RunServiceError("The chat does not exist on the server.", "session_unknown");
-    const attachments = (await admit?.())?.attachments ?? [];
+    let admitted: { attachments?: ChatAttachment[] } | void;
+    try { admitted = await admit?.(); }
+    catch (error) {
+      // A resend racing its first attempt: the first one took the attachments and was recorded.
+      const first = this.replay(scope, request.commandId, command);
+      if (first) return first;
+      throw error;
+    }
+    const attachments = admitted?.attachments ?? [];
     // History shows what was attached (names and sizes), never the contents.
     const summaries = attachments.map(({ id, name, mimeType, sizeBytes, kind }) => ({ id, name, mimeType, sizeBytes, kind }));
     const legacyBusy = this.deps.legacyBusy?.(request.sessionId) ?? false;

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { resolveReviewPath } from "../api/workspaceReview";
+import { resolveChatFileForDevice } from "../api/workspaceReview";
 import type { RuntimeManager } from "../app/RuntimeManager";
 import { loadSessionMessages } from "../conversations/sessionHistory";
 import { isReasoningEffort } from "../llm/ReasoningEffort";
@@ -164,14 +164,14 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     const scrub = await scrubber();
     const label = /^(<[a-z]+>)(?=[\\/]|$)/.exec(ref)?.[1];
     const candidates = label ? scrub.pairs.filter(([, name]) => name === label).map(([dir]) => dir + ref.slice(label.length)) : path.isAbsolute(ref) ? [ref] : [];
-    let refusal: unknown = new RemoteOperationError("The file is not one this chat can open.", "forbidden");
+    const output = scrub.pairs.filter(([, name]) => name === "<output>").map(([dir]) => dir);
     for (const candidate of candidates) {
-      try { return await resolveReviewPath(deps.runtimeManager, candidate, sessionId); }
-      catch (error) { refusal = error; }
+      try { return await resolveChatFileForDevice(deps.runtimeManager, candidate, sessionId, output); }
+      catch { /* The next folder with this label, if any. */ }
     }
-    if ((refusal as NodeJS.ErrnoException).code === "ENOENT") throw new RemoteOperationError("The file no longer exists on the server.", "not_found");
-    if (refusal instanceof RemoteOperationError) throw refusal;
-    throw new RemoteOperationError("The file is not one this chat can open.", "forbidden");
+    // One answer whether the file is missing or not this chat's: a device learns nothing about
+    // other paths on the host.
+    throw new RemoteOperationError("The file is not available to this chat: it was moved or deleted, or this chat did not create or open it.", "file_unavailable");
   };
   const fileView = async (sessionId: string, ref: string) => {
     const file = await chatFile(sessionId, ref);
@@ -184,6 +184,8 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "files.stat": async payload => {
       const { sessionId, path: ref } = parse(schemas.file, payload);
       await requireSession(sessionId);
+      // A chat with full access may have touched any file of the host: its files stay there.
+      await requireUsable(sessionId);
       const { file, stat, path: shown, name } = await fileView(sessionId, ref);
       if (stat.size > COPY_LIMIT) throw new RemoteOperationError("The file is larger than 100 MB.", "too_large");
       const hash = createHash("sha256");
@@ -194,6 +196,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "files.read": async payload => {
       const { sessionId, path: ref, as, offset = 0, length = FILE_CHUNK_BYTES } = parse(schemas.fileRead, payload);
       await requireSession(sessionId);
+      await requireUsable(sessionId);
       const { file, stat, path: shown, name } = await fileView(sessionId, ref);
       const handle = await fsp.open(file, "r");
       try {
@@ -280,6 +283,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
         await current.sessionSettingsStore.delete(sessionId);
         await current.memoryService.deleteSession(sessionId);
         if (!await deps.sessionIndexStore.delete(sessionId)) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+        deps.uploads?.dropSession(sessionId);
         deleted = true;
       } finally { deps.runService.forgotSession(sessionId, deleted); }
       return { deleted: true };
