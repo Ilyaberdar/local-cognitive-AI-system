@@ -120,3 +120,11 @@ test("empty-query search returns readable absolute paths and excludes symlinks o
     assert.equal((await search.read(match.absolutePath)).content, "1: plugin implementation");
   }
 });
+
+test("a path a model ran on into prose is refused with a short reason, before the file system sees it", () => {
+  const prose = `notes/README.md}}}\n\nThe workspace has no story yet, so the next step is to search for one. ${"x".repeat(300)}`;
+  assert.throws(() => parseAgentAction({ tool: "file.read", arguments: { path: prose } }), (error: Error) => /one line naming a file or folder/.test(error.message) && !error.message.includes("The workspace has no story"));
+  assert.throws(() => parseAgentAction({ tool: "file.write", arguments: { path: `${"long".repeat(70)}.md`, content: "x", expectedVersion: "missing" } }),
+    (error: Error) => /at most 255 bytes/.test(error.message));
+  assert.equal(parseAgentAction({ tool: "file.read", arguments: { path: "notes/README.md" } }).arguments.path, "notes/README.md");
+});

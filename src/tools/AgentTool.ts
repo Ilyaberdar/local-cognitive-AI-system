@@ -2,7 +2,11 @@ import { z } from "zod";
 import { LLMFunctionTool, LLMResponseFormat } from "../types";
 import { strictJsonSchema } from "../llm/StructuredOutput";
 
-const filePath = z.string().min(1).max(4096).refine(value => !value.includes("\0"), "Path contains a null byte.");
+// A model that runs on into prose inside a path gets a short reason to correct itself, not a
+// file system error echoing the text (ENAMETOOLONG): one line, parts the file system accepts.
+const filePath = z.string().min(1).max(4096).refine(value => !value.includes("\0"), "Path contains a null byte.")
+  .refine(value => !/[\u0000-\u001f\u007f]/.test(value), "A path is one line naming a file or folder, such as notes/README.md, without line breaks or tabs.")
+  .refine(value => value.split(/[\\/]/).every(part => Buffer.byteLength(part) <= 255), "Each part of a path is at most 255 bytes long; pass only the file or folder name.");
 const text = z.string().max(1_000_000);
 const version = z.string().min(1).max(128);
 export const agentToolSchemas = {
