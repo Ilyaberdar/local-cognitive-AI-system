@@ -95,7 +95,11 @@ test("host-only, deferred and per-device settings are refused with the reason, a
     [{}, "invalid_request"], [{ providers: { openai: { apiKey: "plain-string-key" } } }, "invalid_request"],
     [{ providers: { unknown: { enabled: true } } }, "invalid_request"], [{ llm: { defaultProvider: "unknown" } }, "invalid_request"],
     [{ providers: { ollama: { apiKey: { set: "abcdefgh" } } } }, "invalid_request"], [{ providers: { openai: { version: "1" } } }, "invalid_request"],
-    [{ providers: { openai: { apiKey: { set: "two words" } } } }, "invalid_request"], [{ ui: { language: "fr" } }, "invalid_request"]
+    [{ providers: { openai: { apiKey: { set: "two words" } } } }, "invalid_request"], [{ ui: { language: "fr" } }, "invalid_request"],
+    // Names an object has through its prototype are not providers.
+    [{ providers: { toString: { apiKey: { set: "sk-planted-key-1234" } } } }, "invalid_request"], [{ providers: { hasOwnProperty: { enabled: true } } }, "invalid_request"],
+    [{ llm: { defaultProvider: "toString" } }, "invalid_request"], [{ llm: { defaultProvider: "constructor" } }, "invalid_request"],
+    [JSON.parse('{"providers":{"__proto__":{"enabled":true}}}'), "invalid_request"]
   ];
   for (const [patch, expected] of refused) await assert.rejects(f.call("settings.update", patch), code(expected), JSON.stringify(patch));
   assert.equal(await fs.readFile(f.file, "utf8"), before, "the settings file is byte for byte the same");
@@ -129,6 +133,7 @@ test("a provider test uses the saved key on the host and answers without it", as
   assert.deepEqual(await f.call("providers.test", { providerId: "gemini" }), { ok: false, providerId: "gemini", message: "Provider is disabled." });
   await assert.rejects(f.call("providers.test", { providerId: "llamacpp" }), code("unsupported"));
   await assert.rejects(f.call("providers.test", { providerId: "nope" }), code("invalid_request"));
+  await assert.rejects(f.call("providers.test", { providerId: "toString" }), code("invalid_request"));
 });
 
 test("while the host drains, changes and tests are refused and reading still answers", async t => {
