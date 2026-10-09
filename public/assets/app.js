@@ -178,12 +178,12 @@ const api = {
       method: "POST",
       body: JSON.stringify({ title, ...(projectId ? { projectId } : {}) })
     }),
-  renameSession: (sessionId, title) => isServerChat(sessionId) ? notForServerChats() :
+  renameSession: (sessionId, title) => isServerChat(sessionId) ? chatTarget.rename(sessionId, title) :
     request(`/sessions/${sessionId}`, {
       method: "PATCH",
       body: JSON.stringify({ title })
     }),
-  deleteSession: (sessionId) => isServerChat(sessionId) ? notForServerChats() :
+  deleteSession: (sessionId) => isServerChat(sessionId) ? chatTarget.remove(sessionId) :
     request(`/sessions/${sessionId}`, {
       method: "DELETE"
     }),
@@ -329,7 +329,8 @@ const api = {
 const projectsUi = createProjectsUi({
   getState: () => state,
   // While a server is the chat target, the sidebar lists that server's chats only.
-  remoteSessions: () => chatTarget?.isRemote() ? { hostName: chatTarget.hostName(), sessions: chatTarget.sessionList(), loaded: chatTarget.sessionsLoaded() } : null,
+  remoteSessions: () => chatTarget?.isRemote() ? { hostName: chatTarget.hostName(), sessions: chatTarget.sessionList(), loaded: chatTarget.sessionsLoaded(),
+    canDelete: chatTarget.supports("sessions.delete") } : null,
   createProject: api.createProject,
   updateProject: api.updateProject,
   notify: message => { pushToast(message, "danger"); render(); },
@@ -1523,7 +1524,7 @@ function renderChatRightPanel(settings, currentSession, providerOptions) {
     const setup = chatTarget.setup(state.activeSessionId);
     return renderRemoteSetupPanel({ settings, sessionKey: state.activeSessionId, title: currentSession?.title ?? "", hostName: chatTarget.hostName(),
       models: chatTarget.cachedModels(), collapsed: state.ui.sessionSetupCollapsed, autosaveLabel: autosaveStatusLabel(state.ui.autosaveStatus),
-      agents: setup.agents, hostOnly: setup.hostOnly });
+      agents: setup.agents, hostOnly: setup.hostOnly, renamable: chatTarget.supports("sessions.rename") });
   }
   return reviewPanel.render() || renderSessionSetupPanel(settings, currentSession, providerOptions);
 }
@@ -6226,7 +6227,11 @@ function sessionModelLabel(name) {
 }
 
 async function deleteSessionById(sessionId) {
-  if (!sessionId || isServerChat(sessionId)) {
+  if (!sessionId) {
+    return;
+  }
+  if (isServerChat(sessionId)) {
+    await deleteServerChat(sessionId);
     return;
   }
 
@@ -6863,11 +6868,42 @@ function bindChatTargetControls() {
 /** Model choices follow each provider at once (the main model and every agent's), so the next
  * save cannot mix two providers. */
 function bindRemoteSetupSync(form) {
+  form.querySelector("[data-remote-title]")?.addEventListener("change", (event) => { void renameServerChat(state.activeSessionId, event.target); });
   form.querySelectorAll("[data-remote-provider]").forEach((provider) => provider.addEventListener("change", (event) => {
     const name = event.target.dataset.remoteProvider;
     const select = [...form.querySelectorAll("[data-remote-model]")].find((item) => item.name === name);
     if (select) select.outerHTML = remoteModelSelect(name, event.target.value, "", chatTarget.cachedModels());
   }));
+}
+
+/** Renames a server chat from its setup panel; the field shows the saved title again on failure. */
+async function renameServerChat(key, field) {
+  const before = chatTarget.sessionList().find((session) => session.id === key)?.title ?? "";
+  const title = field.value.trim();
+  if (!title || title === before) { field.value = before; return; }
+  try {
+    await chatTarget.rename(key, title);
+    render();
+  } catch (error) {
+    field.value = before;
+    pushToast(error instanceof Error ? error.message : "Could not rename the chat", "danger");
+  }
+}
+
+/** Deletes a server chat there (for every device), then opens another of its chats. */
+async function deleteServerChat(key) {
+  await runAction(async () => {
+    await chatTarget.remove(key);
+    voiceInput.cancelSession(key);
+    delete state.drafts[key];
+    delete state.draftAttachments[key];
+    if (key === state.activeSessionId) {
+      state.activeSessionId = null;
+      state.sessionSettings = null;
+      state.messages = [];
+      await ensureRemoteSession();
+    }
+  });
 }
 
 /** How a server turn ended when it did not complete. */
