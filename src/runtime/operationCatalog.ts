@@ -28,6 +28,9 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "uploads.chunk": { kind: "request", timeoutMs: 30_000 },
   "uploads.commit": { kind: "request", timeoutMs: 30_000 },
   "uploads.cancel": { kind: "request", timeoutMs: 15_000 },
+  // A chat's files: Review reads them as text, a saved copy in parts (scrubbed paths, checked as Review is).
+  "files.stat": { kind: "request", timeoutMs: 60_000 },
+  "files.read": { kind: "request", timeoutMs: 30_000 },
   "sessions.settings.update": { kind: "request", timeoutMs: 30_000 },
   "models.available": { kind: "request", timeoutMs: 45_000 },
   "chat.runs.start": { kind: "command", timeoutMs: 30_000 },

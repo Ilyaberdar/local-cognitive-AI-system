@@ -274,6 +274,26 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       }
       return ids;
     },
+    /** A file of a server chat as Review shows it: its text, under the path the chat showed. */
+    readFile: (key, filePath) => call("files.read", { sessionId: serverId(key), path: filePath, as: "text" }, hostOf(key)),
+    /** A copy of a server chat's file, read in parts and checked against the server's hash. */
+    async copyFile(key, filePath) {
+      const host = hostOf(key), sessionId = serverId(key);
+      const stat = await call("files.stat", { sessionId, path: filePath }, host);
+      const bytes = new Uint8Array(stat.sizeBytes);
+      for (let offset = 0, eof = stat.sizeBytes === 0; !eof;) {
+        const part = await call("files.read", { sessionId, path: filePath, as: "base64", offset }, host);
+        const chunk = Uint8Array.from(atob(part.data), character => character.charCodeAt(0));
+        if (!chunk.length && !part.eof) throw new Error("The file changed on the server while it was copied.");
+        if (offset + chunk.length > bytes.length) throw new Error("The file changed on the server while it was copied.");
+        bytes.set(chunk, offset);
+        offset += chunk.length;
+        eof = part.eof;
+      }
+      const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      if (digest !== stat.sha256) throw new Error("The file changed on the server while it was copied. Try again.");
+      return { name: stat.name, bytes };
+    },
     async send(key, input, attachmentIds = []) {
       const result = await runtime.send("chat.runs.start", { sessionId: serverId(key), input, ...(attachmentIds.length ? { attachmentIds } : {}) }, hostOf(key));
       if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The message was not sent."), { code: result?.error?.code });

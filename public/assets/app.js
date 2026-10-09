@@ -212,9 +212,10 @@ const api = {
   getProcessRun: (requestId) => request(`/process-runs/${encodeURIComponent(requestId)}`),
   cancelProcessRun: (requestId) =>
     request(`/process-runs/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
-  readWorkspaceFile: (filePath, sessionId) => isServerChat(sessionId) ? notForServerChats() :
+  readWorkspaceFile: (filePath, sessionId) => isServerChat(sessionId) ? chatTarget.readFile(sessionId, filePath) :
     request(`/workspace/file?path=${encodeURIComponent(filePath)}&sessionId=${encodeURIComponent(sessionId || "")}`),
-  openWorkspaceEditor: (filePath, sessionId) => isServerChat(sessionId) ? notForServerChats() :
+  // A server chat's file opens here as a copy, saved where the user chooses.
+  openWorkspaceEditor: (filePath, sessionId) => isServerChat(sessionId) ? saveServerFileCopy(sessionId, filePath) :
     request("/workspace/editor", { method: "POST", body: JSON.stringify({ path: filePath, sessionId }) }),
   revealWorkspacePath: (filePath, sessionId = state.activeSessionId, runId) => isServerChat(sessionId) ? notForServerChats() :
     request("/workspace/reveal", {
@@ -360,6 +361,7 @@ const reviewPanel = createReviewPanel({
   busy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving),
   readFile: api.readWorkspaceFile,
   openEditor: api.openWorkspaceEditor,
+  editorLabel: () => isServerChat(state.activeSessionId) ? "Save a copy" : "Open in editor",
   findChange: findFileChangeMetadata,
   beforeOpen: async () => {
     const sessionId = state.activeSessionId;
@@ -1523,8 +1525,10 @@ function renderSessionSetupPanel(settings, currentSession, providerOptions) {
 
 function renderChatRightPanel(settings, currentSession, providerOptions) {
   if (isServerChat(state.activeSessionId)) {
-    const setup = chatTarget.setup(state.activeSessionId);
-    return renderRemoteSetupPanel({ settings, sessionKey: state.activeSessionId, title: currentSession?.title ?? "", hostName: chatTarget.hostName(),
+    const setup = chatTarget.setup(state.activeSessionId), review = chatTarget.supports("files.read");
+    const reviewPanelMarkup = review ? reviewPanel.render() : null;
+    if (reviewPanelMarkup) return reviewPanelMarkup;
+    return renderRemoteSetupPanel({ reviewTabs: review ? reviewPanel.tabs() : "", settings, sessionKey: state.activeSessionId, title: currentSession?.title ?? "", hostName: chatTarget.hostName(),
       models: chatTarget.cachedModels(), collapsed: state.ui.sessionSetupCollapsed, autosaveLabel: autosaveStatusLabel(state.ui.autosaveStatus),
       agents: setup.agents, hostOnly: setup.hostOnly, renamable: chatTarget.supports("sessions.rename") });
   }
@@ -6884,6 +6888,20 @@ function bindRemoteSetupSync(form) {
     const select = [...form.querySelectorAll("[data-remote-model]")].find((item) => item.name === name);
     if (select) select.outerHTML = remoteModelSelect(name, event.target.value, "", chatTarget.cachedModels());
   }));
+}
+
+/** Saves a copy of a server chat's file where the user chooses, named after the server. */
+async function saveServerFileCopy(key, filePath) {
+  const { name, bytes } = await chatTarget.copyFile(key, filePath);
+  const dot = name.lastIndexOf(".");
+  const suggested = dot > 0 ? `${name.slice(0, dot)} (from ${chatTarget.hostName()})${name.slice(dot)}` : `${name} (from ${chatTarget.hostName()})`;
+  const url = URL.createObjectURL(new Blob([bytes]));
+  try {
+    const link = Object.assign(document.createElement("a"), { href: url, download: suggested });
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 60_000); }
 }
 
 /** Prepares files for a server chat as for this computer's (documents are read here); they are sent

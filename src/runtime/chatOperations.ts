@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { resolveReviewPath } from "../api/workspaceReview";
 import type { RuntimeManager } from "../app/RuntimeManager";
 import { loadSessionMessages } from "../conversations/sessionHistory";
 import { isReasoningEffort } from "../llm/ReasoningEffort";
@@ -15,6 +18,8 @@ import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore"
 
 const MAX_HISTORY_BYTES = 768 * 1024;
 const MAX_SUBAGENTS = 4, MAX_ADVISORS = 5;
+/** A file's text for Review (as on this computer), and bytes per read of a copy being saved. */
+const TEXT_LIMIT = 5 * 1024 * 1024, FILE_CHUNK_BYTES = 512 * 1024, COPY_LIMIT = 100 * 1024 * 1024;
 /** Work the host set up with full access stays there: a device may stop, decline or delete it. */
 export const CHAT_ON_HOST = "This chat has full access on the server, so it can only be used or changed there.";
 const FULL_FROM_DEVICE = "Full access can only be given on the server itself.";
@@ -52,6 +57,9 @@ const schemas = {
     warning: z.string().max(1000).optional() }).strict(),
   uploadChunk: z.object({ uploadId: uuid, index: z.number().int().min(0), data: z.string().min(1).max(CHUNK_CHARS) }).strict(),
   upload: z.object({ uploadId: uuid }).strict(),
+  file: z.object({ sessionId: id, path: z.string().min(1).max(4096).refine(value => !/[\u0000-\u001f]/.test(value)) }).strict(),
+  fileRead: z.object({ sessionId: id, path: z.string().min(1).max(4096).refine(value => !/[\u0000-\u001f]/.test(value)),
+    as: z.enum(["text", "base64"]), offset: z.number().int().min(0).optional(), length: z.number().int().min(1).max(FILE_CHUNK_BYTES).optional() }).strict(),
   run: z.object({ runId: uuid }).strict(),
   approval: z.object({ runId: uuid, approvalId: uuid, approved: z.boolean() }).strict()
 };
@@ -149,6 +157,60 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     }
     if (roles.filter(role => role === "advisor").length > MAX_ADVISORS) throw new RemoteOperationError(`A debate has at most ${MAX_ADVISORS} advisors.`, "invalid_request");
   };
+  /** A file a chat's agents wrote or read, as the device saw it in the chat (`<output>/report.md`):
+   * its labels are mapped back to this host's folders and the result must pass the same check as
+   * Review on this computer (inside the chat's workspace, or a file action the chat completed). */
+  const chatFile = async (sessionId: string, ref: string): Promise<string> => {
+    const scrub = await scrubber();
+    const label = /^(<[a-z]+>)(?=[\\/]|$)/.exec(ref)?.[1];
+    const candidates = label ? scrub.pairs.filter(([, name]) => name === label).map(([dir]) => dir + ref.slice(label.length)) : path.isAbsolute(ref) ? [ref] : [];
+    let refusal: unknown = new RemoteOperationError("The file is not one this chat can open.", "forbidden");
+    for (const candidate of candidates) {
+      try { return await resolveReviewPath(deps.runtimeManager, candidate, sessionId); }
+      catch (error) { refusal = error; }
+    }
+    if ((refusal as NodeJS.ErrnoException).code === "ENOENT") throw new RemoteOperationError("The file no longer exists on the server.", "not_found");
+    if (refusal instanceof RemoteOperationError) throw refusal;
+    throw new RemoteOperationError("The file is not one this chat can open.", "forbidden");
+  };
+  const fileView = async (sessionId: string, ref: string) => {
+    const file = await chatFile(sessionId, ref);
+    const stat = await fsp.stat(file);
+    if (!stat.isFile()) throw new RemoteOperationError("This is a folder, not a file.", "invalid_request");
+    return { file, stat, path: (await scrubber())(file), name: path.basename(file) };
+  };
+  const fileOperations: Record<string, RemoteOperation> = {
+    /** Size, time and hash of a chat's file, so a saved copy can be checked. */
+    "files.stat": async payload => {
+      const { sessionId, path: ref } = parse(schemas.file, payload);
+      await requireSession(sessionId);
+      const { file, stat, path: shown, name } = await fileView(sessionId, ref);
+      if (stat.size > COPY_LIMIT) throw new RemoteOperationError("The file is larger than 100 MB.", "too_large");
+      const hash = createHash("sha256");
+      for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
+      return { path: shown, name, sizeBytes: stat.size, modifiedAt: stat.mtime.toISOString(), sha256: hash.digest("hex") };
+    },
+    /** A chat's file as text for Review (5 MB, no binary), or a part of it for a saved copy. */
+    "files.read": async payload => {
+      const { sessionId, path: ref, as, offset = 0, length = FILE_CHUNK_BYTES } = parse(schemas.fileRead, payload);
+      await requireSession(sessionId);
+      const { file, stat, path: shown, name } = await fileView(sessionId, ref);
+      const handle = await fsp.open(file, "r");
+      try {
+        if (as === "text") {
+          if (stat.size > TEXT_LIMIT) throw new RemoteOperationError("The file is larger than the 5 MB viewer limit.", "too_large");
+          const { buffer, bytesRead } = await handle.read(Buffer.alloc(TEXT_LIMIT + 1), 0, TEXT_LIMIT + 1, 0);
+          if (bytesRead > TEXT_LIMIT) throw new RemoteOperationError("The file is larger than the 5 MB viewer limit.", "too_large");
+          const bytes = buffer.subarray(0, bytesRead);
+          if (bytes.includes(0)) throw new RemoteOperationError("Review shows text files. Save a copy to open this one.", "binary_file");
+          return { path: shown, name, sizeBytes: bytesRead, content: bytes.toString("utf8"), version: createHash("sha256").update(bytes).digest("hex") };
+        }
+        const { buffer, bytesRead } = await handle.read(Buffer.alloc(length), 0, length, offset);
+        return { path: shown, name, sizeBytes: stat.size, offset, data: buffer.subarray(0, bytesRead).toString("base64"), eof: offset + bytesRead >= stat.size };
+      } finally { await handle.close(); }
+    }
+  };
+
   /** Attachments for a device's next turn (R5-4d): begun for a chat the device may use, sent in
    * chunks, then checked and validated as a whole. Requests, not commands: chunks never enter the
    * command ledger, and an upload id makes each step safe to repeat. */
@@ -288,6 +350,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     }),
 
     ...(deps.uploads ? uploadOperations(deps.uploads) : {}),
+    ...fileOperations,
 
     "chat.runs.get": payload => known(() => {
       const run = deps.runService.get(parse(schemas.run, payload).runId);

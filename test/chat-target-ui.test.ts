@@ -8,9 +8,10 @@ const RUN = "0b6a3f0e-7f1d-4b9e-8a52-1f2c3d4e5f60";
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 40)); await flush(10); };
 
 /** A paired server behind the desktop bridge, with one chat; `agents`: a server that offers agent setup (R5-4). */
-function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = false } = {}) {
+function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = false, files = false } = {}) {
   let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0",
-    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : []), ...(uploads ? ["uploads.begin"] : [])] };
+    capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : []), ...(uploads ? ["uploads.begin"] : []), ...(files ? ["files.read", "files.stat"] : [])] };
+  const REPORT = "# Report\nShip on Friday.\n";
   const received: Record<string, { meta: any; chunks: string[] }> = {};
   const chats = [{ id: "srv-1", title: "Server chat", updatedAt: "2026-10-08T10:00:00.000Z" }, ...(manage ? [{ id: "srv-3", title: "Older chat", updatedAt: "2026-10-07T10:00:00.000Z" }] : [])];
   const statusListeners: Array<(value: unknown) => void> = [], eventListeners: Array<(value: unknown) => void> = [];
@@ -18,6 +19,9 @@ function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = f
   const ok = (value: unknown) => ({ ok: true, value });
   const handlers: Record<string, (payload: any) => unknown> = {
     "sessions.list": () => chats,
+    "files.read": payload => payload.as === "text" ? { path: payload.path, name: "report.md", sizeBytes: REPORT.length, content: REPORT, version: "v1" }
+      : { path: payload.path, name: "report.md", sizeBytes: REPORT.length, offset: payload.offset ?? 0, data: Buffer.from(REPORT).toString("base64"), eof: true },
+    "files.stat": payload => ({ path: payload.path, name: "report.md", sizeBytes: REPORT.length, modifiedAt: "t", sha256: createHash("sha256").update(REPORT).digest("hex") }),
     "uploads.begin": payload => { received[payload.uploadId] = { meta: payload, chunks: [] }; return { uploadId: payload.uploadId, chunkChars: 8, received: [] }; },
     "uploads.chunk": payload => { received[payload.uploadId]!.chunks[payload.index] = payload.data; return { received: received[payload.uploadId]!.chunks.length }; },
     "uploads.commit": payload => { const { meta } = received[payload.uploadId]!; return { id: payload.uploadId, name: meta.name, mimeType: meta.mimeType, sizeBytes: meta.sizeBytes, kind: meta.kind }; },
@@ -345,4 +349,31 @@ test("a server chat deleted on another device is left for another of its chats",
   await settle();
   assert.equal(app.document.querySelector(".app-topbar h1").textContent, "Older chat");
   assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /Server chat/);
+});
+
+test("a server chat's file opens in Review from the server, and Save a copy downloads it", async t => {
+  const paired = fakeServer({ files: true });
+  paired.server.messages = [{ id: "m:user", role: "user", content: "Write the report", createdAt: "2026-10-08T10:00:01.000Z" },
+    { id: "m:assistant", role: "assistant", content: "Done.", createdAt: "2026-10-08T10:00:02.000Z",
+      tools: [{ tool: "file", ok: true, output: "Wrote <output>/report.md", metadata: { operation: "write", filePath: "<output>/report.md" } }] }];
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  const downloads: string[] = [];
+  app.window.URL.createObjectURL = () => "blob:copy";
+  app.window.URL.revokeObjectURL = () => undefined;
+  app.window.HTMLAnchorElement.prototype.click = function (this: any) { downloads.push(this.download); };
+  await choose(app, HOST);
+  const localBefore = app.requests.length;
+  app.document.querySelector("[data-action='open-tool-path'][data-path='<output>/report.md']").click();
+  await settle();
+  assert.match(app.document.querySelector(".review-panel").textContent, /Ship on Friday/);
+  const save = app.document.querySelector("[data-review-action='editor']");
+  assert.match(save.textContent, /Save a copy/);
+  save.click();
+  await settle();
+  assert.deepEqual(downloads, ["report (from fedora).md"]);
+  const calls = ops(app, "request").filter(([op]: [string]) => op.startsWith("files."));
+  assert.deepEqual(calls.map(([op, payload]: [string, any]) => [op, payload.path, payload.as]), [["files.read", "<output>/report.md", "text"], ["files.stat", "<output>/report.md", undefined],
+    ["files.read", "<output>/report.md", "base64"]]);
+  assert.deepEqual(app.requests.slice(localBefore).filter(entry => entry.includes("/workspace/")), [], "this computer's files are not asked");
 });
