@@ -143,7 +143,8 @@ const LOCAL_ORCHESTRATION_TRACE = [
   "--- open #/orchestration",
   "--- create task", "POST /tasks <body bd28257806cb>", "GET /dashboard/bootstrap", "GET /integrations/available",
   "--- run task", 'POST /tasks/task-1/run {"background":true}', "GET /dashboard/bootstrap", "GET /integrations/available", "GET /workflow-runs/run-2",
-  "GET /workflow-runs/run-2", "GET /integrations/available", "EVENTSOURCE /workflow-runs/run-2/events?after=0",
+  // The editor reads this computer's MCP tools once (for MCP steps and agents).
+  "GET /workflow-runs/run-2", "GET /integrations/available", "GET /mcp/clients", "EVENTSOURCE /workflow-runs/run-2/events?after=0",
   "--- editor stop", "POST /workflow-runs/run-2/cancel", "GET /workflow-runs/run-2",
   "--- editor resume", 'POST /workflow-runs/run-2/resume {"background":true}', "GET /workflow-runs/run-2",
   "--- editor review", 'POST /workflow-runs/run-2/review {"approved":true,"comment":"Looks right","background":true}', "GET /workflow-runs/run-2",

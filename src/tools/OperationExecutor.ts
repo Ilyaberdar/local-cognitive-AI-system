@@ -23,6 +23,8 @@ export interface OperationInput {
   captureVersion?: boolean;
   /** Request-level narrowing only; never grants account/tool access. */
   pluginIds?: string[];
+  /** Only these external MCP servers; [] means none. */
+  mcpServerIds?: string[];
   resumePrepared?: boolean;
 }
 export class OperationExecutor {

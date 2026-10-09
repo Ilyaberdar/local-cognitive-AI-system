@@ -11,6 +11,7 @@ export type WorkflowNodeType =
   | "file_read"
   | "file_write"
   | "command"
+  | "mcp_call"
   | "decision"
   | "tool"
   | "human_review"

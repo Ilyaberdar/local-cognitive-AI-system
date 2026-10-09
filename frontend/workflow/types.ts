@@ -7,6 +7,7 @@ export type WorkflowNodeType =
   | "file_read"
   | "file_write"
   | "command"
+  | "mcp_call"
   | "decision"
   | "tool"
   | "human_review"
@@ -63,6 +64,15 @@ export interface ProviderOption {
   defaultModel?: string;
   installedOnly?: boolean;
   modelLabels?: Record<string, string>;
+}
+
+/** A tool of an external MCP server on this computer, for MCP steps and agents. */
+export interface McpToolOption {
+  serverId: string;
+  serverName: string;
+  name: string;
+  description?: string;
+  inputSchema?: { properties?: Record<string, { type?: unknown; description?: string }>; required?: string[] };
 }
 
 export interface PluginOption {
@@ -126,6 +136,8 @@ export interface WorkflowEditorViewState {
 export interface WorkflowEditorProps {
   plugins?: PluginOption[];
   pluginsError?: string;
+  /** External MCP tools here; undefined where MCP steps cannot run (a paired server's editor). */
+  mcpTools?: McpToolOption[];
   settingsContainer?: HTMLElement | null;
   onReview?: (runId: string, decision: { approved: boolean; approvalId?: string; waitingNodeRunId?: string }) => Promise<void>;
   projects?: Array<{ id: string; name: string; rootPath: string; archivedAt?: string }>;

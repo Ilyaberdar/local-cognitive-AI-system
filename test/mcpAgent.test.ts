@@ -12,6 +12,10 @@ import { McpClientManager } from "../src/mcp/client/McpClientManager";
 import type { McpApprovalMode, McpClientService, McpConnector, McpDiscoveredTool } from "../src/mcp/client/types";
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
 import { OperationExecutor, type OperationInput } from "../src/tools/OperationExecutor";
+import { McpCallNodeExecutor } from "../src/workflows/nodes/McpCallNodeExecutor";
+import type { NodeExecutionContext } from "../src/workflows/nodes/NodeExecutor";
+import type { WorkflowRun } from "../src/workflows/types";
+import { WorkflowStore } from "../src/workflows/WorkflowStore";
 import type { ExecutionContext, LLMImage, LLMRequest } from "../src/types";
 
 // A real 1x1 PNG, as a viewport screenshot would arrive (base64 in an MCP image item).
@@ -207,4 +211,53 @@ test("a server's tool filter hides tools from agents, and changing it or the cal
   assert.equal(opens, 1, "filters and the call timeout do not restart it");
   await manager.reconcile(applyMcpConfigurationPatch(base, { servers: { blender: { connectTimeoutMs: 90000 } } }));
   assert.equal(opens, 2, "a new startup timeout starts it again");
+});
+
+const workflowContext = (root: string, config: Record<string, unknown>, extra: Partial<NodeExecutionContext> = {}): NodeExecutionContext => {
+  const workspace = { version: 1 as const, kind: "project" as const, rootPath: root, outputDir: root, allowedDirectories: [root], memoryScope: "project:test" };
+  const run = { id: "run-mcp", workflowId: "wf", workflowVersion: 1, status: "running", currentNodeId: "shot", workspace,
+    state: { nodeResults: { agent: { status: "ok", data: { response: "Move the \"cube\"\nup" } } } }, createdAt: "", updatedAt: "" } as unknown as WorkflowRun;
+  return { workflow: {} as never, run, node: { id: "shot", type: "mcp_call", label: "Blender", config } as never, previousNodeRuns: [], workspace, ...extra };
+};
+
+test("an MCP step calls one tool with arguments from earlier steps, asks first by default, and gives its result as fields", async t => {
+  const root = await folder(t);
+  const f = clients();
+  const seen: unknown[] = [];
+  const service = { ...f.service, callTool: async (request: Parameters<McpClientService["callTool"]>[0]) => { seen.push(request.arguments); return f.service.callTool(request); } };
+  const node = new McpCallNodeExecutor(new OperationExecutor(root, undefined, service, () => ({ approval: "trust" })));
+  const config = { serverId: "blender", toolName: "execute_blender_code", argumentsTemplate: '{"code": "# {{nodes.agent.data.response}}"}' };
+  const waiting = await node.execute(workflowContext(root, config));
+  assert.equal(waiting.status, "needs_input", "a step asks unless set otherwise");
+  assert.equal(waiting.data.tool, "mcp");
+  const done = await node.execute(workflowContext(root, config, { approval: { approvalId: waiting.data.approvalId, approved: true } }));
+  assert.equal(done.status, "ok");
+  assert.deepEqual(seen, [{ code: "# Move the \"cube\"\nup" }], "a result is inserted as text, never as JSON structure");
+  assert.equal(done.data.text, "done");
+  assert.equal(done.data.isError, false);
+  const shot = await new McpCallNodeExecutor(new OperationExecutor(path.join(root, "b"), undefined, f.service, () => ({ approval: "trust" })))
+    .execute(workflowContext(root, { serverId: "blender", toolName: "look", argumentsTemplate: "{}", approval: "inherit" }));
+  assert.equal(shot.status, "ok", "inherit follows the server's mode (trust)");
+  assert.equal((shot.data.images as unknown[]).length, 1);
+  assert.match((await node.execute(workflowContext(root, { serverId: "blender", toolName: "nope" }))).summary, /not available/);
+  assert.match((await node.execute(workflowContext(root, { ...config, approval: "inherit" }, { run: { ...workflowContext(root, config).run, deviceOrigin: true } as WorkflowRun }))).summary,
+    /only in workflows started on the server/);
+});
+
+test("a workflow agent may use only the MCP servers chosen for it", async t => {
+  const root = await folder(t);
+  const executor = new OperationExecutor(root, undefined, clients().service, () => ({ approval: "trust" }));
+  const found = (servers?: string[]) => executor.execute({ ...operation(root, "mcp.search", { query: "" }), ...(servers ? { mcpServerIds: servers } : {}) })
+    .then(outcome => JSON.parse(outcome.result!.output) as Array<{ serverId: string }>);
+  assert.equal((await found()).length, 2);
+  assert.equal((await found(["blender"])).length, 2);
+  assert.equal((await found(["unreal"])).length, 0);
+  assert.match((await executor.execute({ ...operation(root, "mcp.call", { toolId: "mcp:blender:look", argumentsJson: "{}" }), mcpServerIds: ["unreal"] })).result!.output, /unavailable/);
+  const store = new WorkflowStore(path.join(root, "workflows"));
+  const errors = (config: Record<string, unknown>, type = "mcp_call") => store.validate({ id: "w", name: "W", version: 1, entryNodeId: "a", createdAt: "", updatedAt: "",
+    nodes: [{ id: "a", type, label: "A", config, position: { x: 0, y: 0 } }], transitions: [] }).errors.join(" ");
+  assert.match(errors({}), /requires config.serverId/);
+  assert.match(errors({ serverId: "blender", toolName: "look", argumentsTemplate: "[1]" }), /arguments must be a JSON object/);
+  assert.doesNotMatch(errors({ serverId: "blender", toolName: "look", argumentsTemplate: '{"a": "{{input.description}}"}' }), /arguments|serverId|toolName|mcp/i);
+  assert.match(errors({ mcpServerIds: "blender" }, "agent"), /mcpServerIds must be a list/);
 });

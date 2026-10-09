@@ -2254,6 +2254,24 @@ function selectWorkflowRun(detail) {
   state.orchestrationTab = "workflow";
 }
 
+/** This computer's MCP tools (connected servers, filters applied) for MCP steps and agents;
+ * read at most once a minute however often the editor is mounted again. */
+let workflowMcpTools = { at: 0, tools: undefined };
+async function loadWorkflowMcpTools() {
+  const handle = workflowEditorHandle;
+  if (Date.now() - workflowMcpTools.at < 60_000) { if (workflowMcpTools.tools) handle?.setMcpTools?.(workflowMcpTools.tools); return; }
+  // A failed read is not repeated on every mount either.
+  workflowMcpTools = { ...workflowMcpTools, at: Date.now() };
+  try {
+    const { tools = [] } = await request("/mcp/clients");
+    const servers = state.bootstrap?.appSettings?.mcp?.client?.servers ?? {};
+    const disabled = id => new Set(servers[id]?.disabledTools ?? []), only = id => servers[id]?.enabledTools;
+    workflowMcpTools = { at: Date.now(), tools: tools.filter(tool => !disabled(tool.serverId).has(tool.name) && (!only(tool.serverId) || only(tool.serverId).includes(tool.name)))
+      .map(tool => ({ serverId: tool.serverId, serverName: servers[tool.serverId]?.name || tool.serverId, name: tool.name, description: tool.description, inputSchema: tool.inputSchema })) };
+    workflowEditorHandle?.setMcpTools?.(workflowMcpTools.tools);
+  } catch { /* The editor keeps its empty list; MCP steps still save. */ }
+}
+
 function unmountWorkflowEditor() {
   if (workflowMountedKey && workflowEditorHandle) {
     const workspace = workflowWorkspaces.get(workflowMountedKey);
@@ -2449,6 +2467,8 @@ async function mountActiveWorkflowEditor() {
       workflow: cloneWorkflow(workflow), providers, projects: server ? loaded.projects : state.bootstrap?.projects ?? [],
       plugins, pluginsError: server ? loaded.pluginsError : state.pluginsError,
       ...(server ? { limits: loaded.limits } : {}),
+      // MCP steps run where the MCP servers are: this computer's editor lists their tools.
+      ...(server ? {} : { mcpTools: [] }),
       initialViewState: workspace.ui, starting: Boolean(workspace.pendingStart),
       onChooseFolder: !server && window.desktopProjects ? () => window.desktopProjects.selectDirectory() : undefined,
       onRun: async draft => {
@@ -2491,6 +2511,7 @@ async function mountActiveWorkflowEditor() {
         workflowEditorHandle?.setValidation(null);
       }
     });
+    if (!server) void loadWorkflowMcpTools();
     if (detail) connectWorkflowRun(detail, generation, workspace, lists);
   } catch (error) {
     if (isCurrent()) container.innerHTML = `<div class="status-block danger"><div class="status-block__label">Editor failed to load</div><div class="status-block__text">${escapeHtml(error instanceof Error ? error.message : "Unknown error")}</div></div>`;

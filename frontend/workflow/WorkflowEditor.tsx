@@ -39,6 +39,7 @@ const RUNNABLE_NODE_TYPES: Array<{ type: WorkflowNodeType; label: string }> = [
   { type: "file_read", label: "Read file" },
   { type: "file_write", label: "Save" },
   { type: "command", label: "Command" },
+  { type: "mcp_call", label: "MCP tool" },
   { type: "decision", label: "Decision" },
   { type: "human_review", label: "Review" },
   { type: "terminal", label: "Terminal" }
@@ -507,6 +508,7 @@ function WorkflowEditorInner(props: WorkflowEditorProps) {
               providers={props.providers}
               plugins={props.plugins}
               pluginsError={props.pluginsError}
+              mcpTools={props.mcpTools}
               limits={props.limits}
               configError={configError}
               onConfigError={setConfigError}
@@ -542,7 +544,7 @@ function WorkflowFields({ draft, onUpdate }: {
   );
 }
 
-function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pluginsError, limits, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
+function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pluginsError, mcpTools, limits, configError, onConfigError, onRename, onUpdate, onConfigUpdate, onSetEntry }: {
   node: WorkflowNodeDefinition;
   nodes: WorkflowNodeDefinition[];
   disabled: boolean;
@@ -550,6 +552,7 @@ function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pl
   providers: WorkflowEditorProps["providers"];
   plugins: WorkflowEditorProps["plugins"];
   pluginsError: WorkflowEditorProps["pluginsError"];
+  mcpTools?: WorkflowEditorProps["mcpTools"];
   limits?: WorkflowEditorProps["limits"];
   configError: string;
   onConfigError: (value: string) => void;
@@ -602,7 +605,7 @@ function NodeFields({ node, nodes, disabled, entryNodeId, providers, plugins, pl
         {!["never", "always"].includes(String(node.config.approval)) ? <span className="fsm-model-hint">This saved step keeps its previous access rules until you choose a mode.</span> : null}
       </Field> : null}
       {node.type === "agent" ? <p className="fsm-model-hint">Agents read files, inspect tool results, and continue until done or the execution limit is reached.</p> : null}
-      <NodeConfigFields node={node} nodes={nodes} plugins={plugins} pluginsError={pluginsError} onUpdate={onConfigUpdate} />
+      <NodeConfigFields node={node} nodes={nodes} plugins={plugins} pluginsError={pluginsError} mcpTools={mcpTools} onUpdate={onConfigUpdate} />
       <details className="fsm-advanced-config"><summary>Advanced JSON</summary>
       <Field label="Config JSON">
         <textarea
@@ -727,6 +730,7 @@ function defaultNodeConfig(type: WorkflowNodeType): Record<string, unknown> {
     cwd: ".",
     timeoutMs: 120000
   };
+  if (type === "mcp_call") return { approval: "always", serverId: "", toolName: "", argumentsTemplate: "{}" };
   if (type === "decision") return {
     path: "nodes.command.data.exitCode",
     operator: "eq",
@@ -748,6 +752,7 @@ function nodeOutputBindings(node: WorkflowNodeDefinition): string {
     case "web_search": return `${prefix}.data.results · ${prefix}.data.query`;
     case "file_write": return `${prefix}.data.path · ${prefix}.data.bytes`;
     case "command": return `${prefix}.data.exitCode · ${prefix}.data.stdout · ${prefix}.data.stderr`;
+    case "mcp_call": return `${prefix}.data.text · ${prefix}.data.structured · ${prefix}.data.isError`;
     case "decision": return `${prefix}.data.matched · events: decision.true / decision.false`;
     default: return `${prefix}.summary · ${prefix}.data`;
   }

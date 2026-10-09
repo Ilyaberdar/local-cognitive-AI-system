@@ -502,3 +502,10 @@ test("a workflow a device saved runs without the host's MCP tools until the host
   await f.workflowRunStore.updateRun(run.id, { state: { ...waiting.state, nodeResults } });
   await assert.rejects(f.call("workflows.runs.review", { commandId: "cmd-review-mcp", runId: run.id, approved: true }), code("unsupported"));
 });
+
+test("a device cannot save or start a workflow with an MCP step: it runs only where the MCP servers are", async t => {
+  const f = await setup(t);
+  const workflow = reviewWorkflow({ nodes: [...reviewWorkflow().nodes, { id: "shot", type: "mcp_call", label: "Blender", position: { x: 0, y: 0 }, config: { serverId: "blender", toolName: "look" } }] as never });
+  await assert.rejects(f.call("workflows.save", { commandId: "cmd-save-mcp-step", workflow, expectedUpdatedAt: null }), code("unsupported"));
+  await assert.rejects(f.call("workflows.runs.start", { commandId: "cmd-start-mcp-step", workflow }), code("unsupported"));
+});

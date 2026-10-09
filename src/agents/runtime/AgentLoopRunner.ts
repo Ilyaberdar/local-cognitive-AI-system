@@ -70,11 +70,11 @@ export class AgentLoopRunner {
       plugins: context.pluginIds?.length === 0 ? false : await this.operations.plugins?.hasEnabled() ?? false,
       // External MCP servers run tools on the host's own applications: a paired device's turn, or a
       // workflow a device started, has none.
-      mcp: withoutHostMcp(context.requestMetadata) ? false : await this.operations.hasExternalMcp(), pluginOnly: false
+      mcp: withoutHostMcp(context.requestMetadata) || context.execution?.mcpServerIds?.length === 0 ? false : await this.operations.hasExternalMcp(), pluginOnly: false
     };
     const allowedTools = new Set(agentFunctionTools(input.readOnly, toolOptions).map(tool => tool.action));
     const budgetId=input.budgetId??input.id.split(":agent:")[0];
-    const fingerprint=hash(JSON.stringify({input:input.input,workspace:context.workspace,target:input.target,readOnly:input.readOnly??false, pluginOwner:this.operations.plugins?.ownerId, pluginIds:context.pluginIds}));
+    const fingerprint=hash(JSON.stringify({input:input.input,workspace:context.workspace,target:input.target,readOnly:input.readOnly??false, pluginOwner:this.operations.plugins?.ownerId, pluginIds:context.pluginIds, mcpServerIds:context.execution?.mcpServerIds}));
     let run=await this.store.get(input.id);
     if(run&&(run.fingerprint!==fingerprint||(run.budgetId&&run.budgetId!==budgetId)))throw new Error("Agent run parameters changed. Start a new run.");
     if(!run){run={id:input.id,fingerprint,input:input.input,instructions:input.instructions,status:"running",turns:[],tools:[],steps:0,repairs:0,activeMs:0,usage:{}};await this.store.save(run);}
@@ -95,7 +95,7 @@ export class AgentLoopRunner {
           accessMode:context.sessionSettings.defaultAccessMode,tool:pending.action.tool,arguments:pending.action.arguments,
           approval:context.execution?.approval,pauseForApproval:context.execution?.pauseForApproval,requestApproval:context.requestApproval,
           requireApproval:context.execution?.requireApproval,
-          pluginIds:context.pluginIds,
+          pluginIds:context.pluginIds, mcpServerIds:context.execution?.mcpServerIds,
           readOnly:input.readOnly,signal:context.signal,onProgress:context.onProgress}).catch(error=>{
             if(context.signal?.aborted)throw error;
             return {result:{tool:pending.action.tool.startsWith("plugins.")?"plugins":pending.action.tool.startsWith("file.")?"file":"command",ok:false,output:error instanceof Error?error.message:String(error)} as ToolExecutionResult,pendingApproval:undefined};
