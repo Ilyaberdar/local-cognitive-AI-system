@@ -183,7 +183,7 @@ test("with fedora selected, the Models tab runs on fedora and asks this computer
   click(app, '[data-mm-action="unload"]');
   await settle();
   await app.tick(5000);
-  assert.match(text(app, ".mm-gpu"), /GPU 0\s*5\.6 GB free \/ 7\.5 GB/);
+  assert.match(text(app, ".mm-gpu"), /GTX 1070 Ti\s*5\.6 GB free \/ 7\.5 GB VRAM/, "a single GPU goes by its name");
 
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => /\/local\/|\/system\/metrics|\/app\/settings|\/providers\/|EVENTSOURCE/.test(entry)), [],
     "this computer's model API, metrics and settings were not asked");

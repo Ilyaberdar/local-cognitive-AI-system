@@ -5286,9 +5286,18 @@ function getModelOptions(providerId) {
   return [...new Set([...fromCatalog, ...fromManaged])].sort();
 }
 
+/** A local model by id: in this computer's library, else in the selected server's (a server chat's
+ * answers and agents name the server's models). */
+function findManagedModel(providerId, modelId) {
+  const matches = (item) => item.providerId === providerId && (item.id === modelId || item.libraryId === modelId);
+  return (state.bootstrap?.allManagedModels ?? []).find(matches) ?? (chatTarget?.cachedModels?.()?.allManagedModels ?? []).find(matches);
+}
+
 function getModelDisplayName(providerId, modelId) {
-  const model = (state.bootstrap?.allManagedModels ?? []).find((item) => item.providerId === providerId && (item.id === modelId || item.libraryId === modelId));
-  return providerId === "llamacpp" ? model ? `${model.displayName || model.id}${model.quantization && !(model.displayName || "").includes(model.quantization) ? ` · ${model.quantization}` : ""}` : "Select model" : modelId;
+  if (providerId !== "llamacpp") return modelId;
+  const model = modelId ? findManagedModel(providerId, modelId) : undefined;
+  // An id that no list knows (a model removed since, or a server's list still loading) shows as it is.
+  return model ? `${model.displayName || model.id}${model.quantization && !(model.displayName || "").includes(model.quantization) ? ` · ${model.quantization}` : ""}` : modelId || "Select model";
 }
 
 function resolveInstalledLocalModel(value, options) {

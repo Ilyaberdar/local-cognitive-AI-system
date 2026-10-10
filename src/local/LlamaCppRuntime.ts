@@ -18,6 +18,16 @@ export { llamaExecutable };
 // Allocation failures reported by llama.cpp and its CUDA/Vulkan backends.
 const OUT_OF_MEMORY = /out of memory|ErrorOutOfDeviceMemory|unable to allocate \S+ buffer|failed to allocate (?:[\w-]+ )?(?:buffer|compute buffers)|failed to allocate buffer for (?:kv|rs) cache/i;
 
+/** llama.cpp's reason when a file is not for this build, whatever the memory: weights in a type it
+ * does not know (files made for a modified llama.cpp, such as Prism ML's PQ2_0) or an architecture
+ * it does not support yet. */
+export const incompatibleModel = (log: string): string | undefined => {
+  const type = /tensor '[^']*' has invalid ggml type (\d{1,5})/.exec(log)?.[1];
+  if (type) return `This file stores weights in a format (tensor type ${type}) that the local runtime cannot read. It was made for a modified runtime; choose another file.`;
+  const architecture = /unknown model architecture: '([\w.-]{1,40})'/.exec(log)?.[1];
+  return architecture ? `The local runtime does not support the ${architecture} model architecture yet.` : undefined;
+};
+
 /** Arguments and environment chosen by placement for one model process. */
 export interface RuntimeLaunch { args: string[]; env: Record<string, string>; placement: LocalPlacementSnapshot }
 
@@ -127,10 +137,13 @@ export class LlamaCppRuntime {
     } catch (error) {
       // Read the log before stopping: placement retries with another layout on out-of-memory.
       const outOfMemory = !signal?.aborted && !deadline.aborted && OUT_OF_MEMORY.test(this.logTail);
+      const incompatible = !signal?.aborted && !deadline.aborted && !outOfMemory ? incompatibleModel(this.logTail) : undefined;
+      const detail = error instanceof Error ? error.message : "Model loading failed.";
+      // The reason first, then how the runtime ended and its whole log (the exit may beat the log's last lines).
       const message = signal?.aborted ? "Model loading cancelled." : deadline.aborted ? "Model loading timed out. Choose a smaller model or increase the load timeout."
-        : outOfMemory ? "Not enough GPU or system memory to load this model." : error instanceof Error ? error.message : "Model loading failed.";
+        : outOfMemory ? "Not enough GPU or system memory to load this model." : incompatible ? `${incompatible}\n${detail.split("\n")[0]}\n${this.logTail}` : detail;
       await this.stop(); this.modelId = modelId; this.setState("error", message);
-      throw new LocalModelError(message, signal?.aborted ? 499 : 503, outOfMemory ? "out_of_memory" : "local_model_error");
+      throw new LocalModelError(message, signal?.aborted ? 499 : 503, outOfMemory ? "out_of_memory" : incompatible ? "model_incompatible" : "local_model_error");
     }
   }
 

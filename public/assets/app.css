@@ -2364,8 +2364,11 @@ a {
 .composer-mention-chip img, .composer-mention-chip .mention-agent-icon, .composer-mention-chip svg { width: 16px; height: 16px; }
 .composer-mention-chip small { color: var(--muted); }
 .composer-mention-chip.is-unavailable { border-color: var(--danger, #ce705b); }
-.entity-mention { display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline; color: var(--text); border-radius: 5px; padding: 0 3px; background: var(--surface-2); }
+/* A chip sits on the line by its name's baseline: the icon is centered beside the name and gives the
+   chip no baseline of its own (an icon's baseline is its bottom edge, which lifted the name). */
+.entity-mention { display: inline-flex; align-items: baseline; gap: 4px; vertical-align: baseline; color: var(--text); border-radius: 5px; padding: 0 3px; background: var(--surface-2); }
 .entity-mention img, .entity-mention .mention-agent-icon, .entity-mention svg { width: 16px; height: 16px; vertical-align: middle; }
+.entity-mention > :is(img, .mention-agent-icon) { align-self: center; }
 @media (max-width: 540px) {
   .mention-item { flex-wrap: wrap; gap: 4px 8px; }
   .mention-item-description { flex-basis: calc(100% - 32px); margin-left: 32px; }

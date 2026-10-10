@@ -5,10 +5,10 @@ import path from "node:path";
 import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { LocalInferenceScheduler } from "../src/local/LocalInferenceScheduler";
-import { LlamaCppRuntime } from "../src/local/LlamaCppRuntime";
+import { incompatibleModel, LlamaCppRuntime } from "../src/local/LlamaCppRuntime";
 import { evaluateCompatibility } from "../src/local/ModelCompatibility";
 import { parseMacMemory } from "../src/utils/systemMemory";
-import { LocalModelOptions } from "../src/local/types";
+import { LocalModelError, LocalModelOptions } from "../src/local/types";
 import { Logger } from "../src/utils/Logger";
 
 test("local inference serializes callers, cancels only the queued caller, and releases after failure", async () => {
@@ -88,6 +88,32 @@ test("macOS reclaimable file cache does not appear as occupied model memory", ()
   const result = parseMacMemory('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 32768.\nFile-backed pages: 1966080.\n', 48 * GiB);
   assert.equal(result?.total, 48 * GiB); assert.equal(result?.free, 30.5 * GiB); assert.equal(result?.cached, 30 * GiB);
   assert.equal(parseMacMemory('invalid metrics', 48 * GiB), undefined);
+});
+
+test("a file made for a modified llama.cpp fails with its reason, and stopping clears the error", { skip: process.platform === "win32" }, async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "llama-runtime-test-"));
+  const executable = path.join(directory, "fake llama-server");
+  // What llama.cpp b10809 prints for Prism ML's PQ2_0 weights before it exits with 1.
+  await fs.writeFile(executable, `#!/usr/bin/env node
+process.stderr.write("gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 43)\\ngguf_init_from_reader: failed to read tensor info\\nllama_model_load: error loading model: llama_model_loader: failed to load model\\n");
+process.exitCode = 1;
+`, { mode: 0o755 });
+  const options: LocalModelOptions = { enabled: true, dataDir: directory, modelsDir: directory, runtimeDir: directory, executablePath: executable,
+    contextSize: 2048, gpuLayers: 0, loadTimeoutMs: 5000, generationTimeoutMs: 5000, memoryLimitPercent: 75 };
+  const runtime = new LlamaCppRuntime(options, new Logger());
+  t.after(async () => { await runtime.dispose(); await fs.rm(directory, { recursive: true, force: true }); });
+  await runtime.init();
+  await assert.rejects(runtime.load("bonsai", path.join(directory, "Ternary-Bonsai-PQ2_0.gguf")), (error: LocalModelError) => {
+    assert.equal(error.code, "model_incompatible");
+    assert.match(error.message.split("\n")[0], /^This file stores weights in a format \(tensor type 142\) that the local runtime cannot read/);
+    assert.match(error.message, /\nLocal runtime exited \(1\)\.\n[\s\S]*invalid ggml type 142/, "how it ended and the log stay in the details");
+    return true;
+  });
+  assert.equal(runtime.status, "error"); assert.equal(runtime.snapshot().modelId, "bonsai");
+  await runtime.stop();
+  assert.equal(runtime.status, "stopped"); assert.equal(runtime.snapshot().modelId, undefined, "dismissing the error leaves nothing loaded");
+  assert.equal(incompatibleModel("llama_model_load: error loading model: unknown model architecture: 'newarch'"), "The local runtime does not support the newarch model architecture yet.");
+  assert.equal(incompatibleModel("ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000.00 MiB on device 0: cudaMalloc failed: out of memory"), undefined);
 });
 
 test("native runtime uses loopback authentication, unload/reload, and recovers after a process crash", { skip: process.platform === "win32" }, async (t) => {

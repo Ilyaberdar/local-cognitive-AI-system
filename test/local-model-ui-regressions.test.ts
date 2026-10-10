@@ -19,7 +19,8 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const modelUseCallback = fragment("  onUse: async (model) => {", "  onDefault:").trim().replace(/^onUse:\s*/, "").replace(/,$/, "");
-const modelLabelHelpers = fragment("function getModelDisplayName", "function getLoadedModelOptions");
+// `chatTarget` is the app's selected computer; a test context may set it.
+const modelLabelHelpers = "var chatTarget;\n" + fragment("function findManagedModel", "function getLoadedModelOptions");
 
 test("deleted local selections are replaced instead of reappearing as unavailable options", () => {
   const context: any = {state:{bootstrap:{allManagedModels:[{id:"gguf-new",providerId:"llamacpp",displayName:"Installed model"}]}},
@@ -55,7 +56,32 @@ test("model errors render a concise escaped summary and copy the complete diagno
   const html=context.renderModelError(error);
   assert.match(html,/Copy full error/); assert.match(html,/Model format is incompatible/);
   const visible=html.replace(/data-mm-id="[^"]*"/,""); assert.ok(visible.length<500);
+  assert.doesNotMatch(html,/dismiss-error/,"only a failed load can be dismissed");
   await context.perform("copy-error",error); assert.equal(copied,error);
+
+  // A file made for a modified llama.cpp (Prism ML's PQ2_0) names its tensor type, also in a server's
+  // older raw log; dismissing a failed load unloads what is left of it.
+  const foreign="Local runtime exited (1).\ngguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 43)\nllama_model_load: error loading model: llama_model_loader: failed to load model\n";
+  const card=context.renderModelError(foreign,"gguf-bonsai");
+  assert.match(card,/format \(tensor type 142\) that the local runtime cannot read\. It was made for a modified runtime; choose another file\./);
+  assert.match(card,/data-mm-action="dismiss-error" data-mm-id="gguf-bonsai"/);
+  assert.match(context.renderModelError("Local runtime exited (1).\nllama_model_load: error loading model: unknown model architecture: 'newarch'\n"),/does not support the newarch model architecture yet/);
+  const sent: unknown[]=[];
+  Object.assign(context,{PROVIDER:"llamacpp",state:{actions:new Set()},repaint:()=>{},refresh:async()=>{},request:async(url:string,init:{body:string})=>{sent.push([url,JSON.parse(init.body)]);}});
+  await context.perform("dismiss-error","gguf-bonsai");
+  assert.deepEqual(sent,[["/local/models/unload",{providerId:"llamacpp",modelIdOrInstanceId:"gguf-bonsai"}]]);
+});
+
+test("answers name the model that replied, a server's too, and never with the empty-choice placeholder", () => {
+  const context: any = { state: { bootstrap: { allManagedModels: [{ id: "gguf-small", providerId: "llamacpp", displayName: "Small", quantization: "Q4_K_M" }] } },
+    chatTarget: { cachedModels: () => ({ allManagedModels: [{ id: "gguf-server", libraryId: "gguf-server", providerId: "llamacpp", displayName: "Qwen3.8-27B-GGUF", quantization: "Q4_K_M" }] }) } };
+  vm.runInNewContext(modelLabelHelpers, context);
+  assert.equal(context.formatLocalModelReferences("gguf-small"), "Small · Q4_K_M");
+  assert.equal(context.formatLocalModelReferences("gguf-server"), "Qwen3.8-27B-GGUF · Q4_K_M", "a server chat's model, from the server's list");
+  assert.equal(context.formatLocalModelReferences("gguf-0123abcd"), "gguf-0123abcd", "a model no list knows shows its id");
+  assert.equal(context.getModelDisplayName("llamacpp", ""), "Select model", "only an empty choice reads Select model");
+  context.chatTarget = null;
+  assert.equal(context.formatLocalModelReferences("gguf-server"), "gguf-server");
 });
 
 test("local selectors show loaded models first without changing the configured selection", () => {
@@ -430,7 +456,7 @@ test("local runtime phases and technical model references render readable instal
   assert.match(context.renderRuntimeMetaLine("Model", "gguf-123abc"), /Qwen2\.5 1\.5B Instruct · Q4_K_M/);
   assert.equal(context.formatLocalModelReferences("Loading gguf-123abc…"), "Loading Qwen2.5 1.5B Instruct · Q4_K_M…");
   assert.equal(context.getModelDisplayName("openai", "remote-model"), "remote-model");
-  assert.equal(context.getModelDisplayName("llamacpp", "gguf-removed"), "Select model");
+  assert.equal(context.getModelDisplayName("llamacpp", "gguf-removed"), "gguf-removed", "a removed model keeps its id; Select model is only for no choice");
 });
 
 test("the runtime strip explains a CPU fallback without rendering the reason as markup", () => {

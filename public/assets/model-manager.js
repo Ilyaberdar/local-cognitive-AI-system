@@ -120,14 +120,18 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const missing = ["unavailable", "missing", "error", "unsupported"].includes(status);
     const label = status === "ready" && runtime?.busy ? "Running inference" : { ready: "Runtime ready", running: "Runtime ready", idle: "Ready when needed", stopped: "Ready when needed", loading: "Loading model", stopping: "Stopping runtime", starting: "Starting runtime", unavailable: "Runtime unavailable", missing: "Runtime not installed", error: "Runtime needs attention", unsupported: "Unsupported platform" }[status] || status;
     const contextSize = runtime?.effectiveContextSize;
-    // A server's GPUs (system.metrics): how much of each one's memory its models use.
-    const gpus = getContext().host ? metrics?.gpus || [] : [];
+    // GPU memory: what nvidia-smi reports now (system.metrics, on this computer or a server), else
+    // what the runtime measured at its last device check (other GPUs under Vulkan).
+    const gpus = metrics?.gpus?.length ? metrics.gpus : (runtime?.gpus || []).map((gpu) => ({ ...gpu, usedBytes: Math.max(0, Number(gpu.totalBytes) - Number(gpu.freeBytes)) }));
+    const gpuLabel = (gpu) => gpus.length === 1 ? String(gpu.name || "GPU").replace(/^(?:NVIDIA|AMD|Intel(?:\(R\))?)\s+(?:GeForce\s+)?/i, "") : `GPU ${gpu.index}`;
     const gpuBars = gpus.map((gpu) => { const used = Number(gpu.totalBytes) > 0 ? Math.min(100, Math.max(0, Number(gpu.usedBytes) / Number(gpu.totalBytes) * 100)) : 0;
-      return `<span class="mm-gpu" title="${escape(gpu.name)}"><span>GPU ${escape(gpu.index)}</span><span class="mm-gpu-bar" role="img" aria-label="${escape(`${gpu.name}: ${bytes(gpu.usedBytes)} of ${bytes(gpu.totalBytes)} used`)}"><span style="width: ${used.toFixed(1)}%"></span></span><span>${bytes(gpu.freeBytes)} free / ${bytes(gpu.totalBytes)}</span></span>`; }).join("");
+      return `<span class="mm-gpu" title="${escape(gpu.name)}"><span>${escape(gpuLabel(gpu))}</span><span class="mm-gpu-bar" role="img" aria-label="${escape(`${gpu.name}: ${bytes(gpu.usedBytes)} of ${bytes(gpu.totalBytes)} used`)}"><span style="width: ${used.toFixed(1)}%"></span></span><span>${bytes(gpu.freeBytes)} free / ${bytes(gpu.totalBytes)} VRAM</span></span>`; }).join("");
+    // A model that failed to load shows its error on its own card; the strip keeps the runtime's own problems.
+    const modelFailed = status === "error" && (runtime?.instances || []).some((instance) => instance.status === "error");
     return `<div class="mm-runtime-strip" data-mm-runtime>
       <div class="mm-runtime-status"><span class="mm-status-dot ${missing ? "is-warning" : "is-success"}"></span><span>${escape(label)}</span>${runtime?.backend ? `<span class="mm-runtime-backend">${escape(runtime.backend)}</span>` : ""}${runtime?.fallbackReason ? `<span class="mm-runtime-backend is-warning" title="${escape(runtime.fallbackReason)}">CPU fallback</span>` : ""}${runtime?.queueLength ? `<span>${runtime.queueLength} waiting</span>` : ""}</div>
-      <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} memory</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${gpuBars}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
-      ${missing && (runtime?.message || runtime?.error) ? renderModelError(runtime.message || runtime.error) : ""}
+      <div class="mm-resource-list">${contextSize ? `<span>Active context: <strong>${Number(contextSize).toLocaleString()} tokens</strong></span>` : ""}${totalMemory ? `<span>${freeMemory ? `${bytes(freeMemory)} available / ` : ""}${bytes(totalMemory)} RAM</span>` : ""}${freeDisk ? `<span>${bytes(freeDisk)} free on disk</span>` : ""}${gpuBars}${runtime?.version ? `<span title="Bundled runtime version">${escape(runtime.version)}</span>` : ""}</div>
+      ${missing && !modelFailed && (runtime?.message || runtime?.error) ? renderModelError(runtime.message || runtime.error) : ""}
       ${runtime?.fallbackReason ? `<p class="mm-runtime-message">${escape(runtime.fallbackReason)}</p>` : ""}
     </div>`;
   }
@@ -140,15 +144,20 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
 
   function errorSummary(error) {
     const text = String(typeof error === "string" ? error : error?.message || "Model operation failed.");
+    // The runtime's own reason for a file this build cannot run (a server before 0.1.0 sends only its log).
+    const tensorType = /has invalid ggml type (\d{1,5})/.exec(text)?.[1], architecture = /unknown model architecture: '([\w.-]{1,40})'/.exec(text)?.[1];
+    if (tensorType) return `This file stores weights in a format (tensor type ${tensorType}) that the local runtime cannot read. It was made for a modified runtime; choose another file.`;
+    if (architecture) return `The local runtime does not support the ${architecture} model architecture yet.`;
     if (/has offset .*expected|failed to read tensor data/i.test(text)) return "Model format is incompatible with this runtime, or the file is damaged.";
     if (/out of memory|failed to allocate|not enough memory/i.test(text)) return "Not enough memory to load this model.";
     if (/Local runtime exited|failed to load model/i.test(text)) return "The local runtime could not load this model.";
     return text.split(/\r?\n/)[0].slice(0, 160) + (text.split(/\r?\n/)[0].length > 160 ? "…" : "");
   }
 
-  function renderModelError(error) {
+  /** `dismissId`: the model whose failed load the error belongs to; dismissing unloads what is left of it. */
+  function renderModelError(error, dismissId = "") {
     const detail = typeof error === "string" ? error : error?.message || "Model operation failed.";
-    return `<div class="mm-inline-error mm-model-error" role="status"><span>${escape(errorSummary(detail))}</span><button type="button" class="ghost-button" data-mm-action="copy-error" data-mm-id="${escape(detail)}" aria-label="Copy full error">Copy</button></div>`;
+    return `<div class="mm-inline-error mm-model-error" role="status"><span>${escape(errorSummary(detail))}</span><button type="button" class="ghost-button" data-mm-action="copy-error" data-mm-id="${escape(detail)}" aria-label="Copy full error">Copy</button>${dismissId ? `<button type="button" class="ghost-button" data-mm-action="dismiss-error" data-mm-id="${escape(dismissId)}" aria-label="Dismiss this error">Dismiss</button>` : ""}</div>`;
   }
 
   function renderContextControl() {
@@ -430,7 +439,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       ${model.projector ? `<div class="subtle mm-projector-note">Vision adapter: ${escape(model.projector.path)} · ${bytes(model.projector.sizeBytes)}</div>` : ""}
       ${loaded && desktop()?.importProjector ? '<div class="subtle mm-projector-note">Changing the vision adapter unloads this model. It loads again with the next request.</div>' : ""}
       ${loaded ? renderPlacement(id) : ""}
-      ${model.error ? renderModelError(model.error) : ""}</div>
+      ${model.error ? renderModelError(model.error, status === "error" && model.filesAvailable !== false ? id : "") : ""}</div>
       <div class="mm-library-actions">${actionButton(loaded ? "unload" : "load", id, status === "loading" || state.actions.has(`load:${id}`) ? "Loading…" : status === "unloading" ? "Unloading…" : loaded ? "Unload" : "Load model", { spinning: busy, primary: !loaded, disabled: busy || used || (!loaded && fit.loadBlocked), symbol: loaded ? "stop" : "play", title: loaded ? "Free memory and keep the downloaded files" : fit.loadBlocked ? fit.messages.join(" ") : "Load this model into memory" })}${actionButton("use", id, isCurrent(model) ? "Open chat" : "Use in chat", { disabled: busy || (!loaded && fit.loadBlocked), symbol: "chat" })}</div>
       <div class="mm-library-footer"><div class="mm-card-footer"><span class="subtle">${loaded ? hostName() ? "Ready for chats" : "Ready for chat, agents and workflows" : fit.loadBlocked ? escape(`Downloaded · Cannot run ${place("on this device")}`) : "Downloaded · Loads automatically when used"}</span><div class="mm-inline-actions">${desktop()?.importProjector ? actionButton("projector", id, model.projector ? "Change vision adapter" : "Add vision adapter", { disabled: busy || used, title: "Choose the matching mmproj GGUF file for this model" }) : ""}${actionButton("default", id, isDefault(model) ? "Default" : "Set default", { disabled: isDefault(model) || (!loaded && fit.loadBlocked) })}${actionButton("delete-prompt", id, "", { disabled: busy || used, symbol: "trash", title: `Delete from ${hostName() || "device"}` })}</div></div>
       ${state.deleteId === id ? `<div class="mm-delete-confirm" role="alert"><p>Delete <strong>${escape(nameOf(model))}</strong> and free ${bytes(totalOf(model))}? You can download it again. Saved chats and workflows keep their model reference.</p><div class="mm-inline-actions">${actionButton("delete", id, `Delete from ${hostName() || "device"}`)}${actionButton("delete-dismiss", id, "Keep model")}</div></div>` : ""}</div>
@@ -677,8 +686,9 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       } else if (["pause", "resume", "cancel"].includes(action)) {
         await request(`/local/downloads/${encodeURIComponent(id)}/${action}`, { method: "POST", timeoutMs: 60000 });
         await refresh();
-      } else if (action === "load" || action === "unload") {
-        await request(`/local/models/${action}`, { method: "POST", timeoutMs: 0, body: JSON.stringify(action === "load" ? { providerId: PROVIDER, modelId: id } : { providerId: PROVIDER, modelIdOrInstanceId: id }) });
+      } else if (action === "load" || action === "unload" || action === "dismiss-error") {
+        // Dismissing a failed load unloads what is left of it, which clears the error everywhere.
+        await request(`/local/models/${action === "load" ? "load" : "unload"}`, { method: "POST", timeoutMs: 0, body: JSON.stringify(action === "load" ? { providerId: PROVIDER, modelId: id } : { providerId: PROVIDER, modelIdOrInstanceId: id }) });
         await refresh();
       } else if (action === "delete") {
         await request(`/local/models/${encodeURIComponent(id)}`, { method: "DELETE", timeoutMs: 60000 });
@@ -692,7 +702,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     } catch (error) {
       notify(errorSummary(error.message || "Unable to complete this model action."), "danger");
       if (action === "download") state.detailError = error.message;
-      if (action === "load" || action === "unload") await refresh();
+      if (action === "load" || action === "unload" || action === "dismiss-error") await refresh();
     } finally {
       state.actions.delete(key); repaint();
     }

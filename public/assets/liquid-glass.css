@@ -156,6 +156,11 @@ html[data-desktop="darwin"] { --desktop-titlebar-height: env(titlebar-area-heigh
 html:is([data-desktop="darwin"], [data-desktop="win32"]) .app-topbar { -webkit-app-region: drag; }
 html:is([data-desktop="darwin"], [data-desktop="win32"]) :is(button, input, select, textarea, a) { -webkit-app-region: no-drag; }
 html[data-desktop="darwin"] .sidebar-brand { -webkit-app-region: drag; }
+/* A click on a draggable strip never reaches the page, so it could not close an open menu: while a
+   menu is open, the strips take clicks like the rest of the window. */
+html:is([data-desktop="darwin"], [data-desktop="win32"]):has(:popover-open) :is(.app-topbar, .sidebar-brand) { -webkit-app-region: no-drag; }
+/* The native window controls own the title bar (its trailing corner on Windows): notices start below it. */
+html:is([data-desktop="darwin"], [data-desktop="win32"]) .toast-stack { top: calc(var(--desktop-titlebar-height) + 12px); }
 [hidden] { display: none !important; }
 button, input, textarea, select { font-family: var(--font-ui); font-size: var(--text-control); }
 /* One centered caret and a reserved trailing inset for every dropdown. */
