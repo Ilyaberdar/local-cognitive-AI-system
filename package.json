@@ -75,7 +75,7 @@
     "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^10.0.3",
-    "electron": "^35.0.0",
+    "electron": "^44.7.0",
     "electron-builder": "^25.1.8",
     "esbuild": "0.25.12",
     "jsdom": "26.1.0",
