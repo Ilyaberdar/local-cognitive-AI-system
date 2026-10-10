@@ -31,6 +31,8 @@ function startSentry() {
     dsn: SENTRY_DSN,
     release: `local-cognitive@${app.getVersion()}`,
     environment: app.isPackaged ? "production" : "development",
+    // LOCAL_COGNITIVE_SENTRY_DEBUG=1: the SDK logs what it sends (development).
+    debug: process.env.LOCAL_COGNITIVE_SENTRY_DEBUG === "1",
     sendDefaultPii: false,
     sendClientReports: false,
     dataCollection: { userInfo: false, cookies: false, httpHeaders: false, httpBodies: [], urlQueryParams: false, genAI: { inputs: false, outputs: false }, databaseQueryData: false },
@@ -52,6 +54,9 @@ function startSentry() {
     },
     beforeBreadcrumb: crumb => scrubSentryBreadcrumb(crumb)
   });
+  if (process.env.LOCAL_COGNITIVE_SENTRY_DEBUG === "1") {
+    Sentry.getClient()?.on("afterSendEvent", (event, response) => console.log(`[sentry] sent ${event.type || "error"} ${event.event_id}: HTTP ${response?.statusCode ?? "none"}`));
+  }
   // beforeSend does not see bug reports (feedback events): the same rules, after the scope is applied.
   Sentry.addEventProcessor(event => event.type === "feedback" ? scrubSentryEvent(event, consent.automatic) : event);
 
