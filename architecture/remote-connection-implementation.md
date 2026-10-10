@@ -1266,6 +1266,10 @@ Client/server обмениваются protocol/capability versions. Несов�
     - Проверено: сторож — на macOS и Fedora; настоящий llama-server под Electron на macOS (`kill -9` приложения убирает его за 1,5 с). Windows ещё не проверен вживую.
   - Собранное приложение не запускается с `--remote-debugging-port/pipe` и `--use-mock-keychain` (выход 64): для этих ключей fuses нет. С `ELECTRON_RUN_AS_NODE=1` оно стартует как приложение, а не как Node.
   - macOS: dmg + zip (zip с blockmap — для будущего updater). Сборка ничего не публикует (`publish: null`, `--publish never`).
+  - Гейт релиза: `npm run verify:release` (`scripts/verify-release-signatures.mjs`) отказывает в публикации, если хоть один артефакт не подписан для людей.
+    - macOS (на macOS): `.app`, а также app внутри dmg и zip — подпись Developer ID, team ID (`--team-id`), hardened runtime, Gatekeeper принимает как notarized, ticket вшит.
+    - Windows: подпись Authenticode у каждого `.exe` (на Windows через `Get-AuthenticodeSignature`, в других системах через `osslsigncode`, `--publisher`).
+    - Локальные сборки остаются неподписанными. Release workflow соберёт с `-c.forceCodeSigning=true` и прогонит гейт перед загрузкой.
   - Несобранный dev-запуск на macOS хранит секреты в файловом dev-vault, а не в Keychain. Собранное приложение использует Keychain.
 - **Проверено.**
   - Тесты обновления, отката, adopt и подписи.
