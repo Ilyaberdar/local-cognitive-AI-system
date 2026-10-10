@@ -5,6 +5,7 @@ import { createSettingsShell } from "./settings-shell.js";
 import { createAccountState, createSettingsData } from "./settings-data.js";
 import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
+import { createQuickReport } from "./quick-report.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuidance, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
@@ -546,6 +547,15 @@ systemTheme.addEventListener("change", () => { if (state.ui.theme === "system") 
 
 window.addEventListener("beforeunload", () => { modelManager.dispose(); serverModels?.dispose(); serverOrchestration?.dispose(); serverSettings?.dispose(); serverSynthesisHandle?.unmount(); });
 
+// The bug button in the top bar: a short report from any screen (desktop app only).
+const quickReport = window.desktopBugReport ? createQuickReport({
+  mode: () => chatTarget?.isRemote?.() ? "remote" : "local",
+  // The full page gets a screenshot of this window, taken once the small form is closed.
+  onMore: () => requestAnimationFrame(() => requestAnimationFrame(() => {
+    void window.desktopBugReport.capture().catch(() => {}).finally(() => { location.hash = "#/settings/report-bug"; });
+  }))
+}) : null;
+
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
   render();
@@ -928,6 +938,7 @@ function renderAppTopbar(nativeTitlebar) {
     ${nativeTitlebar ? `<div class="window-navigation">${renderSidebarToggle()}<span class="brand-name">Cognitive</span></div>` : ""}
     <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
     <div class="app-topbar__actions">
+      ${quickReport ? `<button type="button" class="icon-button topbar-report" data-action="quick-report" aria-label="Report a bug" title="Report a bug">${icon("bug")}</button>` : ""}
       ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
       ${chatTarget?.visible() ? renderTargetSwitch(chatTarget)
         : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`}
@@ -3751,6 +3762,7 @@ function bindEvents() {
       label.htmlFor = control.id;
     }
   });
+  document.querySelector("[data-action='quick-report']")?.addEventListener("click", (event) => quickReport?.open(event.currentTarget));
   document.querySelector("[data-action='toggle-mobile-sessions']")?.addEventListener("click", (event) => {
     const open = document.querySelector(".shell")?.classList.toggle("mobile-sessions-open");
     event.currentTarget.setAttribute("aria-expanded", String(Boolean(open)));
