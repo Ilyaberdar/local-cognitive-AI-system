@@ -46,7 +46,7 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
       ...(screenshot && Date.now() - screenshot.at < 10 * 60_000 ? { screenshot: screenshot.jpeg } : {})
     };
     // The connected server's diagnostics are part of the diagnostics (shown in the same preview).
-    if (status?.state === "connected" && (status.capabilities || []).includes("diagnostics.collect")) {
+    if (status?.state === "online" && (status.capabilities || []).includes("diagnostics.collect")) {
       try { prepared.server = await remote.client.request("diagnostics.collect", { includeLog: true }, 10_000); }
       catch { /* An unreachable server is left out. */ }
     }

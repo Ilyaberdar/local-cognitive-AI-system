@@ -166,7 +166,7 @@ export function mountUsagePage(container, { usage = window.desktopUsage, remote 
       let overview = result.value, server = null;
       // A connected server adds what it has not sent to the Cloud yet.
       const status = overview.state !== 'local' ? (await remote?.status?.().catch(() => undefined))?.value : undefined;
-      if (status?.state === 'connected' && status.hostId && (status.capabilities || []).includes('usage.pending')) {
+      if (status?.state === 'online' && status.hostId && (status.capabilities || []).includes('usage.pending')) {
         const name = status.hostName || 'The server';
         const pending = await remote.runtime.request('usage.pending', { timeZone: overview.timeZone, from: overview.from, ...(overview.asOf ? { asOf: overview.asOf } : {}) }, status.hostId).catch(error => ({ ok: false, error }));
         if (pending?.ok && pending.value?.available) { overview = withServerPending(overview, pending.value, status); server = { name, unsent: pending.value.unsent }; }

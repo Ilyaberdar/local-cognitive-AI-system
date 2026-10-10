@@ -24,7 +24,7 @@ const version = (value: unknown) => /^[\w.+-]{1,40}$/.test(String(value ?? "")) 
  * believed only when a server is in fact connected. */
 export const clientDiagnostics = (input: { versions: Record<string, string | undefined>; osVersion: string; signedIn: boolean; modeHint?: unknown;
   remote?: { state?: unknown; error?: { code?: unknown }; serverVersion?: unknown; capabilities?: unknown[] } }): ClientDiagnostics => {
-  const connected = input.remote?.state === "connected";
+  const connected = input.remote?.state === "online";
   return clientDiagnosticsSchema.parse({
     electron: version(input.versions.electron), chrome: version(input.versions.chrome), osVersion: version(input.osVersion),
     mode: connected && input.modeHint === "remote" ? "remote" : "local", signedIn: input.signedIn,

@@ -79,7 +79,7 @@ test("canaries never leave: the technical log, diagnostics, a bug report, error 
   const reportId = randomUUID();
   const report = composeBugReport(bugReportFormSchema.parse({ reportId, message: "It stopped working", include: { diagnostics: true, screenshot: false } }), {
     reportId, createdAt: new Date().toISOString(), appVersion: "0.1.0", log: log.tail(), server,
-    diagnostics: { client: clientDiagnostics({ versions: process.versions as Record<string, string>, osVersion: "15.0", signedIn: true, remote: { state: "connected", hostName: os.hostname() } as never }), runtime }
+    diagnostics: { client: clientDiagnostics({ versions: process.versions as Record<string, string>, osVersion: "15.0", signedIn: true, remote: { state: "online", hostName: os.hostname() } as never }), runtime }
   });
 
   const leaving = JSON.stringify({ log: fs.readFileSync(log.file, "utf8"), tail: log.tail(), runtime, server, report: report.file, attachments: report.attachments.map(item => String(item.data)), crash, crumb });
