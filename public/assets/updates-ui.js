@@ -5,6 +5,8 @@
 import { renderReleaseNotes } from './markdown-renderer.js';
 import { icon } from './ui-primitives.js';
 
+// Until Windows builds are signed, a new version for Windows comes from here.
+const RELEASES_URL = 'https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const megabytes = bytes => `${(Math.max(0, Number(bytes) || 0) / 1024 ** 2).toFixed(1)} MB`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -45,7 +47,7 @@ export function updatesHtml(state, { confirm, renderNotes = renderReleaseNotes }
     case 'up-to-date':
       return `${row(`Local Cognitive ${escape(state.current)} is up to date`, state.checkedAt ? `Checked at ${escape(new Date(state.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}.` : '', button('check', 'Check again'))}${error}`;
     case 'available':
-      return `${row(`Version ${escape(available?.version)} is available`, `You have ${escape(state.current)}.${available?.size ? ` Download: ${megabytes(available.size)}.` : ''}${state.blocker === 'move-to-applications' ? ' Move Local Cognitive to Applications to install it.' : state.blocker === 'windows-unsigned' ? ' Download it from the website: updates install by themselves once Windows builds are signed.' : ''}`,
+      return `${row(`Version ${escape(available?.version)} is available`, `You have ${escape(state.current)}.${available?.size ? ` Download: ${megabytes(available.size)}.` : ''}${state.blocker === 'move-to-applications' ? ' Move Local Cognitive to Applications to install it.' : state.blocker === 'windows-unsigned' ? ` Download it from the <a href="${RELEASES_URL}" target="_blank" rel="noopener noreferrer">releases page</a>: updates install by themselves once Windows builds are signed.` : ''}`,
         state.blocker ? '' : button('download', 'Download', true))}${error}${notesHtml(available, renderNotes)}`;
     case 'downloading': {
       const progress = state.progress ?? {};

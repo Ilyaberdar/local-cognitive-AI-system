@@ -1,0 +1,93 @@
+name: Windows installer
+
+# Builds the Windows NSIS x64 installer on Windows and checks it. Manual only, no secrets: nothing is
+# signed or published; the installer, latest.yml and the blockmap leave CI as a 14-day workflow
+# artifact. Unsigned, an installed app announces new versions instead of installing them
+# (electron/updates.cjs: windows-unsigned).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # windows-2025: Visual Studio 2022 and CMake for whisper.cpp; System32's Visual C++ runtime is
+    # 14.51+, which prepare-llama-runtime.mjs puts beside llama.cpp (a clean Windows lacks it).
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        # pwsh finds Windows' own bsdtar; Git's GNU tar would read C:\... as a remote host.
+        shell: pwsh
+    env:
+      # electron-builder downloads its own Electron; the npm package's copy is for development runs.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      # Byte-identical sources to the other platforms' builds.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # node directly: PowerShell's npm shim may swallow "--".
+      - name: llama.cpp (Vulkan, with the Visual C++ runtime)
+        run: node scripts/prepare-llama-runtime.mjs --platform win32 --arch x64
+      - name: whisper.cpp (C++ runtime linked in)
+        run: node scripts/prepare-speech-runtime.mjs --platform win32 --arch x64
+      - run: npm run build
+      - name: Package
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npx electron-builder --win nsis --x64 --publish never
+      - name: No credentials in the package
+        run: node scripts/verify-package-secrets.mjs release/win-unpacked/resources/app
+      - name: The runtimes start and bring every library they need
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/verify-packaged-runtime.mjs release/win-unpacked/resources --variant win32-x64 --check-libraries
+          node scripts/verify-speech-runtime.mjs release/win-unpacked/resources
+          node --input-type=module -e "const { missingImports } = await import('./scripts/lib/pe-imports.mjs'); const missing = await missingImports('release/win-unpacked/resources/speech/win32-x64'); if (missing.size) { console.error('whisper needs', [...missing.keys()].join(', ')); process.exit(1); }"
+      - run: npx electron-fuses read --app "release/win-unpacked/Local Cognitive.exe"
+      # Unsigned: a feed without publisherName makes the app announce versions instead of installing them.
+      - name: The update feed names no publisher
+        run: |
+          if (Select-String -Path release/win-unpacked/resources/app-update.yml -Pattern '^\s*publisherName\s*:' -Quiet) { throw 'app-update.yml names a publisher' }
+      # What the installer writes, checked from the installed folder, then removed.
+      - name: Install, check, uninstall
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $setup = Get-ChildItem release -Filter 'Local-Cognitive-Setup-*.exe' | Where-Object Name -notmatch '__uninstaller' | Select-Object -First 1
+          $run = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($run.ExitCode) { throw "installer exited $($run.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Local Cognitive'
+          node scripts/verify-packaged-runtime.mjs "$dir\resources" --variant win32-x64 --check-libraries
+          node scripts/verify-speech-runtime.mjs "$dir\resources"
+          Start-Process -FilePath "$dir\Uninstall Local Cognitive.exe" -ArgumentList '/S' -Wait
+          for ($i = 0; $i -lt 120 -and (Test-Path "$dir\Local Cognitive.exe"); $i++) { Start-Sleep 1 }
+          if (Test-Path "$dir\Local Cognitive.exe") { throw 'the uninstaller left the app' }
+      - name: Checksums
+        run: |
+          Get-ChildItem release -File | Where-Object { $_.Name -match '^Local-Cognitive-Setup-.*\.exe$|^latest\.yml$' -and $_.Name -notmatch '__uninstaller' } |
+            Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Tee-Object -FilePath release/SHA256SUMS | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            release/Local-Cognitive-Setup-*.exe
+            release/Local-Cognitive-Setup-*.exe.blockmap
+            release/latest.yml
+            release/SHA256SUMS
+            !release/*__uninstaller*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error

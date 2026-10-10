@@ -14,13 +14,26 @@ export const withFileLock = <T>(filePath: string, operation: () => Promise<T>): 
   return result;
 };
 
+/** Windows refuses to replace a file that the antivirus or the search indexer has open for a moment
+ * (EPERM, EBUSY, EACCES): the rename is tried again a few times before it counts as a failure. */
+export const renameWithRetry = async (from: string, to: string, attempts = process.platform === "win32" ? 6 : 1): Promise<void> => {
+  for (let attempt = 1; ; attempt++) {
+    try { await fs.rename(from, to); return; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= attempts || !["EPERM", "EBUSY", "EACCES"].includes(code ?? "")) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50 * 2 ** attempt));
+    }
+  }
+};
+
 export const writeJsonAtomically = async (filePath: string, record: unknown, options: { mode?: number } = {}): Promise<void> => {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
   try {
     // The rename keeps the temporary file's mode, so a restricted mode also replaces a looser existing one.
     await fs.writeFile(temporaryPath, JSON.stringify(record, null, 2), { encoding: "utf8", mode: options.mode });
-    await fs.rename(temporaryPath, filePath);
+    await renameWithRetry(temporaryPath, filePath);
   } finally {
     await fs.unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;

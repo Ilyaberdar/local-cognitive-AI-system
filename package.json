@@ -2,7 +2,7 @@
   "name": "local-cognitive-ai-system",
   "version": "0.1.0",
   "private": true,
-  "description": "Local Cognitive headless engine",
+  "description": "Local Cognitive",
   "author": "Local Cognitive",
   "main": "electron/main.cjs",
   "bin": {
