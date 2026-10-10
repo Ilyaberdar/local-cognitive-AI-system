@@ -4,13 +4,8 @@ import { diagnosticCode } from "./events";
 /** What the user writes, and what they chose to attach. */
 export const bugReportFormSchema = z.object({
   reportId: z.uuid(),
-  summary: z.string().trim().min(1).max(200),
-  description: z.string().max(4000).default(""),
-  steps: z.string().max(4000).default(""),
-  expected: z.string().max(1000).default(""),
-  actual: z.string().max(1000).default(""),
-  contact: z.union([z.literal(""), z.email().max(320)]).default(""),
-  include: z.object({ diagnostics: z.boolean().default(false), screenshot: z.boolean().default(false), server: z.boolean().default(false) }).strict().default({ diagnostics: false, screenshot: false, server: false })
+  message: z.string().trim().min(1).max(4000),
+  include: z.object({ diagnostics: z.boolean().default(false), screenshot: z.boolean().default(false) }).strict().default({ diagnostics: false, screenshot: false })
 }).strict();
 export type BugReportForm = z.infer<typeof bugReportFormSchema>;
 
@@ -50,7 +45,6 @@ export interface PreparedReport {
 
 export interface ComposedReport {
   message: string;
-  email?: string;
   tags: Record<string, string>;
   contexts: { lc: Record<string, string> };
   attachments: Array<{ filename: string; data: string | Uint8Array; contentType: string }>;
@@ -58,28 +52,27 @@ export interface ComposedReport {
   file: Record<string, unknown>;
 }
 
-/** A report as it is sent and saved: the user's words, and only the parts they ticked, exactly as
+/** The diagnostics as the preview shows them and the report attaches them: this computer's, the
+ * technical log (what the app did before the problem, as codes), and the connected server's. */
+export const reportDiagnostics = (prepared: PreparedReport) => ({ ...prepared.diagnostics, log: prepared.log, ...(prepared.server ? { server: prepared.server } : {}) });
+
+/** A report as it is sent and saved: the user's words, and only the parts they chose, exactly as
  * the preview showed them. */
 export const composeBugReport = (form: BugReportForm, prepared: PreparedReport): ComposedReport => {
-  const sections: Array<[string, string]> = [["What happened", form.description], ["Steps to reproduce", form.steps], ["Expected", form.expected], ["Actual", form.actual]];
-  const message = [form.summary, ...sections.filter(([, text]) => text.trim()).map(([title, text]) => `${title}:\n${text.trim()}`)].join("\n\n");
-  const diagnostics = form.include.diagnostics ? { ...prepared.diagnostics, log: prepared.log } : undefined;
+  const diagnostics = form.include.diagnostics ? reportDiagnostics(prepared) : undefined;
   const screenshot = form.include.screenshot ? prepared.screenshot : undefined;
-  const server = form.include.server ? prepared.server : undefined;
   const mode = prepared.diagnostics.client.mode;
   const attachments: ComposedReport["attachments"] = [
     ...(diagnostics ? [{ filename: "diagnostics.json", data: JSON.stringify(diagnostics, null, 2), contentType: "application/json" }] : []),
-    ...(server ? [{ filename: "server-diagnostics.json", data: JSON.stringify(server, null, 2), contentType: "application/json" }] : []),
     ...(screenshot ? [{ filename: "screenshot.jpg", data: screenshot, contentType: "image/jpeg" }] : [])
   ];
   return {
-    message, ...(form.contact ? { email: form.contact } : {}),
+    message: form.message,
     tags: { report_id: form.reportId, mode, app_version: prepared.appVersion },
     contexts: { lc: { report_id: form.reportId, mode, attached: attachments.map(item => item.filename).join(",") || "none" } },
     attachments,
-    file: { format: "local-cognitive-bug-report", version: 1, reportId: form.reportId, createdAt: prepared.createdAt, appVersion: prepared.appVersion,
-      report: { summary: form.summary, description: form.description, steps: form.steps, expected: form.expected, actual: form.actual, contact: form.contact },
-      ...(diagnostics ? { diagnostics } : {}), ...(server ? { serverDiagnostics: server } : {}),
+    file: { format: "local-cognitive-bug-report", version: 2, reportId: form.reportId, createdAt: prepared.createdAt, appVersion: prepared.appVersion, message: form.message,
+      ...(diagnostics ? { diagnostics } : {}),
       ...(screenshot ? { screenshot: { contentType: "image/jpeg", base64: Buffer.from(screenshot).toString("base64") } } : {}) }
   };
 };

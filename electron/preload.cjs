@@ -60,7 +60,6 @@ contextBridge.exposeInMainWorld("desktopDiagnostics", {
 contextBridge.exposeInMainWorld("desktopBugReport", {
   capture: () => ipcRenderer.invoke("bugReport:capture"),
   prepare: request => ipcRenderer.invoke("bugReport:prepare", request),
-  serverDiagnostics: () => ipcRenderer.invoke("bugReport:server-diagnostics"),
   submit: form => ipcRenderer.invoke("bugReport:submit", form),
   export: form => ipcRenderer.invoke("bugReport:export", form)
 });

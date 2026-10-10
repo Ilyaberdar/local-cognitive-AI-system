@@ -25,6 +25,8 @@ function startSentry() {
   // Crash dumps, uncaught errors and crashed helper processes: only once the user agreed.
   const automatic = () => [Sentry.sentryMinidumpIntegration(), Sentry.onUncaughtExceptionIntegration(), Sentry.onUnhandledRejectionIntegration(), Sentry.childProcessIntegration()];
   let automaticAdded = consent.automatic;
+  // The last error report sent: a bug report soon after it is tied to it in Sentry.
+  let lastError;
   Sentry.init({
     dsn: SENTRY_DSN,
     release: `local-cognitive@${app.getVersion()}`,
@@ -43,7 +45,11 @@ function startSentry() {
     attachScreenshot: false,
     maxBreadcrumbs: 50,
     initialScope: { tags: { runtime: "desktop" } },
-    beforeSend: event => scrubSentryEvent(event, consent.automatic),
+    beforeSend: event => {
+      const out = scrubSentryEvent(event, consent.automatic);
+      if (out?.event_id) lastError = { id: out.event_id, at: Date.now() };
+      return out;
+    },
     beforeBreadcrumb: crumb => scrubSentryBreadcrumb(crumb)
   });
   // beforeSend does not see bug reports (feedback events): the same rules, after the scope is applied.
@@ -83,8 +89,9 @@ function startSentry() {
       log.onRecord(entry => Sentry.addBreadcrumb({ category: DIAGNOSTIC_BREADCRUMB, message: entry.event, data: entry.fields, level: "info", timestamp: Date.parse(entry.at) / 1000 }));
     },
     /** A bug report the user reviewed and sent. */
-    async sendFeedback({ message, email, tags, contexts, attachments }) {
-      const id = Sentry.captureFeedback({ message, ...(email ? { email } : {}), tags }, { attachments, captureContext: { contexts } });
+    async sendFeedback({ message, tags, contexts, attachments }) {
+      const associatedEventId = lastError && Date.now() - lastError.at < 30 * 60_000 ? lastError.id : undefined;
+      const id = Sentry.captureFeedback({ message, tags, ...(associatedEventId ? { associatedEventId } : {}) }, { attachments, captureContext: { contexts } });
       await Sentry.flush(10_000);
       return id;
     }
