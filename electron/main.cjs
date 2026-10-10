@@ -235,14 +235,22 @@ ipcMain.on("appearance:set-theme", (event, theme) => {
   }
 });
 
-// Keep the native Windows caption buttons in step with light/dark app themes.
-nativeTheme.on("updated", () => {
-  if (process.platform === "win32" && mainWindow && !mainWindow.isDestroyed()) {
-    const overlay = windowsTitleBarOverlay(nativeTheme.shouldUseDarkColors);
-    mainWindow.setTitleBarOverlay(overlay);
-    mainWindow.setBackgroundColor(overlay.color);
-  }
+// Keep the native Windows caption buttons in step with the app's title bar: per theme, the colors
+// the window reports for it (appearance settings change them), else the theme's defaults.
+const titleBarColors = { dark: undefined, light: undefined };
+const applyTitleBarColors = () => {
+  if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return;
+  const dark = nativeTheme.shouldUseDarkColors;
+  const overlay = windowsTitleBarOverlay(dark, titleBarColors[dark ? "dark" : "light"]);
+  mainWindow.setTitleBarOverlay(overlay);
+  mainWindow.setBackgroundColor(overlay.color);
+};
+ipcMain.on("appearance:title-bar", (event, colors) => {
+  if (event.sender !== mainWindow?.webContents || !["dark", "light"].includes(colors?.theme)) return;
+  titleBarColors[colors.theme] = { color: String(colors.color ?? ""), symbolColor: String(colors.symbolColor ?? "") };
+  applyTitleBarColors();
 });
+nativeTheme.on("updated", applyTitleBarColors);
 
 if (hasInstanceLock) app.whenReady().then(async () => {
   try {

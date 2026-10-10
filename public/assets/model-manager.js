@@ -44,6 +44,23 @@ const modelState = (model) => model?.runtimeState || model?.runtimeStatus || mod
 // Catalog traffic and download progress stay isolated from the conversation DOM.
 // A paired server's tab (server-models.js) passes `EventSourceClass` and `desktopModels: null`,
 // and its context names the server (`host`) and says while it is `offline`.
+/** Tabs wider than their strip: a vertical mouse wheel scrolls them sideways too (a wheel has no other
+ * way to reach the last ones), an edge fades where more of them are, and the returned function brings
+ * the chosen tab into view (after a repaint, or when the panel opens). */
+function bindTabStrip(strip) {
+  const edges = () => {
+    const end = strip.scrollWidth - strip.clientWidth;
+    strip.classList.toggle("has-more-start", strip.scrollLeft > 1);
+    strip.classList.toggle("has-more-end", strip.scrollLeft < end - 1);
+  };
+  strip.addEventListener("wheel", (event) => {
+    if (strip.scrollWidth <= strip.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+    event.preventDefault(); strip.scrollLeft += event.deltaY;
+  }, { passive: false });
+  strip.addEventListener("scroll", edges, { passive: true });
+  return () => { strip.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" }); edges(); };
+}
+
 export function createModelManager({ request, getContext, onLibraryChange, onUse, onDefault, onContextChange, onLocalSettingsChange, notify, isVisible, EventSourceClass, desktopModels }) {
   const state = {
     tab: "catalog", source: "recommended", query: "", cursor: null, catalog: [], catalogLoading: false,
@@ -744,6 +761,12 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     root.querySelector("#mm-context-size")?.addEventListener("input", (event) => { state.contextDraft = event.target.value; state.contextError = ""; state.contextSaved = false; });
     root.querySelector("#mm-context-form")?.addEventListener("submit", (event) => { event.preventDefault(); void saveContext(); });
     const settingsTabs = [...root.querySelectorAll("[data-mm-settings-tab]")];
+    const tabStrip = root.querySelector(".mm-settings-tabs");
+    if (tabStrip) {
+      const showChosen = bindTabStrip(tabStrip);
+      panel?.addEventListener("toggle", (event) => { if (event.newState === "open") showChosen(); });
+      if (state.settingsOpen) showChosen();
+    }
     settingsTabs.forEach((tab, index) => {
       tab.addEventListener("click", () => {
         state.settingsTab = tab.dataset.mmSettingsTab || "context";

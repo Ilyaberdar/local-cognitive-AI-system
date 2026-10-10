@@ -475,6 +475,48 @@ test("the runtime strip explains a CPU fallback without rendering the reason as 
   assert.doesNotMatch(context.renderRuntime(), /CPU fallback/);
 });
 
+test("settings tabs wider than the panel scroll with a mouse wheel and keep the chosen tab in view", () => {
+  const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8").replace(/^import .*\n/, "").replace("export function", "function");
+  const context: any = { icon: () => "" };
+  vm.runInNewContext(managerSource, context);
+  const dom = new JSDOM('<div class="mm-settings-tabs"><button role="tab" aria-selected="false">Context</button><button role="tab" aria-selected="true">Generation</button></div>');
+  const strip = dom.window.document.querySelector(".mm-settings-tabs");
+  let left = 0, shown = 0;
+  Object.defineProperties(strip, { scrollWidth: { value: 700 }, clientWidth: { value: 500 }, scrollLeft: { get: () => left, set: (value: number) => { left = value; } } });
+  dom.window.document.querySelector('[aria-selected="true"]').scrollIntoView = () => { shown++; };
+  const showChosen = context.bindTabStrip(strip);
+  const wheel = new dom.window.WheelEvent("wheel", { deltaY: 120, cancelable: true });
+  strip.dispatchEvent(wheel);
+  assert.equal(wheel.defaultPrevented, true); assert.equal(left, 120, "a vertical wheel scrolls the tabs sideways");
+  const sideways = new dom.window.WheelEvent("wheel", { deltaX: 40, deltaY: 10, cancelable: true });
+  strip.dispatchEvent(sideways);
+  assert.equal(sideways.defaultPrevented, false, "a trackpad's own sideways scroll is left alone");
+  showChosen();
+  assert.equal(shown, 1);
+  assert.ok(strip.classList.contains("has-more-start") && strip.classList.contains("has-more-end"), "both edges fade mid-strip");
+  assert.match(fs.readFileSync("public/assets/model-manager.css", "utf8"), /\.mm-gpu-choice input\[type="checkbox"\] \{ flex: none; width: 16px; height: 16px; min-width: 0; min-height: 0;/,
+    "a GPU checkbox keeps a checkbox's size instead of the text inputs' full width");
+  dom.window.close();
+});
+
+test("Windows caption buttons get the title bar's computed colors, once per change, only when opaque", () => {
+  const sent: unknown[] = [];
+  let computed = { backgroundColor: "rgb(12, 17, 23)", color: "rgb(232, 238, 248)" };
+  const context: any = { window: { desktopAppearance: { platform: "win32", setTitleBar: (colors: unknown) => sent.push(colors) } },
+    requestAnimationFrame: (callback: () => void) => callback(), document: { querySelector: () => ({}), body: {} }, getComputedStyle: () => computed,
+    resolveTheme: () => "dark", state: { ui: { theme: "dark" } } };
+  vm.runInNewContext(fragment("let windowControlsSent", "function applyTheme"), context);
+  context.syncWindowControls(); context.syncWindowControls();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{ theme: "dark", color: "#0c1117", symbolColor: "#e8eef8" }], "sent once");
+  computed = { backgroundColor: "rgba(0, 0, 0, 0)", color: "rgb(1, 2, 3)" };
+  context.syncWindowControls();
+  assert.equal(sent.length, 1, "a transparent bar keeps the defaults");
+  context.window.desktopAppearance.platform = "darwin";
+  computed = { backgroundColor: "rgb(1, 2, 3)", color: "rgb(4, 5, 6)" };
+  context.syncWindowControls();
+  assert.equal(sent.length, 1, "macOS draws its own buttons");
+});
+
 test("the GPUs tab is always there; with fewer than two GPUs it says why it is inactive and how it works", () => {
   const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8")
     .replace(/^import .*\n/, "").replace("export function", "function")

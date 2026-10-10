@@ -328,13 +328,13 @@ html[data-theme="light"] .plugin-app-icon--github img, html[data-theme="light"] 
 .settings-avatar-control { align-items: center; }
 .local-avatar--editor { width: 42px; height: 42px; border: 1px solid var(--line-strong); }
 /* Settings hide the app underneath. Retain a separate draggable title strip
-   so neither platform's native controls overlap a settings action. It names the
-   app where the app's own bar does: after the navigation toggle's room. */
+   so neither platform's native controls overlap a settings action. */
 html:is([data-desktop=darwin], [data-desktop=win32]) #settings-root { top: var(--desktop-titlebar-height); }
-html:is([data-desktop=darwin], [data-desktop=win32]) #settings-root::before { content: 'Cognitive'; position: fixed; inset: 0 0 auto; box-sizing: border-box; display: flex; align-items: center; height: var(--desktop-titlebar-height); padding-left: 58px; background: var(--bg); box-shadow: inset 0 -1px var(--line); color: var(--text); font: 600 var(--text-ui)/1.25 var(--font-ui); letter-spacing: -.4px; white-space: nowrap; -webkit-app-region: drag; }
-html[data-desktop=darwin] #settings-root::before { padding-left: calc(max(88px, calc(env(titlebar-area-x, 76px) + 12px)) + 34px); }
+html:is([data-desktop=darwin], [data-desktop=win32]) #settings-root::before { content: ''; position: fixed; inset: 0 0 auto; height: var(--desktop-titlebar-height); background: var(--bg); box-shadow: inset 0 -1px var(--line); -webkit-app-region: drag; }
+/* Windows' tall strip names the app where the app's own bar does: after the navigation toggle's room. */
+html[data-desktop=win32] #settings-root::before { content: 'Cognitive'; box-sizing: border-box; display: flex; align-items: center; padding-left: 58px; color: var(--text); font: 600 var(--text-ui)/1.25 var(--font-ui); letter-spacing: -.4px; white-space: nowrap; }
 html:is([data-desktop=darwin], [data-desktop=win32]):has(:popover-open) #settings-root::before { -webkit-app-region: no-drag; }
-@media (max-width: 980px) { html:is([data-desktop=darwin], [data-desktop=win32]) #settings-root::before { content: ''; } }
+@media (max-width: 980px) { html[data-desktop=win32] #settings-root::before { content: ''; } }
 html:is([data-desktop=darwin], [data-desktop=win32]) .settings-shell { height: calc(100dvh - var(--desktop-titlebar-height)); }
 @media(max-width:760px) {
   .local-profile-button { flex: 0 0 auto; width: 36px; padding: 2px; }

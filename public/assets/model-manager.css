@@ -19,6 +19,10 @@
 .mm-settings-body { display: grid; gap: 12px; padding: 18px 22px; }
 .mm-settings-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
 .mm-settings-tabs::-webkit-scrollbar { display: none; }
+/* More tabs past an edge: that edge fades (model-manager.js sets these while the tabs overflow). */
+.mm-settings-tabs.has-more-end { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.mm-settings-tabs.has-more-start { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+.mm-settings-tabs.has-more-start.has-more-end { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
 .mm-settings-tabs button { flex: 0 0 auto; padding: 0 10px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 500; }
 .mm-settings-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text); }
 .mm-settings-tabs button:hover { color: var(--text); background: transparent; }
@@ -266,6 +270,10 @@ html[data-motion=off] .model-manager .mm-loading-spinner { animation: button-spi
 .mm-gpu-field legend { float: left; width: 100%; padding: 0; margin: 0 0 5px; }
 .mm-gpu-list { clear: both; display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--control-bg); font-size: calc(12px * var(--font-scale, 1)); }
 .mm-gpu-choice { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+/* A checkbox keeps a checkbox's size: the settings fields' rule for text inputs stretched it into a
+   wide grey box across the row (Windows). */
+.mm-gpu-choice input[type="checkbox"] { flex: none; width: 16px; height: 16px; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 4px; background: none; accent-color: var(--accent); cursor: pointer; }
+.mm-gpu-choice input[type="checkbox"]:disabled { cursor: default; }
 /* Its own section under the form's Save, as the panels are spaced elsewhere. */
 .mm-gpu-rebalance { margin-top: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
 .mm-gpu-rebalance > button { margin-top: 12px; }

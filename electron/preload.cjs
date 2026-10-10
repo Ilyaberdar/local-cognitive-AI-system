@@ -4,6 +4,10 @@ contextBridge.exposeInMainWorld("desktopAppearance", {
   platform: process.platform,
   setTheme: (theme) => {
     if (theme === "dark" || theme === "light") ipcRenderer.send("appearance:set-theme", theme);
+  },
+  /** The title bar's computed colors for a theme, for the caption buttons Windows draws. */
+  setTitleBar: (colors) => {
+    ipcRenderer.send("appearance:title-bar", { theme: String(colors?.theme ?? ""), color: String(colors?.color ?? ""), symbolColor: String(colors?.symbolColor ?? "") });
   }
 });
 

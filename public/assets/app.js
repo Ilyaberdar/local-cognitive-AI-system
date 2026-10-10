@@ -499,6 +499,7 @@ function applyAppearanceColors(preferences = {}) {
       localStorage.removeItem(`lcai.${key}`);
     }
   }
+  syncWindowControls();
 }
 function applyFontScale(value) {
   const scale = Number.isFinite(value) && value >= 85 && value <= 150 ? value : 100;
@@ -794,12 +795,32 @@ async function safeJson(response) {
   }
 }
 
+let windowControlsSent = "";
+/** Windows draws its caption buttons on a color of its own: they get the title bar's computed colors
+ * (theme and appearance settings), so they never show as a block of another color. */
+function syncWindowControls() {
+  if (window.desktopAppearance?.platform !== "win32" || !window.desktopAppearance.setTitleBar) return;
+  requestAnimationFrame(() => {
+    const hex = (value) => {
+      const [r, g, b, alpha = 1] = (/^rgba?\(([^)]+)\)$/.exec(String(value))?.[1] ?? "").split(/[\s,/]+/).filter(Boolean).map(Number);
+      return [r, g, b].every(Number.isFinite) && alpha === 1 ? `#${[r, g, b].map((part) => Math.round(part).toString(16).padStart(2, "0")).join("")}` : "";
+    };
+    const bar = getComputedStyle(document.querySelector(".app-topbar--native") ?? document.body);
+    const colors = { theme: resolveTheme(state.ui.theme), color: hex(bar.backgroundColor), symbolColor: hex(bar.color) };
+    const sent = JSON.stringify(colors);
+    if (!colors.color || sent === windowControlsSent) return;
+    windowControlsSent = sent;
+    window.desktopAppearance.setTitleBar(colors);
+  });
+}
+
 function applyTheme(theme, persist = true) {
   const nextTheme = UI_THEMES.includes(theme) ? theme : "dark";
   state.ui.theme = nextTheme;
   document.documentElement.dataset.theme = resolveTheme(nextTheme);
   localStorage.setItem("lcai.theme", nextTheme);
   window.desktopAppearance?.setTheme(resolveTheme(nextTheme));
+  syncWindowControls();
   workflowEditorHandle?.setColorMode(resolveTheme(nextTheme));
   synthesisWorkspaceHandle?.setColorMode(resolveTheme(nextTheme));
   serverSynthesisHandle?.setColorMode(resolveTheme(nextTheme));
@@ -823,6 +844,7 @@ function render(options = {}) {
   const viewKey = `${state.route}:${state.route === "orchestration" ? state.orchestrationTab : state.activeSessionId}`;
   const viewChanged = app.dataset.view !== viewKey;
   const nativeTitlebar = ["darwin", "win32"].includes(window.desktopAppearance?.platform);
+  syncWindowControls();
   app.dataset.view = viewKey;
   unmountWorkflowEditor();
   // Keep the React tree, selections and activity scroll intact when the shell refreshes.
