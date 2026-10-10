@@ -21,10 +21,14 @@ test("the bug button's form: a field and Send; diagnostics as error reports allo
   dom.window.eval(`${bundle}\nwindow.QuickReport = QuickReport;`);
   const reportId = randomUUID();
   const calls: unknown[][] = [];
-  let more = 0, consent = false, fail = false;
+  let more = 0, consent = false, fail = false, expired = false, prepares = 0;
   const bridge = {
-    prepare: async (request: unknown) => { calls.push(["prepare", request]); return { ok: true, value: { reportId, diagnosticsByDefault: consent, sendAvailable: true, diagnostics: {} } }; },
-    submit: async (form: unknown) => { calls.push(["submit", form]); return fail ? { ok: false, error: { message: "Offline." } } : { ok: true, value: { reportId } }; },
+    prepare: async (request: unknown) => { calls.push(["prepare", request]); prepares++; return { ok: true, value: { reportId, diagnosticsByDefault: consent, sendAvailable: true, diagnostics: {} } }; },
+    submit: async (form: unknown) => {
+      calls.push(["submit", form]);
+      if (expired) { expired = false; return { ok: false, error: { code: "report_expired", message: "The report's diagnostics expired." } }; }
+      return fail ? { ok: false, error: { message: "Offline." } } : { ok: true, value: { reportId } };
+    },
     export: async (form: unknown) => { calls.push(["export", form]); return { ok: true, value: { saved: true } }; }
   };
   const quick = dom.window.QuickReport.createQuickReport({ bridge, mode: () => "remote", onMore: () => { more++; } });
@@ -42,8 +46,12 @@ test("the bug button's form: a field and Send; diagnostics as error reports allo
   await until(() => /Not sent\. Offline\./.test($("[data-quick-status]").textContent), "failure");
   assert.equal(($("[data-quick-export]") as HTMLButtonElement).hidden, false, "a file when sending fails");
   fail = false;
+  // The app restarted meanwhile: the report is prepared again and sent, without asking.
+  expired = true;
+  const before = prepares;
   ($("[data-quick-send]") as HTMLButtonElement).click();
   await until(() => /Sent\. Thank you/.test($("[data-quick-status]").textContent), "sent");
+  assert.equal(prepares, before + 1, "prepared again once");
   const sent = calls.filter(call => call[0] === "submit").map(call => JSON.parse(JSON.stringify(call[1])));
   assert.deepEqual(sent.at(-1), { reportId, message: "The chat froze", include: { diagnostics: false, screenshot: false } });
   assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), ["prepare", { mode: "remote" }]);

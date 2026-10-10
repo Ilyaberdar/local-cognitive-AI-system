@@ -13,7 +13,10 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
     try { return { ok: true, value: await action(...args) }; }
     catch (error) { return { ok: false, error: { code: error.code || "error", message: error.message || "The report failed." } }; }
   });
-  let screenshot, prepared;
+  // Reports being written, by id: the small form and the full page each keep their own.
+  const reports = new Map();
+  const REPORT_TTL_MS = 60 * 60_000;
+  let screenshot;
   const fail = (message, code = "invalid_request") => { throw Object.assign(new Error(message), { code }); };
   const remoteStatus = () => { try { return remote?.client?.status(); } catch { return undefined; } };
 
@@ -32,7 +35,7 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
     const status = remoteStatus();
     const account = accountService.status();
     const reportId = randomUUID();
-    prepared = {
+    const prepared = {
       reportId, createdAt: new Date().toISOString(), appVersion: app.getVersion(),
       diagnostics: {
         client: clientDiagnostics({ versions: process.versions, osVersion: process.getSystemVersion(), signedIn: account.state === "signed-in", modeHint: request && request.mode, remote: status }),
@@ -46,6 +49,9 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
       try { prepared.server = await remote.client.request("diagnostics.collect", { includeLog: true }, 10_000); }
       catch { /* An unreachable server is left out. */ }
     }
+    for (const [id, report] of reports) if (Date.now() - Date.parse(report.createdAt) > REPORT_TTL_MS) reports.delete(id);
+    reports.set(reportId, prepared);
+    while (reports.size > 8) reports.delete(reports.keys().next().value);
     return { reportId, diagnostics: reportDiagnostics(prepared), screenshot: prepared.screenshot ? `data:image/jpeg;base64,${Buffer.from(prepared.screenshot).toString("base64")}` : null,
       diagnosticsByDefault: sentry.consent().automatic === true, sendAvailable: sentry.enabled };
   });
@@ -53,7 +59,9 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
   const compose = input => {
     const form = bugReportFormSchema.safeParse(input);
     if (!form.success) fail("Write what went wrong.");
-    if (!prepared || prepared.reportId !== form.data.reportId) fail("Open the report again.");
+    const prepared = reports.get(form.data.reportId);
+    // Gone (an hour passed, or the app restarted): the window prepares it again.
+    if (!prepared) fail("The report's diagnostics expired.", "report_expired");
     return composeBugReport(form.data, prepared);
   };
 
@@ -61,6 +69,7 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
     if (!sentry.enabled) fail("Sending reports is not available in this build. Save the report to a file instead.", "unavailable");
     const report = compose(input);
     const eventId = await sentry.sendFeedback({ message: report.message, tags: report.tags, contexts: report.contexts, attachments: report.attachments });
+    reports.delete(input.reportId);
     return { reportId: input.reportId, eventId };
   });
 

@@ -53,6 +53,15 @@ export function mountReportBugPage(container, { bridge = window.desktopBugReport
     view.busy = true; view.error = ''; paint();
     const result = await bridge.submit(payload()).catch(error => ({ ok: false, error }));
     view.busy = false;
+    // Expired diagnostics are prepared again; what is sent must be what the page shows, so ask again.
+    if (result?.error?.code === 'report_expired') {
+      const { message, include } = view.form;
+      await prepare();
+      Object.assign(view.form, { message, include: { ...include, screenshot: include.screenshot && Boolean(view.prepared?.screenshot) } });
+      view.error = 'The diagnostics were refreshed. Check them if you like, and press Send again.';
+      paint();
+      return;
+    }
     if (result?.ok) view.sent = result.value;
     else { view.failed = true; view.error = `Not sent. ${result?.error?.message || 'The report failed.'} You can save it to a file and send it later.`; }
     paint();
