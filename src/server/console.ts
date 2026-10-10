@@ -3,6 +3,7 @@ import path from "path";
 import readline from "readline";
 import { controlRequest } from "./ControlServer";
 import { controlSocketPathFor, dataDirectories } from "./dataRoot";
+import { printableDeep } from "./terminalText";
 
 // The server's console: `sudo local-cognitive-server` in a terminal. A banner, what the server is
 // doing, and a prompt for its commands; `watch` follows it live. It only reads the server's state
@@ -212,7 +213,8 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
   const socket = controlSocketPathFor(dataDirectories(path.resolve(options.dataDir)).app);
   let denied = false;
   const overview = async (): Promise<Overview | undefined> => {
-    try { const response = await controlRequest(socket, { op: "overview" }, { timeoutMs: 5_000 }); return response.ok ? response.result as Overview : undefined; }
+    // Names come from computers and model files: printed only once made harmless for the terminal.
+    try { const response = await controlRequest(socket, { op: "overview" }, { timeoutMs: 5_000 }); return response.ok ? printableDeep(response.result as Overview) : undefined; }
     catch (error) { denied = ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? ""); return undefined; }
   };
   const unavailable = (s: Style) => paint(s, YELLOW, denied ? "Permission denied: open the console with sudo local-cognitive-server." : "The server is not running: type start.");
@@ -286,7 +288,7 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
     input.removeAllListeners("keypress");
     readline.emitKeypressEvents(input);
     input.on("keypress", onKey);
-    restore = () => { for (const listener of prompting) input.on("keypress", listener); input.pause(); };
+    restore = () => { for (const listener of prompting) input.on("keypress", listener); };
     input.resume();
     void draw();
   }).finally(() => restore?.());

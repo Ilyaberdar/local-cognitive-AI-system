@@ -64,3 +64,48 @@ test("watch turns changes into activity: computers, models, work, updates", () =
   assert.deepEqual(activityBetween(running, { ...running, models: [] }), ["Model Qwen 27B unloaded"]);
   assert.deepEqual(activityBetween(running, running), []);
 });
+
+test("the console runs status, watch and exit against a live control socket, and never prints a computer's escape codes", { skip: process.platform === "win32", timeout: 30_000 }, async t => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { PassThrough } = await import("node:stream");
+  const { setTimeout: delay } = await import("node:timers/promises");
+  const { ControlServer } = await import("../src/server/ControlServer");
+  const { controlSocketPathFor, dataDirectories } = await import("../src/server/dataRoot");
+  const { runConsole } = await import("../src/server/console");
+  const { Logger } = await import("../src/utils/Logger");
+  // A short path: macOS limits socket paths to 103 bytes.
+  const base = fs.mkdtempSync("/tmp/lcc-");
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "d");
+  fs.mkdirSync(path.join(root, "app", "runtime"), { recursive: true });
+  const evil = "Mallory\u001b]52;c;cm0gLXJmIC8=\u0007\u001b[2J";
+  const server = await ControlServer.listen(controlSocketPathFor(dataDirectories(root).app), {
+    status: () => ({}), drain: async () => ({ drained: true, remaining: 0, elapsedMs: 0 }),
+    overview: () => ({ ...running, connected: [{ deviceId: "d1", deviceName: evil }] })
+  }, new Logger());
+  t.after(() => server.close());
+
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() { return input; } }) as unknown as NodeJS.ReadStream;
+  const output = Object.assign(new PassThrough(), { isTTY: true, columns: 100 }) as unknown as NodeJS.WriteStream;
+  let text = "";
+  output.on("data", chunk => { text += chunk; });
+  const done = runConsole({ dataDir: root, input, output, env: { LANG: "en_US.UTF-8", NO_COLOR: "1" }, run: async () => 0 });
+  const waitFor = async (pattern: RegExp) => {
+    for (let attempt = 0; attempt < 250 && !pattern.test(text); attempt++) await delay(20);
+    assert.match(text, pattern);
+  };
+  await waitFor(/Ready when you are\. Type a command to get started\./);
+  assert.match(text, /fedora · 0\.2\.0 · CUDA · ● Remote online · 1 computer connected/);
+  input.write("status\r");
+  await waitFor(/Remote +● online · Mallory�\]52;c;cm0gLXJmIC8=��\[2J connected/);
+  input.write("watch\r");
+  await waitFor(/q or Esc: back to the console/);
+  input.write("q");
+  await waitFor(/\x1b\[\?1049l/);
+  input.write("exit\r");
+  assert.equal(await done, 0, "exit works after watch: the prompt reads again");
+  assert.match(text, /Bye\. The server keeps running\./);
+  assert.equal(text.includes("\u001b]52"), false, "the computer's OSC 52 never reaches the terminal");
+  assert.equal(text.includes("\u0007"), false);
+});
