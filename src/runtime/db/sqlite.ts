@@ -6,9 +6,9 @@ export type SQLInputValue = Sqlite.SQLInputValue;
 
 let loaded: SqliteModule | undefined;
 
-/** Loads node:sqlite once. Its ExperimentalWarning is emitted synchronously on the first
- * require, so only that warning is filtered, and only during that call. All access to
- * node:sqlite goes through this module (Electron 35 bundles Node 22.16). */
+/** Loads node:sqlite once. Node 22 emits an ExperimentalWarning synchronously on the first
+ * require, so only that warning is filtered, and only during that call (Node 24, bundled with
+ * Electron 44, emits none). All access to node:sqlite goes through this module. */
 export const loadSqlite = (): SqliteModule => {
   if (loaded) return loaded;
   const original = process.emitWarning;

@@ -54,8 +54,8 @@ function registerVoiceInput({ app, ipcMain, systemPreferences, shell, powerMonit
     window.on("minimize", stopCapture);
     window.on("hide", stopCapture);
     window.webContents.on("render-process-gone", () => { release(); void service.cancel(); });
-    window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
-      if (isMainFrame && !isInPlace) { release(); void service.cancel(); }
+    window.webContents.on("did-start-navigation", details => {
+      if (details.isMainFrame && !details.isSameDocument) { release(); void service.cancel(); }
     });
     window.on("closed", () => { release(); void service.cancel(); });
   }

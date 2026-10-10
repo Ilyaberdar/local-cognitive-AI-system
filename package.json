@@ -76,7 +76,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^10.0.3",
     "electron": "^44.7.0",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.15.3",
     "esbuild": "0.25.12",
     "jsdom": "26.1.0",
     "tsx": "^4.19.3",
@@ -135,7 +135,8 @@
       ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Dictate messages using local speech recognition. Audio stays on your computer."
-      }
+      },
+      "minimumSystemVersion": "13.0"
     },
     "win": {
       "signAndEditExecutable": false,
