@@ -1,3 +1,4 @@
+import os from "os";
 import path from "path";
 import type net from "net";
 import { config } from "../config/config";
@@ -33,6 +34,7 @@ import { createModelOperations } from "../runtime/modelOperations";
 import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
 import { createSettingsOperations } from "../runtime/settingsOperations";
 import { publicError } from "../runtime/publicError";
+import { systemMetricsSnapshot } from "../local/systemMetrics";
 
 /** Runs the server until it is drained or stopped. Imported only after the CLI has set the
  * environment: the configuration is read when its module loads. */
@@ -141,10 +143,26 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       return { version: appVersion(), update: updates.status(), phase, activeWork, scheduler, telegram, loadedModels,
         inference: { ...current, ...(fallbackReason ? { fallbackReason: publicError(fallbackReason) } : {}) } };
     } });
+  const startedAt = new Date().toISOString();
+  const controlStatus = () => ({ pid: process.pid, version: appVersion(), update: updates.status(), inference: inference(),
+    remote: remote.agent ? remote.agent.status() : { state: "off", reason: remote.disabledReason },
+    vault: { configured: vault.configured, keyIds: vault.keyIds }, mcpSessions: mcpSessions.size, ...backend.status() });
   const control = await ControlServer.listen(controlSocketPathFor(config.appDataDir), {
-    status: () => ({ pid: process.pid, version: appVersion(), update: updates.status(), inference: inference(),
-      remote: remote.agent ? remote.agent.status() : { state: "off", reason: remote.disabledReason },
-      vault: { configured: vault.configured, keyIds: vault.keyIds }, mcpSessions: mcpSessions.size, ...backend.status() }),
+    status: controlStatus,
+    // The console's live view (root on this machine only): names, never paths or keys.
+    overview: () => {
+      let models: Array<{ id: string; name: string; status: string; placement?: string }> = [];
+      let gpus: Parameters<typeof systemMetricsSnapshot>[0];
+      try {
+        const local = backend.runtimeManager.getRuntime().localModelService;
+        const snapshot = local.snapshot();
+        models = (snapshot.runtime.instances ?? []).filter(instance => instance.modelId).map(instance => ({ id: instance.modelId!,
+          name: snapshot.models.find(model => model.id === instance.modelId)?.displayName ?? instance.modelId!, status: instance.status,
+          ...(instance.placement?.label ? { placement: instance.placement.label } : {}) }));
+        gpus = local.gpuMetrics();
+      } catch { /* The runtime is not built yet. */ }
+      return { ...controlStatus(), startedAt, hostName: os.hostname(), models, metrics: systemMetricsSnapshot(gpus), connected: remote.agent?.connectedDevices() ?? [] };
+    },
     drain: async (timeoutSec, progress) => {
       const result = await drain(timeoutSec, progress);
       setImmediate(() => void stop(result.drained ? ExitCode.ok : ExitCode.failure));
@@ -155,6 +173,7 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       if (!agent) throw new ControlError(remote.disabledReason ?? "Remote is off.", "remote_off");
       if (op === "connect-key") return agent.connectKey((request.ttlSec ?? 600) * 1000);
       if (op === "devices") return { devices: agent.devices() };
+      if (op === "invitation") return agent.invitation(String(request.invitationId));
       if (op === "revoke-device") return { revoked: agent.revokeDevice(String(request.deviceId)) };
       agent.resetOwner();
       return { reset: true };

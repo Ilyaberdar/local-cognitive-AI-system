@@ -250,8 +250,9 @@ Notes:
 
 ### Headless server: install and connect
 
-On a Linux server with systemd (Ubuntu 22.04+, Debian 12+, Fedora, RHEL 9+), one command installs
-the newest signed release as a service and prints a connection key:
+On a Linux x64 server with systemd (Ubuntu 22.04+, Debian 12+, Fedora 36+, Amazon Linux 2023: glibc
+2.34+, libstdc++ from GCC 12+, OpenSSL 3), one command installs the newest signed release as a
+service and prints a connection key:
 
 ```bash
 curl -fsSL https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/install.sh | sudo bash
@@ -262,6 +263,7 @@ the server: the first account that connects owns it, and only that account's com
 later (each with a new key). The server only needs outbound HTTPS; no ports are opened.
 
 ```bash
+sudo local-cognitive-server            # the console: status, a live view and the commands
 sudo local-cognitive-server pair       # a key for another computer; waits until it connects
 sudo local-cognitive-server status     # running? reachable? how many computers?
 sudo local-cognitive-server update     # newest release: backed up, rolled back if it fails

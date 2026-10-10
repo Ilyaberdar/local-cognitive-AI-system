@@ -39,6 +39,15 @@ export class RemoteHostStore {
     this.host.db.prepare("INSERT INTO remote_invitations(invitation_id, created_at, expires_at) VALUES (?, ?, ?)").run(invitationId, now.toISOString(), expiresAt.toISOString());
   }
 
+  /** Whether a connection key was used, and by which computer (for `pair`). */
+  invitation(invitationId: string): { consumed: boolean; deviceId?: string; deviceName?: string } | undefined {
+    const row = this.host.db.prepare(`SELECT i.consumed_at, i.consumed_by_device_id, g.device_name FROM remote_invitations i
+      LEFT JOIN remote_grants g ON g.device_id = i.consumed_by_device_id WHERE i.invitation_id = ?`).get(invitationId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return { consumed: Boolean(row.consumed_at), ...(row.consumed_by_device_id ? { deviceId: String(row.consumed_by_device_id) } : {}),
+      ...(row.device_name ? { deviceName: String(row.device_name) } : {}) };
+  }
+
   /** Consumes the invitation and records the device grant in one transaction. The first claim
    * makes the account the owner; later claims must come from the same account. */
   claim(input: { invitationId: string; accountId: string; deviceId: string; deviceSpkiSha256: string; deviceName?: string; receiptId: string; now: Date }):

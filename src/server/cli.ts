@@ -136,30 +136,24 @@ const remoteRequest = async (args: ServerArgs, request: Record<string, unknown>)
   return response.result as Record<string, unknown>;
 };
 
-type Device = { deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string };
-const activeDevices = async (args: ServerArgs) => ((await remoteRequest(args, { op: "devices" })).devices as Device[]).filter(device => device.status === "active");
-
-/** pair: a one-time key for Remote → Connect, then (in a terminal) waits until a computer uses it,
- * like pairing two devices. connect-key prints the key only. */
+/** pair: a one-time key for Remote → Connect, then waits until a computer uses that key, like
+ * pairing two devices (a computer paired before counts too). connect-key prints the key only. */
 const pair = async (args: ServerArgs, wait: boolean) => {
-  const before = wait ? new Set((await activeDevices(args)).map(device => device.deviceId)) : new Set<string>();
-  const result = await remoteRequest(args, { op: "connect-key", ...(args.ttlMinutes ? { ttlSec: args.ttlMinutes * 60 } : {}) }) as { key: string; expiresAt: number; claimed: boolean };
-  const minutes = Math.round((result.expiresAt - Date.now()) / 60_000);
+  const result = await remoteRequest(args, { op: "connect-key", ...(args.ttlMinutes ? { ttlSec: args.ttlMinutes * 60 } : {}) }) as { key: string; invitationId: string; expiresAt: number; claimed: boolean };
+  const until = new Date(result.expiresAt).toTimeString().slice(0, 5);
   // The key is a secret: only this command's output shows it, never the service log.
+  if (args.quiet) { process.stdout.write(`${result.key}\n`); return ExitCode.ok; }
   print(args, [
-    `Connection key (valid ${minutes} minute${minutes === 1 ? "" : "s"}, one use):`, "", `    ${result.key}`, "",
+    `Connection key (one use, valid until ${until}; restarting the server cancels it):`, "", `    ${result.key}`, "",
     "On your computer: Local Cognitive → Remote → Connect, then paste the key.",
     result.claimed ? "Only the account that owns this server can connect with it." : "No account owns this server yet: the account that connects first becomes its owner. No sign-in is needed here."
   ].join("\n"), result);
-  if (!wait || args.json || args.quiet) return ExitCode.ok;
+  if (!wait || args.json) return ExitCode.ok;
   process.stdout.write("\nWaiting for the computer to connect… (Ctrl+C stops waiting; the key stays valid)\n");
   while (Date.now() < result.expiresAt) {
     await new Promise(resolve => setTimeout(resolve, 2_000));
-    const joined = (await activeDevices(args)).filter(device => !before.has(device.deviceId));
-    if (joined.length) {
-      process.stdout.write(joined.map(device => `✓ ${device.deviceName ?? "A computer"} is connected.\n`).join(""));
-      return ExitCode.ok;
-    }
+    const used = await remoteRequest(args, { op: "invitation", invitationId: result.invitationId }) as { consumed: boolean; deviceName?: string };
+    if (used.consumed) { process.stdout.write(`✓ ${used.deviceName ?? "A computer"} is connected.\n`); return ExitCode.ok; }
   }
   process.stdout.write("The key expired before a computer used it. Run pair again for a new one.\n");
   return ExitCode.failure;
@@ -269,6 +263,11 @@ export const main = async (argv: string[]): Promise<number> => {
       case "start": return await start(args);
       case "status": return await status(args);
       case "drain": return await drain(args);
+      case "console": {
+        if (!process.stdin.isTTY || !process.stdout.isTTY) throw new CliError("The console needs a terminal.", ExitCode.usage);
+        const { runConsole } = await import("./console");
+        return await runConsole({ dataDir: args.dataDir! });
+      }
       case "pair": return await pair(args, args.wait);
       case "connect-key": return await pair(args, false);
       case "devices": return await devices(args);

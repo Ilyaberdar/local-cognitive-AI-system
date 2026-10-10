@@ -8,7 +8,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { parseServerArgs } from "../src/server/args";
 import { describeStatus } from "../src/server/cli";
-import { controlSocketPathFor, initDataRoot, readServerConfig } from "../src/server/dataRoot";
+import { controlSocketPathFor, dataDirectories, initDataRoot, readServerConfig } from "../src/server/dataRoot";
+import { controlRequest } from "../src/server/ControlServer";
 import { selectInference } from "../src/server/inference";
 import { serverEnvironment } from "../src/server/serverEnv";
 
@@ -145,6 +146,17 @@ test("init → start → status → MCP bridge → drain, with a second start re
   const health = await fetch(`http://127.0.0.1:${status.http!.port}/health`);
   assert.equal(health.status, 200);
   assert.equal((await fetch(`http://127.0.0.1:${status.http!.port}/`)).status, 404, "the server serves no UI");
+
+  // The console's view: names and numbers, never paths or keys.
+  const overview = await controlRequest(controlSocketPathFor(dataDirectories(root).app), { op: "overview" }, { timeoutMs: 5_000 });
+  assert.equal(overview.ok, true);
+  const view = overview.result as { phase: string; hostName: string; startedAt: string; models: unknown[]; connected: unknown[]; metrics: { cpuPercent: number; memoryTotalBytes: number } };
+  assert.equal(view.phase, "running");
+  assert.equal(view.hostName, os.hostname());
+  assert.ok(Date.parse(view.startedAt) <= Date.now());
+  assert.deepEqual([view.models, view.connected], [[], []]);
+  assert.ok(view.metrics.memoryTotalBytes > 0 && view.metrics.cpuPercent >= 0);
+  assert.equal(JSON.stringify(view).includes(root), false, "no data paths");
 
   // Someone other than the server's user is refused by the system: the CLI says to use sudo.
   const runtimeDir = path.join(root, "app", "runtime");
