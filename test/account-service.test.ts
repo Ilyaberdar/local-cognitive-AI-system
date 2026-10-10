@@ -181,3 +181,24 @@ test("sign-out clears the session immediately, even if revocation fails or a ref
   await waitFor(() => f.state.revoked.length >= 2);
   assert.ok(f.state.revoked.includes("refresh-0"));
 });
+
+test("a session that protected storage cannot read now is kept; one of another sign-in configuration is discarded", async t => {
+  const f = await setup(t);
+  await f.service.signIn("google");
+  await browserReturn(f.opened[0]!, { code: "code-1" });
+  const stored = f.data.get("account/session")!;
+  // The Keychain refused (or is locked): reading throws.
+  const locked = new AccountService({ config: f.config, vault: { ...f.vault, read: async () => { throw new Error("Protected credentials could not be read."); } }, openExternal: async () => {} });
+  t.after(() => locked.dispose());
+  await locked.init();
+  assert.equal(locked.status().state, "signed-out");
+  assert.equal(f.data.get("account/session"), stored, "kept for when the storage can be read again");
+  const later = f.create(); t.after(() => later.dispose());
+  await later.init();
+  assert.equal(later.status().state, "signed-in");
+  // A different tenant: the record is not this configuration's session.
+  const other = new AccountService({ config: { ...f.config, clientId: "client-2" }, vault: f.vault, openExternal: async () => {} });
+  t.after(() => other.dispose());
+  await other.init();
+  assert.equal(f.data.has("account/session"), false);
+});

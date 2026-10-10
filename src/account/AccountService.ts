@@ -76,14 +76,19 @@ export class AccountService extends EventEmitter {
 
   async init(): Promise<void> {
     if (!this.options.vault.available()) return;
+    let raw: string | undefined;
+    // Protected storage that cannot be read now (the Keychain refused, say) keeps the session:
+    // the user stays signed in once it can be read again.
+    try { raw = await this.options.vault.read(SESSION_KEY); }
+    catch { return; }
+    if (!raw) return;
     let parsed: SessionRecord | undefined;
     try {
-      const raw = await this.options.vault.read(SESSION_KEY);
-      if (!raw) return;
       const result = recordSchema.safeParse(JSON.parse(raw));
       const { config } = this.options;
       if (result.success && result.data.issuer === config.issuer && result.data.clientId === config.clientId && result.data.audience === config.audience) parsed = result.data;
-    } catch { /* An unreadable record is discarded below. */ }
+    } catch { /* Not a session record: discarded below. */ }
+    // A record that was read but is not a session of this sign-in configuration is discarded.
     if (!parsed) { await this.persist(() => this.options.vault.remove(SESSION_KEY)).catch(() => {}); return; }
     this.record = parsed;
     this.emitChange();
