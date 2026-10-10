@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "backup" | "backups" | "restore";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -26,10 +26,13 @@ export interface ServerArgs {
   folders?: { action: "list" } | { action: "add"; path: string; label?: string; allowCreate: boolean } | { action: "remove"; id: string };
   /** error-reports: show, or turn on or off, this server's error reports to the developer. */
   errorReports?: "show" | "on" | "off";
+  /** backup: a name part for the backup; restore: the backup's name (from `backups`). */
+  label?: string;
+  backupName?: string;
   yes: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -46,6 +49,9 @@ Commands:
   folders add <path>     Share a folder with connected computers (--label, --allow-create)
   folders remove <id>    Stop sharing a folder
   error-reports [on|off] Show, or turn on or off, sending this server's error reports to the developer
+  backup                 Back up the server's state (not its models), with the server stopped (--label)
+  backups                List the backups
+  restore <name>         Put a backup's state back, with the server stopped (the current state is kept aside)
   help      Show this help
 
 Options:
@@ -89,7 +95,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const { values, positionals } = parsed;
   const command = values.help ? "help" : values.version ? "version" : (positionals[0] ?? "help") as ServerCommand;
   if (!commands.includes(command)) throw new CliError(`Unknown command: ${command}`, ExitCode.usage);
-  const extra = command === "revoke-device" || command === "error-reports" ? 2 : command === "folders" ? 3 : 1;
+  const extra = command === "revoke-device" || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : 1;
   if (positionals.length > extra) throw new CliError(`Unexpected argument: ${positionals[extra]}`, ExitCode.usage);
   const deviceId = command === "revoke-device" ? positionals[1] : undefined;
   if (command === "revoke-device" && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError("revoke-device needs a device id (see `devices`).", ExitCode.usage);
@@ -102,6 +108,9 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     else if (action === "remove" && target) folders = { action, id: target };
     else throw new CliError("Use: folders, folders add <path> [--label <name>] [--allow-create], or folders remove <id>.", ExitCode.usage);
   }
+  const backupName = command === "restore" ? positionals[1] : undefined;
+  if (command === "restore" && !/^\d{8}T\d{6}Z-[\w.+-]{1,80}$/.test(backupName ?? "")) throw new CliError("restore needs a backup name (see `backups`).", ExitCode.usage);
+  if (values.label !== undefined && command === "backup" && !/^[\w.+-]{1,80}$/.test(values.label)) throw new CliError("--label is letters, digits and . _ + - only.", ExitCode.usage);
   let errorReports: ServerArgs["errorReports"];
   if (command === "error-reports") {
     const choice = positionals[1] ?? "show";
@@ -111,13 +120,14 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,
     init: Boolean(values.init), envFile: values["env-file"], llamaRuntimeDir: values["llama-runtime-dir"],
     drainTimeoutSec: integer(values["drain-timeout"] ?? values.timeout, values.timeout !== undefined ? "timeout" : "drain-timeout", 0, 86_400),
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
-    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {})
+    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}),
+    ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {})
   };
 };

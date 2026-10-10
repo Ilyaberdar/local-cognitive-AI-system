@@ -8,6 +8,8 @@ import { parseServerArgs, ServerArgs, usage } from "./args";
 import { controlRequest } from "./ControlServer";
 import { checkDataRoot, controlSocketPathFor, dataDirectories, initDataRoot, readServerConfig } from "./dataRoot";
 import { consentFilePath, readConsent, writeConsent } from "../diagnostics/consentFile";
+import { backupDataRoot, listBackups, restoreDataRoot } from "../update/dataBackup";
+import { DataRootLock, DataRootLockedError } from "../runtime/db/DataRootLock";
 import { CliError, ExitCode } from "./exitCodes";
 import { selectInference } from "./inference";
 import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from "../runtime/hostFolders";
@@ -126,6 +128,38 @@ const devices = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** Backups of the server's state (not its models): taken and restored with the server stopped,
+ * under the data root lock, as the server's user. */
+const backupCommand = async (args: ServerArgs) => {
+  if (process.getuid?.() === 0 && !args.allowRoot) throw new CliError(`Run ${args.command} as the server's user (sudo -u <user> …), or pass --allow-root.`, ExitCode.config);
+  const root = path.resolve(args.dataDir!);
+  checkDataRoot(root);
+  if (args.command === "backups") {
+    const backups = listBackups(root);
+    if (args.json) process.stdout.write(`${JSON.stringify(backups)}\n`);
+    else process.stdout.write(backups.length ? `${backups.map(item => `${item.name}  ${item.appVersion ?? "?"}  ${Math.ceil((item.bytes ?? 0) / 1024 ** 2)} MB`).join("\n")}\n` : "No backups.\n");
+    return ExitCode.ok;
+  }
+  let lock: DataRootLock;
+  try { lock = await DataRootLock.acquire(dataDirectories(root).app, "maintenance", appVersion(), { waitMs: 0 }); }
+  catch (error) {
+    if (error instanceof DataRootLockedError) throw new CliError("The server is running: stop it first (systemctl stop local-cognitive).", ExitCode.locked);
+    throw error;
+  }
+  try {
+    if (args.command === "backup") {
+      const result = backupDataRoot(root, { label: args.label ?? `manual-${appVersion()}` });
+      if (args.json) process.stdout.write(`${JSON.stringify(result)}\n`);
+      else process.stdout.write(`Backed up ${result.files} files (${Math.ceil(result.bytes / 1024 ** 2)} MB) to ${result.directory}\n`);
+    } else {
+      const result = restoreDataRoot(root, path.join(root, "backups", args.backupName!));
+      if (args.json) process.stdout.write(`${JSON.stringify(result)}\n`);
+      else process.stdout.write(`Restored ${args.backupName}. The state it replaced is in ${result.replaced}\n`);
+    }
+    return ExitCode.ok;
+  } finally { lock.release(); }
+};
+
 /** Error reports to the developer (Sentry, EU): the owner's choice, off until turned on. A file
  * in the data directory, read again by the running server: no restart is needed. */
 const errorReports = (args: ServerArgs) => {
@@ -194,6 +228,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "devices": return await devices(args);
       case "folders": return await folders(args);
       case "error-reports": return errorReports(args);
+      case "backup": case "backups": case "restore": return await backupCommand(args);
       case "revoke-device": {
         const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
         print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });

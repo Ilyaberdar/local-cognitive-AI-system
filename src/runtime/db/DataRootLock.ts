@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isBusy, loadSqlite, type DatabaseSync } from "./sqlite";
 
-export type RuntimeKind = "desktop" | "server" | "mcp-stdio" | "test";
+export type RuntimeKind = "desktop" | "server" | "mcp-stdio" | "maintenance" | "test";
 export interface DataRootOwner {
   instanceId: string; pid: number; kind: RuntimeKind; appVersion: string; startedAt: string; dataRoot: string; releasedAt?: string;
 }
