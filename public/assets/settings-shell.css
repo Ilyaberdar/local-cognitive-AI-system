@@ -258,6 +258,28 @@ html[data-theme="light"] .plugin-app-icon--github img, html[data-theme="light"] 
 .local-avatar { display: inline-grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; overflow: hidden; border-radius: 50%; background: var(--control-active); color: var(--muted); }
 .local-avatar .ui-icon { width: 17px; height: 17px; }
 .local-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+/* A picture fills its circle: no backing color or inner shadow showing at the edge. */
+.local-avatar:has(img) { background: transparent; box-shadow: none; }
+
+/* Choosing the picture's area: a round frame with a grid over the movable image. */
+.avatar-crop { width: min(360px, calc(100vw - 32px)); padding: 22px; margin: auto; color: var(--text); background: var(--bg-elevated, var(--bg-panel)); border: 1px solid var(--glass-rim, var(--line-strong)); border-radius: 22px; box-shadow: var(--popover-shadow); }
+.avatar-crop::backdrop { background: rgb(0 0 0 / .45); backdrop-filter: blur(5px); }
+.avatar-crop h2 { margin: 0 0 6px; font-size: calc(15px * var(--font-scale, 1)); font-weight: 600; }
+.avatar-crop .settings-description { margin: 0 0 16px; font-size: calc(12px * var(--font-scale, 1)); }
+.avatar-crop__view { position: relative; overflow: hidden; margin: 0 auto; border-radius: 14px; background: #000; cursor: grab; touch-action: none; user-select: none; outline: none; }
+.avatar-crop__view.is-dragging { cursor: grabbing; }
+.avatar-crop__view:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.avatar-crop__image { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; }
+.avatar-crop__frame { position: absolute; inset: 0; box-sizing: border-box; border: 1.5px solid rgb(255 255 255 / .9); border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / .55);
+  background-image:
+    linear-gradient(to right, transparent calc(100% / 3 - .5px), rgb(255 255 255 / .4) calc(100% / 3 - .5px), rgb(255 255 255 / .4) calc(100% / 3 + .5px), transparent calc(100% / 3 + .5px),
+      transparent calc(200% / 3 - .5px), rgb(255 255 255 / .4) calc(200% / 3 - .5px), rgb(255 255 255 / .4) calc(200% / 3 + .5px), transparent calc(200% / 3 + .5px)),
+    linear-gradient(to bottom, transparent calc(100% / 3 - .5px), rgb(255 255 255 / .4) calc(100% / 3 - .5px), rgb(255 255 255 / .4) calc(100% / 3 + .5px), transparent calc(100% / 3 + .5px),
+      transparent calc(200% / 3 - .5px), rgb(255 255 255 / .4) calc(200% / 3 - .5px), rgb(255 255 255 / .4) calc(200% / 3 + .5px), transparent calc(200% / 3 + .5px)); }
+.avatar-crop__zoom { display: flex; align-items: center; gap: 12px; margin: 18px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); }
+.avatar-crop__zoom input { flex: 1; accent-color: var(--accent); }
+.avatar-crop__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .local-profile-button { flex: 0 0 100%; display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 12px; border: 0; border-radius: 10px; color: var(--text); background: transparent; text-align: left; }
 .local-profile-button:hover, .local-profile-button[aria-expanded=true] { background: var(--highlight); }
 .local-profile-button > .ui-icon { margin-left: auto; width: 16px; height: 16px; }
