@@ -24,6 +24,9 @@ const defaultKeyFile = () => path.join(process.env.XDG_CONFIG_HOME || path.join(
 const ownerFile = (root: string) => path.join(dataDirectories(root).app, "runtime", "data-root.owner.json");
 const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
 const unreachable = (error: unknown) => ["ENOENT", "ECONNREFUSED"].includes((error as NodeJS.ErrnoException).code ?? "");
+/** The server's control socket belongs to its user: anyone else is refused by the system. */
+const notPermitted = (error: unknown, command: string) => ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")
+  ? new CliError(`Permission denied: the server's files belong to its user. Run: sudo local-cognitive-server ${command}`, ExitCode.config) : error;
 
 const init = (args: ServerArgs) => {
   const { root, created, config } = initDataRoot(args.dataDir!, { inference: args.inference, httpPort: args.httpPort, http: args.http });
@@ -57,22 +60,46 @@ const start = async (args: ServerArgs) => {
   return runDaemon({ drainTimeoutSec: args.drainTimeoutSec ?? serverConfig.drainTimeoutSec, inference, overriddenEnv: overridden });
 };
 
+interface StatusResult {
+  phase: string; pid: number; version?: string; activeWork: { total: number }; http?: { port: number };
+  inference: { backend: string; active?: string; fallbackReason?: string };
+  remote?: { state?: string; claimed?: boolean; devices?: number; sessions?: number; reason?: string; lastError?: string };
+  update?: { available?: string | null; error?: string | null };
+}
+
+/** What `status` says to a person: whether computers can reach the server, and what to do next. */
+export const describeStatus = (result: StatusResult): string => {
+  const { backend, active, fallbackReason } = result.inference;
+  const inference = active && active.toLowerCase() !== backend ? `${backend} → ${active}${fallbackReason ? ` (${fallbackReason})` : ""}` : backend;
+  const remote = result.remote;
+  const devices = remote?.devices ?? 0, sessions = remote?.sessions ?? 0;
+  const computers = `${devices} computer${devices === 1 ? "" : "s"} paired${sessions ? `, ${sessions} connected now` : ""}`;
+  const remoteLine = !remote || remote.state === "off" ? `off${remote?.reason ? ` (${remote.reason})` : ""}`
+    : remote.state === "online" ? `online, ${remote.claimed ? computers : "no owner yet: run pair to connect your computer"}`
+      : `${remote.state ?? "unknown"}${remote.lastError ? ` (${remote.lastError})` : ""}, ${computers}`;
+  const work = result.activeWork.total ? `${result.activeWork.total} task${result.activeWork.total === 1 ? "" : "s"} running` : "idle";
+  return [
+    `Local Cognitive Server ${result.version ?? ""} — ${result.phase === "running" ? "running" : result.phase}`.replace("  ", " "),
+    `  Remote:     ${remoteLine}`,
+    `  Inference:  ${inference}`,
+    `  Work:       ${work}`,
+    ...(result.update?.available ? [`  Update:     ${result.update.available} is available: sudo local-cognitive-server update`] : [])
+  ].join("\n");
+};
+
 const status = async (args: ServerArgs) => {
   const root = path.resolve(args.dataDir!);
   try {
     const response = await controlRequest(controlSocketPathFor(dataDirectories(root).app), { op: "status" }, { timeoutMs: 5_000 });
-    const result = response.result as { phase: string; pid: number; activeWork: { total: number }; http?: { port: number }; inference: { backend: string; active?: string; fallbackReason?: string } };
-    const { backend, active, fallbackReason } = result.inference;
-    const inference = active && active.toLowerCase() !== backend ? `${backend} → ${active}${fallbackReason ? ` (${fallbackReason})` : ""}` : backend;
-    print(args, `Running (${result.phase}), pid ${result.pid}, inference ${inference}, ${result.http ? `HTTP 127.0.0.1:${result.http.port}` : "HTTP disabled"}, active work ${result.activeWork.total}`,
-      { running: true, ...result });
+    const result = response.result as StatusResult;
+    print(args, describeStatus(result), { running: true, ...result });
     return ExitCode.ok;
   } catch (error) {
-    if (!unreachable(error)) throw error;
+    if (!unreachable(error)) throw notPermitted(error, "status");
     let owner: { pid?: number } | undefined;
     try { owner = JSON.parse(fs.readFileSync(ownerFile(root), "utf8")); } catch { owner = undefined; }
     if (owner?.pid && isAlive(owner.pid)) { print(args, `Starting or not responding (pid ${owner.pid}).`, { running: "unknown", pid: owner.pid }); return ExitCode.unknownState; }
-    print(args, "Not running.", { running: false });
+    print(args, "Not running. Start it: sudo systemctl start local-cognitive", { running: false });
     return ExitCode.notRunning;
   }
 };
@@ -88,7 +115,7 @@ const drain = async (args: ServerArgs) => {
       }
     });
   } catch (error) {
-    if (!unreachable(error)) throw error;
+    if (!unreachable(error)) throw notPermitted(error, "drain");
     throw new CliError("The server is not running.", ExitCode.unavailable);
   }
   if (args.wait) for (let waited = 0; fs.existsSync(ownerFile(root)) && waited < 60_000; waited += 250) await new Promise(resolve => setTimeout(resolve, 250));
@@ -101,7 +128,7 @@ const remoteRequest = async (args: ServerArgs, request: Record<string, unknown>)
   const root = path.resolve(args.dataDir!);
   let response: Record<string, unknown>;
   try { response = await controlRequest(controlSocketPathFor(dataDirectories(root).app), request, { timeoutMs: 15_000 }); }
-  catch (error) { if (unreachable(error)) throw new CliError("The server is not running. Start it first.", ExitCode.unavailable); throw error; }
+  catch (error) { if (unreachable(error)) throw new CliError("The server is not running. Start it: sudo systemctl start local-cognitive", ExitCode.unavailable); throw notPermitted(error, args.command); }
   if (!response.ok) {
     const error = response.error as { code?: string; message?: string } | undefined;
     throw new CliError(error?.message ?? "The server refused the request.", error?.code === "offline" || error?.code === "remote_off" ? ExitCode.unavailable : ExitCode.failure);
@@ -109,23 +136,40 @@ const remoteRequest = async (args: ServerArgs, request: Record<string, unknown>)
   return response.result as Record<string, unknown>;
 };
 
-const connectKey = async (args: ServerArgs) => {
+type Device = { deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string };
+const activeDevices = async (args: ServerArgs) => ((await remoteRequest(args, { op: "devices" })).devices as Device[]).filter(device => device.status === "active");
+
+/** pair: a one-time key for Remote → Connect, then (in a terminal) waits until a computer uses it,
+ * like pairing two devices. connect-key prints the key only. */
+const pair = async (args: ServerArgs, wait: boolean) => {
+  const before = wait ? new Set((await activeDevices(args)).map(device => device.deviceId)) : new Set<string>();
   const result = await remoteRequest(args, { op: "connect-key", ...(args.ttlMinutes ? { ttlSec: args.ttlMinutes * 60 } : {}) }) as { key: string; expiresAt: number; claimed: boolean };
   const minutes = Math.round((result.expiresAt - Date.now()) / 60_000);
   // The key is a secret: only this command's output shows it, never the service log.
   print(args, [
-    `Connection key (valid ${minutes} minute${minutes === 1 ? "" : "s"}, one use):`, "", result.key, "",
+    `Connection key (valid ${minutes} minute${minutes === 1 ? "" : "s"}, one use):`, "", `    ${result.key}`, "",
     "On your computer: Local Cognitive → Remote → Connect, then paste the key.",
-    result.claimed ? "Only the account that owns this server can connect with it." : "This server is not linked to an account yet: the account that connects first becomes its owner."
+    result.claimed ? "Only the account that owns this server can connect with it." : "No account owns this server yet: the account that connects first becomes its owner. No sign-in is needed here."
   ].join("\n"), result);
-  return ExitCode.ok;
+  if (!wait || args.json || args.quiet) return ExitCode.ok;
+  process.stdout.write("\nWaiting for the computer to connect… (Ctrl+C stops waiting; the key stays valid)\n");
+  while (Date.now() < result.expiresAt) {
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+    const joined = (await activeDevices(args)).filter(device => !before.has(device.deviceId));
+    if (joined.length) {
+      process.stdout.write(joined.map(device => `✓ ${device.deviceName ?? "A computer"} is connected.\n`).join(""));
+      return ExitCode.ok;
+    }
+  }
+  process.stdout.write("The key expired before a computer used it. Run pair again for a new one.\n");
+  return ExitCode.failure;
 };
 
 const devices = async (args: ServerArgs) => {
   const { devices: list } = await remoteRequest(args, { op: "devices" }) as { devices: Array<{ deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string }> };
   const active = list.filter(device => device.status === "active");
   print(args, active.length ? active.map(device => `${device.deviceId}  ${device.deviceName ?? "(unnamed)"}  paired ${device.grantedAt.slice(0, 10)}${device.lastConnectedAt ? `, last seen ${device.lastConnectedAt.slice(0, 16).replace("T", " ")}` : ""}`).join("\n")
-    : "No computers can connect yet. Run connect-key to add one.", { devices: list });
+    : "No computers can connect yet. Run pair to add one.", { devices: list });
   return ExitCode.ok;
 };
 
@@ -225,7 +269,8 @@ export const main = async (argv: string[]): Promise<number> => {
       case "start": return await start(args);
       case "status": return await status(args);
       case "drain": return await drain(args);
-      case "connect-key": return await connectKey(args);
+      case "pair": return await pair(args, args.wait);
+      case "connect-key": return await pair(args, false);
       case "devices": return await devices(args);
       case "folders": return await folders(args);
       case "error-reports": return errorReports(args);
