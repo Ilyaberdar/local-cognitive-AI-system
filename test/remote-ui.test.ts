@@ -89,3 +89,22 @@ test("a mistyped key stays editable and the reason is shown", async () => {
   assert.match(page.root.textContent, /has a typo/);
   assert.equal(page.root.querySelector("[data-remote-key]").value, "LCR1-TYPO");
 });
+
+test("a newer release of the connected server is shown with how to install it; its notes are text", async () => {
+  const { bridge, emit } = bridgeWith({
+    status: async () => ({ ok: true, value: { state: "online", hostId: HOST, hostName: "Fedora", serverVersion: "0.1.0" } }),
+    hostStatus: async () => ({ ok: true, value: { version: "0.1.0", phase: "running", activeWork: { total: 0 }, inference: { active: "CUDA" }, loadedModels: [],
+      update: { current: "0.1.0", checkedAt: "2026-10-10T00:00:00.000Z", available: { version: "0.2.0", notes: "Faster <script>alert(1)</script> downloads", releasedAt: "2026-10-10T00:00:00.000Z" } } } })
+  });
+  const page = load(bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
+  page.paint();
+  page.signIn({});
+  emit({ state: "online", hostId: HOST, hostName: "Fedora", serverVersion: "0.1.0" });
+  await flush(); await flush(); await flush();
+  page.paint();
+  assert.match(page.root.textContent, /Version\s*0\.1\.0 · 0\.2\.0 available/);
+  assert.match(page.root.textContent, /Local Cognitive 0\.2\.0 is available for Fedora/);
+  assert.match(page.root.textContent, /sudo local-cognitive-server update/);
+  assert.equal(page.root.querySelectorAll("script").length, 0, "the notes are shown as text");
+  assert.match(page.root.querySelector(".remote-update-notes").textContent, /Faster <script>/);
+});

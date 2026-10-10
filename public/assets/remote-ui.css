@@ -70,3 +70,7 @@
 .remote-setup-fields { border: 0; margin: 0; padding: 0; min-width: 0; display: contents; }
 .remote-setup-fields:disabled .setup-section, .remote-setup-fields:disabled .chat-type-bar, .remote-setup-fields:disabled .chat-settings__grid { opacity: 0.6; }
 .remote-setup-note--host { margin: 0 0 8px; color: var(--warning, var(--muted)); }
+
+/* A newer release of the connected server (installed on the server by its administrator). */
+.remote-update { margin-top: 16px; }
+.remote-update-notes { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--control-bg); white-space: pre-wrap; font-size: calc(11px * var(--font-scale, 1)); }
