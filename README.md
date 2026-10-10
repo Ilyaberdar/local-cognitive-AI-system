@@ -1,878 +1,275 @@
 # Local Cognitive
 
-Local multi-model AI workspace with:
+A private AI workspace for chats, agents and workflows. Models run on your own computer, or on your own GPU server that you connect with one command. What you write stays on your machines unless you choose a cloud model.
 
-- browser dashboard on `localhost`
-- Telegram access
-- built-in local GGUF inference with llama.cpp; optional LM Studio and Ollama during the transition
-- cloud LLMs via OpenAI, Anthropic, Gemini
-- debate mode with support / attack / judge roles
-- ten curated service plugins with local OAuth, alongside built-in filesystem tools
-- local long memory
+**[Download the latest release](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest)**: macOS (Apple silicon), Windows (x64), Linux server (x64).
 
-The goal is simple: one personal system you can use every day for research, coding, note-taking, and orchestration.
+![Chat workspace with session setup](images/chat.png)
 
-Planned account login, headless GPU hosts, Remote Connection, usage reporting,
-bug reports and updates are specified in the [Remote Connection implementation
-plan](architecture/remote-connection-implementation.md). This is a roadmap, not
-a claim that remote access is already available.
+## What you get
 
-## What You Get
-
-- `Chat Workspace` for normal chat, hypothesis debates, and code mode
-- `Models` panel with a Hugging Face download catalog, installed library, memory controls, and device compatibility warnings
-- `Settings → Plugins` for installing and connecting services; `Connections` for account authorizations
-- `Settings` page for provider keys, MCP, Telegram, and memory
-- session-based configuration, history, and message persistence
-
-## Synthesis DSL
-
-Author module contracts in `.lcspec` and executable agent loops in `.lcflow`, then run them from the **Synthesis** workspace. See the [LC Spec and LC Flow language guide](docs/lc-language.md) for syntax, model selection, runtime functions, complete examples, and current V1 limitations.
+- **Chats.** Use local GGUF models (built-in llama.cpp) or cloud models (OpenAI, Anthropic, Gemini), chosen per chat. You also get:
+  - subagents you call with `@Name`;
+  - debates with support, attack and judge roles;
+  - a code mode with file tools and approvals.
+- **Models.** A Hugging Face catalog that checks memory and disk before a download, and a library on your disk. Acceleration through Metal, Vulkan and CUDA, and models can be split across several GPUs.
+- **Remote.** Work on your own GPU server from your laptop, wherever you are.
+  - One command on the server prints a key; you paste it into the app.
+  - The connection is encrypted end to end.
+  - Work continues while the laptop sleeps.
+- **Workflows and tasks.** A visual workflow builder, a task board, and daily or weekly schedules.
+- **Synthesis.** Describe a module's contract in `.lcspec` and drive agents with `.lcflow`. The result is checked against the contract ([language guide](docs/lc-language.md)).
+- **MCP and plugins.** Connect MCP servers (Blender, editors and more) and services: Notion, GitHub, Slack, Google Drive, Linear, Jira, Outlook, Teams and Dropbox.
+- **Voice input.** Local dictation with whisper.cpp; audio never leaves the device.
+- **Usage.** Tokens per day, per computer and per server.
 
 ## Screenshots
 
-### Chat Workspace
+<table>
+  <tr>
+    <td width="50%"><img src="images/store.png" alt="Models: the Hugging Face catalog"><br><b>Catalog.</b> Search Hugging Face GGUF models; memory and disk are checked before a download.</td>
+    <td width="50%"><img src="images/local-models.png" alt="Models: the library on this computer"><br><b>On device.</b> Your library: load, use in chat, set the default, add a vision adapter.</td>
+  </tr>
+  <tr>
+    <td><img src="images/remote.png" alt="Remote: a connected GPU server"><br><b>Remote.</b> A paired GPU server: its version, CUDA, loaded models and current work.</td>
+    <td><img src="images/workflow.png" alt="Workflow editor with a running workflow"><br><b>Workflows.</b> Agents, files and commands as steps, with a live console and agent activity.</td>
+  </tr>
+  <tr>
+    <td><img src="images/tasks.png" alt="Task board"><br><b>Tasks.</b> A board of tasks, each run by a workflow, with traces and schedules.</td>
+    <td><img src="images/synthesis.png" alt="Synthesis workspace"><br><b>Synthesis.</b> A contract, a flow that drives the agents, and every check they pass.</td>
+  </tr>
+  <tr>
+    <td><img src="images/usage.png" alt="Usage page"><br><b>Usage.</b> Tokens across your computers and servers.</td>
+    <td></td>
+  </tr>
+</table>
 
-![Chat Workspace with a session, generated response, and per-session setup](images/chat-workspace.png)
+## Install the app
 
-Run everyday chats, switch modes, configure subagents, and keep each conversation in its own session.
+### macOS (Apple silicon, macOS 13+)
 
-### Chat access and approvals
+1. Download `Local-Cognitive-<version>-arm64-mac.dmg` from the [latest release](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest).
+2. Drag **Local Cognitive** to Applications.
 
-Use the access icon beside **Ready / Local models** in the composer. Each chat saves its own mode, which also governs its agents:
+The app is signed and notarized. New versions install from the app: use the update button in the title bar, or Settings → About.
 
-- **Ask for approval** (`ask`): confirm file changes, commands, plugin actions, and access outside the configured workspace. Workspace reads do not require confirmation.
-- **Approve for me** (`default`): allow workspace reads and edits; ask before deletions, external access, commands, and plugin actions. Command approval is conservative; there is no automatic command risk classifier.
-- **Full access** (`full`): execute local actions without confirmation, including outside the configured workspace, subject to the OS account's permissions. External plugin writes still require explicit approval.
+### Windows (x64)
 
-The approval card shows the proposed paths and contents or command arguments. **Approve** executes that saved proposal once; **Cancel** skips it. Stopping generation or closing the connection cancels pending approvals. Changing access affects subsequent requests. Permission cannot be granted by text in a prompt or attachment.
+1. Download `Local-Cognitive-Setup-<version>.exe` and run it. It installs for your user only and needs no administrator rights.
+2. The installer is not code-signed yet, so Windows SmartScreen warns once. Choose **More info → Run anyway**.
+3. Models run on any GPU through Vulkan.
+   - On a PC with an NVIDIA GPU, the app offers the faster CUDA build at first launch: about 515 MB, after NVIDIA's license.
+   - If you skip it, the offer stays in Settings → Local Runtime.
+4. The app tells you about new versions; install them from the releases page.
 
-For example, ask the model to ``Write file `hello.txt` containing hello`` or `Ping example.com once`. Command proposals run with separate executable/argument fields and a 30-second timeout. Malformed proposals do not execute. This is an application approval policy, not an OS sandbox; approved commands run with the application's OS permissions. Workflow node reviews remain separate. Headless callers without an approval handler receive a permission-required result for actions that need confirmation.
+### First steps
 
-### Local voice input (desktop)
+1. **Models → Catalog.** Pick a model and a quantization. Start small (for example Qwen2.5 1.5B Instruct) and move up as memory allows.
+2. Choose **Use in chat**, or **Set default** for new chats. A model loads on first use.
+3. Optional: add cloud provider keys in Settings → Models & Providers, then connect MCP servers or plugins.
+4. Sign in (Settings → Account) to use Remote and to see usage across your computers. Local chats and models work without an account.
 
-Click the microphone beside **Send**, speak, then press the checkmark to finish.
-Whisper transcribes locally and appends the result to the current draft.
-Review the text and press **Send** separately. **Esc** or the cross cancels only
-the current dictation. The existing draft is preserved. Recordings are limited
-to five minutes; switching chats stops recording and saves the result to the
-original chat's draft. Recording and transcription survive ordinary UI updates.
+## Your own GPU server
 
-The small arrow beside the microphone opens voice settings: choose **Higher
-accuracy** (Whisper Large v3 Turbo, 1.5 GiB, five decoding candidates) or **Faster**
-(Whisper Small, 465 MiB). Each multilingual model can be downloaded or removed
-independently. New installations default to higher accuracy; existing Small
-installations keep working until you select and download the larger model.
-Choose Auto/Russian/Ukrainian/English (an explicit language is useful for short
-dictation with mixed-language technical names), or click
-**Choose microphone…** to grant access and list input devices. The model is
-downloaded once and verified by SHA-256. Audio stays on the device and temporary
-recordings are deleted after recognition/cancellation. On a recognition error,
-Retry keeps the current audio in memory until retry or cancellation. Sent text
-uses the selected chat provider. Agent access modes do not grant microphone access.
+Run models on a Linux machine with NVIDIA GPUs and use it from your laptop, from anywhere.
 
-macOS asks for microphone access on first use. If denied, use **Microphone
-permissions** in voice settings and restart after changing the system permission.
-The embedded speech engine runs separately from the chat model. The first
-recognition may take longer while the GPU prepares its kernels.
+### Requirements
 
-For development, install CMake and a C++ compiler, then run `npm run prepare:speech`
-before `npm run electron`. macOS builds target 13.3 or later and use Metal;
-Windows builds must prepare speech on Windows. Packaged builds include the runtime
-but download speech model weights on demand. Verify an assembled package with
-`node scripts/verify-speech-runtime.mjs "release/mac-arm64/Local Cognitive.app"`.
-Voice input currently requires the desktop preload bridge; browser-only mode
-continues to support text input.
+- **Linux x64 with systemd.** Ubuntu 22.04+, Debian 12+, Fedora 36+ or Amazon Linux 2023, with glibc 2.34+, libstdc++ from GCC 12+ and OpenSSL 3.
+- **Network.** Outbound HTTPS only. You don't open ports or need a domain or certificate.
+- **NVIDIA GPU, optional.** It needs driver 570 or newer. The CUDA runtime covers Maxwell through Blackwell (compute capability 5.0 to 12.0).
 
-### Orchestration Tasks
-
-![Orchestration task board with Todo, In Progress, and Done columns](images/orchestration-tasks.png)
-
-Create prioritized tasks and monitor their progress through the selected workflow.
-
-### Daily and Weekly Schedules
-
-In `Orchestration -> Tasks`, create a daily or weekly schedule with a task
-description, workflow, local time, IANA timezone (for example `Europe/Kyiv`),
-and—when weekly—the day of the week. The local server checks schedules every
-30 seconds and creates a new task for each occurrence, so every run keeps its
-own workflow trace and history. If the app was offline at the scheduled time,
-it performs one catch-up run after startup and then returns to the normal
-cadence.
-
-Schedules run only while the local server/Electron app is running. You can
-pause, resume, or delete them from the task board; their definitions persist in
-`data/app/schedules/schedules.json` by default.
-
-### Workflow Builder
-
-![Visual workflow builder showing an entry node, agent execution, and terminal states](images/workflow-builder.png)
-
-Design and validate task workflows visually, including success and failure transitions.
-
-### Models and Providers
-
-![Runtime provider status and local model catalog](images/model-catalog.png)
-
-See cloud provider status, loaded local models, and the local model catalog in one place.
-
-### Runtime Settings
-
-![Provider, MCP, Telegram, and runtime settings](images/runtime-settings.png)
-
-Configure providers, MCP, Telegram, memory, and other local runtime defaults from the dashboard.
-
-## Quick Start
-
-### 1. Requirements
-
-- Node.js `>= 18.18.0`
-- npm
-- No external model application is required for the built-in provider.
-
-### 2. Install
-
-```bash
-npm install
-cp .env.example .env
-npm run prepare:llama
-```
-
-### 3. Start
-
-```bash
-npm run dev
-```
-
-Open:
-
-```text
-http://127.0.0.1:3000
-```
-
-Open **Models → Catalog**, choose a quantization, and download it. **On device**
-shows verified local files. **Load model** loads weights into memory; **Unload**
-releases memory while keeping the download. **Use in chat** selects the model
-for the current conversation, and **Set default** changes the application default.
-Installed models are available to code/debate agents and workflow nodes even
-when unloaded; the first request loads them automatically. Local requests share
-one queue, while cloud providers can run alongside them.
-Finishing a response, cancelling it, or reaching an agent deadline keeps the
-current model loaded. After cancellation, the queue waits for llama.cpp to
-confirm its decoding slot is idle. An unresponsive or invalid slot is unloaded
-with an explicit recovery error. Manual unload, switching models, runtime
-reconfiguration, and application shutdown can still release the model.
-
-The **Context size** control on Models saves the local runtime setting. **Active
-context** shows the size confirmed by the loaded llama.cpp process. Local model
-selectors mark **Loaded** models and list them first. **Model storage** separates
-this app's files, partial downloads, external LM Studio libraries (including
-MLX weights that use a different runtime), and recognized temporary test model
-libraries; inspecting storage does not delete files.
-
-Downloads support pause, resume, cancellation, SHA-256 verification, and complete
-multi-file GGUF variants. Public text models are supported; gated repositories,
-MLX, and safetensors are not direct imports. Device memory estimates include
-weights, context/KV cache, recurrent state and working space. The configured
-memory percentage is a warning threshold, not a loading cap. Models above it
-can still load; only weights exceeding all device memory are blocked. macOS
-estimates account for reclaimable file cache. The native loader validates model
-architecture support, including Qwen3.5/3.8; projector and encoder-only files
-cannot be used as standalone chat models. Estimates do not guarantee fit or
-generation quality.
-
-The desktop build bundles pinned llama.cpp **b10809 / 0.4.0** with native libraries
-and license notices. Build scripts verify the archive hash; user launches never
-compile or download the runtime. Models live in the app's user-data directory,
-outside the installation, and remain available offline. Settings support another
-storage directory; files are copied and verified before switching, and the
-previous files remain as a backup. Existing LM Studio/Ollama targets are preserved; migration
-does not rewrite conversation history or completed workflow snapshots.
-
-Run ordinary regression tests with `npm test`. Real inference is an explicit
-opt-in and downloads the four pinned recommended variants (about 1.8 GB):
-
-```bash
-LLAMA_CPP_INTEGRATION=1 LLAMA_TEST_DATA_DIR=/tmp/llama-acceptance npm run test:llama
-node scripts/verify-packaged-runtime.mjs "release/mac-arm64/Local Cognitive.app"
-```
-
-The real test covers downloads, load/unload, final answers, JSON parsing, queued
-models, chat, workflow review/completion, and an offline restart. Without the
-opt-in it is reported as skipped, not as a successful inference test. Platform
-archives for macOS Intel and Windows CPU are pinned; acceptance on those machines
-must be performed separately before claiming support there.
-
-## Desktop Builds
-
-The desktop package uses Electron as a thin shell around the existing local
-Express server and browser dashboard. The backend, plugins, and UI are reused;
-the app stores runtime data in the operating system user-data directory.
-
-Build macOS DMGs for Apple Silicon and Intel:
-
-```bash
-npm run dist:mac
-```
-
-Build only one architecture:
-
-```bash
-npm run dist:mac:arm64
-npm run dist:mac:x64
-```
-
-Build a Windows x64 NSIS installer:
-
-```bash
-npm run dist:win
-```
-
-Artifacts are written to `release/`.
-
-Notes:
-
-- The built-in provider runs without LM Studio or Ollama. Those optional
-  integrations still require their own application and endpoint when selected.
-- Desktop settings are stored in Electron's user data directory, independently
-  of the repository's `.env` and `data/app/settings.json`. The desktop app does
-  not read `.env` at all; it is for development and headless runs. Saved provider
-  settings take precedence over defaults. If an existing installation still
-  aborts generation after 20 seconds, set the local provider timeout to at least
-  `300000` ms in Settings; a reasoning model may need minutes for its final answer.
-- Built-in loading has its own timeout (five minutes by default). Generation
-  has a separate ten-minute default. A single local queue serializes model
-  switches and generation across chats, agents, and workflows.
-- Release builds are unsigned until Apple Developer ID / Windows code-signing
-  certificates are configured.
-- The application icon is `icon.png` (`build.icon`); electron-builder makes the macOS and
-  Windows icons from it.
-
-### Headless server: install and connect
-
-On a Linux x64 server with systemd (Ubuntu 22.04+, Debian 12+, Fedora 36+, Amazon Linux 2023: glibc
-2.34+, libstdc++ from GCC 12+, OpenSSL 3), one command installs the newest signed release as a
-service and prints a connection key:
+### Install
 
 ```bash
 curl -fsSL https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/install.sh | sudo bash
 ```
 
-On your computer: Local Cognitive → Remote → Connect, then paste the key. No sign-in is needed on
-the server: the first account that connects owns it, and only that account's computers can connect
-later (each with a new key). The server only needs outbound HTTPS; no ports are opened.
+The installer:
+
+- checks the release's Ed25519 signature and checksums;
+- installs into `/opt/local-cognitive` with its own Node runtime;
+- creates the service user `local-cognitive` and the data folder `/srv/local-cognitive`;
+- installs the CUDA runtime when it finds an NVIDIA GPU, after you accept NVIDIA's license;
+- starts the `local-cognitive` systemd service and prints the first connection key.
+
+Options:
+
+- `--cpu` skips CUDA;
+- `--data-dir <dir>` changes the data folder;
+- `--no-pair` skips the key;
+- `--yes` answers every question with yes.
+
+### Connect your computer
+
+1. **On the server:** run `sudo local-cognitive-server pair`. It prints a one-time key that starts with `LCR1-…` and waits until a computer uses it. The key works once and expires after 10 minutes.
+2. **In the app:** open **Remote → Connect a server**, paste the key and choose **Connect**. You need to be signed in.
+3. **Ownership:** the first account that connects owns the server. Each further computer of the same account connects with a new key. Other accounts can't connect.
+
+Then choose the server in the switch at the top right (**This computer** or your server). Chats, models, tasks and workflows then run there.
+
+### Server commands
 
 ```bash
-sudo local-cognitive-server            # the console: status, a live view and the commands
-sudo local-cognitive-server pair       # a key for another computer; waits until it connects
-sudo local-cognitive-server status     # running? reachable? how many computers?
-sudo local-cognitive-server update     # newest release: backed up, rolled back if it fails
-sudo local-cognitive-server logs | restart | devices | uninstall
+sudo local-cognitive-server            # the console: status, a live view and these commands
+sudo local-cognitive-server pair       # a key for another computer of your account
+sudo local-cognitive-server status     # running? reachable? CUDA or CPU, and why
+sudo local-cognitive-server devices    # computers that can connect; revoke-device <id>
+sudo local-cognitive-server update     # the newest signed release: backed up, rolled back if it fails
+sudo local-cognitive-server rollback   # back to the previous release and its data
+sudo local-cognitive-server cuda       # install the CUDA runtime later (driver 570+)
+sudo local-cognitive-server logs | restart | stop | start
+sudo local-cognitive-server uninstall  # removes the server and keeps its data
 ```
 
-`node scripts/test-server-install.mjs [--distro fedora|ubuntu]` checks the installer end to end in
-Docker with a throwaway signing key.
+### How Remote stays private
 
-### Linux server runtime (NVIDIA)
+- **The relay sees only encrypted bytes.** The app and the server connect through the relay of the Cloud API, inside TLS 1.3 with mutual authentication.
+- **Trust comes from the key you paste.** It is pinned to the server's own key, which the connection key carries, not to a certificate authority.
+- **The Cloud stores only account records.** It keeps accounts, servers, devices, permissions and token counts, never prompts, answers or files.
+- **What a device can do.** Use chats, models, tasks, workflows, Synthesis, projects in shared folders, and the server's settings.
+- **What stays on the server.** Anything set up there with full file access. A device can only delete, cancel or pause it.
 
-The headless server (`local-cognitive-server`, see `deploy/server/`) prefers a
-CUDA build of llama.cpp and runs on the CPU when it is absent or no GPU is usable:
+## Models and GPUs
+
+Every platform uses the same pinned llama.cpp build, b10809, verified by checksum.
+
+| Platform | Acceleration |
+| --- | --- |
+| macOS, Apple silicon | Metal, unified memory |
+| Windows x64 | Vulkan on any GPU; CUDA 13.3 or 12.4 on NVIDIA, installed from the app |
+| Linux server x64 | CUDA 12.8 on NVIDIA (driver 570+), otherwise CPU |
+
+**How models are placed:**
+
+- Each loaded model runs in its own `llama-server` process on a loopback port with its own key.
+- Loading a model never unloads another one.
+- The app places a model on one GPU if it fits, on several GPUs if needed, or partly in RAM. If nothing fits, the error says what to unload or change.
+
+**Several GPUs** (Models → GPUs):
+
+- Different models run on different GPUs at the same time.
+- A model too large for one GPU is split by layers (any GPUs) or by rows (CUDA, with a fast link between the cards).
+- You can choose which GPUs models may use, pin a model to its own GPUs, and **Rebalance** the loaded models by the current settings.
+- Splitting has not been validated on multi-GPU hardware yet.
+
+**Formats:**
+
+- Standard llama.cpp quantizations work, from F16 to the IQ and TQ types, including MXFP4 and models split into several GGUF files.
+- Files made for a fork, such as Prism ML's PQ2_0, fail with a clear reason.
+
+## Updates
+
+- **App.** It checks 10–30 seconds after launch and then every 6 hours. A new version shows a button in the title bar and one system notification. You install it with a click, and the app restarts.
+- **macOS** accepts an update only with the same Developer ID signature.
+- **Windows** announces new versions and links to this page until the installer is code-signed.
+- **Server.** It checks once a day and shows new versions in Remote. It installs nothing by itself.
+  - `sudo local-cognitive-server update` verifies the signed manifest and backs up the data.
+  - Then it switches the release and checks that the server is healthy; if it isn't, the update rolls back code and data on its own.
+
+## Your data
+
+| | App data | Installed app |
+| --- | --- | --- |
+| macOS | `~/Library/Application Support/Local Cognitive` | `/Applications/Local Cognitive.app` |
+| Windows | `%LOCALAPPDATA%\Local Cognitive` | `%LOCALAPPDATA%\Programs\Local Cognitive` |
+| Linux server | `/srv/local-cognitive` | `/opt/local-cognitive/current`, with previous releases kept for rollback |
+
+- **Inside the data folder:** chats, memory, models, settings, and `app/runtime/host.db` (work in progress and the usage ledger).
+- **Secrets** (provider keys, sign-in, Remote keys) are encrypted. On the desktop the key is kept by the system (Keychain on macOS). On a server it is kept in `/etc/local-cognitive/vault.key`.
+- **Error reports and crash dumps** go to Sentry (EU region) only if you turn them on in Settings → Data & Privacy, with personal data removed. **Report a bug** sends what you write in it.
+
+## Development
+
+### Run from source
+
+Requirements: Node.js 22.16+ and npm, plus CMake and a C++ compiler for the speech runtime.
 
 ```bash
-npm run prepare:llama:server   # linux-x64 and linux-x64-cuda12
-node scripts/verify-packaged-runtime.mjs resources --variant linux-x64 --variant linux-x64-cuda12 --check-libraries
+npm ci
+npm run prepare:llama     # the pinned llama.cpp for this machine
+npm run prepare:speech    # whisper.cpp (desktop dictation)
+npm run electron          # the desktop app
+npm run dev               # or the browser UI at http://127.0.0.1:3000
 ```
 
-`linux-x64-cuda12` is the upstream `linux-x64` build plus an overlay with
-`libggml-cuda.so` and the NVIDIA CUDA runtime and cuBLAS libraries, pinned in
-`resources/llama/runtime-manifest.json`. The overlay is built by
-`scripts/build-llama-cuda-overlay.mjs` (locally, or by the manual
-`llama-cuda-runtime` workflow). It needs an NVIDIA driver 570 or newer.
-`local-cognitive-server status` shows the selected and the active backend, and
-the reason when models run on the CPU.
+Development runs keep their data in the operating system's user-data folder under `local-cognitive-ai-system`, separate from the installed app. The browser and headless runs read `.env`, while the desktop app keeps its settings in the app.
 
-## Fastest Local Setup
+### Tests
 
-If you want the system working as fast as possible, use LM Studio.
-
-### 1. Load local models in LM Studio first
-
-The engine does not download or load your local models by itself.
-
-The correct order is:
-
-1. load the models in LM Studio
-2. start the LM Studio local server
-3. open this dashboard
-4. assign those already loaded models inside `Chat Workspace` or `Settings`
-
-Example roles:
-
-- `support`: `qwen/qwen3.5-9b`
-- `attack`: `zai-org/glm-4.6v-flash`
-- `judge`: `nvidia/nemotron-3-nano-4b`
-
-### 2. Start the LM Studio server
-
-Typical endpoint:
-
-```text
-http://127.0.0.1:1234/v1
+```bash
+npm test                                                     # the full suite
+LLAMA_CPP_INTEGRATION=1 LLAMA_TEST_DATA_DIR=/tmp/llama-acceptance npm run test:llama   # real inference (downloads ~1.8 GB)
+node scripts/test-server-install.mjs --distro fedora         # the server installer and updates in Docker systemd
 ```
 
-### 3. Configure `.env`
+### Builds and releases
+
+- **macOS.** `npm run dist:mac:arm64` builds the dmg and the zip. For a signed build, set `CSC_NAME` to the Developer ID identity and `APPLE_KEYCHAIN_PROFILE` to a notarytool profile, then pass `-c.forceCodeSigning=true`. Before publishing, run `npm run verify:release -- --team-id <team>`.
+- **Windows.** The **Windows installer** workflow in GitHub Actions builds the NSIS installer with the Vulkan llama.cpp and whisper.cpp. It checks the runtimes and their libraries, then runs a silent install and uninstall.
+- **Server.** On Linux x64, `node scripts/pack-server.mjs --out release/server --url-base https://github.com/<repo>/releases/download/v<version>/` builds the tarball, `server-manifest.json` and `install.sh`. Sign the manifest with `node scripts/release-key.mjs sign release/server/server-manifest.json --key <private key>`.
+- **CUDA for the server.** The **llama-cuda-runtime** workflow builds `libggml-cuda.so` for every NVIDIA architecture and publishes it as a prerelease that the manifest pins.
+
+### Configuration for development and headless runs
+
+The browser UI and the headless server read `.env` (see `.env.example`):
 
 ```env
 HOST=127.0.0.1
 PORT=3000
-HTTP_ENABLED=true
-
-DEFAULT_PROVIDER=lmstudio
-
+DEFAULT_PROVIDER=llamacpp        # or lmstudio, ollama, openai, anthropic, gemini
 LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
-LMSTUDIO_MODEL=qwen/qwen3.5-9b
-LMSTUDIO_API_KEY=lm-studio
-LMSTUDIO_TIMEOUT_MS=300000
-```
-
-### 4. Run the app
-
-```bash
-npm run dev
-```
-
-### 5. In the UI
-
-Go to:
-
-- `Models` to confirm loaded models
-- `Chat Workspace` to set:
-  - mode
-  - debate on/off
-  - support / attack / judge providers and models
-
-That means a normal working flow looks like this:
-
-1. load models in LM Studio
-2. confirm them in `Models -> Loaded Local Models`
-3. go to `Chat Workspace`
-4. assign roles in `Session Setup`
-5. start chatting or run a debate
-
-## Cloud Providers
-
-You can mix local and cloud models in one session.
-
-Example:
-
-- `Support`: LM Studio
-- `Attack`: OpenAI
-- `Judge`: Anthropic
-
-### OpenAI
-
-Use:
-
-```text
-Base URL: https://api.openai.com/v1
-```
-
-Recommended starting models:
-
-- `gpt-5-mini`
-- `gpt-4.1-mini`
-
-### Anthropic
-
-Use:
-
-```text
-Base URL: https://api.anthropic.com
-```
-
-Recommended starting models:
-
-- `claude-sonnet-4-5`
-- `claude-opus-4-1`
-
-### Gemini
-
-Use:
-
-```text
-Base URL: https://generativelanguage.googleapis.com
-```
-
-After adding keys, use `Test provider` in `Settings`.
-
-## Telegram Setup
-
-Telegram is optional.
-
-### 1. Create a bot
-
-Use `@BotFather` and get a bot token.
-
-### 2. Configure `.env`
-
-```env
-TELEGRAM_ENABLED=true
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_OWNER_USER_IDS=123456789
-TELEGRAM_POLL_TIMEOUT_SEC=25
-```
-
-`TELEGRAM_OWNER_USER_IDS` is a comma-separated allowlist of Telegram numeric user IDs. The
-transport does not start until it contains at least one ID; only listed users can invoke the bot.
-
-### 3. Start the server
-
-```bash
-npm run dev
-```
-
-If the bot had a webhook before, clear it:
-
-```bash
-curl "https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook?drop_pending_updates=true"
-```
-
-### 4. Chat with the bot
-
-Useful commands:
-
-- `/help`
-- `/providers`
-- `/models`
-- `/settings`
-- `/mode hypothesis`
-- `/debate on`
-
-## Workflow Tool Nodes
-
-The visual FSM builder supports structured outputs between nodes. Reference a
-previous node from any string config field with `{{nodes.<node-id>.data.<key>}}`.
-
-- `Search Files`: returns `data.results` and `data.scannedFiles`.
-- `Search Web`: supports `provider=searxng` through `SEARXNG_URL`, or
-  `provider=brave` through `BRAVE_SEARCH_API_KEY`; returns `data.results`.
-- `Save File`: writes or appends `contentTemplate`; set `access=full` for an
-  unattended run. Default access returns `needs_input`.
-- `Run Command`: executes an executable and argument array without a shell;
-  returns `data.exitCode`, `data.stdout`, and `data.stderr`. It also requires
-  explicit full access for an unattended run.
-- `Decision`: evaluates a stored output and emits `decision.true` or
-  `decision.false` for event guards.
-
-Runs retain a snapshot of their workflow, so editing the saved graph does not change an active run. Concurrent requests for the same running task or node share one execution. The task board starts workflows in the background and refreshes their status; Cancel remains available while a model is working.
-
-A waiting run exposes **Approve & continue** and **Reject** in its trace. Human review selects the matching success/failure transition. Approval for a command or file write applies only to the operation shown in the trace, even if the task is edited while waiting, and preserves configured path restrictions. Re-running a blocked task creates a fresh run from its saved workflow.
-
-Example chain:
-
-```text
-Entry -> Search Files -> Agent -> Save File -> Run Command -> Decision
-Decision --decision.true--> Done
-Decision --decision.false--> Failed
-```
-
-## MCP Setup
-
-MCP is optional and is intended for opencode/Codex-style clients and local
-development pipelines.
-
-### 1. Configure MCP
-
-You can use environment variables:
-
-```env
+TELEGRAM_ENABLED=false
 MCP_ENABLED=true
-MCP_DEFAULT_SESSION_ID=mcp-default
 ```
 
-Or create a local config file:
+- **Cloud providers.** Add keys in Settings → Models & Providers and use **Test provider**. Local and cloud models can be mixed in one chat, for example a local supporter with a cloud judge.
+- **Telegram (optional).**
+  - Create a bot with `@BotFather` and set `TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_OWNER_USER_IDS`.
+  - The owner IDs are a comma-separated allowlist of numeric user IDs; only those users can use the bot.
+- **MCP over stdio.** Other agents can call Local Cognitive as an MCP server. Run `npm run build`, then `npm run mcp:stdio`.
+  - Tools: `local_ai_chat`, `local_ai_code`, `local_ai_hypothesis`, `local_ai_runtime_status`, `local_ai_list_models`, `local_ai_get_session_settings`, `local_ai_update_session_settings`.
 
-```bash
-cp local-cognitive.config.example.json local-cognitive.config.json
-```
+### Chat access and approvals
 
-`local-cognitive.config.json` is ignored by Git.
+Each chat has an access mode, set by the icon beside the model in the composer. Its agents follow the same mode.
 
-### 2. Run MCP over stdio
-
-Build once before using the stdio server from an MCP client:
-
-```bash
-npm run build
-```
-
-```bash
-npm run mcp:stdio
-```
-
-### 3. Example opencode config
-
-```json
-{
-  "mcp": {
-    "local-cognitive": {
-      "type": "local",
-      "command": "npm",
-      "args": ["run", "--silent", "mcp:stdio"]
-    }
-  },
-  "permission": {
-    "local_ai_*": "ask"
-  }
-}
-```
-
-Available tools:
-
-- `local_ai_chat`
-- `local_ai_code`
-- `local_ai_hypothesis`
-- `local_ai_runtime_status`
-- `local_ai_list_models`
-- `local_ai_get_session_settings`
-- `local_ai_update_session_settings`
-
-## Plugins and connected accounts
-
-Open **Settings → Plugins**. The release-owned catalog contains **Notion, GitHub,
-Slack, Google Drive, Linear, Jira, Outlook Email, Outlook Calendar, Microsoft
-Teams, and Dropbox**. Install → connect an account in the system browser →
-choose Read only or Read & write → enable. Installation alone grants no access.
-The catalog ships in `src/plugins/catalog.ts`; it is not a third-party package
-marketplace and never downloads executable plugin code.
-
-Notion, Linear and Jira use their official remote MCP services and the official
-MCP SDK's OAuth/PKCE client. Other services have small, explicit native REST tool
-adapters. The distributor must register the application once before shipping login:
-
-| Service | Developer application setup |
-| --- | --- |
-| GitHub | OAuth app Client ID with device flow enabled |
-| Slack | Public/native OAuth client with PKCE and the adapter's user scopes |
-| Google Drive | Desktop OAuth client ID and secret from its downloaded JSON; testing users/verification as required by Google |
-| Outlook Email, Calendar, Teams | Entra public/native client ID, delegated scopes and loopback redirect; tenant/admin restrictions may apply |
-| Dropbox | App key with PKCE and the adapter's scoped permissions |
-
-End users see Install → browser login, never developer registration forms. Supply
-the release's public/native client registrations, following
-`electron/plugin-oauth-clients.example.json`, in one of these places (first match
-wins): `LOCAL_COGNITIVE_OAUTH_CLIENTS_FILE`, `plugin-oauth-clients.json` in the
-app's user data directory, or — in a development checkout only — the git-ignored
-`electron/plugin-oauth-clients.json`. Packaged builds never include this file;
-`npm run verify:package-secrets` checks an unpacked build for credential files and
-credential-like strings. This config is application-wide, while account
-tokens remain profile-local. Do not distribute confidential web-client secrets.
-Scopes are defined in `src/plugins/OAuthConnections.ts`; default callback is
-`http://127.0.0.1:17849/oauth/callback` (Slack/Graph use `localhost`).
-Missing registrations are shown as unavailable, not as a request to create a new
-user account. These registrations are **not** replaced by browser login.
-The three official MCP services can dynamically
-register the client, subject to the provider's own policies and account plan.
-Thus a catalog entry is not evidence that an account has been tested or connected.
-
-Tokens, refresh tokens and legacy operator overrides stay on the device, encrypted
-using Electron `safeStorage` (macOS Keychain-backed key). They never enter the
-renderer, prompts, tool results or ordinary settings JSON. Connection setup
-fails closed when protected storage is unavailable; headless deployments must
-inject an appropriate `CredentialVault`. There is no Composio/cloud token proxy.
-
-Installations, connections and saved operation approvals are isolated by owner.
-The current owner is the local profile. `RuntimeManager.switchIntegrationOwner`
-is an internal hook for future authenticated account switching, not a login or
-billing implementation. Switching owners cancels old operations; tokens are not
-synced between machines.
-
-Enabled plugins expose dynamically discovered tools to ordinary/project chats
-and workflow **agent** steps through `plugins.search` and `plugins.call`. Local
-permissions filter available tools; every write requires a saved, account-bound
-approval, including in Full access. Unknown outcomes after a dispatched request
-are not retried automatically. DSL integration is intentionally out of scope.
-
-Disable stops local tool access. Uninstall removes the local installation but
-keeps independent account authorizations under **Connected accounts**. Disconnect removes
-local credentials; revoke the grant in the provider's settings if it must be
-withdrawn provider-side too.
-
-The old Files/Notion/VS Code settings and plugin loader are retired. Existing
-settings are backed up to `settings.pre-integrations.json` with private file
-permissions; old Notion keys are not reused or returned by the settings API.
-Filesystem tools remain built in; configure their output directory and allowed
-directories under **Settings → Data & Privacy**.
-
-## Daily Usage Patterns
-
-### Review edited files
-
-Click **Review** in a completed file card to open the complete current file in the right panel. **Session Setup** and **Review** share that panel; each chat keeps its own open files. Both tabs share the same saved panel size and header controls for resizing, expanding, and hiding. Review also includes **Refresh**, **Copy file**, and **Open in editor**, which prefers Visual Studio Code and falls back to a text editor when it is unavailable (the system text editor on macOS, Notepad on Windows; gedit on Linux).
-
-Select text in the file, click **+**, write a comment, and choose **Send to chat** (or press Cmd/Ctrl+Enter). The message includes the path, line numbers, and quoted selection; your existing chat draft stays intact. Direct comments such as “Change this…” or “Замени…” edit only that range, subject to the chat's access mode. The app preserves surrounding content and rejects an edit if the file changes before it is applied. Review supports text files up to 5 MB and selections up to 5,000 characters.
-
-### 1. Normal chat
-
-Use `general` mode when you just want one model to answer.
-
-Example:
-
-```text
-briefly explain how this module works
-```
-
-### 2. Debate mode
-
-Use `hypothesis` mode when you want support / attack / judge behavior.
-
-Example:
-
-```text
-test the hypothesis that game theory is a good primary layer for analyzing news in a Telegram channel
-```
-
-### 3. Code mode
-
-Use `code` mode when you want implementation output.
-
-Example:
-
-```text
-create a simple Express TypeScript API project in `demo-api`
-```
-
-```text
-create `demo-api/src/index.ts` and add a healthcheck route
-```
-
-### 4. Save result to Notion
-
-Example:
-
-```text
-save this to Notion
-```
-
-### 5. Write files locally
-
-Example:
-
-```text
-create `notes/summary.md` and write a short summary into it
-```
-
-## Architecture
-
-```mermaid
-flowchart LR
-  U["Browser UI / Telegram"] --> API["Express API"]
-  API --> RT["RuntimeManager"]
-  RT --> ENG["CognitiveEngine"]
-  ENG --> MODE["ModeDetector"]
-  ENG --> ROUTER["Router"]
-  ENG --> MEM["MemoryService"]
-  ENG --> TOOLS["ToolRegistry"]
-
-  ROUTER --> GEN["General / Code Flow"]
-  ROUTER --> HYP["Hypothesis Flow"]
-
-  HYP --> SUP["SupportAgent"]
-  HYP --> ATT["AttackAgent"]
-  HYP --> J["Judge"]
-
-  SUP --> LLM["LLMService / Registry"]
-  ATT --> LLM
-  J --> LLM
-  GEN --> LLM
-
-  LLM --> LMS["LM Studio"]
-  LLM --> OLL["Ollama"]
-  LLM --> OAI["OpenAI"]
-  LLM --> ANT["Anthropic"]
-  LLM --> GEM["Gemini"]
-
-  TOOLS --> PLUGINS["PluginManager → OAuth / MCP / REST"]
-  TOOLS --> FILE["FileTool"]
-
-  MEM --> JSON["LocalJsonMemoryAdapter"]
-  MEM --> WP["WorldPartitionMemoryAdapter"]
-  MEM --> OM["OpenMemoryAdapter"]
-```
-
-## Projects and task workspaces
-
-The sidebar stacks **Projects** above ordinary **Chats**, separated by a thin divider. Sections grow with their content, share a scroll area, and can collapse to their headers; their state is remembered. Add a project with a name and an existing absolute directory (the desktop app has a folder picker), then create any number of chats inside it. Rename or archive projects from the folder row; archiving preserves files and history, and a project can be restored. Project folders are not moved or deleted by the application. Changing an existing project's root is intentionally rejected; register the new directory as another project.
-
-Tasks and schedules select a **Workflow**, **Project**, and **Access** policy. The small **+** next to Project creates and selects a project without losing the form. A Workflow is a reusable definition: the same definition can run in different projects. Task/Trace details show the resolved folder and an **Open folder** action. An active or waiting run keeps a snapshot of the task, workspace, settings, and node model targets; edits to the task cannot redirect it.
-
-Without a project, each task receives a persistent directory at `<APP_DATA_DIR>/workspaces/tasks/<taskId>/workspace`. It is reused for later runs of that task. Deleting the task card preserves its files; `<APP_DATA_DIR>/workspaces/managed.json` records these directories. There is no automatic cleanup. Ordinary chats retain their existing filesystem area and compatibility execution flow.
-
-Project chats, Workflow agents and ordinary chats with enabled plugins use a structured loop: read/search → observe actual tool output → edit or run a check → observe the result → final answer. Tools include list, search, read, write, replace, append, mkdir, delete, and commands with an explicit working directory. Existing-file edits check the version returned by reading the file. Advisers and debate researchers have read-only tools. Files, attachments, and tool output are treated as source material, not permission grants. Plugin operations use the shared owner-scoped manager and a saved approval journal; file/command intent matching is not executed again after the new loop.
-
-Access applies to every agent and Workflow file/command node:
-
-| Policy | Reads inside workspace | Writes inside workspace | Delete, commands, outside paths |
+| Mode | Reads inside the workspace | Writes inside the workspace | Delete, commands, outside paths |
 | --- | --- | --- | --- |
-| Ask | Allowed | Confirmation | Confirmation |
-| Approve for me | Allowed | Allowed | Confirmation |
-| Full | Allowed | Allowed | Allowed |
+| Ask for approval | allowed | ask | ask |
+| Approve for me | allowed | allowed | ask |
+| Full access | allowed | allowed | allowed |
 
-A node can require extra confirmation with `approval: "always"`; it cannot override the task's policy. Legacy node `access: "default"` requests extra confirmation and `access: "full"` inherits the task policy. Commands run with the operating system privileges of the application; the workspace policy is not an OS sandbox.
+- **The approval card** shows the exact paths, contents or command arguments. **Approve** runs that proposal once.
+- **Prompts can't grant access.** Text in a prompt or an attachment never grants permission.
+- **External writes always ask.** Writes through plugins need approval even with full access.
+- **Not a sandbox.** Commands run with the app's operating-system permissions.
 
-Workflow approval pauses the exact saved operation and continues the same agent. Restarted running work becomes **interrupted** and requires **Resume**. A command/plugin whose effect is uncertain becomes **blocked** and is not automatically replayed, including through retry transitions. Project/task memory is isolated by workspace, user, and channel while each chat/run retains its own history.
+### Workflow tool nodes
 
-Agent turn settings are available in **Settings → Agents** and can also be set in `agentLimits` in the config file or these environment variables: `AGENT_MAX_STEPS` (24), `AGENT_ADVISOR_MAX_STEPS` (12), `AGENT_MAX_TOTAL_STEPS` (72), `AGENT_MAX_ACTIVE_MS` (0), `AGENT_MAX_REPAIRS` (3), and `AGENT_CONTEXT_CHARS` (48000). A turn is one model decision: request a tool or return a final answer. Entering `0` disables a turn or time limit; the settings have no hidden upper ceiling. The automatic generation-time limit is disabled by default, so an advisor is not stopped to reserve an arbitrary share for another agent. Provider timeouts and user cancellation still apply. The last permitted turn of a bounded run is reserved for a final answer from the evidence already collected. Tool output and context have explicit truncation markers; local agent prompts also follow the configured runtime context. Local agent turns default to at most 512 reasoning tokens and 4096 output tokens, reduced for small context windows; an explicit workflow reasoning budget retains its configured behavior. After exhausted format repairs or a truncated generation, an agent with observed tool results attempts a final answer when turns remain. Partial advisor output remains in its expandable card rather than being appended as raw JSON to the chat response. Invalid actions are never executed as guessed commands.
+Steps exchange structured output: reference an earlier step as `{{nodes.<node-id>.data.<key>}}`.
 
-## Runtime Flow
+- **Search Files** and **Search Web**: SearXNG or Brave.
+- **Save File** and **Run Command**: an executable plus an argument array, no shell. Both need full access to run unattended.
+- **Decision**: emits `decision.true` or `decision.false`.
 
-1. User sends a message from the browser or Telegram.
-2. The engine loads session settings and relevant memory.
-3. `ModeDetector` chooses `general`, `hypothesis`, or `code`.
-4. The router runs the matching execution flow.
-5. The selected provider(s) generate output.
-6. Project/task agents execute structured tool turns and feed the results back to the model. Ordinary chats use the existing intent-based compatibility tools.
-7. Results are formatted, saved in memory, and shown in the UI.
+A run keeps a snapshot of its workflow, so later edits don't change it. A waiting run shows **Approve & continue** and **Reject** in its trace.
 
-## Code Mode Behavior
+### Plugins and connected accounts
 
-`code` mode supports configured subagents.
+Settings → Plugins lists Notion, GitHub, Slack, Google Drive, Linear, Jira, Outlook Email, Outlook Calendar, Microsoft Teams and Dropbox.
 
-Ordinary-chat compatibility behavior:
+- **How a plugin is enabled.** Install it, connect an account in the browser, choose read only or read & write, then enable it. Installing alone grants no access.
+- **Account tokens** stay on the device, encrypted, and never reach the window, prompts or tool output.
+- **Each write** needs a saved approval tied to the account.
+- **OAuth client registrations** come from the distributor; see `electron/plugin-oauth-clients.example.json`. Packaged builds never include them, and `npm run verify:package-secrets` checks a build for credentials.
 
-- subagents can use any configured provider/model, including LM Studio models or API providers
-- prompts that mention `spawn subagent`, `subagent`, or `сабагент` are routed into code mode automatically
-- `@AgentName` selects configured agents explicitly; a generic spawn request picks the cheapest configured local/API target by heuristic
-- if no subagent config exists, spawn requests fall back to the current main provider/model
-- at most 4 code subagents run for a request
-- the main model drafts and assigns bounded tasks, then writes the final response
-- configured subagents return advisory results to the main model
-- live agent cards show waiting, working, completed, failed, or interrupted states using the same activity indicator as the prompt bar
-- final responses preserve the main model output and include expandable subagent results
-- provider failures are reported explicitly and cannot trigger file/plugin actions
-- Escape interrupts generation, including translation and delegated calls
-- each subagent has an access mode:
-  - `default`: file writes/deletes from subagent output require explicit approval
-  - `full`: file writes/deletes may run through the configured filesystem tool boundaries
-- the system reduces bad merged output by avoiding raw multi-agent file concatenation
+### Architecture
 
-This is intentionally safer than letting multiple agents write directly into the same scaffold output.
-
-## Project Structure
-
-```text
-src/
-  agents/
-  api/
-  app/
-  config/
-  core/
-  judge/
-  llm/
-  memory/
-  plugins/
-  session/
-  tools/
-  transports/
-  types/
-  utils/
-public/
-data/
-```
-
-## Main API Routes
-
-```text
-GET    /health
-GET    /meta
-GET    /dashboard/bootstrap
-GET    /models
-GET    /local/catalog
-GET    /local/catalog/model
-GET    /local/models/all
-GET    /local/models/loaded
-POST   /local/models/load
-POST   /local/models/unload
-POST   /local/models/import
-DELETE /local/models/:modelId
-GET    /local/runtime
-GET    /local/events
-GET    /local/downloads
-POST   /local/downloads
-POST   /local/downloads/:downloadId/pause
-POST   /local/downloads/:downloadId/resume
-POST   /local/downloads/:downloadId/cancel
-GET    /lmstudio/models/loaded
-GET    /lmstudio/models/all
-POST   /lmstudio/models/load
-POST   /lmstudio/models/unload
-
-GET    /sessions
-POST   /sessions
-PATCH  /sessions/:sessionId
-DELETE /sessions/:sessionId
-GET    /sessions/:sessionId/messages
-GET    /sessions/:sessionId/settings
-PUT    /sessions/:sessionId/settings
-
-GET    /app/settings
-PUT    /app/settings
-POST   /providers/:providerId/test
-GET    /integrations
-POST   /integrations/:id/install
-PATCH  /integrations/:id
-DELETE /integrations/:id
-PUT    /integrations/:id/oauth-client
-POST   /integrations/:id/connect
-POST   /integrations/connections/:id/refresh
-DELETE /integrations/connections/:id
-POST   /runtime/reload
-
-POST   /chat
-POST   /process
-GET    /process-runs/:requestId
-POST   /process-runs/:requestId/cancel
-POST   /tasks/:taskId/run              # { "background": true } returns before completion
-GET    /workflow-runs/:runId
-POST   /workflow-runs/:runId/review    # { "approved": true|false, "background": true }
-POST   /workflow-runs/:runId/cancel
-```
-
-## Useful Commands
-
-```bash
-npm run dev
-npm run build
-npm run test
-```
-
-### Electron UI checks
-
-Use Playwright's Electron launcher and `withNativeWindowSize` from
-`scripts/electron-ui-viewport.cjs` to check different window sizes. It resizes the
-native window and restores it in `finally`, including after a failed assertion.
-Avoid `page.setViewportSize()` on a visible Electron window: it overrides only the
-renderer size and leaves unused transparent space around the UI. The helper also
-clears any remaining viewport override. Check the full native window, not just a
-screenshot cropped to an emulated viewport. After deliberately reproducing an
-emulation issue, use `BrowserWindow.webContents.capturePage()` for the final
-capture: Playwright can retain the old viewport in its screenshot settings.
-
-## Current Notes
-
-- The retired VS Code placeholder is not part of the new ten-service plugin catalog.
-- `world-partition` is the default local long-memory adapter. It writes a per-user Morton-indexed world under `MEMORY_DIR/.world-partition-v1`, while session timelines remain separate.
-- `OpenMemory` remains an optional adapter shape.
-- With `MEMORY_PARTITION_STRATEGY=auto`, exact per-user search is used below `MEMORY_PARTITION_ACTIVATION_THRESHOLD` (default `10000`); the Morton cell search is used above it. The dashboard exposes the same controls.
-- HTTP/browser traffic uses a stable profile ID generated and persisted by the local server; the HTTP request body cannot select another profile. Telegram and MCP memory are isolated by channel and their caller `userId`.
-- Cloud provider rate limits can appear in `Models -> Connected providers` after `Test provider`.
-
-## Recommended First Run
-
-If you want a stable first experience:
-
-1. Download Qwen2.5 1.5B Instruct from `Models -> Catalog` for a small first chat.
-2. Select `Use in chat` or `Set default` in `On device`.
-3. Use the installed model in a workflow or configure local subagents.
-4. Add cloud providers or plugins as needed. Small models have limited reasoning
-   and instruction following; choose a more capable compatible model for demanding tasks.
+- **Components.** The desktop app runs its backend inside Electron's main process and draws the UI in an isolated window. The server is the same backend under systemd. The Cloud API (`apps/cloud`, Node 24 and Postgres 17) handles accounts, devices and the relay.
+- **Remote** works over a catalog of operations (`src/runtime/operationCatalog.ts`), each request checked against its schema. Commands are written to the host's SQLite database before they are acknowledged.
+- **Specifications:**
+  - [Remote connection](architecture/remote-connection-implementation.md) (in Russian);
+  - [llama.cpp integration](architecture/llama-cpp-integration-plan.md);
+  - [Synthesis language](docs/lc-language.md).
+- **Release notes:** [CHANGELOG.md](CHANGELOG.md).
