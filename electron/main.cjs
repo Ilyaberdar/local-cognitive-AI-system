@@ -3,6 +3,8 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
+// First: the native crash handler starts before the app is ready (reports only with consent).
+const sentry = require("./sentry.cjs").startSentry();
 
 let mainWindow;
 let backendHandle;
@@ -102,6 +104,16 @@ const focusWindow = () => {
 
 // Model calls are recorded for the account signed in when they run; none signed in, they stay on this computer.
 const usageAccount = () => { const status = account?.service.status(); return status?.state === "signed-in" ? status.profile.accountId : undefined; };
+
+// Error reports: the user's consent (Settings → Data & Privacy) and a window's uncaught errors.
+const registerDiagnostics = () => {
+  ipcMain.handle("diagnostics:consent", event => { assertAppSender(event); return sentry.consent(); });
+  ipcMain.handle("diagnostics:set-consent", (event, value) => { assertAppSender(event); return sentry.setConsent(value === true); });
+  ipcMain.on("diagnostics:renderer-error", (event, report) => {
+    try { assertAppSender(event); } catch { return; }
+    sentry.rendererError(report, backendHandle?.diagnosticLog);
+  });
+};
 
 const startBackend = async (appRoot, vault) => {
   const entry = path.join(appRoot, "dist", "src", "index.js");
@@ -207,6 +219,8 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
     backendHandle = await startBackend(runtime.appRoot, vault);
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
+    sentry.attachLog(backendHandle.diagnosticLog);
+    registerDiagnostics();
     // A window's or helper process's crash, as codes in the technical log (never a dump of its memory here).
     const crashed = (process, details) => { if (details.reason !== "clean-exit") backendHandle.diagnosticLog.record("app.crash", { process, reason: details.reason, exitCode: details.exitCode }); };
     app.on("render-process-gone", (_event, _contents, details) => crashed("renderer", details));

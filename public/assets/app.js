@@ -1,3 +1,4 @@
+import "./error-forwarding.js";
 import { createProjectsUi, projectOptions } from "./projects-ui.js";
 import { activityLabel, renderChatActivity, patchChatActivity } from "./activity-ui.js";
 import { createSettingsShell } from "./settings-shell.js";

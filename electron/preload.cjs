@@ -48,6 +48,14 @@ contextBridge.exposeInMainWorld("desktopAccount", {
   }
 });
 
+// Error reports: the user's consent, and this window's uncaught errors (the main process decides
+// what may leave; nothing does without consent).
+contextBridge.exposeInMainWorld("desktopDiagnostics", {
+  consent: () => ipcRenderer.invoke("diagnostics:consent"),
+  setConsent: value => ipcRenderer.invoke("diagnostics:set-consent", value === true),
+  reportError: report => ipcRenderer.send("diagnostics:renderer-error", report && { name: String(report.name || "").slice(0, 40), message: String(report.message || "").slice(0, 1000), stack: String(report.stack || "").slice(0, 8000) })
+});
+
 // The Usage page's numbers, put together in the main process with the account token.
 contextBridge.exposeInMainWorld("desktopUsage", {
   overview: request => ipcRenderer.invoke("usage:overview", request)
