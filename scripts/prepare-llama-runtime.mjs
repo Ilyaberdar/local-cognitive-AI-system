@@ -135,7 +135,8 @@ try {
     }
   }
   await fs.writeFile(path.join(partial, 'runtime.json'), JSON.stringify({ id: variant, build: manifest.build, commit: manifest.commit, platform: target.platform, arch: target.arch,
-    backend: target.backend, sha256: target.sha256, ...(target.overlay ? { overlaySha256: target.overlay.sha256 } : {}), ...(vcRuntime ? { vcRuntime } : {}) }, null, 2));
+    backend: target.backend, sha256: target.sha256, ...(target.overlay ? { overlaySha256: target.overlay.sha256 } : {}), ...(target.requires ? { requires: target.requires } : {}),
+    ...(vcRuntime ? { vcRuntime } : {}) }, null, 2));
   await fs.rm(destination, { recursive: true, force: true });
   await fs.rename(partial, destination);
 

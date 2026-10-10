@@ -5,9 +5,9 @@ import { Logger } from "../utils/Logger";
 import { getSystemMemory } from "../utils/systemMemory";
 import { DeviceInventory, createProcessProbe } from "./DeviceInventory";
 import { LlamaCppRuntime, RuntimeLaunch } from "./LlamaCppRuntime";
-import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf } from "./RuntimeInstall";
+import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf, runtimeIsolation } from "./RuntimeInstall";
 import type { ModelMemoryEstimate } from "./ModelCompatibility";
-import { planPlacement, PlacementPlan, ResidentModel } from "./PlacementPlanner";
+import { placementPolicyFor, planPlacement, PlacementPlan, ResidentModel } from "./PlacementPlanner";
 import { LocalModelError, LocalModelOptions, LocalPlacementSnapshot, LocalRuntimeSnapshot } from "./types";
 
 const backendOf = (plan: PlacementPlan, devices: { backendName: string }[]) =>
@@ -33,7 +33,7 @@ export class LocalRuntimePool {
   constructor(private options: LocalModelOptions, private readonly logger: Logger, private readonly changed: () => void, inventory?: DeviceInventory) {
     this.probe = new LlamaCppRuntime(options, logger, changed);
     this.installed = readInstalledRuntime(runtimeDirOf(options));
-    this.inventory = inventory ?? new DeviceInventory(createProcessProbe(llamaExecutable(options), this.installed?.backend));
+    this.inventory = inventory ?? this.createInventory(options, this.installed);
     this.probeOptions = options;
   }
   get status(): LocalRuntimeSnapshot["status"] { return this.snapshot().status; }
@@ -53,7 +53,7 @@ export class LocalRuntimePool {
       ?? instances.find(runtime => runtime.status === "ready")
       ?? instances.find(runtime => runtime.status === "error") ?? { ...idle, backend: this.idleBackend(idle.backend) };
     const fallbackReason = this.fallbackReason();
-    // A CUDA build lists its GPUs, for the multi-GPU settings (never on Apple Silicon or CPU builds).
+    // A GPU build lists its GPUs, for the multi-GPU settings (never on Apple Silicon or CPU builds).
     const gpus = this.gpuRuntime() ? (this.inventory.cached()?.devices ?? []).filter(device => device.kind === "gpu")
       .map(({ id, index, name, totalBytes, freeBytes }) => ({ id, index, name, totalBytes, freeBytes })) : [];
     return { ...selected, ...(gpus.length ? { gpus } : {}), modelId: instances.length === 1 ? instances[0].modelId : undefined,
@@ -121,7 +121,7 @@ export class LocalRuntimePool {
     this.instances.clear(); this.options = options;
     const installed = readInstalledRuntime(runtimeDirOf(options));
     if (llamaExecutable(options) !== llamaExecutable(this.probeOptions) || installed?.backend !== this.installed?.backend) {
-      this.inventory = new DeviceInventory(createProcessProbe(llamaExecutable(options), installed?.backend));
+      this.inventory = this.createInventory(options, installed);
     }
     this.installed = installed;
     this.probeOptions = options;
@@ -150,7 +150,7 @@ export class LocalRuntimePool {
     const result = planPlacement({ modelId: id, estimate, contextSize: this.options.contextSize, devices: inventory.devices, system: { totalBytes }, residents,
       gpuLayers: this.options.gpuLayers, gpuRuntime: this.gpuRuntime(),
       ...(this.options.multiGpu ? { multiGpu: retry.layerSplit ? { ...this.options.multiGpu, mode: "layer" as const } : this.options.multiGpu } : {}),
-      ...(retry.after ? { after: retry.after } : {}), ...(retry.policy ? { policy: retry.policy } : {}) });
+      ...(retry.after ? { after: retry.after } : {}), policy: { ...placementPolicyFor(this.installed?.backend), ...retry.policy } });
     if (result.kind === "error") {
       this.instances.get(id)?.fail(id, result.message);
       throw new LocalModelError(result.message, 409, "insufficient_memory", { options: result.options });
@@ -160,13 +160,19 @@ export class LocalRuntimePool {
     return { ...result, warnings: [...inventory.warnings, ...result.warnings] };
   }
 
-  private gpuRuntime(): boolean { return this.installed?.backend === "cuda"; }
+  private gpuRuntime(): boolean { return this.installed?.backend === "cuda" || this.installed?.backend === "vulkan"; }
+
+  /** The probe runs like a model launch: same folder, environment and isolation. */
+  private createInventory(options: LocalModelOptions, installed: InstalledRuntime | undefined): DeviceInventory {
+    return new DeviceInventory(createProcessProbe(llamaExecutable(options), installed?.backend,
+      { isolation: runtimeIsolation(options.dataDir), ...(installed?.requires?.nvidiaDriver ? { minDriver: installed.requires.nvidiaDriver } : {}) }));
+  }
 
   /** Backend shown while no model is loaded: the GPU build until a probe finds no device. */
   private idleBackend(current: string): string {
     if (!this.gpuRuntime() || this.options.gpuLayers === 0) return current;
     const cached = this.inventory.cached();
-    return !cached || cached.devices.some(device => device.backendName.startsWith("CUDA")) ? "CUDA" : "CPU";
+    return !cached || cached.devices.length ? (this.installed?.backend === "vulkan" ? "Vulkan" : "CUDA") : "CPU";
   }
 
   private fallbackReason(): string | undefined {

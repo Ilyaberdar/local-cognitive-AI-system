@@ -19,7 +19,7 @@ const estimate = (weightsMiB: number): ModelMemoryEstimate => ({ layers: 40, wei
 const fakeServer = `#!/usr/bin/env node
 const fs=require('fs'),http=require('http'),path=require('path');const args=process.argv.slice(2);const value=k=>args[args.indexOf(k)+1];
 const log=path.join(process.env.FAKE_LOG_DIR,'launches.jsonl');
-fs.appendFileSync(log,JSON.stringify({model:value('--alias'),args,visible:process.env.CUDA_VISIBLE_DEVICES,cwd:process.cwd(),ggml:process.env.GGML_BACKEND_PATH,argHost:process.env.LLAMA_ARG_HOST,at:Date.now()})+'\\n');
+fs.appendFileSync(log,JSON.stringify({model:value('--alias'),args,visible:process.env.CUDA_VISIBLE_DEVICES,cwd:process.cwd(),ggml:process.env.GGML_BACKEND_PATH,argHost:process.env.LLAMA_ARG_HOST,mtmd:process.env.MTMD_BACKEND_DEVICE,config:process.env.XDG_CONFIG_HOME,layers:process.env.VK_LOADER_LAYERS_DISABLE,at:Date.now()})+'\\n');
 if((process.env.FAKE_OOM_ON&&value('--device')==='CUDA0'&&process.env.CUDA_VISIBLE_DEVICES===process.env.FAKE_OOM_ON)||(process.env.FAKE_OOM_ROW&&args.includes('row'))){console.error('ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000 MiB on device 0: cudaMalloc failed: out of memory');process.exit(1);}
 const delay=Number(process.env.FAKE_START_DELAY||0);
 setTimeout(()=>http.createServer(async(req,res)=>{res.setHeader('Content-Type','application/json');
@@ -43,7 +43,7 @@ async function setup(t: TestContext, devices: string, gpuLayers: number | "auto"
   t.after(async () => { await pool.dispose(); delete process.env.FAKE_OOM_ON; delete process.env.FAKE_OOM_ROW; delete process.env.FAKE_START_DELAY; await fs.rm(root, { recursive: true, force: true }); });
   await pool.init();
   const launches = async () => (await fs.readFile(path.join(root, "launches.jsonl"), "utf8")).trim().split("\n")
-    .map(line => JSON.parse(line) as { model: string; args: string[]; visible?: string; cwd: string; ggml?: string; argHost?: string; at: number });
+    .map(line => JSON.parse(line) as { model: string; args: string[]; visible?: string; cwd: string; ggml?: string; argHost?: string; mtmd?: string; config?: string; layers?: string; at: number });
   return { root, pool, launches };
 }
 const twoGpus = "Available devices:\n  CUDA0: NVIDIA Fake (8192 MiB, 8192 MiB free)\n  CUDA1: NVIDIA Fake (8192 MiB, 8192 MiB free)\n";
@@ -192,3 +192,22 @@ test("Rebalance loads the loaded models again by the current settings, largest f
     assert.deepEqual(result, { reloaded: ["big", "small"], failed: [{ modelId: "mid", message: "Not enough memory to load mid" }] });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test("a Vulkan runtime is a GPU runtime: its GPUs are listed and used by name, outside influences dropped", { skip: process.platform === "win32" }, async t => {
+  process.env.MTMD_BACKEND_DEVICE = "Vulkan0";
+  t.after(() => { delete process.env.MTMD_BACKEND_DEVICE; });
+  const f = await setup(t, "Available devices:\n  Vulkan0: Intel(R) UHD Graphics (16000 MiB, 15000 MiB free)\n  Vulkan1: NVIDIA Fake (8192 MiB, 8000 MiB free)\n", "auto", "linux",
+    { runtime: { id: "win32-x64", backend: "vulkan", build: "b10809" } });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(f.pool.snapshot().backend, "Vulkan", "the idle label names the GPU build");
+  assert.deepEqual(f.pool.snapshot().gpus?.map(gpu => gpu.name), ["NVIDIA Fake"], "the integrated GPU is not offered");
+  await f.pool.load("a", path.join(f.root, "a.gguf"), undefined, undefined, estimate(4000));
+  const [launch] = await f.launches();
+  assert.deepEqual(launch!.args.slice(launch!.args.indexOf("--device"), launch!.args.indexOf("--device") + 2), ["--device", "Vulkan1"]);
+  assert.equal(launch!.visible, undefined, "no CUDA restrictions for Vulkan");
+  assert.equal(launch!.mtmd, undefined, "an inherited projector device is dropped");
+  assert.equal(launch!.layers, "~implicit~");
+  assert.equal(launch!.config, path.join(f.root, "runtime", "llama-config"));
+  assert.equal(f.pool.snapshot().backend, "Vulkan");
+});
+

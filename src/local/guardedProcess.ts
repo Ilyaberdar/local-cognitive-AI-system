@@ -25,6 +25,13 @@ const WATCH_SCRIPT = [
 ].join("\n");
 
 /** The signal that ended a runtime: the watching shell reports one killed by signal n as 128 + n. */
+/** What a Windows status code as an exit code means, for the few a runtime meets. */
+const WINDOWS_EXITS: Record<number, string> = {
+  0xC0000135: "a DLL it needs is missing", 0xC0000139: "a DLL it loaded is the wrong version", 0xC000001D: "this processor lacks an instruction it uses",
+  0xC0000005: "it crashed", 0xC0000409: "it stopped after an internal error", 0xC0E90002: "Smart App Control or a code integrity policy blocked it"
+};
+export const windowsExitReason = (code: number): string | undefined => WINDOWS_EXITS[code >>> 0];
+
 export const endingSignal = (code: number | null, signal: NodeJS.Signals | null): NodeJS.Signals | undefined => {
   if (signal) return signal;
   if (process.platform === "win32" || code === null || code <= 128) return undefined;

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeviceInventory, mergeDevices, parseListDevices, parseNvidiaSmi, type InventoryDevice } from "../src/local/DeviceInventory";
+import { DeviceInventory, isIntegratedGpu, mergeDevices, parseListDevices, parseNvidiaSmi, type InventoryDevice } from "../src/local/DeviceInventory";
 import { estimateModelMemory, type ModelMemoryEstimate } from "../src/local/ModelCompatibility";
-import { planPlacement, type PlacementInput, type PlacementPlan } from "../src/local/PlacementPlanner";
+import { placementPolicyFor, planPlacement, type PlacementInput, type PlacementPlan } from "../src/local/PlacementPlanner";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 // usable = free - 512 headroom - 384 context - 384 compute = free - 1280 MiB
@@ -201,3 +201,78 @@ test("row split runs on CUDA with the context cache on the GPU with most room, a
   assert.deepEqual(ok(plan({ devices: [unified], multiGpu: { split: "always", mode: "row" } })).launch.args, ["--n-gpu-layers", "99"]);
   assert.equal(ok(plan({ devices: [gpu(0, 8000), gpu(1, 8000)], gpuLayers: 0, multiGpu: { split: "always" } })).kind, "cpu");
 });
+
+// Vulkan: lines as llama.cpp b10809 prints them (the first captured on a Windows 11 PC, the others
+// from public reports), with integrated GPUs that share system memory.
+const memory = () => ({ total: 64 * GiB, free: 48 * GiB });
+const vulkanInventory = (listing: string, smi?: string, extra: { minDriver?: string } = {}) => new DeviceInventory({ platform: "win32", listDevices: async () => listing,
+  nvidiaSmi: async () => smi, systemMemory: memory, expectedBackend: "vulkan", ...extra });
+
+test("Vulkan devices: discrete GPUs are placed, integrated ones never, and NVIDIA cards keep their identity", async () => {
+  const pc = await vulkanInventory("Available devices:\r\n  Vulkan0: NVIDIA GeForce RTX 3070 Ti (8231 MiB, 7424 MiB free)\r\n",
+    "0, GPU-ccc, 00000000:0A:00.0, NVIDIA GeForce RTX 3070 Ti, 8192, 768, 7424\r\n").probeDevices();
+  assert.deepEqual(pc.devices.map(device => [device.backendName, device.id, device.index]), [["Vulkan0", "GPU-ccc", 0]], "the same id as under CUDA");
+  assert.equal(pc.fallbackReason, undefined);
+
+  const laptop = await vulkanInventory("Available devices:\n  Vulkan0: Intel(R) Graphics (37025 MiB, 47805 MiB free)\n  Vulkan1: NVIDIA GeForce RTX 5090 Laptop GPU (24137 MiB, 23369 MiB free)\n").probeDevices();
+  assert.deepEqual(laptop.devices.map(device => [device.backendName, device.index]), [["Vulkan1", 0]]);
+  assert.deepEqual(laptop.integrated, [{ backendName: "Vulkan0", name: "Intel(R) Graphics" }]);
+  const placed = ok(plan({ devices: laptop.devices, policy: placementPolicyFor("vulkan") }));
+  assert.deepEqual(placed.launch, { args: ["--device", "Vulkan1", "--n-gpu-layers", "all", "--fit", "off"], env: {} }, "no CUDA variables for Vulkan");
+
+  const twoVendors = await vulkanInventory("Available devices:\n  Vulkan0: AMD Radeon RX 9070 (16304 MiB, 15416 MiB free)\n  Vulkan1: Intel(R) Arc(TM) B570 Graphics (10074 MiB, 9305 MiB free)\n").probeDevices();
+  assert.deepEqual(twoVendors.devices.map(device => device.backendName), ["Vulkan0", "Vulkan1"], "discrete Arc cards are GPUs");
+  const rows = ok(plan({ estimate: estimate(20000), devices: twoVendors.devices, multiGpu: { mode: "row" } }));
+  assert.ok(rows.launch.args.includes("layer") && !rows.launch.args.includes("row"), "row split is CUDA only");
+
+  const halo = await vulkanInventory("Available devices:\n  Vulkan0: AMD Radeon(TM) 8050S Graphics (20299 MiB, 19284 MiB free)\n").probeDevices();
+  assert.deepEqual(halo.devices, []);
+  assert.match(halo.fallbackReason ?? "", /Only an integrated GPU was found \(AMD Radeon\(TM\) 8050S Graphics\)/);
+
+  for (const name of ["AMD Radeon Graphics (RADV RENOIR)", "AMD Radeon(TM) 780M Graphics", "Intel(R) UHD Graphics 770", "Intel(R) Arc(TM) 140V GPU (16GB)", "AMD Radeon(TM) Vega 8 Graphics"]) {
+    assert.ok(isIntegratedGpu({ backendName: "Vulkan0", name, totalBytes: 8 * GiB, freeBytes: 7 * GiB }), name);
+  }
+  for (const name of ["NVIDIA GeForce RTX 4090", "AMD Radeon RX 7600M XT", "AMD Radeon PRO W7900", "Intel(R) Arc(TM) A770 Graphics", "Intel(R) Arc(TM) Pro B60 Graphics"]) {
+    assert.ok(!isIntegratedGpu({ backendName: "Vulkan0", name, totalBytes: 8 * GiB, freeBytes: 7 * GiB }), name);
+  }
+  assert.ok(!isIntegratedGpu({ backendName: "CUDA0", name: "Intel(R) Graphics", totalBytes: 8 * GiB, freeBytes: 9 * GiB }), "only Vulkan lists integrated GPUs");
+});
+
+test("a runtime uses only its own backend's devices, never nvidia-smi's CUDA numbering under Vulkan", async () => {
+  const both = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4070 (12281 MiB, 11063 MiB free)\n  Vulkan0: NVIDIA GeForce RTX 4070 (12282 MiB, 11000 MiB free)\n  Vulkan1: Intel(R) UHD Graphics (16000 MiB, 15000 MiB free)\n";
+  const cuda = await new DeviceInventory({ platform: "win32", listDevices: async () => both, nvidiaSmi: async () => undefined, systemMemory: memory, expectedBackend: "cuda" }).probeDevices();
+  assert.deepEqual(cuda.devices.map(device => device.backendName), ["CUDA0"]);
+  assert.deepEqual((await vulkanInventory(both).probeDevices()).devices.map(device => device.backendName), ["Vulkan0"]);
+
+  // The listing failed: a Vulkan build is never launched with --device CUDA0 from nvidia-smi.
+  const broken = await new DeviceInventory({ platform: "win32", listDevices: async () => { throw new Error("exited 3221225781"); },
+    nvidiaSmi: async () => "0, GPU-aaa, 00000000:01:00.0, NVIDIA GeForce RTX 3070 Ti, 8191, 591, 7600\n", systemMemory: memory, expectedBackend: "vulkan" }).probeDevices();
+  assert.deepEqual(broken.devices, []);
+  assert.match(broken.fallbackReason ?? "", /Vulkan cannot use it/);
+  const noGpu = await vulkanInventory("Available devices:\n  (none)\n").probeDevices();
+  assert.equal(noGpu.fallbackReason, undefined, "a computer without a GPU is not a fallback");
+  const oldDriver = await new DeviceInventory({ platform: "win32", listDevices: async () => "Available devices:\n  (none)\n", systemMemory: memory, expectedBackend: "cuda", minDriver: "580",
+    nvidiaSmi: async () => "0, GPU-aaa, 00000000:01:00.0, NVIDIA GeForce RTX 3070 Ti, 8191, 591, 7600\n" }).probeDevices();
+  assert.match(oldDriver.fallbackReason ?? "", /Update the NVIDIA driver to 580 or newer\./);
+});
+
+test("the vision projector stays on the planned GPU, or off the GPUs for a CPU plan", () => {
+  const withProjector = { ...estimate(), projectorBytes: 600 * MiB };
+  const vulkan: InventoryDevice = { id: "GPU-v", backendName: "Vulkan1", index: 0, name: "NVIDIA GeForce RTX 4070", kind: "gpu", totalBytes: 12 * GiB, freeBytes: 11 * GiB };
+  assert.deepEqual(ok(plan({ estimate: withProjector, devices: [vulkan] })).launch.args.slice(-2), ["--mmproj-device", "Vulkan1"]);
+  assert.deepEqual(ok(plan({ estimate: withProjector, devices: [gpu(1, 12000), gpu(0, 4000)] })).launch.args.slice(-2), ["--mmproj-device", "CUDA0"],
+    "CUDA devices are renumbered inside CUDA_VISIBLE_DEVICES");
+  assert.ok(!ok(plan({ devices: [vulkan] })).launch.args.includes("--mmproj-device"), "nothing to place without a projector");
+  const cpu = ok(plan({ estimate: withProjector, devices: [vulkan], gpuLayers: 0 }));
+  assert.deepEqual(cpu.launch.args, ["--device", "none", "--n-gpu-layers", "0", "--fit", "off", "--no-mmproj-offload"]);
+});
+
+test("Windows and Vulkan keep more GPU memory free than the CUDA calibration", () => {
+  assert.equal(placementPolicyFor("vulkan").gpuHeadroomBytes, 1024 * MiB);
+  assert.equal(placementPolicyFor("cuda", "win32").gpuHeadroomBytes, 1024 * MiB);
+  assert.deepEqual(placementPolicyFor("cuda", "linux"), {});
+  const exact = (headroom: number) => ok(plan({ devices: [gpu(0, 4400 + 768 + headroom)], policy: { ...placementPolicyFor("cuda", "win32"), gpuContextBytes: 384 * MiB, computeBytes: 384 * MiB } })).kind;
+  assert.equal(exact(1024), "single-gpu");
+  assert.notEqual(exact(1023), "single-gpu");
+});
+

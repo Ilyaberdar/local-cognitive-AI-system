@@ -10,8 +10,8 @@ import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { LocalModelError, LocalModelOptions, LocalPlacementSnapshot, LocalRuntimeSnapshot } from "./types";
 import { fetchLocalInference } from "./fetchLocalInference";
 import { childProcessEnv } from "../config/secrets";
-import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf, runtimeEnv } from "./RuntimeInstall";
-import { endingSignal, GuardedProcess, spawnGuarded, STOP_GRACE_SEC } from "./guardedProcess";
+import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf, runtimeEnv, runtimeIsolation } from "./RuntimeInstall";
+import { endingSignal, GuardedProcess, spawnGuarded, STOP_GRACE_SEC, windowsExitReason } from "./guardedProcess";
 
 export { llamaExecutable };
 
@@ -90,7 +90,8 @@ export class LlamaCppRuntime {
     // The runtime directory is the working directory: ggml also loads backends from there.
     const directory = runtimeDirOf(this.options);
     const guarded = spawnGuarded(this.executable(), args, { cwd: directory, stdout: "pipe", stderr: "pipe",
-      env: { ...runtimeEnv(childProcessEnv(), directory), ...launch?.env, LLAMA_API_KEY: this.token, LLAMA_ARG_MCP_SERVERS: "", LLAMA_ARG_TOOLS: "", LLAMA_ARG_AGENT: "0" } });
+      env: { ...runtimeEnv(childProcessEnv(), directory, process.platform, runtimeIsolation(this.options.dataDir)), ...launch?.env,
+        LLAMA_API_KEY: this.token, LLAMA_ARG_MCP_SERVERS: "", LLAMA_ARG_TOOLS: "", LLAMA_ARG_AGENT: "0" } });
     const child = guarded.process;
     this.child = child; this.guarded = guarded;
     const append = (chunk: Buffer) => { this.logTail = (this.logTail + chunk.toString("utf8")).slice(-65536); };
@@ -103,7 +104,8 @@ export class LlamaCppRuntime {
       this.child = undefined; this.guarded = undefined; this.endpoint = undefined; this.effectiveContextSize = undefined;
       if (this.state !== "stopping") {
         const ended = endingSignal(code, signal);
-        this.setState("error", `Local runtime exited (${ended ?? code ?? "signal"}).\n${this.logTail}`);
+        const reason = code !== null ? windowsExitReason(code) : undefined;
+        this.setState("error", `Local runtime exited (${ended ?? code ?? "signal"}${reason ? `: ${reason}` : ""}).\n${this.logTail}`);
         diagnostics().record("local_runtime.exited", ended ? { signal: ended.toLowerCase() } : code !== null ? { exitCode: code } : {});
         this.logger.warn("Local inference runtime exited", { code, modelId });
       }

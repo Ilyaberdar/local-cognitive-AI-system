@@ -1,7 +1,8 @@
 import { execFile } from "child_process";
+import fs from "fs";
 import path from "path";
 import { childProcessEnv } from "../config/secrets";
-import { runtimeEnv } from "./RuntimeInstall";
+import { RuntimeIsolation, runtimeEnv } from "./RuntimeInstall";
 import { getSystemMemory, SystemMemory } from "../utils/systemMemory";
 
 const MiB = 1024 ** 2;
@@ -23,8 +24,10 @@ export interface InventoryDevice {
 
 export interface DeviceSnapshot {
   devices: InventoryDevice[]; probedAt: number; warnings: string[];
-  /** Why a CUDA runtime runs models on the CPU. */
+  /** Why a GPU runtime runs models on the CPU. */
   fallbackReason?: string;
+  /** Integrated GPUs a Vulkan runtime lists: they share system memory and get no models. */
+  integrated?: Array<{ backendName: string; name: string }>;
 }
 export interface GpuMetric { id: string; index: number; name: string; totalBytes: number; usedBytes: number; freeBytes: number }
 
@@ -38,6 +41,8 @@ export interface DeviceProbe {
   parentVisibleDevices?: string;
   /** Backend of the installed runtime, from its runtime.json. */
   expectedBackend?: string;
+  /** The NVIDIA driver a CUDA runtime needs, from its runtime.json. */
+  minDriver?: string;
 }
 
 interface ListedDevice { backendName: string; name: string; totalBytes: number; freeBytes: number }
@@ -62,6 +67,19 @@ export const parseNvidiaSmi = (csv: string): SmiDevice[] => csv.split(/\r?\n/).f
   return [{ index: numbers[0]!, uuid, pciBusId: pciBusId!, name, totalBytes: numbers[1]! * MiB, usedBytes: numbers[2]! * MiB, freeBytes: numbers[3]! * MiB }];
 }).sort((left, right) => left.pciBusId.localeCompare(right.pciBusId));
 
+/** Integrated GPUs share system memory, which Vulkan reports as theirs (often more free than in total),
+ * so they would be placed like large discrete GPUs. Known by that report or by name: Intel's except Arc
+ * cards with a model number (A770, B580; Arc 140V is integrated), and AMD's Radeon Graphics, Vega and
+ * "M"/"S" models (780M, 8060S) unless named RX or PRO. */
+export const isIntegratedGpu = (device: ListedDevice): boolean => {
+  if (!/^Vulkan\d+$/.test(device.backendName)) return false;
+  if (device.freeBytes > device.totalBytes) return true;
+  const name = device.name;
+  if (/\bIntel\b/i.test(name)) return !/\bArc\b\S*\s+(?:Pro\s+)?[AB]\d{2,3}\b/i.test(name);
+  if (/\bRadeon\b/i.test(name) && !/\b(RX|PRO)\b/i.test(name)) return /Radeon(?:\(TM\))?\s+(?:Graphics|Vega|\d{3,4}[MS]\b)/i.test(name);
+  return false;
+};
+
 /** Applies a parent CUDA_VISIBLE_DEVICES (indices or UUIDs) to the PCI-ordered rows. */
 const visibleRows = (rows: SmiDevice[], parentVisible?: string): SmiDevice[] | undefined => {
   if (parentVisible === undefined || parentVisible.trim() === "") return rows;
@@ -70,37 +88,51 @@ const visibleRows = (rows: SmiDevice[], parentVisible?: string): SmiDevice[] | u
   return selected.every(Boolean) ? selected as SmiDevice[] : undefined;
 };
 
-/** Maps CUDAi (PCI order with CUDA_DEVICE_ORDER=PCI_BUS_ID) to the i-th visible nvidia-smi row. */
+/** Maps CUDAi (PCI order with CUDA_DEVICE_ORDER=PCI_BUS_ID) to the i-th visible nvidia-smi row. A
+ * Vulkan device takes the identity of the NVIDIA GPU with its name when that name is unique, so GPU
+ * choices stay valid between the Vulkan and the CUDA runtime. */
 export const mergeDevices = (listed: ListedDevice[], smi: SmiDevice[] | undefined, parentVisible?: string): { devices: InventoryDevice[]; warnings: string[] } => {
   const warnings: string[] = [];
   const cuda = listed.filter(device => /^CUDA\d+$/.test(device.backendName));
   const rows = smi ? visibleRows(smi, parentVisible) : undefined;
   const mapped = rows && rows.length === cuda.length && cuda.every((device, index) => device.name === rows[index]!.name);
   if (cuda.length && smi && !mapped) warnings.push("GPU identities could not be matched with nvidia-smi; devices are identified by their CUDA order.");
+  const unique = (name: string) => listed.filter(device => device.name === name).length === 1 && (rows ?? []).filter(row => row.name === name).length === 1;
   const devices = listed.map((device, index): InventoryDevice => {
-    const row = mapped && /^CUDA(\d+)$/.test(device.backendName) ? rows![Number(device.backendName.slice(4))] : undefined;
-    return { id: row?.uuid ?? device.backendName, backendName: device.backendName, index: row ? rows!.indexOf(row) : index, name: device.name,
+    const row = mapped && /^CUDA(\d+)$/.test(device.backendName) ? rows![Number(device.backendName.slice(4))]
+      : /^Vulkan\d+$/.test(device.backendName) && unique(device.name) ? rows!.find(candidate => candidate.name === device.name) : undefined;
+    return { id: row?.uuid ?? device.backendName, backendName: device.backendName, index: row && cuda.length ? rows!.indexOf(row) : index, name: device.name,
       kind: "gpu", totalBytes: device.totalBytes, freeBytes: device.freeBytes, uuid: row?.uuid, pciBusId: row?.pciBusId };
   });
   return { devices, warnings };
 };
 
+// The first run on Windows waits for the antivirus to scan large GPU libraries.
 const run = (file: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string) => new Promise<string>((resolve, reject) => {
-  execFile(file, args, { env, cwd, timeout: 30_000, killSignal: "SIGKILL", windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout));
+  execFile(file, args, { env, cwd, timeout: process.platform === "win32" ? 60_000 : 30_000, killSignal: "SIGKILL", windowsHide: true, maxBuffer: 256 * 1024 },
+    (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
-export const createProcessProbe = (executable: string, expectedBackend?: string): DeviceProbe => {
+/** nvidia-smi comes with the driver: on Windows in System32, by its full path rather than through PATH. */
+const nvidiaSmiPath = (): string => {
+  if (process.platform !== "win32") return "nvidia-smi";
+  const system32 = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "nvidia-smi.exe");
+  return fs.existsSync(system32) ? system32 : "nvidia-smi";
+};
+
+export const createProcessProbe = (executable: string, expectedBackend?: string, options: { isolation?: RuntimeIsolation; minDriver?: string } = {}): DeviceProbe => {
   // Same directory and environment as a model launch, so the probe sees the same backends.
   const directory = path.dirname(executable);
-  const env = { ...runtimeEnv(childProcessEnv(), directory), CUDA_DEVICE_ORDER: "PCI_BUS_ID" };
+  const env = { ...runtimeEnv(childProcessEnv(), directory, process.platform, options.isolation), CUDA_DEVICE_ORDER: "PCI_BUS_ID" };
   return {
     platform: process.platform,
     listDevices: () => run(executable, ["--list-devices"], env, directory),
-    nvidiaSmi: () => run("nvidia-smi", ["--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free", "--format=csv,noheader,nounits"], env)
+    nvidiaSmi: () => run(nvidiaSmiPath(), ["--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free", "--format=csv,noheader,nounits"], env)
       .catch(() => undefined),
     systemMemory: getSystemMemory,
     parentVisibleDevices: process.env.CUDA_VISIBLE_DEVICES,
-    expectedBackend
+    expectedBackend,
+    ...(options.minDriver ? { minDriver: options.minDriver } : {})
   };
 };
 
@@ -124,29 +156,38 @@ export class DeviceInventory {
         probedAt: Date.now(), warnings: [] };
     }
     const warnings: string[] = [];
-    const [listed, smiOutput] = await Promise.all([
+    const backend = this.probe.expectedBackend;
+    const [listing, smiOutput] = await Promise.all([
       this.probe.listDevices().then(parseListDevices, () => undefined),
       this.smiMissing ? Promise.resolve(undefined) : this.probe.nvidiaSmi()
     ]);
     const smi = smiOutput === undefined ? undefined : parseNvidiaSmi(smiOutput);
+    // A runtime places models only on its own backend's devices (a folder with two backends lists a GPU twice).
+    const own = backend === "cuda" ? /^CUDA\d+$/ : backend === "vulkan" ? /^Vulkan\d+$/ : undefined;
+    const listed = listing?.filter(device => !own || own.test(device.backendName));
+    const integrated = (listed ?? []).filter(isIntegratedGpu);
     let devices: InventoryDevice[];
     if (listed) {
-      const merged = mergeDevices(listed, smi, this.probe.parentVisibleDevices);
+      const merged = mergeDevices(listed.filter(device => !integrated.includes(device)), smi, this.probe.parentVisibleDevices);
       devices = merged.devices; warnings.push(...merged.warnings);
-    } else if (smi?.length && this.probe.expectedBackend !== "cpu") {
-      // Only a GPU build can use these; a CPU build that cannot list devices runs on the CPU.
+    } else if (smi?.length && backend === "cuda") {
+      // Only a CUDA build can use these; any other build that cannot list devices runs on the CPU.
       const rows = visibleRows(smi, this.probe.parentVisibleDevices) ?? smi;
       devices = rows.map((row, index) => ({ id: row.uuid, backendName: `CUDA${index}`, index, name: row.name, kind: "gpu", totalBytes: row.totalBytes,
         freeBytes: row.freeBytes, uuid: row.uuid, pciBusId: row.pciBusId }));
       warnings.push("The runtime could not list devices; GPU memory comes from nvidia-smi.");
     } else devices = [];
     let fallbackReason: string | undefined;
-    if (this.probe.expectedBackend === "cuda" && !devices.some(device => device.backendName.startsWith("CUDA"))) {
-      fallbackReason = smi?.length ? "An NVIDIA GPU was found, but the CUDA runtime cannot use it. Update the NVIDIA driver to 570 or newer."
+    if (backend === "cuda" && !devices.length) {
+      fallbackReason = smi?.length ? `An NVIDIA GPU was found, but the CUDA runtime cannot use it. Update the NVIDIA driver${this.probe.minDriver ? ` to ${this.probe.minDriver} or newer` : ""}.`
         : "No NVIDIA GPU or driver was found.";
-      warnings.push(`${fallbackReason} Models run on the CPU.`);
+    } else if (backend === "vulkan" && !devices.length) {
+      if (smi?.length) fallbackReason = "An NVIDIA GPU was found, but Vulkan cannot use it. Update the NVIDIA driver.";
+      else if (integrated.length) fallbackReason = `Only an integrated GPU was found (${integrated[0]!.name}); it shares system memory and is not used for models.`;
     }
-    return this.snapshot = { devices, probedAt: Date.now(), warnings, ...(fallbackReason ? { fallbackReason } : {}) };
+    if (fallbackReason) warnings.push(`${fallbackReason} Models run on the CPU.`);
+    return this.snapshot = { devices, probedAt: Date.now(), warnings, ...(fallbackReason ? { fallbackReason } : {}),
+      ...(integrated.length ? { integrated: integrated.map(({ backendName, name }) => ({ backendName, name })) } : {}) };
   }
 
   /** Cached per-GPU memory for host metrics; refreshes in the background at most every 5 s. */

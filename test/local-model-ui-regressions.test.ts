@@ -477,4 +477,6 @@ test("the GPUs tab is always there; with fewer than two GPUs it says why it is i
   assert.match(html, /data-mm-gpu-device="GPU-b" checked/);
   assert.match(html, /Rebalance loaded models/);
   assert.match(html, /Not yet checked on real multi-GPU hardware/);
+  runtime = { ...runtime, backend: "Vulkan" };
+  assert.match(manager.test.renderGpuSettings(), /<option value="row" selected disabled>/, "row split needs CUDA");
 });
