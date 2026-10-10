@@ -60,7 +60,9 @@ export const createRemoteRepository = (pool: pg.Pool) => ({
     return rows[0] ? toHost(rows[0]) : undefined;
   },
 
-  async touchHost(id: string): Promise<void> { await pool.query("UPDATE hosts SET last_seen_at = now() WHERE id = $1", [id]); },
+  async touchHost(id: string, appVersion?: string): Promise<void> {
+    await pool.query("UPDATE hosts SET last_seen_at = now(), app_version = coalesce($2, app_version) WHERE id = $1", [id, appVersion ?? null]);
+  },
 
   async announceInvitation(hostId: string, invitationId: string, expiresAt: Date): Promise<boolean> {
     const { rowCount } = await pool.query("INSERT INTO host_invitations (id, host_id, expires_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",

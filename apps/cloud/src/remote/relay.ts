@@ -20,7 +20,9 @@ const AUTH_GRACE_MS = 30_000;
 
 const uuid = z.uuid();
 const b64 = (bytes: number) => z.string().regex(/^[A-Za-z0-9_-]+$/).transform(value => Buffer.from(value, "base64url")).refine(value => value.length === bytes);
-const hostHello = z.object({ type: z.literal("hello"), hostId: uuid, protocol: z.literal(1), lastRevocationSeq: z.number().int().nonnegative() });
+// The host's version on every connection: the host list shows what runs now, not what registered.
+const hostHello = z.object({ type: z.literal("hello"), hostId: uuid, protocol: z.literal(1), lastRevocationSeq: z.number().int().nonnegative(),
+  appVersion: z.string().regex(/^[\w.+-]{1,64}$/).optional() });
 const hostAuth = z.object({ type: z.literal("auth"), signature: b64(64) });
 const signed = z.object({ payload: z.string().max(8192).regex(/^[A-Za-z0-9_-]+$/), signature: b64(64) });
 const hostMessage = z.discriminatedUnion("type", [
@@ -143,7 +145,7 @@ export class Relay {
     const connection: HostConnection = { hostId: host.id, socket, ownerAccountId: host.ownerAccountId };
     this.hosts.set(host.id, connection);
     socket.on("close", () => { if (this.hosts.get(host.id) === connection) this.hosts.delete(host.id); });
-    await this.deps.repo.touchHost(host.id);
+    await this.deps.repo.touchHost(host.id, hello.appVersion);
     send(socket, { type: "ready", ownerAccountId: host.ownerAccountId, revocations: await this.deps.repo.revocationsAfter(host.id, hello.lastRevocationSeq) });
     socket.on("message", (data, binary) => {
       if (binary) { close(socket, CLOSE.auth, "binary"); return; }
