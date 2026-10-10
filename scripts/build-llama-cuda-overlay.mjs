@@ -137,7 +137,7 @@ async function packageOverlay() {
     ...NVIDIA.flatMap(item => item.libraries.map(library => `  ${library.padEnd(18)} ${item.name} ${item.version}  (${path.basename(new URL(item.url).pathname)})`)),
     'Copyright (c) NVIDIA Corporation. All rights reserved. NVIDIA, CUDA and cuBLAS are trademarks of NVIDIA Corporation.',
     'These files are provided solely for use by the bundled llama.cpp CUDA backend (libggml-cuda.so) of',
-    'Local Cognitive AI System and may only be accessed by that application; they are not licensed for',
+    'Local Cognitive and may only be accessed by that application; they are not licensed for',
     'separate use or redistribution. Their use is governed by the NVIDIA CUDA Toolkit EULA',
     `(${eulaFiles.map(([name]) => name).join(', ')}; https://docs.nvidia.com/cuda/eula/).`,
     `libggml-cuda.so is built from llama.cpp (MIT, licenses/llama.cpp-LICENSE) ${manifest.build}, commit`,

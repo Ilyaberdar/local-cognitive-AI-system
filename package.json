@@ -2,8 +2,8 @@
   "name": "local-cognitive-ai-system",
   "version": "0.1.0",
   "private": true,
-  "description": "Local Cognitive AI System headless engine",
-  "author": "Local Cognitive AI System",
+  "description": "Local Cognitive headless engine",
+  "author": "Local Cognitive",
   "main": "electron/main.cjs",
   "bin": {
     "local-cognitive-server": "dist/src/server/cli.js"
@@ -96,7 +96,8 @@
         ]
       }
     ],
-    "productName": "Local Cognitive AI System",
+    "productName": "Local Cognitive",
+    "icon": "icon.png",
     "asar": false,
     "directories": {
       "output": "release"

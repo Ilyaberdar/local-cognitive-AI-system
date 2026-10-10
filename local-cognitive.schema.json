@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Local Cognitive AI System Config",
+  "title": "Local Cognitive Config",
   "type": "object",
   "additionalProperties": true,
   "properties": {

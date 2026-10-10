@@ -49,7 +49,7 @@ export function localSettings() {
     if (url === "/providers/openai/test") return { ok: true, providerId: "openai", model: "gpt-4o-mini", message: "ok" };
     if (url === "/mcp/clients") return { connections: [], tools: [] };
     if (url === "/integrations") return { catalog: [], connections: [], providers: [], setup: {} };
-    if (url === "/app/info") return { name: "Local Cognitive AI System", version: "0.1.0" };
+    if (url === "/app/info") return { name: "Local Cognitive", version: "0.1.0" };
     return undefined;
   };
   return { route, bootstrap, settings };
