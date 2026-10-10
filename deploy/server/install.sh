@@ -212,10 +212,11 @@ main() {
     say "Then run: sudo local-cognitive-server cuda"
   elif ! $cpu && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then
     driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1)
-    # The service may not load kernel modules itself (NoNewPrivileges): nvidia-uvm is loaded for it.
+    # The service may not load kernel modules or create device files itself (NoNewPrivileges):
+    # nvidia-uvm is loaded and every GPU's device file is created for it (gpu-devices).
     if [ -x /usr/bin/nvidia-modprobe ]; then
       mkdir -p "/etc/systemd/system/$UNIT.service.d"
-      printf '[Service]\nExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0\n' > "/etc/systemd/system/$UNIT.service.d/nvidia.conf"
+      printf '[Service]\nExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0\nExecStartPre=-+/usr/local/bin/local-cognitive-server gpu-devices\n' > "/etc/systemd/system/$UNIT.service.d/nvidia.conf"
     fi
     if ! grep -q "\"$cuda\"" "$release/resources/llama/runtime-manifest.json" 2>/dev/null; then
       say "NVIDIA GPU found, but this release has no CUDA runtime for $arch yet: models run on the CPU."

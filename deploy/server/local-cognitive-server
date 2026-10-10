@@ -82,9 +82,10 @@ case "$command" in
       || { echo "No working NVIDIA driver: install driver 570 or newer (and reboot after updating it)." >&2; exit 1; }
     grep -q "\"$variant\"" "$release/resources/llama/runtime-manifest.json" 2>/dev/null \
       || { echo "This release has no CUDA runtime for $(uname -m) yet: models run on the CPU." >&2; exit 1; }
-    if [ -x /usr/bin/nvidia-modprobe ] && [ ! -f "/etc/systemd/system/$UNIT.service.d/nvidia.conf" ]; then
+    if [ -x /usr/bin/nvidia-modprobe ]; then
       mkdir -p "/etc/systemd/system/$UNIT.service.d"
-      printf '[Service]\nExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0\n' > "/etc/systemd/system/$UNIT.service.d/nvidia.conf"
+      # GPU 0 and nvidia-uvm as before (a release without gpu-devices still starts), then every GPU.
+      printf '[Service]\nExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0\nExecStartPre=-+/usr/local/bin/local-cognitive-server gpu-devices\n' > "/etc/systemd/system/$UNIT.service.d/nvidia.conf"
       systemctl daemon-reload
     fi
     echo "The CUDA runtime includes NVIDIA CUDA libraries, redistributed under the NVIDIA CUDA Toolkit license:"
@@ -93,6 +94,17 @@ case "$command" in
     (cd / && TMPDIR=/var/tmp "$NODE" "$release/scripts/prepare-llama-runtime.mjs" --variant "$variant" --destination "$release/resources/llama/$variant")
     chown -R root:root "$release/resources" && chmod -R go-w "$release/resources"
     exec systemctl restart "$UNIT" ;;
+  gpu-devices)
+    # Run as root before the service starts (its unit's nvidia.conf): an NVIDIA device file for every
+    # GPU. The service cannot create them itself (NoNewPrivileges stops CUDA's setuid nvidia-modprobe),
+    # and CUDA does not see a GPU whose file is missing; the driver creates only what is asked for.
+    need_root "$@"
+    /usr/bin/nvidia-modprobe -u -c=0 || exit 0
+    for info in /proc/driver/nvidia/gpus/*/information; do
+      [ -r "$info" ] || continue
+      minor=$(sed -n 's/^Device Minor:[[:space:]]*//p' "$info")
+      if [ -n "$minor" ] && [ "$minor" != 0 ]; then /usr/bin/nvidia-modprobe -c="$minor" || true; fi
+    done ;;
   update | rollback | adopt)
     need_root "$@"
     extra=()
