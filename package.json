@@ -24,6 +24,7 @@
     "test:mcp-model": "npm run build:server && node scripts/test-mcp-local-model.cjs",
     "test:server-install": "npm run build:server && node scripts/test-server-install.mjs",
     "test": "npm run build && node --test dist/test/**/*.test.js",
+    "postinstall": "node scripts/dev-electron-name.mjs",
     "electron": "npm run build && electron .",
     "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch arm64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg zip --arm64 --x64 --publish never",
     "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:speech -- --arch arm64 && npm run build && electron-builder --mac dmg zip --arm64 --publish never",
