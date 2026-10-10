@@ -2,6 +2,7 @@ import path from "path";
 import type net from "net";
 import { config } from "../config/config";
 import { startBackend } from "../index";
+import { HostDatabaseError } from "../runtime/db/HostDatabase";
 import { createUsageOperations } from "../runtime/usageOperations";
 import { createDiagnosticsOperations } from "../runtime/diagnosticsOperations";
 import { consentFilePath, liveConsent } from "../diagnostics/consentFile";
@@ -42,7 +43,14 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
 
   let handle;
   try { handle = await startBackend(config, { vault: vault.vault }, { runtimeKind: "server" }); }
-  catch (error) { if (error instanceof DataRootLockedError) throw new CliError(error.message, ExitCode.locked); throw error; }
+  catch (error) {
+    if (error instanceof DataRootLockedError) throw new CliError(error.message, ExitCode.locked);
+    // Data of a newer version (after going back to an older one): exit 78, so systemd stops restarting.
+    if (error instanceof HostDatabaseError && error.code === "schema_too_new") {
+      throw new CliError(`${error.message} Install that newer version again, or restore the backup made before updating to it.`, ExitCode.config);
+    }
+    throw error;
+  }
   const backend = handle;
   // Error reports only while the owner's consent is on (error-reports on, or Settings through Remote).
   const consentFile = consentFilePath(config.appDataDir);

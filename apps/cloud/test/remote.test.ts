@@ -59,10 +59,10 @@ async function registerHost(c: Cloud, name = "Fedora") {
   return { hostId: response.body.hostId as string, status: response.status, signing: signing.privateKey, payload };
 }
 
-async function connectHost(c: Cloud, host: { hostId: string; signing: KeyObject }, lastRevocationSeq = 0) {
+async function connectHost(c: Cloud, host: { hostId: string; signing: KeyObject }, lastRevocationSeq = 0, appVersion?: string) {
   const socket = c.ws(RELAY_PATHS.host), control = watch(socket);
   await control.opened;
-  socket.send(JSON.stringify({ type: "hello", hostId: host.hostId, protocol: 1, lastRevocationSeq }));
+  socket.send(JSON.stringify({ type: "hello", hostId: host.hostId, protocol: 1, lastRevocationSeq, ...(appVersion ? { appVersion } : {}) }));
   const challenge = await control.next();
   socket.send(JSON.stringify({ type: "auth", signature: signFor(host.signing, SIGNATURE_CONTEXT.relayAuth, relayAuthMessage(host.hostId, challenge.nonce, c.origin)).toString("base64url") }));
   return { socket, control, ready: await control.next(), send: (message: object) => socket.send(JSON.stringify(message)) };
@@ -109,8 +109,10 @@ test("hosts register with proof of their key and authenticate the control channe
   await events.next();
   impostor.send(JSON.stringify({ type: "auth", signature: randomBytes(64).toString("base64url") }));
   assert.equal(await events.closed, CLOSE.auth);
-  const replacement = await connectHost(c, host);
+  // After an update the host connects with its new version, and that is what is stored.
+  const replacement = await connectHost(c, host, 0, "0.2.0");
   assert.equal(await online.control.closed, CLOSE.replaced, "a second connection of the same host replaces the first");
+  assert.equal((await c.pool.query("SELECT app_version FROM hosts WHERE id = $1", [host.hostId])).rows[0].app_version, "0.2.0");
   replacement.socket.close();
 });
 

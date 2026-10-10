@@ -137,7 +137,8 @@ export class HostAgent extends EventEmitter {
       this.setState("connecting");
       const socket = new WebSocket(`${this.wsOrigin}/v1/relay/host`, { maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false, handshakeTimeout: 15_000 });
       this.control = socket;
-      socket.on("open", () => socket.send(JSON.stringify({ type: "hello", hostId, protocol: PROTOCOL, lastRevocationSeq: this.options.store.revocationSeq() })));
+      socket.on("open", () => socket.send(JSON.stringify({ type: "hello", hostId, protocol: PROTOCOL, lastRevocationSeq: this.options.store.revocationSeq(),
+        appVersion: this.options.serverVersion })));
       socket.on("ping", () => this.arm(socket));
       socket.on("message", (data, binary) => { if (!binary) this.onControl(socket, hostId, data.toString()); });
       socket.on("error", error => { this.lastError = error.message; });

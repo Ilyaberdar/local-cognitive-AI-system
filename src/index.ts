@@ -92,7 +92,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   let database: HostDatabase | undefined;
   try { database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations); }
   catch (error) {
-    if (options.runtimeKind === "server") { lock.release(); throw error; }
+    if (options.runtimeKind === "server") { failed(error); lock.release(); throw error; }
     logger.warn("Usage is not recorded: host.db could not be opened", { message: error instanceof Error ? error.message : String(error) });
   }
   const remoteStore = database && options.runtimeKind === "server" ? new RemoteHostStore(database) : undefined;

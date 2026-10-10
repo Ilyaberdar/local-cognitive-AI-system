@@ -166,3 +166,24 @@ test("folders: an admin shares, lists and stops sharing folders for connected co
   assert.equal(run("folders", "remove", folder.id).status, 0);
   assert.equal(run("folders", "remove", folder.id).status, 1);
 });
+
+test("data of a newer version stops the server with exit 78 (systemd does not restart it) and says what to do", { skip: !posix, timeout: 60_000 }, t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "lcs-newer-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "data"), keyFile = path.join(base, "key", "vault.key");
+  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false",
+    LOCAL_COGNITIVE_REMOTE: "off", LOCAL_COGNITIVE_SENTRY: "off" };
+  assert.equal(spawnSync(process.execPath, [cli, "init", "--data-dir", root, "--vault-key-file", keyFile], { env, encoding: "utf8" }).status, 0);
+  // host.db as a later version left it.
+  const runtime = path.join(root, "app", "runtime");
+  fs.mkdirSync(runtime, { recursive: true, mode: 0o700 });
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+  const db = new DatabaseSync(path.join(runtime, "host.db"));
+  db.exec("PRAGMA user_version = 99");
+  db.close();
+  const started = spawnSync(process.execPath, [cli, "start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none")],
+    { env, encoding: "utf8", timeout: 45_000 });
+  assert.equal(started.status, 78, started.stderr);
+  assert.match(started.stderr, /newer than this application[\s\S]*restore the backup made before updating/);
+});
