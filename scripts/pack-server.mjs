@@ -115,12 +115,12 @@ const sha256 = createHash("sha256").update(bytes).digest("hex");
 
 // What this release speaks and stores, read from its own build.
 const require = createRequire(import.meta.url);
-const { PROTOCOL_VERSION } = require(path.join(root, "dist", "src", "remote", "channel.js"));
+const { MIN_PROTOCOL_VERSION, PROTOCOL_VERSION } = require(path.join(root, "dist", "src", "remote", "channel.js"));
 const { hostMigrations } = require(path.join(root, "dist", "src", "runtime", "db", "hostSchema.js"));
 const notesFile = option("--notes-file");
 const manifest = {
   schema: 1, product: "local-cognitive-server", version, channel, releasedAt: new Date().toISOString(), ...(commit ? { commit } : {}),
-  protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION }, hostDbSchema: hostMigrations.length, node: nodeVersion, notes: notesFile ? fs.readFileSync(notesFile, "utf8").slice(0, 20_000) : "",
+  protocol: { min: MIN_PROTOCOL_VERSION, max: PROTOCOL_VERSION }, hostDbSchema: hostMigrations.length, node: nodeVersion, notes: notesFile ? fs.readFileSync(notesFile, "utf8").slice(0, 20_000) : "",
   artifacts: [{ platform, arch, url: `${urlBase}${name}.tar.gz`, size: bytes.length, sha256 }]
 };
 fs.writeFileSync(path.join(out, "server-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

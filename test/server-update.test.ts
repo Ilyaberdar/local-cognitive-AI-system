@@ -6,13 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
 import { keyIdOf, MANIFEST_SIGNATURE_CONTEXT, type ReleaseKey } from "../src/update/manifest";
-import { linkedRelease, pointLink, releasesDir, updateServer, UpdateError, type ReleaseRunner, type ServiceControl } from "../src/update/serverUpdate";
+import { adoptRelease, linkedRelease, pointLink, releasesDir, updateServer, UpdateError, type ReleaseRunner, type ServiceControl } from "../src/update/serverUpdate";
 
 const posix = process.platform !== "win32";
 const dataBackup = path.resolve(__dirname, "..", "src", "update", "dataBackup.js");
 
-/** A release whose CLI answers version, backup and restore; BROKEN makes it fail to start. */
-const releaseTree = (dir: string, version: string, options: { broken?: boolean; link?: boolean } = {}) => {
+/** A release whose CLI answers version, backup and restore; BROKEN makes it fail to start, and
+ * noRestore makes its restore fail. */
+const releaseTree = (dir: string, version: string, options: { broken?: boolean; link?: boolean; noRestore?: boolean } = {}) => {
   fs.mkdirSync(path.join(dir, "node", "bin"), { recursive: true });
   fs.writeFileSync(path.join(dir, "node", "bin", "node"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
   fs.mkdirSync(path.join(dir, "dist", "src", "server"), { recursive: true });
@@ -21,7 +22,7 @@ const path = require("path"), backup = require(${JSON.stringify(dataBackup)});
 const [command, ...rest] = process.argv.slice(2), option = name => rest[rest.indexOf(name) + 1];
 if (command === "version") { console.log(${JSON.stringify(version)}); process.exit(0); }
 if (command === "backup") { console.log(JSON.stringify(backup.backupDataRoot(option("--data-dir"), { label: option("--label") }))); process.exit(0); }
-if (command === "restore") { console.log(JSON.stringify(backup.restoreDataRoot(option("--data-dir"), path.join(option("--data-dir"), "backups", rest[0])))); process.exit(0); }
+if (command === "restore") { ${options.noRestore ? "process.exit(70);" : ""} console.log(JSON.stringify(backup.restoreDataRoot(option("--data-dir"), path.join(option("--data-dir"), "backups", rest[0])))); process.exit(0); }
 process.exit(64);`);
   if (options.broken) fs.writeFileSync(path.join(dir, "BROKEN"), "");
   if (options.link) fs.symlinkSync("/etc/hosts", path.join(dir, "hosts"));
@@ -50,7 +51,7 @@ async function fixture(t: TestContext) {
   const raw = Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url");
   const keys: ReleaseKey[] = [{ id: keyIdOf(raw), publicKey: raw.toString("base64url") }];
   const files = new Map<string, Buffer>();
-  const publish = (version: string, options: { broken?: boolean; link?: boolean; tamper?: boolean } = {}) => {
+  const publish = (version: string, options: { broken?: boolean; link?: boolean; tamper?: boolean; noRestore?: boolean } = {}) => {
     const tree = path.join(base, `tree-${version}`);
     releaseTree(tree, version, options);
     const tarball = path.join(base, `server-${version}.tar.gz`);
@@ -73,6 +74,7 @@ async function fixture(t: TestContext) {
     stop: async () => { service.running = false; service.stops++; },
     start: async () => {
       const version = linkedRelease(prefix, "current")!;
+      fs.writeFileSync(path.join(dataDir, "app", `started-${version}`), "");
       if (fs.existsSync(path.join(releasesDir(prefix), version, "BROKEN"))) { fs.writeFileSync(path.join(dataDir, "app", "settings.json"), `{"schema":"${version}"}`); service.running = false; return; }
       fs.writeFileSync(path.join(dataDir, "app", "settings.json"), `{"schema":"${version}"}`);
       service.running = true; service.version = version;
@@ -111,6 +113,35 @@ test("a release that does not start is rolled back: the old code and the data fr
   const journal = JSON.parse(fs.readFileSync(path.join(f.prefix, "update.json"), "utf8"));
   assert.equal(journal.state, "rolled_back");
   assert.ok(fs.readdirSync(path.join(f.dataDir, "backups")).some(name => name.endsWith("-replaced")), "the failed state is kept aside");
+});
+
+test("when the failed release cannot even restore the data, the previous release restores it", { skip: !posix }, async t => {
+  const f = await fixture(t);
+  f.publish("0.2.0", { broken: true, noRestore: true });
+  await assert.rejects(updateServer(f.options("0.1.0")), (error: unknown) => error instanceof UpdateError && error.code === "rolled_back");
+  assert.equal(linkedRelease(f.prefix, "current"), "0.1.0");
+  assert.equal(fs.existsSync(path.join(f.dataDir, "app", "started-0.2.0")), false, "the state the failed release left is put aside");
+  assert.ok(fs.readdirSync(path.join(f.dataDir, "backups")).some(name => name.endsWith("-replaced")));
+});
+
+test("adopt makes an install in place the first release, once, and refuses an app folder with its own Node", { skip: !posix }, async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "lc-adopt-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const prefix = path.join(base, "opt"), app = path.join(prefix, "app"), node = path.join(prefix, "node");
+  fs.mkdirSync(path.join(app, "dist"), { recursive: true });
+  fs.mkdirSync(path.join(node, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(node, "bin", "node"), "", { mode: 0o755 });
+  assert.throws(() => adoptRelease({ prefix, fromApp: app, fromNode: node }), /release version/);
+  fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "local-cognitive-ai-system", version: "0.1.0" }));
+  fs.mkdirSync(path.join(app, "node"));
+  assert.throws(() => adoptRelease({ prefix, fromApp: app, fromNode: node }), /node folder/);
+  fs.rmdirSync(path.join(app, "node"));
+  assert.equal(adoptRelease({ prefix, fromApp: app, fromNode: node }), "0.1.0");
+  assert.equal(linkedRelease(prefix, "current"), "0.1.0");
+  assert.ok(fs.existsSync(path.join(releasesDir(prefix), "0.1.0", "node", "bin", "node")));
+  assert.equal(fs.existsSync(path.join(releasesDir(prefix), "0.1.0", "node", "node")), false);
+  assert.ok(fs.existsSync(path.join(app, "package.json")), "the old folders are left");
+  assert.throws(() => adoptRelease({ prefix, fromApp: app, fromNode: node }), /already points/);
 });
 
 test("nothing is stopped for a changed download, a link in the release, a wrong signature or a busy server", { skip: !posix }, async t => {
