@@ -33,6 +33,7 @@ const confirm = async (question: string, yes: boolean) => {
 };
 
 const fail = (error: unknown): never => {
+  if (error instanceof UpdateError && error.code === "not_published") throw new CliError(error.message, ExitCode.ok);
   if (error instanceof UpdateError || error instanceof ManifestError) throw new CliError(error.message, error.code === "busy" ? ExitCode.unavailable : ExitCode.failure);
   throw error;
 };

@@ -41,6 +41,11 @@ export class UpdateChecker {
       this.state = { current: this.options.currentVersion, checkedAt: new Date().toISOString(),
         available: manifest ? { version: manifest.version, notes: manifest.notes.slice(0, 4000), releasedAt: manifest.releasedAt, ...(manifest.notesUrl ? { notesUrl: manifest.notesUrl } : {}) } : null };
     } catch (error) {
+      // Nothing published yet (GitHub answers 404): no update, and nothing wrong.
+      if (error instanceof UpdateError && error.code === "not_published") {
+        this.state = { current: this.options.currentVersion, checkedAt: new Date().toISOString(), available: null };
+        return this.status();
+      }
       // The last known release stays shown; the error says the check did not answer.
       this.state = { ...this.state, checkedAt: new Date().toISOString(), error: error instanceof ManifestError || error instanceof UpdateError ? error.code : "unreachable" };
     }
