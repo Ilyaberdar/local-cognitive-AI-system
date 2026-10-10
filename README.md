@@ -1,4 +1,4 @@
-# Local Cognitive AI System
+# Local Cognitive
 
 Local multi-model AI workspace with:
 
@@ -80,7 +80,7 @@ For development, install CMake and a C++ compiler, then run `npm run prepare:spe
 before `npm run electron`. macOS builds target 13.3 or later and use Metal;
 Windows builds must prepare speech on Windows. Packaged builds include the runtime
 but download speech model weights on demand. Verify an assembled package with
-`node scripts/verify-speech-runtime.mjs "release/mac-arm64/Local Cognitive AI System.app"`.
+`node scripts/verify-speech-runtime.mjs "release/mac-arm64/Local Cognitive.app"`.
 Voice input currently requires the desktop preload bridge; browser-only mode
 continues to support text input.
 
@@ -194,7 +194,7 @@ opt-in and downloads the four pinned recommended variants (about 1.8 GB):
 
 ```bash
 LLAMA_CPP_INTEGRATION=1 LLAMA_TEST_DATA_DIR=/tmp/llama-acceptance npm run test:llama
-node scripts/verify-packaged-runtime.mjs "release/mac-arm64/Local Cognitive AI System.app"
+node scripts/verify-packaged-runtime.mjs "release/mac-arm64/Local Cognitive.app"
 ```
 
 The real test covers downloads, load/unload, final answers, JSON parsing, queued
@@ -245,8 +245,8 @@ Notes:
   switches and generation across chats, agents, and workflows.
 - Release builds are unsigned until Apple Developer ID / Windows code-signing
   certificates are configured.
-- macOS builds use Electron's default icon until a project `.icns` asset is
-  configured in the `build.mac.icon` field.
+- The application icon is `icon.png` (`build.icon`); electron-builder makes the macOS and
+  Windows icons from it.
 
 ### Headless server: install and connect
 

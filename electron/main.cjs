@@ -143,6 +143,9 @@ const startBackend = async (appRoot, vault) => {
 
 const createWindow = async (url) => {
   const isMac = process.platform === "darwin";
+  // A development run is Electron itself, with Electron's Dock icon: it shows the project's instead
+  // (a build carries icon.png in its bundle, "icon" in package.json).
+  if (isMac && !app.isPackaged) app.dock?.setIcon(path.join(app.getAppPath(), "icon.png"));
   let liquidGlass = null;
   if (isMac) {
     try {
@@ -158,7 +161,7 @@ const createWindow = async (url) => {
     height: 900,
     minWidth: 980,
     minHeight: 680,
-    title: "Local Cognitive AI System",
+    title: "Local Cognitive",
     show: false,
     backgroundColor: isMac ? "#00000000" : windowsTitleBarOverlay(nativeTheme.shouldUseDarkColors).color,
     ...windowChromeOptions(process.platform, nativeTheme.shouldUseDarkColors),

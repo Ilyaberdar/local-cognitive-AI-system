@@ -46,7 +46,7 @@ export const formatStartupSummary = ({
 
   return [
     "",
-    "Local Cognitive AI System",
+    "Local Cognitive",
     "=========================",
     line("HTTP API", config.server.enabled ? baseUrl : "off"),
     line("Web UI", config.server.enabled ? baseUrl : "off"),
