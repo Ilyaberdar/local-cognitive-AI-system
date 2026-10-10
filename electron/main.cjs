@@ -3,6 +3,9 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
+// A packaged app never runs under a debugger or with a stand-in Keychain (see launch-guard.cjs).
+const refusedSwitch = require("./launch-guard.cjs").refusedSwitch({ isPackaged: app.isPackaged, hasSwitch: name => app.commandLine.hasSwitch(name) });
+if (refusedSwitch) { process.stderr.write(`This app does not run with --${refusedSwitch}.\n`); process.exit(64); }
 // A development build (unsigned Electron from npm) on macOS keeps no secrets in the Keychain:
 // macOS keeps asking for the login password for such a binary. See src/security/devVault.ts.
 const devVault = require("../dist/src/security/devVault.js").usesDevVault({ isPackaged: app.isPackaged, platform: process.platform, env: process.env });

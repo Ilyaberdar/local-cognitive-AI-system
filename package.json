@@ -24,10 +24,10 @@
     "test:mcp-model": "npm run build:server && node scripts/test-mcp-local-model.cjs",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "electron": "npm run build && electron .",
-    "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch arm64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg --arm64 --x64",
-    "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:speech -- --arch arm64 && npm run build && electron-builder --mac dmg --arm64",
-    "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg --x64",
-    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run prepare:speech -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64",
+    "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch arm64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg zip --arm64 --x64 --publish never",
+    "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:speech -- --arch arm64 && npm run build && electron-builder --mac dmg zip --arm64 --publish never",
+    "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg zip --x64 --publish never",
+    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run prepare:speech -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64 --publish never",
     "prepare:llama": "node scripts/prepare-llama-runtime.mjs",
     "prepare:llama:server": "node scripts/prepare-llama-runtime.mjs --platform linux --arch x64 && node scripts/prepare-llama-runtime.mjs --variant linux-x64-cuda12",
     "verify:llama": "node scripts/verify-packaged-runtime.mjs",
@@ -116,6 +116,13 @@
             "x64",
             "arm64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "extraResources": [
@@ -187,7 +194,15 @@
           "**/*"
         ]
       }
-    ]
+    ],
+    "electronFuses": {
+      "runAsNode": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "grantFileProtocolExtraPrivileges": false,
+      "resetAdHocDarwinSignature": true
+    },
+    "publish": null
   },
   "optionalDependencies": {
     "electron-liquid-glass": "1.1.1"
