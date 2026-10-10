@@ -3,6 +3,7 @@ import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { artifactFor, isUpgrade, ManifestError, verifyManifest, type ReleaseKey, type ServerManifest } from "./manifest";
+import { isVersion } from "./version";
 
 /** How the server runs, for the updater: systemd on a real host, a child process in tests. */
 export interface ServiceControl {
@@ -57,6 +58,24 @@ export const pointLink = (prefix: string, name: "current" | "previous", version:
   fs.rmSync(temporary, { force: true });
   fs.symlinkSync(path.join("releases", version), temporary);
   fs.renameSync(temporary, link);
+};
+
+/** Once: an install in place (an app folder and a Node folder) becomes releases/<its version>, and
+ * `current` points to it. The old folders are left as they are. */
+export const adoptRelease = (options: { prefix: string; fromApp: string; fromNode: string }): string => {
+  let version: unknown;
+  try { version = (JSON.parse(fs.readFileSync(path.join(options.fromApp, "package.json"), "utf8")) as { version?: unknown }).version; } catch { /* Checked below. */ }
+  if (!isVersion(version)) throw new UpdateError(`${options.fromApp} has no package.json with a release version.`, "not_adoptable");
+  if (linkedRelease(options.prefix, "current")) throw new UpdateError(`${options.prefix}/current already points to a release: nothing to adopt.`, "not_adoptable");
+  // The Node in fromNode becomes the release's node/: an app folder with its own would nest it.
+  if (fs.existsSync(path.join(options.fromApp, "node"))) throw new UpdateError(`${options.fromApp} has a node folder already: give the app without it.`, "not_adoptable");
+  const target = path.join(releasesDir(options.prefix), version);
+  if (fs.existsSync(target)) throw new UpdateError(`${target} exists already.`, "not_adoptable");
+  fs.mkdirSync(releasesDir(options.prefix), { recursive: true, mode: 0o755 });
+  execFileSync("cp", ["-a", options.fromApp, target]);
+  execFileSync("cp", ["-a", options.fromNode, path.join(target, "node")]);
+  pointLink(options.prefix, "current", version);
+  return version;
 };
 
 const fetchBytes = async (fetchImpl: typeof fetch, url: string, limit: number): Promise<Buffer> => {
@@ -199,7 +218,10 @@ export const rollback = async (options: Pick<UpdateOptions, "prefix" | "dataDir"
   writeJournal(options.prefix, { state: "rolling_back", ...step });
   await options.service.stop();
   pointLink(options.prefix, "current", step.from);
-  const restored = await options.runner.run(path.join(releasesDir(options.prefix), step.to), ["restore", step.backup, "--data-dir", options.dataDir]);
+  // The release that made the backup restores it; when even its own CLI fails, the previous one does.
+  const restore = (version: string) => options.runner.run(path.join(releasesDir(options.prefix), version), ["restore", step.backup, "--data-dir", options.dataDir]);
+  let restored = await restore(step.to);
+  if (restored.status !== 0) restored = await restore(step.from);
   if (restored.status !== 0) log(`The data could not be restored automatically: ${restored.stderr.trim().slice(0, 300)}`);
   await options.service.start();
   const health = await options.service.healthy(step.from, options.healthTimeoutMs ?? 90_000);

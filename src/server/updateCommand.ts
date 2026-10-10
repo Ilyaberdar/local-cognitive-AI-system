@@ -1,8 +1,7 @@
-import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import readline from "readline/promises";
-import { checkForUpdate, journalFile, linkedRelease, pointLink, releasesDir, rollback, updateServer, UpdateError } from "../update/serverUpdate";
+import { adoptRelease, checkForUpdate, journalFile, releasesDir, rollback, updateServer, UpdateError } from "../update/serverUpdate";
 import { ManifestError } from "../update/manifest";
 import { RELEASE_KEYS } from "../update/releaseKeys";
 import { releaseRunner, serviceUser, systemdService } from "../update/systemdService";
@@ -55,16 +54,10 @@ export const updateCommand = async (args: ServerArgs): Promise<number> => {
 
   if (args.command === "adopt") {
     const fromApp = path.resolve(options.fromApp ?? path.join(prefix, "app")), fromNode = path.resolve(options.fromNode ?? path.join(prefix, "node"));
-    const version = (JSON.parse(fs.readFileSync(path.join(fromApp, "package.json"), "utf8")) as { version?: string }).version;
-    if (!version) throw new CliError(`${fromApp} has no package.json version.`, ExitCode.config);
-    if (linkedRelease(prefix, "current")) throw new CliError(`${prefix}/current already points to a release: nothing to adopt.`, ExitCode.config);
-    const target = path.join(releasesDir(prefix), version);
-    if (fs.existsSync(target)) throw new CliError(`${target} exists already.`, ExitCode.config);
-    fs.mkdirSync(releasesDir(prefix), { recursive: true, mode: 0o755 });
-    execFileSync("cp", ["-a", fromApp, target]);
-    execFileSync("cp", ["-a", fromNode, path.join(target, "node")]);
-    pointLink(prefix, "current", version);
-    log(`${fromApp} is now ${target}, and ${prefix}/current points to it. The old folders are untouched.`);
+    let version: string;
+    try { version = adoptRelease({ prefix, fromApp, fromNode }); }
+    catch (error) { throw error instanceof UpdateError ? new CliError(error.message, ExitCode.config) : error; }
+    log(`${fromApp} is now ${path.join(releasesDir(prefix), version)}, and ${prefix}/current points to it. The old folders are untouched.`);
     log(`Next, point the unit at it and restart:\n  ExecStart=${prefix}/current/node/bin/node ${prefix}/current/dist/src/server/cli.js start --data-dir ${dataDir} --inference auto\n  systemctl daemon-reload && systemctl restart ${options.unit}`);
     return ExitCode.ok;
   }
