@@ -21,7 +21,7 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
   const remoteStatus = () => { try { return remote?.client?.status(); } catch { return undefined; } };
 
   // The window as it was when the user chose Report a bug (before the report page opened).
-  handle("capture", async () => {
+  const capture = async () => {
     const window = getWindow();
     if (!window || window.isDestroyed()) return { preview: null };
     let image = await window.webContents.capturePage();
@@ -29,7 +29,8 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
     if (image.getSize().width > 1600) image = image.resize({ width: 1600, quality: "good" });
     screenshot = { jpeg: image.toJPEG(80), at: Date.now() };
     return { preview: image.resize({ width: 480 }).toDataURL() };
-  });
+  };
+  handle("capture", capture);
 
   handle("prepare", async request => {
     const status = remoteStatus();
@@ -82,6 +83,14 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
     fs.writeFileSync(result.filePath, JSON.stringify(report.file, null, 2), { mode: 0o600 });
     return { saved: true };
   });
+  return {
+    /** Help → Report a Bug…: the window as it is, then the report page. */
+    async openReport() {
+      await capture().catch(() => undefined);
+      const window = getWindow();
+      if (window && !window.isDestroyed()) { window.show(); window.webContents.send("bugReport:open"); }
+    }
+  };
 }
 
 module.exports = { registerBugReport };

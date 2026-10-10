@@ -61,7 +61,13 @@ contextBridge.exposeInMainWorld("desktopBugReport", {
   capture: () => ipcRenderer.invoke("bugReport:capture"),
   prepare: request => ipcRenderer.invoke("bugReport:prepare", request),
   submit: form => ipcRenderer.invoke("bugReport:submit", form),
-  export: form => ipcRenderer.invoke("bugReport:export", form)
+  export: form => ipcRenderer.invoke("bugReport:export", form),
+  // Help → Report a Bug…: the main process took the screenshot; the window opens the report page.
+  onOpen: callback => {
+    const listener = () => callback();
+    ipcRenderer.on("bugReport:open", listener);
+    return () => ipcRenderer.removeListener("bugReport:open", listener);
+  }
 });
 
 // The Usage page's numbers, put together in the main process with the account token.
