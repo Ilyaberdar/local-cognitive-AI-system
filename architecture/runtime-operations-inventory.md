@@ -1,6 +1,6 @@
 # Runtime operations inventory (R0)
 
-Date: 2026-10-07, at commit `4671a02` plus the R0 working tree. Status: R0 deliverable for
+Date: 2026-10-07, at commit `3ed9444` plus the R0 working tree. Status: R0 deliverable for
 [Remote Connection](remote-connection-implementation.md) §7.1 and §8. Every UI call to the
 backend must become an explicit `RuntimeClient` operation (no generic URL proxy). This
 table is the starting registry; operation IDs are proposals until the registry module lands.
