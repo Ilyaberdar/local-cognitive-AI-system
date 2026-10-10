@@ -163,6 +163,17 @@ const createWindow = async (url) => {
   });
 
   voiceInput?.attach(mainWindow);
+  // Links to the web (a model's answer, a model card) open in the user's browser, never in an app
+  // window: such a window would get the app's preload. Nothing else opens a window.
+  const openOutside = url => {
+    try { if (["https:", "http:", "mailto:"].includes(new URL(url).protocol)) void shell.openExternal(url); } catch { /* Not a URL. */ }
+  };
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => { openOutside(url); return { action: "deny" }; });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    try { if (new URL(url).origin === applicationOrigin) return; } catch { /* Not a URL: refused. */ }
+    event.preventDefault();
+    openOutside(url);
+  });
   // The window's only frames are Synthesis previews: they stay on the application's own pages.
   mainWindow.webContents.on("will-frame-navigate", event => {
     if (event.isMainFrame || ["about:blank", "about:srcdoc"].includes(event.url)) return;
