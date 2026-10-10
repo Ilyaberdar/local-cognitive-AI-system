@@ -31,6 +31,7 @@
     "prepare:llama": "node scripts/prepare-llama-runtime.mjs",
     "prepare:llama:server": "node scripts/prepare-llama-runtime.mjs --platform linux --arch x64 && node scripts/prepare-llama-runtime.mjs --variant linux-x64-cuda12",
     "verify:llama": "node scripts/verify-packaged-runtime.mjs",
+    "verify:release": "node scripts/verify-release-signatures.mjs release",
     "verify:package-secrets": "node scripts/verify-package-secrets.mjs",
     "cloud:build": "npm run build -w @local-cognitive/cloud",
     "cloud:test": "npm test -w @local-cognitive/cloud",
