@@ -16,6 +16,7 @@
 // electron-builder's forceCodeSigning does not replace this: it accepts an ad-hoc identity or any
 // other identity in the keychain, skips signing in pull-request builds, and does not cover
 // notarization.
+import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -99,6 +100,27 @@ export const exeProblems = (file, publisher) => {
   return [];
 };
 
+/** Why an updater feed (latest-mac.yml, latest.yml) does not match the files beside it: each file it
+ * names must be there under that exact name (GitHub renames names with spaces), with its size and sha512. */
+export const feedProblems = (feed) => {
+  const problems = [], directory = path.dirname(feed);
+  const entries = [];
+  for (const line of fs.readFileSync(feed, "utf8").split("\n")) {
+    const url = /^\s*-\s*url:\s*(.+?)\s*$/.exec(line), sha512 = /^\s+sha512:\s*(\S+)\s*$/.exec(line), size = /^\s+size:\s*(\d+)\s*$/.exec(line);
+    if (url) entries.push({ url: url[1].replace(/^['"]|['"]$/g, "") });
+    else if (sha512 && entries.length) entries.at(-1).sha512 = sha512[1].replace(/^['"]|['"]$/g, "");
+    else if (size && entries.length) entries.at(-1).size = Number(size[1]);
+  }
+  if (!entries.length) problems.push("it lists no files");
+  for (const entry of entries) {
+    const file = path.join(directory, entry.url);
+    if (/\s/.test(entry.url) || !fs.existsSync(file)) { problems.push(`${entry.url}: not here under that name`); continue; }
+    if (entry.size !== undefined && fs.statSync(file).size !== entry.size) problems.push(`${entry.url}: the size differs`);
+    if (entry.sha512 && createHash("sha512").update(fs.readFileSync(file)).digest("base64") !== entry.sha512) problems.push(`${entry.url}: the sha512 differs`);
+  }
+  return problems;
+};
+
 // Hidden folders are the builder's scratch space, never published.
 const walk = (root, found = []) => {
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -120,6 +142,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (!directory || !fs.existsSync(directory)) { console.error("Use: verify-release-signatures.mjs <release dir> [--team-id <id>] [--publisher <name>]"); process.exit(64); }
   const artifacts = walk(path.resolve(directory));
   const results = [];
+  // The updater's feeds: what an installed app will download must be exactly what is published.
+  for (const name of fs.readdirSync(path.resolve(directory)).filter(name => /^latest(?:-mac)?\.yml$/.test(name))) {
+    results.push({ artifact: path.join(path.resolve(directory), name), problems: feedProblems(path.join(path.resolve(directory), name)) });
+  }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "lc-release-gate-"));
   try {
     for (const artifact of artifacts) {

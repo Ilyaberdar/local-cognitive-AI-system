@@ -248,6 +248,8 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     registerDiagnostics();
     const bugReport = require("./bug-report.cjs").registerBugReport({ app, ipcMain, dialog, assertSender: assertAppSender, getWindow: () => mainWindow, sentry,
       backend: backendHandle, remote, accountService: account.service });
+    require("./updates.cjs").registerUpdates({ app, ipcMain, assertSender: assertAppSender, getWindow: () => mainWindow, getBackend: () => backendHandle,
+      prepareForExit: shutdown, record: (event, fields) => backendHandle?.diagnosticLog.record(event, fields) });
     // The standard menus, with Help → Report a Bug… instead of Electron's own links.
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
@@ -270,7 +272,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
 });
 
 app.on("activate", () => {
-  if (!mainWindow) {
+  if (!mainWindow && !shutdownPromise) {
     const host = process.env.HOST ?? "127.0.0.1";
     const port = process.env.PORT ?? "3000";
     void createWindow(`http://${host}:${port}`);
@@ -288,15 +290,18 @@ app.on("second-instance", (_event, argv) => {
   const link = argv.find(argument => require("./account.cjs").isDeepLinkArgument(argument));
   if (link) deliverDeepLink(link);
 });
+// One shutdown for a quit and for an update (on Windows it runs before the installer starts).
+let shutdownPromise;
+const shutdown = () => shutdownPromise ??= (async () => {
+  account?.dispose();
+  remote?.dispose();
+  try { await Promise.all([backendHandle?.dispose(), voiceInput?.dispose()]); } catch (error) { console.error("Shutdown failed", error); }
+  shutdownComplete = true;
+})();
 app.on("before-quit", (event) => {
   if (shutdownComplete || !backendHandle) return;
   event.preventDefault();
-  account?.dispose();
-  remote?.dispose();
-  void Promise.all([backendHandle.dispose(), voiceInput?.dispose()]).catch(error => console.error("Shutdown failed", error)).finally(() => {
-    shutdownComplete = true;
-    app.quit();
-  });
+  void shutdown().finally(() => app.quit());
 });
 ipcMain.handle("models:select-files", async (event) => {
   if (event.sender !== mainWindow?.webContents) return [];

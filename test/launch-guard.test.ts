@@ -17,7 +17,7 @@ test("a development run keeps its debugging switches", () => {
   assert.equal(refusedSwitch({ isPackaged: false, hasSwitch: switches("remote-debugging-port", "use-mock-keychain") }), undefined);
 });
 
-test("the packaged app's fuses refuse running it as Node, NODE_OPTIONS, --inspect and file:// privileges, and a build publishes nothing", () => {
+test("the packaged app's fuses refuse running it as Node, NODE_OPTIONS, --inspect and file:// privileges, and a build publishes nothing itself", () => {
   const manifest = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
   const fuses = manifest.build.electronFuses;
   // Native runtimes start through /bin/sh or directly (src/local/guardedProcess.ts), not as Node children.
@@ -28,6 +28,9 @@ test("the packaged app's fuses refuse running it as Node, NODE_OPTIONS, --inspec
   // Flipping a fuse changes the binary: without a signing identity it must be signed again (ad hoc),
   // or macOS kills it at launch.
   assert.equal(fuses.resetAdHocDarwinSignature, true);
-  assert.equal(manifest.build.publish, null);
+  // The updater's feed: GitHub releases of the public repository, never a token (it would ship in
+  // app-update.yml); artifact names without spaces (GitHub renames them, and the feed would point nowhere).
+  assert.deepEqual(manifest.build.publish, { provider: "github", owner: "Ilyaberdar", repo: "local-cognitive-AI-system" });
+  for (const name of [manifest.build.mac.artifactName, manifest.build.nsis.artifactName]) assert.doesNotMatch(name, /\s/);
   for (const script of ["dist:mac", "dist:mac:arm64", "dist:mac:x64", "dist:win"]) assert.match(manifest.scripts[script], /--publish never$/);
 });

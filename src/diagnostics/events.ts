@@ -20,6 +20,7 @@ export const DIAGNOSTIC_EVENTS = {
   "remote.host_event": { event: diagnosticCode, code: diagnosticCode },
   "local_runtime.load_failed": { code: diagnosticCode, backend: diagnosticCode, placement: diagnosticCode },
   "local_runtime.exited": { exitCode: z.number().int(), signal: diagnosticCode },
+  "app.update_failed": { stage: z.enum(["check", "download", "install"]), code: diagnosticCode },
   "local_runtime.oom_retry": { placement: diagnosticCode },
   "workflow.failed": { nodeType: diagnosticCode, category: diagnosticCode },
   "chat_run.failed": { category: diagnosticCode },
