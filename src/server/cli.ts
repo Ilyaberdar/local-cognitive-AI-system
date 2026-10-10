@@ -15,6 +15,7 @@ import { CliError, ExitCode } from "./exitCodes";
 import { selectInference } from "./inference";
 import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from "../runtime/hostFolders";
 import { serverEnvironment } from "./serverEnv";
+import { printable, printableDeep, printableMessage } from "./terminalText";
 
 // Only modules that do not read the application configuration are imported above: the
 // configuration is evaluated when its module loads, after `start` has set the environment.
@@ -92,7 +93,7 @@ const status = async (args: ServerArgs) => {
   try {
     const response = await controlRequest(controlSocketPathFor(dataDirectories(root).app), { op: "status" }, { timeoutMs: 5_000 });
     const result = response.result as StatusResult;
-    print(args, describeStatus(result), { running: true, ...result });
+    print(args, describeStatus(printableDeep(result)), { running: true, ...result });
     return ExitCode.ok;
   } catch (error) {
     if (!unreachable(error)) throw notPermitted(error, "status");
@@ -131,7 +132,8 @@ const remoteRequest = async (args: ServerArgs, request: Record<string, unknown>)
   catch (error) { if (unreachable(error)) throw new CliError("The server is not running. Start it: sudo systemctl start local-cognitive", ExitCode.unavailable); throw notPermitted(error, args.command); }
   if (!response.ok) {
     const error = response.error as { code?: string; message?: string } | undefined;
-    throw new CliError(error?.message ?? "The server refused the request.", error?.code === "offline" || error?.code === "remote_off" ? ExitCode.unavailable : ExitCode.failure);
+    // The message may carry text from the network (the Cloud's last error).
+    throw new CliError(printableMessage(error?.message ?? "The server refused the request."), error?.code === "offline" || error?.code === "remote_off" ? ExitCode.unavailable : ExitCode.failure);
   }
   return response.result as Record<string, unknown>;
 };
@@ -153,7 +155,7 @@ const pair = async (args: ServerArgs, wait: boolean) => {
   while (Date.now() < result.expiresAt) {
     await new Promise(resolve => setTimeout(resolve, 2_000));
     const used = await remoteRequest(args, { op: "invitation", invitationId: result.invitationId }) as { consumed: boolean; deviceName?: string };
-    if (used.consumed) { process.stdout.write(`✓ ${used.deviceName ?? "A computer"} is connected.\n`); return ExitCode.ok; }
+    if (used.consumed) { process.stdout.write(`✓ ${used.deviceName ? printable(used.deviceName) : "A computer"} is connected.\n`); return ExitCode.ok; }
   }
   process.stdout.write("The key expired before a computer used it. Run pair again for a new one.\n");
   return ExitCode.failure;
@@ -162,7 +164,7 @@ const pair = async (args: ServerArgs, wait: boolean) => {
 const devices = async (args: ServerArgs) => {
   const { devices: list } = await remoteRequest(args, { op: "devices" }) as { devices: Array<{ deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string }> };
   const active = list.filter(device => device.status === "active");
-  print(args, active.length ? active.map(device => `${device.deviceId}  ${device.deviceName ?? "(unnamed)"}  paired ${device.grantedAt.slice(0, 10)}${device.lastConnectedAt ? `, last seen ${device.lastConnectedAt.slice(0, 16).replace("T", " ")}` : ""}`).join("\n")
+  print(args, active.length ? active.map(device => `${device.deviceId}  ${device.deviceName ? printable(device.deviceName) : "(unnamed)"}  paired ${device.grantedAt.slice(0, 10)}${device.lastConnectedAt ? `, last seen ${device.lastConnectedAt.slice(0, 16).replace("T", " ")}` : ""}`).join("\n")
     : "No computers can connect yet. Run pair to add one.", { devices: list });
   return ExitCode.ok;
 };
