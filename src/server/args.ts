@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "backup" | "backups" | "restore";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -29,10 +29,12 @@ export interface ServerArgs {
   /** backup: a name part for the backup; restore: the backup's name (from `backups`). */
   label?: string;
   backupName?: string;
+  /** update/rollback/adopt (run as root): where releases live, the unit and the server's user. */
+  update?: { check: boolean; wait: boolean; manifestUrl?: string; prefix: string; unit: string; user: string; fromApp?: string; fromNode?: string };
   yes: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -52,6 +54,10 @@ Commands:
   backup                 Back up the server's state (not its models), with the server stopped (--label)
   backups                List the backups
   restore <name>         Put a backup's state back, with the server stopped (the current state is kept aside)
+  update                 Install the newest release (as root): backed up, checked, rolled back if it fails
+                         (--check to only look, --wait for running work, --yes to skip the question)
+  rollback               Go back to the previous release and the data from before the last update (as root)
+  adopt                  Once: move an install in --from-app and --from-node into <prefix>/releases (as root)
   help      Show this help
 
 Options:
@@ -72,7 +78,11 @@ Options:
   --allow-create            folders add: computers may make folders in it
   --json                    Machine-readable output
   --quiet                   status: no output, only the exit code
-  --allow-root              Allow running as root (not recommended)`;
+  --allow-root              Allow running as root (not recommended)
+  --prefix <dir>            update: where releases are installed (default: /opt/local-cognitive)
+  --unit <name>             update: the systemd unit (default: local-cognitive)
+  --user <name>             update: the server's user (default: local-cognitive)
+  --manifest-url <url>      update: the release manifest (default: this project's newest GitHub release)`;
 
 const integer = (value: string | undefined, name: string, min: number, max: number): number | undefined => {
   if (value === undefined) return undefined;
@@ -89,7 +99,9 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
       init: { type: "boolean" }, "env-file": { type: "string" }, "llama-runtime-dir": { type: "string" }, "drain-timeout": { type: "string" },
       "vault-key-file": { type: "string" }, timeout: { type: "string" }, "no-wait": { type: "boolean" }, json: { type: "boolean" },
       quiet: { type: "boolean" }, "allow-root": { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean" },
-      ttl: { type: "string" }, yes: { type: "boolean" }, label: { type: "string" }, "allow-create": { type: "boolean" }
+      ttl: { type: "string" }, yes: { type: "boolean" }, label: { type: "string" }, "allow-create": { type: "boolean" },
+      check: { type: "boolean" }, wait: { type: "boolean" }, "manifest-url": { type: "string" }, prefix: { type: "string" }, unit: { type: "string" },
+      user: { type: "string" }, "from-app": { type: "string" }, "from-node": { type: "string" }
     } });
   } catch (error) { throw new CliError(error instanceof Error ? error.message : String(error), ExitCode.usage); }
   const { values, positionals } = parsed;
@@ -120,7 +132,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,
@@ -128,6 +140,10 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     drainTimeoutSec: integer(values["drain-timeout"] ?? values.timeout, values.timeout !== undefined ? "timeout" : "drain-timeout", 0, 86_400),
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
     wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}),
-    ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {})
+    ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {}),
+    ...(["update", "rollback", "adopt"].includes(command) ? { update: { check: Boolean(values.check), wait: Boolean(values.wait),
+      ...(values["manifest-url"] ? { manifestUrl: values["manifest-url"] } : {}), prefix: values.prefix ?? "/opt/local-cognitive",
+      unit: values.unit ?? "local-cognitive", user: values.user ?? "local-cognitive",
+      ...(values["from-app"] ? { fromApp: values["from-app"] } : {}), ...(values["from-node"] ? { fromNode: values["from-node"] } : {}) } } : {})
   };
 };
