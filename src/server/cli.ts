@@ -9,6 +9,7 @@ import { controlRequest } from "./ControlServer";
 import { checkDataRoot, controlSocketPathFor, dataDirectories, initDataRoot, readServerConfig } from "./dataRoot";
 import { consentFilePath, readConsent, writeConsent } from "../diagnostics/consentFile";
 import { backupDataRoot, listBackups, restoreDataRoot } from "../update/dataBackup";
+import { updateCommand } from "./updateCommand";
 import { DataRootLock, DataRootLockedError } from "../runtime/db/DataRootLock";
 import { CliError, ExitCode } from "./exitCodes";
 import { selectInference } from "./inference";
@@ -229,6 +230,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "folders": return await folders(args);
       case "error-reports": return errorReports(args);
       case "backup": case "backups": case "restore": return await backupCommand(args);
+      case "update": case "rollback": case "adopt": return await updateCommand(args);
       case "revoke-device": {
         const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
         print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });
