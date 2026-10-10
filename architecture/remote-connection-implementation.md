@@ -212,6 +212,24 @@ service стартует после reboot без GUI. CLI обращается 
   - Состав: overlay 724 МБ и `manifest-fragment.json`, слитый в `runtime-manifest.json`. Сборка в CI заняла 93 мин; архитектуры `50-virtual;61-real;70-virtual;75-real;80-real;86-real;89-real;90-real;90-virtual;120a-real`.
   - На fedora `sudo local-cognitive-server cuda` поставил опубликованную сборку за 1 мин и заменил ручную (`61-real`, копия в `/opt/local-cognitive/cuda-61-real.backup`).
   - llama-bench на GTX 1070 Ti, Qwen2.5-0.5B Q4_K_M: pp512 8575 t/s, tg128 224 t/s.
+- **Windows (W1, 2026-10-10).** Всё — готовые сборки llama.cpp b10809 из релизов upstream, без своей компиляции.
+  - `win32-x64` по умолчанию — Vulkan; так видеокарта работает у любого производителя.
+  - `win32-x64-cuda13` и `-cuda12`: архив CUDA-сборки upstream (`archive`) плюс архив DLL NVIDIA (`overlay`, zip). Контрольные суммы закреплены.
+  - Требования в `requires`: драйвер 580 / 551.78, compute capability 7.5 / 5.0, карты с готовым кодом.
+  - Сборки upstream требуют Microsoft Visual C++ 14.51+. Prepare на Windows кладёт `msvcp140`, `vcruntime140` и `vcruntime140_1` рядом с рантаймом (app-local) и записывает их хеши в `runtime.json`.
+  - `verify --check-libraries` разбирает PE-импорты на любой ОС: всё, чего нет у Windows и драйвера, должно лежать в папке.
+  - Распаковка: системный bsdtar (`tar.exe`) или unzip; до неё проверяются имена внутри архива.
+  - Распознавание речи на Windows собирается со статическим CRT и без OpenMP.
+  - Проверено на Windows 11, RTX 3070 Ti, драйвер 610.88: prepare и verify прошли.
+  - llama-bench, Qwen2.5-0.5B Q4_K_M:
+
+    | Рантайм | pp512 | tg128 |
+    |---|---|---|
+    | Vulkan | 17411 t/s | 324 t/s |
+    | CUDA 12.4 | 23820 t/s | 475 t/s |
+    | CUDA 13.3 | 25698 t/s | 491 t/s |
+
+  - `-lv 5 --list-devices` в Vulkan-сборке не печатает тип устройства (uma), поэтому встроенные GPU отсекаются по имени и памяти (W2).
 - Сервер выбирает CUDA, только если `runtime.json` этого каталога — `cuda` той же
   сборки, что manifest; `status` показывает выбранный и фактический backend и причину
   CPU fallback, UI моделей — плашку «CPU fallback».

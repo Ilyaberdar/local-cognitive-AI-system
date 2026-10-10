@@ -28,7 +28,8 @@ try {
   execFileSync(cmake, ['-S', source, '-B', build, '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=OFF',
     '-DGGML_NATIVE=OFF', '-DWHISPER_BUILD_TESTS=OFF', '-DWHISPER_BUILD_SERVER=OFF',
     ...(process.platform === 'darwin' ? [`-DCMAKE_OSX_ARCHITECTURES=${arch === 'x64' ? 'x86_64' : 'arm64'}`, '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3', '-DGGML_METAL=ON', '-DGGML_METAL_EMBED_LIBRARY=ON'] : []),
-    ...(process.platform === 'win32' ? ['-A', arch === 'x64' ? 'x64' : 'ARM64'] : [])], { stdio: 'inherit' });
+    // Windows: the C++ runtime linked in and no OpenMP, so whisper-cli.exe needs no DLLs a clean Windows lacks.
+    ...(process.platform === 'win32' ? ['-A', arch === 'x64' ? 'x64' : 'ARM64', '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded', '-DGGML_OPENMP=OFF'] : [])], { stdio: 'inherit' });
   execFileSync(cmake, ['--build', build, '--config', 'Release', '--target', 'whisper-cli', '-j', '6'], { stdio: 'inherit' });
   const executable = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
   const destination = path.join(root, 'resources/speech', `${process.platform}-${arch}`);

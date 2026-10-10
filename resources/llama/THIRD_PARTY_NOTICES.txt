@@ -27,3 +27,15 @@ NVIDIA CUDA components
 The linux-x64-cuda12 runtime adds the NVIDIA CUDA Runtime and cuBLAS libraries, redistributed
 under the NVIDIA CUDA Toolkit End User License Agreement. Their notice and license are in
 llama/linux-x64-cuda12/CUDA_NOTICE.txt and llama/linux-x64-cuda12/licenses/.
+On Windows, the CUDA runtime that the app downloads on request (win32-x64-cuda12 or -cuda13) is
+llama.cpp's own CUDA build with the NVIDIA CUDA Runtime and cuBLAS DLLs (cudart64_1x.dll,
+cublas64_1x.dll, cublasLt64_1x.dll), unmodified, under the same agreement:
+https://docs.nvidia.com/cuda/eula/
+
+LLVM OpenMP runtime (libomp.dll, Windows builds)
+Apache License v2.0 with LLVM Exceptions. The license is LICENSE-LLVM-OpenMP in the runtime folder.
+
+Microsoft Visual C++ Redistributable (msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll, Windows builds)
+Copyright (c) Microsoft Corporation. Distributed with the Windows runtimes as permitted for the
+Visual C++ runtime files ("app-local" deployment). They are the unmodified files of the
+Microsoft Visual C++ 2015-2022 Redistributable.

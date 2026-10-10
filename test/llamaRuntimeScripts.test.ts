@@ -6,6 +6,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import test, { TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -159,3 +160,140 @@ test("downloads take as long as they need and give up only when nothing arrives"
   await assert.rejects(download(`${base}/stalls`, path.join(directory, "stalls"), "the stalled file", { stallMs: 400, log }), /the stalled file download stopped: nothing arrived/);
   await assert.rejects(download(`${base}/missing`, path.join(directory, "missing"), "the missing file", { stallMs: 400, log }), /HTTP 404/);
 });
+
+test("the manifest pins Vulkan for Windows and CUDA variants with archives of their own", async () => {
+  const { normalizeManifest, runtimeEntry } = await importModule(pathToFileURL(script("lib/llama-manifest.mjs")).href);
+  const manifest = normalizeManifest(repoManifest());
+  const windows = runtimeEntry(manifest, "win32-x64");
+  assert.deepEqual({ backend: windows.backend, kind: windows.kind, executable: windows.executable }, { backend: "vulkan", kind: "zip", executable: "llama-server.exe" });
+  for (const id of ["win32-x64-cuda12", "win32-x64-cuda13"]) {
+    const cuda = runtimeEntry(manifest, id);
+    assert.equal(cuda.backend, "cuda");
+    assert.equal(cuda.base, undefined, "its own archive, not the Vulkan build");
+    assert.ok(cuda.url.startsWith(`https://github.com/ggml-org/llama.cpp/releases/download/${manifest.build}/`), cuda.url);
+    assert.ok(cuda.overlay.url.startsWith(`https://github.com/ggml-org/llama.cpp/releases/download/${manifest.build}/`), cuda.overlay.url);
+    assert.equal(cuda.overlay.kind, "zip");
+    assert.ok(Number(cuda.requires.nvidiaDriver) > 0);
+  }
+  const windowsRuntime = (patch: (entry: any) => void) => {
+    const entry = { platform: "win32", arch: "x64", backend: "cuda", executable: "llama-server.exe", archive: { url: "https://example.invalid/cuda.zip", sha256: "c".repeat(64) },
+      overlay: { url: "https://example.invalid/cudart.zip", sha256: "d".repeat(64) }, files: { "cudart64_12.dll": "e".repeat(64) } };
+    patch(entry);
+    return () => normalizeManifest({ ...repoManifest(), runtimes: { "win32-x64-cuda99": entry } });
+  };
+  assert.equal(windowsRuntime(() => undefined)().entries.get("win32-x64-cuda99").kind, "zip");
+  assert.throws(windowsRuntime(entry => { entry.base = "win32-x64"; }), /either a base or an archive/);
+  assert.throws(windowsRuntime(entry => { delete entry.archive; }), /either a base or an archive/);
+  assert.throws(windowsRuntime(entry => { entry.archive.url = "https://example.invalid/cuda.7z"; }), /\.zip or \.tar\.gz/);
+  assert.throws(windowsRuntime(entry => { entry.files = { "ggml-cpu-haswell.dll": "e".repeat(64) }; }), /may not replace the base backend/);
+  assert.throws(windowsRuntime(entry => { entry.files = { "GGML-BASE.DLL": "e".repeat(64) }; }), /may not replace the base backend/);
+  assert.throws(windowsRuntime(entry => { entry.requires = { nvidiaDriver: "latest" }; }), /requires nvidiaDriver/);
+  assert.throws(() => normalizeManifest({ ...repoManifest(), runtimes: { "win32-x64-../x": {} } }), /runtime id/);
+});
+
+/** A zip archive of `files`, stored uncompressed, with names exactly as given (unsafe ones too). */
+const zipOf = (files: Record<string, string | Buffer>) => {
+  const parts: Buffer[] = [], central: Buffer[] = [];
+  let offset = 0;
+  for (const [name, content] of Object.entries(files)) {
+    const data = Buffer.from(content), nameBytes = Buffer.from(name, "utf8"), crc = (zlib as unknown as { crc32(data: Buffer): number }).crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(nameBytes.length, 26);
+    const header = Buffer.alloc(46);
+    header.writeUInt32LE(0x02014b50, 0); header.writeUInt16LE(20, 4); header.writeUInt16LE(20, 6); header.writeUInt32LE(crc, 16); header.writeUInt32LE(data.length, 20);
+    header.writeUInt32LE(data.length, 24); header.writeUInt16LE(nameBytes.length, 28); header.writeUInt32LE(offset, 42);
+    parts.push(local, nameBytes, data);
+    central.push(header, nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const directory = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(central.length / 2, 8); end.writeUInt16LE(central.length / 2, 10); end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, directory, end]);
+};
+
+/** A minimal PE32+ file that imports `imports` and delay-loads `delayed`. */
+const fakePe = (imports: string[], delayed: string[] = []) => {
+  const headers = Buffer.alloc(0x400), section = Buffer.alloc(0x400);
+  let names = 0x300;
+  const nameRva = (name: string) => { const rva = 0x1000 + names; section.write(`${name}\0`, names, "latin1"); names += name.length + 1; return rva; };
+  imports.forEach((name, index) => section.writeUInt32LE(nameRva(name), index * 20 + 12));
+  delayed.forEach((name, index) => section.writeUInt32LE(nameRva(name), 0x100 + index * 32 + 4));
+  headers.write("MZ", 0, "latin1"); headers.writeUInt32LE(0x40, 0x3c); headers.write("PE\0\0", 0x40, "latin1");
+  headers.writeUInt16LE(0x8664, 0x44); headers.writeUInt16LE(1, 0x46); headers.writeUInt16LE(240, 0x54);
+  const optional = 0x58;
+  headers.writeUInt16LE(0x20b, optional); headers.writeUInt32LE(16, optional + 108);
+  headers.writeUInt32LE(0x1000, optional + 112 + 8); headers.writeUInt32LE((imports.length + 1) * 20, optional + 112 + 12);
+  if (delayed.length) { headers.writeUInt32LE(0x1100, optional + 112 + 104); headers.writeUInt32LE((delayed.length + 1) * 32, optional + 112 + 108); }
+  const table = optional + 240;
+  headers.write(".rdata", table, "latin1"); headers.writeUInt32LE(0x400, table + 8); headers.writeUInt32LE(0x1000, table + 12); headers.writeUInt32LE(0x400, table + 16); headers.writeUInt32LE(0x400, table + 20);
+  return Buffer.concat([headers, section]);
+};
+
+test("Windows runtimes: imports are read from PE headers, and a folder must bring the C++ runtime but never the driver", async t => {
+  const { peImports, missingImports } = await importModule(pathToFileURL(script("lib/pe-imports.mjs")).href);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pe-imports-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(directory, "llama-server.exe"), fakePe(["llama.dll", "KERNEL32.dll", "vcruntime140.dll", "api-ms-win-crt-runtime-l1-1-0.dll"], ["vulkan-1.dll"]));
+  fs.writeFileSync(path.join(directory, "llama.dll"), fakePe(["msvcp140.dll", "kernel32.dll"]));
+  assert.deepEqual(await peImports(path.join(directory, "llama-server.exe")), ["llama.dll", "kernel32.dll", "vcruntime140.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "vulkan-1.dll"]);
+  assert.deepEqual(Object.fromEntries(await missingImports(directory)), { "vcruntime140.dll": ["llama-server.exe"], "msvcp140.dll": ["llama.dll"] });
+  fs.writeFileSync(path.join(directory, "vcruntime140.dll"), fakePe([]));
+  fs.writeFileSync(path.join(directory, "MSVCP140.dll"), fakePe([]));
+  assert.equal((await missingImports(directory)).size, 0, "names match without regard to case");
+  fs.writeFileSync(path.join(directory, "notes.dll"), "not a program");
+  await assert.rejects(missingImports(directory), /not a PE file/);
+});
+
+test("prepare assembles a Windows CUDA runtime from two zip archives and refuses unsafe zip entries", { skip: !posix }, t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "llama-zip-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const nvidia = { "cudart64_12.dll": fakePe(["kernel32.dll"]), "cublas64_12.dll": fakePe(["cublasLt64_12.dll"]), "cublasLt64_12.dll": fakePe(["kernel32.dll"]) };
+  const write = (name: string, files: Record<string, string | Buffer>) => { fs.writeFileSync(path.join(root, name), zipOf(files)); return sha(fs.readFileSync(path.join(root, name))); };
+  const build = (cuda: Record<string, string | Buffer>, cudart: Record<string, string | Buffer>) => {
+    const runtime = { platform: "win32", arch: "x64", backend: "cuda", executable: "llama-server.exe",
+      archive: { url: "https://example.invalid/llama-cuda.zip", sha256: write("cuda.zip", cuda) }, overlay: { url: "https://example.invalid/cudart.zip", sha256: write("cudart.zip", cudart) },
+      files: Object.fromEntries(Object.entries(nvidia).map(([name, content]) => [name, sha(content)])), notices: [] };
+    fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify({ ...repoManifest(), runtimes: { "win32-x64-cuda12": runtime } }));
+    const destination = path.join(root, "resources", "llama", "win32-x64-cuda12");
+    const prepared = spawnSync(process.execPath, [script("prepare-llama-runtime.mjs"), "--manifest", path.join(root, "manifest.json"), "--variant", "win32-x64-cuda12",
+      "--archive", path.join(root, "cuda.zip"), "--overlay", path.join(root, "cudart.zip"), "--destination", destination], { encoding: "utf8" });
+    return { prepared, destination };
+  };
+  const base = { "llama-server.exe": fakePe(["llama.dll", "kernel32.dll"]), "llama.dll": fakePe(["ggml-cuda.dll"]), "ggml-cuda.dll": fakePe(["cudart64_12.dll", "cublas64_12.dll", "nvcuda.dll"]) };
+  const { prepared, destination } = build(base, nvidia);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.match(prepared.stderr, /Visual C\+\+ runtime is not bundled/, "only a Windows machine can bundle it");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, "runtime.json"), "utf8")).backend, "cuda");
+  assert.match(fs.readFileSync(path.join(destination, "CUDA_NOTICE.txt"), "utf8"), /docs\.nvidia\.com\/cuda\/eula/, "NVIDIA's notice goes in beside its DLLs");
+  for (const name of [...Object.keys(base), ...Object.keys(nvidia)]) assert.ok(fs.existsSync(path.join(destination, name)), name);
+
+  // The packaged check: the C++ runtime is missing until it is bundled; the driver and Vulkan never belong.
+  const resources = path.join(root, "resources");
+  fs.copyFileSync(path.join(root, "manifest.json"), path.join(resources, "llama", "runtime-manifest.json"));
+  fs.writeFileSync(path.join(resources, "llama", "THIRD_PARTY_NOTICES.txt"), "notices");
+  fs.mkdirSync(path.join(resources, "models"));
+  fs.writeFileSync(path.join(resources, "models", "recommended.json"), "{}");
+  const verify = (...extra: string[]) => spawnSync(process.execPath, [script("verify-packaged-runtime.mjs"), resources, "--variant", "win32-x64-cuda12", ...extra], { encoding: "utf8" });
+  assert.equal(verify().status, 0, verify().stderr);
+  fs.writeFileSync(path.join(destination, "llama-server.exe"), fakePe(["llama.dll", "kernel32.dll", "vcruntime140.dll"]));
+  assert.match(verify("--check-libraries").stderr, /libraries missing from the runtime: vcruntime140\.dll \(needed by 1\)/);
+  fs.writeFileSync(path.join(destination, "vcruntime140.dll"), fakePe([]));
+  assert.equal(verify("--check-libraries").status, 0, verify("--check-libraries").stderr);
+  fs.writeFileSync(path.join(destination, "ggml-vulkan.dll"), fakePe([]));
+  assert.match(verify().stderr, /must not contain the Vulkan backend/);
+  fs.rmSync(path.join(destination, "ggml-vulkan.dll"));
+  fs.writeFileSync(path.join(destination, "nvcuda.dll"), fakePe([]));
+  assert.match(verify().stderr, /must not contain nvcuda\.dll/);
+
+  for (const unsafe of ["../outside.dll", "C:evil.dll", "/etc/evil.dll", "dir\\evil.dll"]) {
+    fs.rmSync(path.join(root, "resources"), { recursive: true, force: true });
+    const { prepared: refused, destination: nothing } = build(base, { ...nvidia, [unsafe]: "x" });
+    assert.notEqual(refused.status, 0, unsafe);
+    assert.match(refused.stderr, /unsafe path/, unsafe);
+    assert.equal(fs.existsSync(nothing), false, `${unsafe}: nothing is installed`);
+  }
+  fs.rmSync(path.join(root, "resources"), { recursive: true, force: true });
+  const collision = build({ ...base, "CUDART64_12.DLL": "base copy" }, nvidia);
+  assert.match(collision.prepared.stderr, /would replace cudart64_12\.dll/, "names collide regardless of case");
+});
+

@@ -20,11 +20,11 @@
       "validation": "not tested on target hardware"
     },
     "win32-x64": {
-      "backend": "cpu",
+      "backend": "vulkan",
       "executable": "llama-server.exe",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-win-cpu-x64.zip",
-      "sha256": "9df3158ed228a641a4b127942d7f459f24c9e13f04682659d05c00c80099b6b5",
-      "validation": "not tested on target hardware"
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-win-vulkan-x64.zip",
+      "sha256": "97e50b3ef0cdd2cb4d5afd446a9006b3496bee6c0d0ba7083d32f36075771870",
+      "validation": "Vulkan verified on Windows 11, RTX 3070 Ti, driver 610.88, 2026-10-10, llama-bench Qwen2.5-0.5B Q4_K_M: pp512 17411 t/s, tg128 324 t/s; the packaged Windows app not yet"
     },
     "linux-x64": {
       "backend": "cpu",
@@ -57,6 +57,72 @@
         "licenses/NVIDIA-CUDA-EULA.txt"
       ],
       "validation": "Published overlay verified on Fedora 43, GTX 1070 Ti (sm_61), driver 580, 2026-10-10: llama-bench Qwen2.5-0.5B Q4_K_M pp512 8575 t/s, tg128 224 t/s"
+    },
+    "win32-x64-cuda13": {
+      "platform": "win32",
+      "arch": "x64",
+      "backend": "cuda",
+      "executable": "llama-server.exe",
+      "archive": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-win-cuda-13.3-x64.zip",
+        "sha256": "790a89e7c40049b8b1cd1a2565abe1d40cfc4e18843cdefa77ed2ce52d6a7b2d",
+        "size": 149558056
+      },
+      "overlay": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/cudart-llama-bin-win-cuda-13.3-x64.zip",
+        "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
+        "size": 390970417
+      },
+      "files": {
+        "cudart64_13.dll": "b00ca6f53699120da815bf3e06e2e4285fae2f201235b883dcbb50eec51e2a2a",
+        "cublas64_13.dll": "f1d500d0cd892f5b8c6b6cdbffd82d0c55d5f5427215668e7ceb55aeeccc1b63",
+        "cublasLt64_13.dll": "b592cd016d7673e9cb97716a22b27c4010ee635377a3ba28f37070a9bdb76a68"
+      },
+      "notices": [],
+      "requires": {
+        "nvidiaDriver": "580",
+        "minComputeCapability": "7.5",
+        "nativeComputeCapabilities": [
+          "8.6",
+          "8.9",
+          "12.0",
+          "12.1"
+        ]
+      },
+      "installedBytes": 704643072,
+      "validation": "Verified on Windows 11, RTX 3070 Ti, driver 610.88, 2026-10-10, llama-bench Qwen2.5-0.5B Q4_K_M: pp512 25698 t/s, tg128 491 t/s"
+    },
+    "win32-x64-cuda12": {
+      "platform": "win32",
+      "arch": "x64",
+      "backend": "cuda",
+      "executable": "llama-server.exe",
+      "archive": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-win-cuda-12.4-x64.zip",
+        "sha256": "c77bfcd9ed8d91e8721a2d6a290b907fddd4fa5412a47b21c6fa1709116b85f9",
+        "size": 253938543
+      },
+      "overlay": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/cudart-llama-bin-win-cuda-12.4-x64.zip",
+        "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+        "size": 391443627
+      },
+      "files": {
+        "cudart64_12.dll": "d28e42265da7462162a54da6b7a99ea4fa2caf8139d862bb500db875d0b32dfc",
+        "cublas64_12.dll": "e40202fe4223c1cd2d2dce7beec59e1ed61c7801bd827309183be9b50e358f4c",
+        "cublasLt64_12.dll": "2a896460bef60ed57ef32b0875812f355a6984e671d638bb632f5e8c1d7a831f"
+      },
+      "notices": [],
+      "requires": {
+        "nvidiaDriver": "551.78",
+        "minComputeCapability": "5.0",
+        "nativeComputeCapabilities": [
+          "8.6",
+          "8.9"
+        ]
+      },
+      "installedBytes": 1166016512,
+      "validation": "Verified on Windows 11, RTX 3070 Ti, driver 610.88, 2026-10-10, llama-bench Qwen2.5-0.5B Q4_K_M: pp512 23820 t/s, tg128 475 t/s"
     }
   }
 }
