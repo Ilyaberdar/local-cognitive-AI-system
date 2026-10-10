@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
@@ -240,8 +240,14 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
     sentry.attachLog(backendHandle.diagnosticLog);
     registerDiagnostics();
-    require("./bug-report.cjs").registerBugReport({ app, ipcMain, dialog, assertSender: assertAppSender, getWindow: () => mainWindow, sentry,
+    const bugReport = require("./bug-report.cjs").registerBugReport({ app, ipcMain, dialog, assertSender: assertAppSender, getWindow: () => mainWindow, sentry,
       backend: backendHandle, remote, accountService: account.service });
+    // The standard menus, with Help → Report a Bug… instead of Electron's own links.
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+      { role: "fileMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
+      { role: "help", submenu: [{ label: "Report a Bug…", click: () => void bugReport.openReport() }] }
+    ]));
     // A window's or helper process's crash, as codes in the technical log (never a dump of its memory here).
     const crashed = (process, details) => { if (details.reason !== "clean-exit") backendHandle.diagnosticLog.record("app.crash", { process, reason: details.reason, exitCode: details.exitCode }); };
     app.on("render-process-gone", (_event, _contents, details) => crashed("renderer", details));

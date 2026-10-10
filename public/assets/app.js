@@ -556,6 +556,9 @@ const quickReport = window.desktopBugReport ? createQuickReport({
   }))
 }) : null;
 
+// Help → Report a Bug… in the app menu opens the full report page (the window was captured first).
+window.desktopBugReport?.onOpen?.(() => { location.hash = "#/settings/report-bug"; });
+
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
   render();
