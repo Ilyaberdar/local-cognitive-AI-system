@@ -5,6 +5,8 @@ const { app, safeStorage } = require("electron");
 // vault (the login password is asked one last time) and stores them in the development vault,
 // so the app stays signed in and paired. Nothing is deleted; run it with the app closed.
 function migrateDevVault() {
+  // Never in a packaged app: its Keychain secrets stay in the Keychain.
+  if (app.isPackaged) { console.error("[dev-vault] not available in a packaged app"); app.exit(1); return; }
   app.whenReady().then(() => {
     const { createAeadVaultCipher } = require("../dist/src/security/AeadVaultCipher.js");
     const { loadVaultKey } = require("../dist/src/security/vaultKey.js");
