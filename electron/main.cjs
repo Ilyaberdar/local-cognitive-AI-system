@@ -3,6 +3,11 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
+// A development build (unsigned Electron from npm) on macOS keeps no secrets in the Keychain:
+// macOS keeps asking for the login password for such a binary. See src/security/devVault.ts.
+const devVault = require("../dist/src/security/devVault.js").usesDevVault({ isPackaged: app.isPackaged, platform: process.platform, env: process.env });
+if (process.argv.includes("--migrate-dev-vault")) { require("./migrate-dev-vault.cjs").migrateDevVault(); return; }
+if (devVault) app.commandLine.appendSwitch("use-mock-keychain");
 // First: the native crash handler starts before the app is ready (reports only with consent).
 const sentry = require("./sentry.cjs").startSentry();
 
@@ -87,6 +92,7 @@ const configureRuntimeEnvironment = async () => {
 
 // One protected vault for plugin credentials and the account session (separate key namespaces).
 const createVault = (appRoot) => {
+  if (devVault) return require(path.join(appRoot, "dist", "src", "security", "devVault.js")).openDevVault(process.env.APP_DATA_DIR, applicationDataRoot || app.getPath("userData"));
   const { EncryptedCredentialVault } = require(path.join(appRoot, "dist", "src", "plugins", "EncryptedCredentialVault.js"));
   return new EncryptedCredentialVault(path.join(process.env.APP_DATA_DIR, "integrations", "vault"), {
     available: () => safeStorage.isEncryptionAvailable() && (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
