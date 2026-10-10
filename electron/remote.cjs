@@ -83,7 +83,7 @@ function registerRemote({ app, ipcMain, vault, accountService, assertSender, get
   handle("runtime-unwatch", streamId => { if (typeof streamId === "string") runtime.unwatch(streamId); });
   // Reconnect to the server this computer used last, once the account session is known.
   void client.resume().catch(() => {});
-  return { dispose: () => { runtime.dispose(); client.dispose(); } };
+  return { client, dispose: () => { runtime.dispose(); client.dispose(); } };
 }
 
 module.exports = { registerRemote };

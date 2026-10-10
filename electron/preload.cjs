@@ -56,6 +56,15 @@ contextBridge.exposeInMainWorld("desktopDiagnostics", {
   reportError: report => ipcRenderer.send("diagnostics:renderer-error", report && { name: String(report.name || "").slice(0, 40), message: String(report.message || "").slice(0, 1000), stack: String(report.stack || "").slice(0, 8000) })
 });
 
+// Report a bug: previews here, the screenshot and the server's diagnostics stay in the main process.
+contextBridge.exposeInMainWorld("desktopBugReport", {
+  capture: () => ipcRenderer.invoke("bugReport:capture"),
+  prepare: request => ipcRenderer.invoke("bugReport:prepare", request),
+  serverDiagnostics: () => ipcRenderer.invoke("bugReport:server-diagnostics"),
+  submit: form => ipcRenderer.invoke("bugReport:submit", form),
+  export: form => ipcRenderer.invoke("bugReport:export", form)
+});
+
 // The Usage page's numbers, put together in the main process with the account token.
 contextBridge.exposeInMainWorld("desktopUsage", {
   overview: request => ipcRenderer.invoke("usage:overview", request)
