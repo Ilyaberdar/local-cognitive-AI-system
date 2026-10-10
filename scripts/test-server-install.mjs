@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// End-to-end test of the one-line server installer (deploy/server/install.sh) in a Fedora container
-// with systemd, against a release packed here with a throwaway signing key:
+// End-to-end test of the one-line server installer (deploy/server/install.sh) and of updates, in a
+// container with systemd, against releases packed here with a throwaway signing key:
 //
 //   npm run build && node scripts/test-server-install.mjs [--distro fedora|ubuntu] [--keep]
 //
-// Needs Docker. Packs a linux release for this machine's architecture in a Node container
-// (without llama.cpp), serves it on the container's loopback, installs it, checks the service,
-// the commands, a second run and uninstall, and that a changed manifest, a changed download and
-// an unknown signing key are refused. Remote stays off: no test server reaches the real Cloud.
+// Needs Docker. Packs three linux releases for this machine's architecture in a Node container
+// (without llama.cpp; the third does not start), serves them on the container's loopback, installs
+// the first and checks the service, the commands, the console, a second run, an interrupted run and
+// uninstall; that a changed manifest, a changed download and an unknown signing key are refused; and
+// update → rollback → update → a failed update rolled back by itself, with the data from before.
+// Remote stays off: no test server reaches the real Cloud.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -26,7 +28,7 @@ const DISTROS = {
 // x86-64 emulation, a CI host's QEMU): never let it run.
 const NO_BINFMT = "RUN systemctl mask systemd-binfmt.service proc-sys-fs-binfmt_misc.automount proc-sys-fs-binfmt_misc.mount";
 if (!DISTROS[distro]) { console.error(`--distro is one of ${Object.keys(DISTROS).join(", ")}`); process.exit(64); }
-const VERSION = "0.1.0-installtest.1";
+const VERSION = "0.1.0-installtest.1", NEXT = "0.1.0-installtest.2", BROKEN = "0.1.0-installtest.3";
 const IMAGE = `lc-install-test-${distro}`;
 const CONTAINER = `lc-install-test-${process.pid}`;
 const CONTEXT = "lc-release-manifest/v1";
@@ -72,14 +74,30 @@ try {
   if (!/exports\.RELEASE_KEYS = \[\];/.test(keys)) throw new Error("dist/src/update/releaseKeys.js has an unexpected shape.");
   fs.writeFileSync(keysFile, keys.replace("exports.RELEASE_KEYS = [];", `exports.RELEASE_KEYS = [{ id: "${keyIdOf(raw)}", publicKey: "${raw.toString("base64url")}" }];`));
 
-  console.log("Packing a linux release in a container…");
+  // The next release, and one whose server does not start (its own commands still work).
+  const sources = [VERSION, NEXT, BROKEN].map((version, index) => {
+    const dir = path.join(work, `source-${index + 1}`);
+    fs.cpSync(source, dir, { recursive: true });
+    const file = path.join(dir, "package.json");
+    fs.writeFileSync(file, `${JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), version }, null, 2)}\n`);
+    if (version === BROKEN) {
+      const daemon = path.join(dir, "dist", "src", "server", "daemon.js");
+      fs.writeFileSync(daemon, `throw new Error("This test release does not start.");\n${fs.readFileSync(daemon, "utf8")}`);
+    }
+    return dir;
+  });
+
+  console.log("Packing three linux releases in a container…");
   // Packed inside the container's own filesystem: a Docker Desktop mount does not keep file modes.
   const out = path.join(work, "out");
   fs.mkdirSync(out);
-  docker(["run", "--rm", "-v", `${source}:/src:ro`, "-v", `${out}:/out`, "node:22-bookworm", "bash", "-c",
-    "cp -a /src /build && cd /build && node scripts/pack-server.mjs --out /build/out --skip-llama --url-base http://127.0.0.1:8977/ && cp /build/out/*.tar.gz /build/out/server-manifest.json /build/out/install.sh /out/"],
+  docker(["run", "--rm", ...sources.flatMap((dir, index) => ["-v", `${dir}:/src${index + 1}:ro`]), "-v", `${out}:/out`, "node:22-bookworm", "bash", "-c",
+    "set -e; for n in 1 2 3; do cp -a /src$n /build$n && (cd /build$n && node scripts/pack-server.mjs --out /build$n/out --skip-llama --url-base http://127.0.0.1:8977/) "
+    + "&& mkdir -p /out/v$n && cp /build$n/out/*.tar.gz /build$n/out/server-manifest.json /build$n/out/install.sh /out/v$n/; done"],
     { stdio: ["ignore", "ignore", "inherit"] });
-  signManifest(path.join(out, "server-manifest.json"), createPrivateKey(pem));
+  for (const n of [1, 2, 3]) signManifest(path.join(out, `v${n}`, "server-manifest.json"), createPrivateKey(pem));
+  for (const n of [1, 2, 3]) for (const name of fs.readdirSync(path.join(out, `v${n}`)).filter(name => name.endsWith(".tar.gz"))) fs.copyFileSync(path.join(out, `v${n}`, name), path.join(out, name));
+  for (const name of ["server-manifest.json", "server-manifest.json.sig", "install.sh"]) fs.copyFileSync(path.join(out, "v1", name), path.join(out, name));
   const installer = fs.readFileSync(path.join(out, "install.sh"), "utf8");
   check(installer.includes(`RELEASE_KEYS="${keyIdOf(raw)}:${raw.toString("base64url")}"`), "the published installer carries the release key");
 
@@ -92,6 +110,8 @@ try {
     execFileSync("sleep", ["1"]);
   }
   docker(["cp", `${out}/.`, `${CONTAINER}:/release`]);
+  /** Publishes release n: its signed manifest becomes the newest. */
+  const serve = n => inContainer(`cp /release/v${n}/server-manifest.json /release/v${n}/server-manifest.json.sig /release/`);
   docker(["exec", "-d", CONTAINER, "python3", "-m", "http.server", "8977", "--bind", "127.0.0.1", "--directory", "/release"]);
   inContainer("for i in $(seq 1 20); do curl -fs -o /dev/null http://127.0.0.1:8977/server-manifest.json && exit 0; sleep 0.5; done; exit 1");
   // Remote, error reports and the update check stay off in this test.
@@ -156,6 +176,30 @@ try {
     && inContainer("systemctl is-active local-cognitive", { check: false }).output.trim() === "active", "an interrupted install is finished by running it again", resumed.output);
   const restart = inContainer("local-cognitive-server restart && sleep 3 && systemctl is-active local-cognitive", { check: false });
   check(restart.output.trim().endsWith("active"), "sudo local-cognitive-server restart", restart.output);
+
+  // Updates in real systemd: N → N+1, rollback with the data from before, and a release that does not start.
+  const update = () => inContainer("local-cognitive-server update --yes --manifest-url http://127.0.0.1:8977/server-manifest.json 2>&1", { check: false });
+  const linked = name => inContainer(`readlink /opt/local-cognitive/${name}`, { check: false }).output.trim();
+  const folders = () => inContainer("local-cognitive-server folders 2>&1", { check: false }).output;
+  const runningVersion = () => { for (let i = 0; i < 30; i++) { const text = inContainer("local-cognitive-server status 2>&1", { check: false }).output; const match = /Local Cognitive Server (\S+) — running/.exec(text); if (match) return match[1]; execFileSync("sleep", ["1"]); } return "none"; };
+  inContainer("mkdir -p /srv/before /srv/after && local-cognitive-server folders add /srv/before --label before-update >/dev/null");
+  serve(2);
+  let updated = update();
+  check(updated.status === 0 && new RegExp(`Updated ${VERSION} → ${NEXT}`).test(updated.output) && linked("current") === `releases/${NEXT}` && linked("previous") === `releases/${VERSION}`
+    && runningVersion() === NEXT, "update installs the next release beside the running one and switches to it", updated.output);
+  inContainer("local-cognitive-server folders add /srv/after --label after-update >/dev/null");
+  const rolledBack = inContainer("local-cognitive-server rollback --yes 2>&1", { check: false });
+  const afterRollback = folders();
+  check(rolledBack.status === 0 && linked("current") === `releases/${VERSION}` && runningVersion() === VERSION && /before-update/.test(afterRollback) && !/after-update/.test(afterRollback),
+    "rollback brings back the previous release and the data from before the update", `${rolledBack.output}\n${afterRollback}`);
+  updated = update();
+  check(updated.status === 0 && linked("current") === `releases/${NEXT}`, "the same update works again after a rollback", updated.output);
+  serve(3);
+  const failed = update();
+  const journal = inContainer("cat /opt/local-cognitive/update.json", { check: false }).output;
+  check(failed.status !== 0 && /did not start/.test(failed.output) && linked("current") === `releases/${NEXT}` && runningVersion() === NEXT
+    && /"state": "rolled_back"/.test(journal) && /before-update/.test(folders()), "a release that does not start is rolled back by itself, data included", `${failed.output}\n${journal}`);
+  check(inContainer("ls /srv/local-cognitive/backups | grep -q -- '-replaced$'", { check: false }).status === 0, "the failed release's data is kept aside, not lost");
 
   // Uninstall keeps the data.
   const removed = inContainer("local-cognitive-server uninstall 2>&1", { check: false });

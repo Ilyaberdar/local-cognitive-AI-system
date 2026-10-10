@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { loadSqlite } from "../runtime/db/sqlite";
+import { DATA_SUBDIRECTORIES } from "../server/dataRoot";
 import { appVersion } from "../utils/appVersion";
 
 /** Never copied: models are large and can be downloaded again, output is the user's own folder,
@@ -19,20 +20,21 @@ const isSqlite = (file: string) => {
   return header.toString("latin1") === "SQLite format 3\u0000";
 };
 
-/** Every file to copy, relative to the data root, and their total size. */
+/** Every folder and file to copy, relative to the data root, and the files' total size. Folders are
+ * listed too: an empty one (sessions on a new server) is part of the layout the server checks. */
 const inventory = (root: string) => {
-  const files: Array<{ relative: string; size: number }> = [];
+  const files: Array<{ relative: string; size: number }> = [], directories: Array<{ relative: string; mode: number }> = [];
   const walk = (directory: string, relative: string, depth: number) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (depth === 0 && SKIPPED_TOP.has(entry.name)) continue;
       const child = path.join(relative, entry.name), full = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) walk(full, child, depth + 1);
+      if (entry.isDirectory()) { directories.push({ relative: child, mode: fs.statSync(full).mode & 0o777 }); walk(full, child, depth + 1); }
       else if (entry.isFile() && !SKIPPED_FILE.test(entry.name)) files.push({ relative: child, size: fs.statSync(full).size });
     }
   };
   walk(root, "", 0);
-  return { files, bytes: files.reduce((total, file) => total + file.size, 0) };
+  return { files, directories, bytes: files.reduce((total, file) => total + file.size, 0) };
 };
 
 const freeBytes = (directory: string) => { const stats = fs.statfsSync(directory); return stats.bavail * stats.bsize; };
@@ -43,7 +45,7 @@ const freeBytes = (directory: string) => { const stats = fs.statfsSync(directory
 export const backupDataRoot = (rootInput: string, options: { label: string; now?: Date; keep?: number }): BackupResult => {
   const root = path.resolve(rootInput);
   if (!/^[\w.+-]{1,80}$/.test(options.label)) throw new Error("A backup label is letters, digits and . _ + - only.");
-  const { files, bytes } = inventory(root);
+  const { files, directories, bytes } = inventory(root);
   const backups = path.join(root, "backups");
   fs.mkdirSync(backups, { recursive: true, mode: 0o700 });
   const needed = Math.ceil(bytes * 1.1) + 64 * 1024 * 1024;
@@ -53,6 +55,10 @@ export const backupDataRoot = (rootInput: string, options: { label: string; now?
   const partial = `${directory}.partial`;
   fs.rmSync(partial, { recursive: true, force: true });
   fs.mkdirSync(partial, { mode: 0o700 });
+  for (const directory of directories) {
+    fs.mkdirSync(path.join(partial, directory.relative), { recursive: true, mode: 0o700 });
+    fs.chmodSync(path.join(partial, directory.relative), directory.mode);
+  }
   const { DatabaseSync } = loadSqlite();
   for (const file of files) {
     const source = path.join(root, file.relative), target = path.join(partial, file.relative);
@@ -86,7 +92,9 @@ export const restoreDataRoot = (rootInput: string, backupInput: string, now = ne
     fs.renameSync(path.join(root, entry), path.join(replaced, entry));
   }
   fs.cpSync(backup, root, { recursive: true, preserveTimestamps: true, filter: source => path.basename(source) !== "backup.json" || path.dirname(source) !== backup });
-  // The restored files keep the backup's modes; the data root stays private.
+  // The restored files keep the backup's modes; the data root stays private. Its folders are all
+  // there, also after a backup made before backups kept empty ones: the server refuses to start without.
+  for (const name of DATA_SUBDIRECTORIES) fs.mkdirSync(path.join(root, name), { recursive: true, mode: 0o700 });
   fs.chmodSync(root, 0o700);
   return { replaced };
 };
