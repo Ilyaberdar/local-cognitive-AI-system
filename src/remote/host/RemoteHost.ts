@@ -57,6 +57,8 @@ export class RemoteHost extends EventEmitter {
   }) { super(); }
 
   get activeSessions(): number { return [...this.sessions.values()].reduce((sum, set) => sum + set.size, 0); }
+  /** Devices with at least one open session now. */
+  get connectedDeviceIds(): string[] { return [...this.sessions.keys()]; }
   private now(): number { return this.options.now?.() ?? Date.now(); }
 
   /** A one-time key for `connect-key`. The secret lives only in this process. */

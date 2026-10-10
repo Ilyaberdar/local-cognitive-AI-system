@@ -19,9 +19,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const keep = process.argv.includes("--keep");
 const distro = process.argv.includes("--distro") ? process.argv[process.argv.indexOf("--distro") + 1] : "fedora";
 const DISTROS = {
-  fedora: ["FROM fedora:42", "RUN dnf -y install systemd procps-ng openssl tar gzip python3 shadow-utils util-linux findutils curl && dnf clean all"],
+  fedora: ["FROM fedora:42", "RUN dnf -y install systemd procps-ng openssl tar gzip python3 shadow-utils util-linux util-linux-script findutils curl && dnf clean all"],
   ubuntu: ["FROM ubuntu:24.04", "RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv openssl ca-certificates curl python3 procps && rm -rf /var/lib/apt/lists/*"]
 };
+// systemd-binfmt in a privileged container flushes the host's binfmt_misc handlers (Docker Desktop's
+// x86-64 emulation, a CI host's QEMU): never let it run.
+const NO_BINFMT = "RUN systemctl mask systemd-binfmt.service proc-sys-fs-binfmt_misc.automount proc-sys-fs-binfmt_misc.mount";
 if (!DISTROS[distro]) { console.error(`--distro is one of ${Object.keys(DISTROS).join(", ")}`); process.exit(64); }
 const VERSION = "0.1.0-installtest.1";
 const IMAGE = `lc-install-test-${distro}`;
@@ -81,7 +84,7 @@ try {
   check(installer.includes(`RELEASE_KEYS="${keyIdOf(raw)}:${raw.toString("base64url")}"`), "the published installer carries the release key");
 
   console.log(`Starting ${distro} with systemd…`);
-  docker(["build", "-q", "-t", IMAGE, "-"], { input: [...DISTROS[distro], 'CMD ["/sbin/init"]'].join("\n") });
+  docker(["build", "-q", "-t", IMAGE, "-"], { input: [...DISTROS[distro], NO_BINFMT, 'CMD ["/sbin/init"]'].join("\n") });
   docker(["run", "-d", "--name", CONTAINER, "--privileged", "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/tmp", IMAGE]);
   for (let waited = 0; ; waited += 1) {
     if (inContainer("systemctl is-system-running 2>/dev/null | grep -Eq 'running|degraded'", { check: false }).status === 0) break;
@@ -114,6 +117,11 @@ try {
   docker(["cp", path.join(out, "server-manifest.json.sig"), `${CONTAINER}:/release/server-manifest.json.sig`]);
   check(inContainer("test ! -e /opt/local-cognitive && ! id local-cognitive 2>/dev/null", { check: false }).status === 0, "nothing was installed by the refused attempts");
 
+  if (distro === "ubuntu") {
+    const dash = inContainer("sh /release/install.sh 2>&1", { check: false });
+    check(dash.status === 1 && /Run the installer with bash/.test(dash.output), "run with sh (dash), it says to use bash", dash.output);
+  }
+
   // The real install.
   result = install();
   check(result.status === 0 && /is installed and running/.test(result.output) && /Remote is turned off on this server/.test(result.output),
@@ -133,8 +141,19 @@ try {
   check(asUser.status === 78 && /Run: sudo local-cognitive-server status/.test(asUser.output), "another user is told to use sudo", asUser.output);
   const pairOff = inContainer("local-cognitive-server pair --no-wait 2>&1", { check: false });
   check(pairOff.status !== 0 && /Remote is (turned )?off|not connected/i.test(pairOff.output), "pair explains why it cannot work while Remote is off", pairOff.output);
+  const help = inContainer("local-cognitive-server < /dev/null 2>&1", { check: false });
+  check(help.status === 0 && /Usage: local-cognitive-server/.test(help.output), "without a terminal, the bare command prints the help", help.output);
+  const consoleRun = inContainer("printf 'status\\nexit\\n' | script -qec local-cognitive-server /dev/null | sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g'", { check: false });
+  check(/Welcome to Local Cognitive Server!/.test(consoleRun.output) && /Server +running/.test(consoleRun.output) && /Bye\. The server keeps running\./.test(consoleRun.output),
+    "in a terminal, the bare command opens the console", consoleRun.output);
   const again = install();
   check(again.status === 0 && /already installed/.test(again.output), "running the installer again only says how to update", again.output);
+  check(inContainer("test -f /opt/local-cognitive/.installed", { check: false }).status === 0, "a finished install leaves its marker");
+  // Interrupted before the end (no marker, no unit yet): running the installer again finishes it.
+  inContainer("rm -f /opt/local-cognitive/.installed /etc/systemd/system/local-cognitive.service && systemctl daemon-reload");
+  const resumed = install();
+  check(resumed.status === 0 && /Finishing an installation that was interrupted/.test(resumed.output) && /is installed and running/.test(resumed.output)
+    && inContainer("systemctl is-active local-cognitive", { check: false }).output.trim() === "active", "an interrupted install is finished by running it again", resumed.output);
   const restart = inContainer("local-cognitive-server restart && sleep 3 && systemctl is-active local-cognitive", { check: false });
   check(restart.output.trim().endsWith("active"), "sudo local-cognitive-server restart", restart.output);
 

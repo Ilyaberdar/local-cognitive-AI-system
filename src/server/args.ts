@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -34,7 +34,7 @@ export interface ServerArgs {
   yes: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -43,6 +43,7 @@ Commands:
   start     Run the server in the foreground (systemd or a terminal)
   status    Show whether the server runs and what it is doing
   drain     Finish accepted work, then stop the server
+  console                The interactive console (as root): status, live view, the commands below
   pair                   Connect a computer: prints a one-time key and waits until it is used
                          (on the computer: Local Cognitive → Remote → Connect; --no-wait, --ttl)
   connect-key            The same as pair, without waiting
@@ -134,7 +135,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,

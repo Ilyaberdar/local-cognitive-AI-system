@@ -4,6 +4,7 @@
 # current release's copy of this script; settings are never read from a file the server's user can
 # change, since admins run it with sudo.
 #
+#   sudo local-cognitive-server               the console: status, a live view and these commands
 #   sudo local-cognitive-server pair          connect a computer (Local Cognitive → Remote → Connect)
 #   sudo local-cognitive-server status        is it running, can computers reach it
 #   sudo local-cognitive-server devices       computers that can connect; revoke-device <id>
@@ -21,6 +22,8 @@ VAULT_KEY_FILE="${LC_VAULT_KEY_FILE:-/etc/local-cognitive/vault.key}"
 
 NODE="$PREFIX/current/node/bin/node"
 CLI="$PREFIX/current/dist/src/server/cli.js"
+# In a terminal, no command opens the console; elsewhere it prints the help.
+if [ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then set -- console; fi
 command="${1:-help}"
 
 need_root() {
@@ -37,9 +40,11 @@ uninstall() {
   need_root "$@"
   echo "Stopping and removing Local Cognitive Server…"
   systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
-  rm -f "/etc/systemd/system/$UNIT.service"
+  rm -f "/etc/systemd/system/$UNIT.service" "/etc/systemd/system/$UNIT.service.d/nvidia.conf"
+  rmdir "/etc/systemd/system/$UNIT.service.d" 2>/dev/null || true
   systemctl daemon-reload || true
   rm -rf "$PREFIX"
+  [ "$(readlink /usr/bin/local-cognitive-server 2>/dev/null)" = /usr/local/bin/local-cognitive-server ] && rm -f /usr/bin/local-cognitive-server
   rm -f /usr/local/bin/local-cognitive-server
   echo "Removed. Kept: the data in $DATA_DIR, the credential key in $VAULT_KEY_FILE and the user $SERVICE_USER."
   echo "To delete them too: sudo rm -rf $DATA_DIR $(dirname "$VAULT_KEY_FILE") && sudo userdel $SERVICE_USER"
@@ -59,15 +64,28 @@ case "$command" in
     exec journalctl -u "$UNIT" -n 200 -f "$@" ;;
   start | stop | restart)
     need_root "$@"
-    exec systemctl "$command" "$UNIT" ;;
+    systemctl "$command" "$UNIT"
+    # `start` in a terminal goes on to the console (not when typed in the console itself).
+    if [ "$command" = start ] && [ -t 0 ] && [ -t 1 ] && [ -z "${LC_IN_CONSOLE:-}" ]; then exec bash "$0" console; fi ;;
+  console)
+    need_root "$@"
+    cd /
+    exec env LOCAL_COGNITIVE_DATA_DIR="$DATA_DIR" "$NODE" "$CLI" console ;;
   uninstall)
     uninstall "$@" ;;
   cuda)
     need_root "$@"
     case "$(uname -m)" in x86_64 | amd64) variant=linux-x64-cuda12 ;; *) variant="linux-$(uname -m)-cuda12" ;; esac
     release=$(readlink -f "$PREFIX/current")
+    command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU ' \
+      || { echo "No working NVIDIA driver: install driver 570 or newer (and reboot after updating it)." >&2; exit 1; }
     grep -q "\"$variant\"" "$release/resources/llama/runtime-manifest.json" 2>/dev/null \
       || { echo "This release has no CUDA runtime for $(uname -m) yet: models run on the CPU." >&2; exit 1; }
+    if [ -x /usr/bin/nvidia-modprobe ] && [ ! -f "/etc/systemd/system/$UNIT.service.d/nvidia.conf" ]; then
+      mkdir -p "/etc/systemd/system/$UNIT.service.d"
+      printf '[Service]\nExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0\n' > "/etc/systemd/system/$UNIT.service.d/nvidia.conf"
+      systemctl daemon-reload
+    fi
     echo "The CUDA runtime includes NVIDIA CUDA libraries, redistributed under the NVIDIA CUDA Toolkit license:"
     echo "  https://docs.nvidia.com/cuda/eula/"
     (cd / && "$NODE" "$release/scripts/prepare-llama-runtime.mjs" --variant "$variant" --destination "$release/resources/llama/$variant")

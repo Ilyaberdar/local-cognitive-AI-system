@@ -78,14 +78,23 @@ export class HostAgent extends EventEmitter {
   }
 
   /** A one-time connection key. The Cloud must know the invitation, so the host must be online. */
-  connectKey(ttlMs: number): { key: string; expiresAt: number; hostId: string; claimed: boolean } {
+  connectKey(ttlMs: number): { key: string; invitationId: string; expiresAt: number; hostId: string; claimed: boolean } {
     if (this.state !== "online" || !this.remote) throw new RemoteOperationError(`The server is not connected to ${this.origin}${this.lastError ? ` (${this.lastError})` : ""}. Try again shortly.`, "offline");
     const invitation = this.remote.createInvitation(ttlMs);
     this.send({ type: "invitation.announce", invitationId: invitation.invitationId, expiresAt: invitation.expiresAt });
-    return { key: invitation.key, expiresAt: invitation.expiresAt, hostId: this.options.store.hostId()!, claimed: Boolean(this.options.store.owner()) };
+    return { key: invitation.key, invitationId: invitation.invitationId, expiresAt: invitation.expiresAt, hostId: this.options.store.hostId()!, claimed: Boolean(this.options.store.owner()) };
   }
 
   devices(): RemoteGrant[] { return this.options.store.grants(); }
+
+  /** Whether a key from connectKey was used, and by which computer. */
+  invitation(invitationId: string) { return this.options.store.invitation(invitationId) ?? { consumed: false }; }
+
+  /** The paired computers connected right now, by name (for the server's console). */
+  connectedDevices(): Array<{ deviceId: string; deviceName?: string }> {
+    const connected = new Set(this.remote?.connectedDeviceIds ?? []);
+    return this.options.store.grants().filter(grant => connected.has(grant.deviceId)).map(({ deviceId, deviceName }) => ({ deviceId, ...(deviceName ? { deviceName } : {}) }));
+  }
 
   /** Revokes locally at once (the host enforces it) and tells the Cloud when online. */
   revokeDevice(deviceId: string): boolean {

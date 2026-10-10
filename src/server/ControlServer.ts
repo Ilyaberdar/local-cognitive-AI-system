@@ -4,11 +4,13 @@ import path from "path";
 import type { Logger } from "../utils/Logger";
 
 export class ControlError extends Error { constructor(message: string, readonly code: string) { super(message); } }
-export type RemoteControlOp = "connect-key" | "devices" | "revoke-device" | "reset-owner";
-export interface RemoteControlRequest { ttlSec?: number; deviceId?: string }
+export type RemoteControlOp = "connect-key" | "invitation" | "devices" | "revoke-device" | "reset-owner";
+export interface RemoteControlRequest { ttlSec?: number; deviceId?: string; invitationId?: string }
 
 export interface ControlHandlers {
   status(): unknown;
+  /** Everything the console shows: status, loaded models, machine metrics, connected computers. */
+  overview?(): unknown;
   /** Pairing administration; errors with a code (ControlError or RemoteOperationError) reach the CLI. */
   remote?(op: RemoteControlOp, request: RemoteControlRequest): Promise<unknown>;
   drain(timeoutSec: number | undefined, progress: (active: number) => void): Promise<{ drained: boolean; remaining: number; elapsedMs: number }>;
@@ -50,10 +52,14 @@ export class ControlServer {
       if (end < 0) return;
       clearTimeout(timer);
       socket.off("data", onData);
-      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string };
+      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string };
       try { request = JSON.parse(buffer.slice(0, end)); } catch { fail("bad_request", "Invalid JSON."); return; }
       if (request.v !== 1) { fail("unsupported_version", "Unsupported control protocol version."); return; }
       if (request.op === "status") { send({ v: 1, ok: true, result: handlers.status() }); socket.end(); return; }
+      if (request.op === "overview") {
+        if (!handlers.overview) { fail("unknown_op", "This server has no overview."); return; }
+        send({ v: 1, ok: true, result: handlers.overview() }); socket.end(); return;
+      }
       if (request.op === "drain") {
         send({ v: 1, ok: true, result: { accepted: true } });
         void handlers.drain(typeof request.timeoutSec === "number" ? request.timeoutSec : undefined, active => send({ event: "drain.progress", active }))
@@ -67,12 +73,14 @@ export class ControlServer {
         socket.resume();
         return;
       }
-      if (["connect-key", "devices", "revoke-device", "reset-owner"].includes(request.op ?? "")) {
+      if (["connect-key", "invitation", "devices", "revoke-device", "reset-owner"].includes(request.op ?? "")) {
         if (!handlers.remote) { fail("remote_off", "Remote is not available on this server."); return; }
         const ttlSec = typeof request.ttlSec === "number" && request.ttlSec >= 60 && request.ttlSec <= 3600 ? request.ttlSec : undefined;
         const deviceId = typeof request.deviceId === "string" && /^[0-9a-f-]{36}$/i.test(request.deviceId) ? request.deviceId : undefined;
+        const invitationId = typeof request.invitationId === "string" && /^[0-9a-f-]{36}$/i.test(request.invitationId) ? request.invitationId : undefined;
         if (request.op === "revoke-device" && !deviceId) { fail("bad_request", "A device id is required."); return; }
-        void handlers.remote(request.op as RemoteControlOp, { ...(ttlSec ? { ttlSec } : {}), ...(deviceId ? { deviceId } : {}) }).then(
+        if (request.op === "invitation" && !invitationId) { fail("bad_request", "An invitation id is required."); return; }
+        void handlers.remote(request.op as RemoteControlOp, { ...(ttlSec ? { ttlSec } : {}), ...(deviceId ? { deviceId } : {}), ...(invitationId ? { invitationId } : {}) }).then(
           result => { send({ v: 1, ok: true, result }); socket.end(); },
           (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
         return;
