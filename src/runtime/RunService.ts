@@ -1,3 +1,5 @@
+import { diagnostics } from "../diagnostics/DiagnosticLog";
+import { errorCategory } from "../diagnostics/errorCategory";
 import { randomUUID } from "crypto";
 import type { ApprovalOperation, ChatAttachment, ChatMessage, ProcessProgressEvent } from "../types";
 import type { Logger } from "../utils/Logger";
@@ -281,7 +283,7 @@ export class RunService {
         requestApproval: operation => this.requestApproval(run, operation)
       });
       this.flush(run);
-      if (result.error) { this.finish(run, "failed", result.error); return; }
+      if (result.error) { diagnostics().record("chat_run.failed", { category: "answer_failed" }); this.finish(run, "failed", result.error); return; }
       const turn = await this.deps.completedTurn?.(sessionId, runId).catch(() => undefined);
       this.finish(run, "completed", undefined, turn);
     } catch (error) {
@@ -290,7 +292,10 @@ export class RunService {
       if (reason === "cancel") this.finish(run, "cancelled");
       else if (reason === "host_shutdown") this.finish(run, "interrupted", "The server stopped while answering.");
       else if (reason === "host_only") this.finish(run, "failed", run.stopReason);
-      else this.finish(run, "failed", error instanceof Error ? error.message : "The answer failed on the server.");
+      else {
+        diagnostics().record("chat_run.failed", { category: errorCategory(error) });
+        this.finish(run, "failed", error instanceof Error ? error.message : "The answer failed on the server.");
+      }
     }
   }
 

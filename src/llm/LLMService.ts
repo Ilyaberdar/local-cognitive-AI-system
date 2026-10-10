@@ -11,6 +11,9 @@ import { parseJsonDocument, validateStructuredObject } from "./StructuredOutput"
 import { UsageCall, UsageRecorder } from "../usage/UsageCall";
 import { currentUsageScope } from "../usage/UsageScope";
 
+/** Without a ledger (tests, tools) calls are still counted for the technical log. */
+const NO_LEDGER: UsageRecorder = { record: () => undefined };
+
 export class LLMService {
   constructor(
     private readonly registry: LLMRegistry,
@@ -44,12 +47,12 @@ export class LLMService {
     if (targetProviderId !== "llamacpp") onProgress?.({ phase: "waiting", model: request.model ?? provider.defaultModel });
     const effort = request.reasoningEffort ?? currentReasoningEffort();
     // Every request this call sends is recorded, before a cancellation can discard its answer.
-    const usageCall = this.usage ? new UsageCall(this.usage, provider.id, request.model ?? provider.defaultModel ?? "", { ...currentUsageScope(), ...(request.usagePurpose ? { purpose: request.usagePurpose } : {}) }) : undefined;
+    const usageCall = new UsageCall(this.usage ?? NO_LEDGER, provider.id, request.model ?? provider.defaultModel ?? "", { ...currentUsageScope(), ...(request.usagePurpose ? { purpose: request.usagePurpose } : {}) });
     let response: LLMResponse;
     try {
       response = await provider.generateText({ ...request, images, onProgress, ...(effort ? { reasoningEffort: effort } : {}),
         localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() ?? (effort ? localThinkingBudgetForEffort(effort) : undefined),
-        ...(usageCall ? { usageCall } : {}) });
+        usageCall });
     } catch (error) {
       this.endUsage(usageCall, undefined, request);
       throw error;

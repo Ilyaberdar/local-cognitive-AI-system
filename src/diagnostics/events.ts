@@ -14,7 +14,7 @@ export const DIAGNOSTIC_EVENTS = {
   "app.crash": { process: z.enum(["main", "renderer", "gpu", "utility", "other"]), reason: diagnosticCode, exitCode: z.number().int() },
   "renderer.error": { category: diagnosticCode },
   "provider.call_failed": { provider: diagnosticCode, outcome: z.enum(["rejected", "failed", "cancelled"]), httpStatus },
-  "mcp.connection_failed": { transport: z.enum(["stdio", "http"]), code: diagnosticCode },
+  "mcp.connection_failed": { transport: z.enum(["stdio", "streamable-http"]), code: diagnosticCode },
   "mcp.tool_failed": { code: diagnosticCode },
   "remote.client_state": { state: diagnosticCode, code: diagnosticCode },
   "remote.host_event": { event: diagnosticCode, code: diagnosticCode },

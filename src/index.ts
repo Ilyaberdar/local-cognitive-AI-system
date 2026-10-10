@@ -23,6 +23,8 @@ import { hostMigrations } from "./runtime/db/hostSchema";
 import { RemoteHostStore } from "./remote/host/RemoteHostStore";
 import { UsageLedger } from "./usage/UsageLedger";
 import { UsageOutbox } from "./usage/UsageOutbox";
+import { DiagnosticLog, setDiagnosticSink } from "./diagnostics/DiagnosticLog";
+import { errorCategory } from "./diagnostics/errorCategory";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
 import { createChatScrubber, withoutAttachmentData } from "./runtime/chatOperations";
@@ -66,6 +68,8 @@ export interface BackendHandle {
   usage?: UsageLedger;
   /** Sends the ledger to the Cloud once a sender is set (the account's, or the server's). */
   usageOutbox?: UsageOutbox;
+  /** The technical log: event codes only (diagnostics, bug reports). */
+  diagnosticLog: DiagnosticLog;
 }
 
 export interface BackendOptions {
@@ -79,6 +83,10 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   // The short wait covers restarts (tsx watch, app relaunch) of the previous owner.
   const lock = await DataRootLock.acquire(config.appDataDir, options.runtimeKind ?? "server", appVersion(), { waitMs: 3000 });
   if (lock.previousShutdown === "unclean") logger.warn("The previous runtime did not shut down cleanly", { kind: lock.previousOwner?.kind });
+  const diagnosticLog = new DiagnosticLog(path.join(config.appDataDir, "diagnostics"));
+  setDiagnosticSink(diagnosticLog);
+  diagnosticLog.record("app.started", { runtimeKind: options.runtimeKind ?? "server", previousShutdown: lock.previousShutdown });
+  const failed = (error: unknown) => { diagnosticLog.record("startup.failed", { category: errorCategory(error) }); diagnosticLog.flush(); };
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
   // host.db: the server's durable runs, and every runtime's usage ledger.
   let database: HostDatabase | undefined;
@@ -95,14 +103,14 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, { ...integrations, ...(usage ? { usage } : {}) });
   let runtime;
   try { runtime = await runtimeManager.init(); }
-  catch (error) { usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
+  catch (error) { failed(error); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = runtime.sessionIndexStore;
   // The server keeps chat turns durable across disconnects and restarts (R4); the desktop does not yet.
   let host: HostServices | undefined;
   if (options.runtimeKind === "server") {
     try { host = openHostServices(database!, config, runtimeManager, sessionIndexStore); }
-    catch (error) { await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
+    catch (error) { failed(error); await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   }
 
   let server: Server | undefined;
@@ -119,6 +127,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     await runtimeManager.dispose();
     usageOutbox?.stop();
     database?.close();
+    diagnosticLog.flush();
     server?.closeAllConnections();
     await closed;
     lock.release();
@@ -222,8 +231,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting();
     try { runtimeManager.getRuntime().synthesis.stopAccepting(); } catch { /* Runtime not built. */ } };
   const interruptActiveWork = () => processRunRegistry.cancelAll() + (host?.runService.interruptAll() ?? 0);
-  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}), ...(usageOutbox ? { usageOutbox } : {}) };
-  } catch (error) { await dispose(); throw error; }
+  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}), ...(usageOutbox ? { usageOutbox } : {}), diagnosticLog };
+  } catch (error) { failed(error); await dispose(); throw error; }
 };
 
 /** What the engine is told about a paired device's turn: it is a device's (never full access), its

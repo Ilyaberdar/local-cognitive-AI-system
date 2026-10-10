@@ -1,3 +1,4 @@
+import { diagnostics } from "../../diagnostics/DiagnosticLog";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { connectTimeoutMs, MAX_CALL_MS, parseMcpConfiguration, requestTimeoutMs } from "./configuration";
@@ -363,6 +364,7 @@ export class McpClientManager implements McpClientService {
             safe.code === "cancelled" ? "disconnected" : "error";
           entry.status.error = safe.toJSON();
           if (safe.detail) entry.status.diagnostic = safe.detail;
+          if (safe.code !== "cancelled") diagnostics().record("mcp.connection_failed", { transport: entry.server.transport, code: safe.code });
           this.emitStatus(entry);
           entry.retiring = entry.initializing?.then(() => {}, () => {});
           if (connection) await this.close(connection);
@@ -423,6 +425,7 @@ export class McpClientManager implements McpClientService {
     entry.status.state = error.code === "authentication_required" ? "authentication-required" : "error";
     entry.status.error = error.toJSON();
     if (error.detail) entry.status.diagnostic = error.detail; else delete entry.status.diagnostic;
+    diagnostics().record("mcp.connection_failed", { transport: entry.server.transport, code: error.code });
     this.emitStatus(entry);
     entry.retiring = connection ? this.close(connection) : undefined;
     if (error.retryable) this.scheduleRetry(entry);

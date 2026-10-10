@@ -1,3 +1,4 @@
+import { diagnostics } from "../diagnostics/DiagnosticLog";
 import fs from "fs/promises";
 import path from "path";
 import net from "net";
@@ -103,13 +104,14 @@ export class LlamaCppRuntime {
     const append = (chunk: Buffer) => { this.logTail = (this.logTail + chunk.toString("utf8")).slice(-65536); };
     child.stderr?.on("data", append); child.stdout?.on("data", append);
     child.once("error", (error) => { if (this.child === child) this.setState("error", `Local runtime failed to start: ${error.message}`); });
-    child.once("exit", (code) => {
+    child.once("exit", (code, signal) => {
       // A SIGKILL of the guardian must not leave a second native model consuming memory.
       if (nativePid) this.nativeCleanup = this.terminateNative(nativePid);
       if (this.child !== child) return;
       this.child = undefined; this.endpoint = undefined; this.effectiveContextSize = undefined;
       if (this.state !== "stopping") {
         this.setState("error", `Local runtime exited (${code ?? "signal"}).\n${this.logTail}`);
+        diagnostics().record("local_runtime.exited", { ...(code !== null ? { exitCode: code } : {}), ...(signal ? { signal: signal.toLowerCase() } : {}) });
         this.logger.warn("Local inference runtime exited", { code, modelId });
       }
     });

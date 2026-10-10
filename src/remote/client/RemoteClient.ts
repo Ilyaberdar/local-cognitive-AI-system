@@ -1,3 +1,4 @@
+import { diagnostics } from "../../diagnostics/DiagnosticLog";
 import { EventEmitter } from "events";
 import WebSocket from "ws";
 import type { CredentialVault } from "../../plugins/contracts";
@@ -309,6 +310,7 @@ export class RemoteClient extends EventEmitter {
   }
 
   private set(status: RemoteStatus): void {
+    if (status.error && status.error.code !== this.current?.error?.code) diagnostics().record("remote.client_state", { state: status.state, code: status.error.code });
     this.current = status;
     this.emit("change", status);
   }

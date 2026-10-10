@@ -207,6 +207,10 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
     backendHandle = await startBackend(runtime.appRoot, vault);
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
+    // A window's or helper process's crash, as codes in the technical log (never a dump of its memory here).
+    const crashed = (process, details) => { if (details.reason !== "clean-exit") backendHandle.diagnosticLog.record("app.crash", { process, reason: details.reason, exitCode: details.exitCode }); };
+    app.on("render-process-gone", (_event, _contents, details) => crashed("renderer", details));
+    app.on("child-process-gone", (_event, details) => crashed(details.type === "GPU" ? "gpu" : details.type === "Utility" ? "utility" : "other", details));
     await waitForServer(runtime.url);
     await createWindow(runtime.url);
     const { isDeepLinkArgument } = require("./account.cjs");

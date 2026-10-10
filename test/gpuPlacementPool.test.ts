@@ -8,6 +8,7 @@ import { LocalRuntimePool } from "../src/local/LocalRuntimePool";
 import type { ModelMemoryEstimate } from "../src/local/ModelCompatibility";
 import { LocalModelError, type LocalModelOptions } from "../src/local/types";
 import { Logger } from "../src/utils/Logger";
+import { setDiagnosticSink } from "../src/diagnostics/DiagnosticLog";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 const estimate = (weightsMiB: number): ModelMemoryEstimate => ({ layers: 40, weightsBytes: weightsMiB * MiB, projectorBytes: 0, kvCacheBytes: 0,
@@ -60,6 +61,9 @@ test("two models load one at a time and land on different GPUs", async t => {
 });
 
 test("an out-of-memory load is retried once with the next placement", async t => {
+  const recorded: unknown[] = [];
+  setDiagnosticSink({ record: (event, fields) => { recorded.push([event, fields]); } });
+  t.after(() => setDiagnosticSink(undefined));
   process.env.FAKE_OOM_ON = "GPU-a";
   const f = await setup(t, "Available devices:\n  CUDA0: NVIDIA Fake (8192 MiB, 8192 MiB free)\n  CUDA1: NVIDIA Fake (8192 MiB, 8192 MiB free)\n");
   // Fits a single GPU by estimate, but the first GPU reports out of memory.
@@ -69,6 +73,8 @@ test("an out-of-memory load is retried once with the next placement", async t =>
   assert.equal(launches.length, 2);
   assert.equal(snapshotFor()?.placement?.kind, "multi-gpu");
   assert.equal(snapshotFor()?.placement?.retried, true);
+  assert.deepEqual(recorded, [["local_runtime.exited", { exitCode: 1 }], ["local_runtime.oom_retry", { placement: "single-gpu" }]],
+    "the technical log has the failed start and the retry, as codes");
 });
 
 test("a model that fits nowhere is refused with options and nothing is unloaded", async t => {

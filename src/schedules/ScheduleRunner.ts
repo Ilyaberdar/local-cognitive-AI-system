@@ -1,3 +1,4 @@
+import { diagnostics } from "../diagnostics/DiagnosticLog";
 import { Logger } from "../utils/Logger";
 import { ScheduleService } from "./ScheduleService";
 
@@ -44,6 +45,7 @@ export class ScheduleRunner {
 
       for (const result of results) {
         if (result.error) {
+          diagnostics().record("schedule.failed", { category: "run_failed" });
           this.logger.warn("Scheduled task run failed", {
             scheduleId: result.scheduleId,
             taskId: result.taskId,
