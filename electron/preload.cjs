@@ -57,6 +57,20 @@ contextBridge.exposeInMainWorld("desktopDiagnostics", {
 });
 
 // Report a bug: previews here, the screenshot and the server's diagnostics stay in the main process.
+// Updates: their state and the user's actions; downloads and installers stay in the main process.
+contextBridge.exposeInMainWorld("desktopUpdates", {
+  state: () => ipcRenderer.invoke("updates:state"),
+  check: () => ipcRenderer.invoke("updates:check"),
+  download: () => ipcRenderer.invoke("updates:download"),
+  cancel: () => ipcRenderer.invoke("updates:cancel"),
+  install: confirmed => ipcRenderer.invoke("updates:install", confirmed === true),
+  onChange: callback => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("updates:changed", listener);
+    return () => ipcRenderer.removeListener("updates:changed", listener);
+  }
+});
+
 contextBridge.exposeInMainWorld("desktopBugReport", {
   capture: () => ipcRenderer.invoke("bugReport:capture"),
   prepare: request => ipcRenderer.invoke("bugReport:prepare", request),

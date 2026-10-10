@@ -55,6 +55,19 @@ export function renderMarkdown(value) {
   })}</div>`;
 }
 
+// Release notes come from GitHub as HTML: their own sanitizer (its hook must not touch chat markdown),
+// text formatting and https links only, no images (no requests from the notes).
+const notesPurify = DOMPurify(window);
+notesPurify.addHook("afterSanitizeAttributes", node => {
+  if (node.tagName === "A") { node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); }
+});
+export function renderReleaseNotes(html) {
+  return notesPurify.sanitize(String(html ?? "").slice(0, 65536), {
+    ALLOWED_TAGS: ["h1", "h2", "h3", "h4", "p", "ul", "ol", "li", "strong", "em", "b", "i", "code", "pre", "blockquote", "a", "br", "hr"],
+    ALLOWED_ATTR: ["href", "target", "rel"], ALLOWED_URI_REGEXP: /^https:\/\//i, ALLOW_DATA_ATTR: false
+  });
+}
+
 export function bindMarkdownActions(root) {
   root.addEventListener("click", async event => {
     const button = event.target.closest?.("[data-code-copy]");

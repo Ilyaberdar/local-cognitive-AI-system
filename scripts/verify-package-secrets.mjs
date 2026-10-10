@@ -65,6 +65,15 @@ const scan = (appDir) => {
       }
     }
   }
+  // The updater's feed (Resources/app-update.yml, beside the app) is copied from build.publish: a
+  // token there would ship to every user, and a private feed needs one.
+  const feed = path.join(path.dirname(appDir), "app-update.yml");
+  if (fs.existsSync(feed)) {
+    const text = fs.readFileSync(feed, "utf8");
+    for (const [name, pattern] of [...patterns, ["update feed token", /^\s*token\s*:/m], ["private update feed", /^\s*private\s*:\s*true/m]]) {
+      if (pattern.test(text)) findings.push(`app-update.yml: ${name}`);
+    }
+  }
   return findings;
 };
 

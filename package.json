@@ -58,6 +58,7 @@
     "cross-spawn": "^7.0.6",
     "dompurify": "3.4.16",
     "dotenv": "^16.4.5",
+    "electron-updater": "6.8.10",
     "express": "^4.21.2",
     "highlight.js": "11.12.0",
     "mammoth": "1.12.3",
@@ -150,7 +151,8 @@
       },
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "artifactName": "Local-Cognitive-${version}-${arch}-mac.${ext}"
     },
     "win": {
       "target": [
@@ -181,7 +183,8 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Local-Cognitive-Setup-${version}.${ext}"
     },
     "extraResources": [
       {
@@ -207,7 +210,11 @@
       "grantFileProtocolExtraPrivileges": false,
       "resetAdHocDarwinSignature": true
     },
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "Ilyaberdar",
+      "repo": "local-cognitive-AI-system"
+    }
   },
   "optionalDependencies": {
     "electron-liquid-glass": "1.1.1"

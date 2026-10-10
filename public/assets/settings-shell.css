@@ -485,3 +485,16 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
   font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .report-screenshot { display: block; max-width: min(480px, 100%); border: 1px solid var(--line); border-radius: 9px; }
 .report-id { user-select: all; }
+
+/* Settings → About → Updates */
+.updates-panel { margin-top: 18px; display: grid; gap: 10px; }
+.updates-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+.updates-progress { width: 100%; height: 6px; appearance: none; border: 0; border-radius: 999px; overflow: hidden; background: var(--surface-2, rgba(127, 127, 127, 0.18)); }
+.updates-progress::-webkit-progress-bar { background: var(--surface-2, rgba(127, 127, 127, 0.18)); border-radius: 999px; }
+.updates-progress::-webkit-progress-value { background: var(--accent, #4f8cff); border-radius: 999px; transition: width 0.2s ease; }
+.updates-notes { border: 1px solid var(--border, rgba(127, 127, 127, 0.22)); border-radius: 12px; padding: 10px 14px; }
+.updates-notes summary { cursor: pointer; font-weight: 600; }
+.updates-notes section { margin-top: 10px; }
+.updates-notes h4 { margin: 0 0 4px; font-size: 13px; }
+.updates-notes-body { max-height: 260px; overflow: auto; font-size: 13px; line-height: 1.5; }
+.updates-notes-body pre { white-space: pre-wrap; }

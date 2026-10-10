@@ -56,6 +56,24 @@ test("the release gate refuses an unsigned Windows installer and a directory wit
   assert.doesNotMatch(unverified.output, /no Authenticode signature/);
 });
 
+test("the release gate checks the updater's feed: every file it names is here, under that name, with its size and sha512", async t => {
+  const { createHash } = await import("node:crypto");
+  const directory = releaseDir(t);
+  const zip = Buffer.from("the update");
+  fs.writeFileSync(path.join(directory, "Local-Cognitive-0.1.0-arm64-mac.zip"), zip);
+  const sha512 = createHash("sha512").update(zip).digest("base64");
+  const feed = (url: string, hash = sha512, size = zip.length) => fs.writeFileSync(path.join(directory, "latest-mac.yml"),
+    `version: 0.1.0\nfiles:\n  - url: ${url}\n    sha512: ${hash}\n    size: ${size}\npath: ${url}\nsha512: ${hash}\nreleaseDate: '2026-10-10T00:00:00.000Z'\n`);
+  feed("Local-Cognitive-0.1.0-arm64-mac.zip");
+  assert.doesNotMatch(verify(directory).output, /latest-mac\.yml\n\s+/, "a matching feed has no problems");
+  feed("Local Cognitive-0.1.0-arm64-mac.zip");
+  assert.match(verify(directory).output, /✗ .*latest-mac\.yml\n\s+Local Cognitive-0\.1\.0-arm64-mac\.zip: not here under that name/);
+  feed("Local-Cognitive-0.1.0-arm64-mac.zip", createHash("sha512").update("other").digest("base64"));
+  assert.match(verify(directory).output, /the sha512 differs/);
+  feed("Local-Cognitive-0.1.0-arm64-mac.zip", sha512, 3);
+  assert.match(verify(directory).output, /the size differs/);
+});
+
 test("the release gate refuses an ad-hoc signed macOS app, with each reason", { skip: process.platform !== "darwin" }, async t => {
   const directory = releaseDir(t);
   const app = path.join(directory, "mac-arm64", "Demo.app");
