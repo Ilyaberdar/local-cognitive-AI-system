@@ -13,6 +13,9 @@ const devVault = require("../dist/src/security/devVault.js").usesDevVault({ isPa
 // with this flag by another program would otherwise hand its Keychain secrets to a readable file.
 if (devVault && process.argv.includes("--migrate-dev-vault")) { require("./migrate-dev-vault.cjs").migrateDevVault(); return; }
 if (devVault) app.commandLine.appendSwitch("use-mock-keychain");
+// Windows: the app's data (models of tens of GB, the CUDA runtime) belongs in the local profile, not
+// the roaming one that a company network copies at sign-in. Set before anything reads it.
+if (process.platform === "win32" && process.env.LOCALAPPDATA && !process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.join(process.env.LOCALAPPDATA, app.getName()));
 // First: the native crash handler starts before the app is ready (reports only with consent).
 const sentry = require("./sentry.cjs").startSentry();
 
@@ -83,6 +86,8 @@ const configureRuntimeEnvironment = async () => {
   process.env.LLAMA_RUNTIME_DIR = path.join(resourceRoot, "llama", `${process.platform}-${process.arch}`);
   process.env.LOCAL_MODEL_CATALOG_PATH = path.join(resourceRoot, "models", "recommended.json");
   process.env.LOCAL_MODELS_DIR = path.join(dataRoot, "models");
+  // Windows: the CUDA build the app downloads on request (resources are read-only and replaced by updates).
+  if (process.platform === "win32") process.env.LLAMA_RUNTIMES_DIR = path.join(dataRoot, "runtimes", "llama");
   process.env.APP_DATA_DIR = path.join(dataRoot, "app");
   process.env.MEMORY_DIR = path.join(dataRoot, "memory");
   // Its default is relative to the working directory, which is inside the signed app.

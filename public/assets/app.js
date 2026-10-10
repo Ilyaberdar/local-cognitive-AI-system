@@ -7,6 +7,7 @@ import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createQuickReport } from "./quick-report.js";
 import { createUpdatePill } from "./updates-ui.js";
+import { createCudaOffer } from "./gpu-runtime-ui.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuidance, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
@@ -532,7 +533,7 @@ serverSettings = createServerSettings({ target: chatTarget,
   onChange: () => settingsShell.targetChanged(),
   // The server's chat models and its Models tab read what was just saved.
   onSaved: () => { chatTarget.invalidateModels(); serverModels?.settingsChanged(); } });
-const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput, account: accountState,
+const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput, account: accountState, request,
   // Host pages follow the selected server (`server`); appearance, profile and the rest stay this device's.
   getContext: () => ({ ...state.bootstrap, route: state.route, server: serverSettings?.source(),
     useThisComputer: () => switchChatTarget("local", { route: "settings" }) }),
@@ -562,6 +563,9 @@ window.desktopBugReport?.onOpen?.(() => { location.hash = "#/settings/report-bug
 
 // The top bar's button while an update waits (desktop app only); the update notification opens the same page.
 const updatePill = createUpdatePill({ onOpen: () => { location.hash = "#/settings/about"; } });
+
+// Windows with an NVIDIA GPU: the CUDA runtime is offered once, after the app has looked for the GPU.
+if (window.desktopUpdates) createCudaOffer({ request });
 
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");

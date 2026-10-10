@@ -16,6 +16,25 @@ export interface LocalModelOptions {
   /** Backend chosen by the headless server (`start --inference`); absent on the desktop. */
   inference?: { preference: "auto" | "cuda" | "cpu"; fallbackReason?: string };
   multiGpu?: MultiGpuSettings;
+  /** Where the desktop app keeps runtimes it downloads (Windows: the CUDA build); absent on the server. */
+  runtimesDir?: string;
+}
+
+/** The Windows desktop app's GPU acceleration: the NVIDIA GPU found and the CUDA runtime offered for it. */
+export interface GpuAccelerationSnapshot {
+  gpu?: { name: string; driver: string; computeCapability?: string; memoryBytes?: number; count: number };
+  cuda: {
+    state: "unavailable" | "available" | "downloading" | "installing" | "installed" | "failed" | "removing";
+    /** Why CUDA cannot be installed here (no NVIDIA GPU, an old driver), or why it failed. */
+    reason?: string;
+    variant?: string;
+    downloadBytes?: number;
+    installedBytes?: number;
+    progress?: { receivedBytes: number; totalBytes: number; bytesPerSecond?: number };
+    /** Offer CUDA once (first launch): until it is installed or declined. */
+    offer: boolean;
+    license: { name: string; url: string };
+  };
 }
 
 export interface ModelArtifact {
@@ -168,6 +187,8 @@ export interface LocalRuntimeSnapshot {
   runtimeId?: string;
   /** Why models run on the CPU although a GPU runtime was wanted. */
   fallbackReason?: string;
+  /** Windows desktop: the NVIDIA GPU and its CUDA runtime. */
+  acceleration?: GpuAccelerationSnapshot;
 }
 
 export interface LocalModelStorageSnapshot {

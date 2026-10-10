@@ -27,6 +27,13 @@ export const createLocalModelRouter = (getService: () => LocalModelService): Rou
   router.delete("/local/models/:libraryId", route(async (req, res) => { await getService().deleteModel(String(req.params.libraryId)); res.json({ ok: true }); }));
   router.post("/local/models/:libraryId/projector", route(async (req, res) => res.json(await getService().attachProjector(String(req.params.libraryId), string(req.body?.path, "path")))));
   router.get("/local/runtime", route(async (_req, res) => res.json(await getService().refreshSnapshot())));
+  // Windows desktop: the CUDA build (the license is accepted in the window; host only, never a paired device).
+  const acceleration = () => getService().snapshot().runtime.acceleration;
+  router.post("/local/runtime/cuda/install", route(async (req, res) => { await getService().installCuda(req.body?.license); res.status(202).json(acceleration()); }));
+  router.post("/local/runtime/cuda/cancel", route(async (_req, res) => { getService().cancelCuda(); res.json(acceleration()); }));
+  router.delete("/local/runtime/cuda", route(async (_req, res) => { await getService().removeCuda(); res.json(acceleration()); }));
+  router.post("/local/runtime/cuda/dismiss", route(async (_req, res) => { await getService().dismissCudaOffer(); res.json(acceleration()); }));
+  router.post("/local/runtime/gpu/detect", route(async (_req, res) => { await getService().detectGpu(); res.json(acceleration()); }));
   router.get("/local/events", (req, res) => {
     res.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" }); res.flushHeaders();
     const service = getService();

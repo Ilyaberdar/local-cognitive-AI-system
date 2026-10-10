@@ -3,6 +3,7 @@ import { createAccountState, entityPatch, localProfileView, mcpServerCount } fro
 import { mountIntegrationPage } from './plugins-ui.js';
 import { mountUsagePage } from './usage-ui.js';
 import { mountUpdatesPanel } from './updates-ui.js';
+import { mountGpuRuntimePanel } from './gpu-runtime-ui.js';
 import { mountReportBugPage } from './report-bug.js';
 import { openAvatarCropper } from './avatar-crop.js';
 
@@ -47,7 +48,7 @@ const generationFields = [
   ['maxTokens', 'Max response tokens', '1–32,768', '1', '32768', '1']
 ];
 
-export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, captureScroll, restoreScroll, voiceInput, account = createAccountState(window.desktopAccount) }) {
+export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, captureScroll, restoreScroll, voiceInput, account = createAccountState(window.desktopAccount), request }) {
   const root = document.createElement('section');
   root.id = 'settings-root'; root.hidden = true;
   document.body.append(root);
@@ -57,7 +58,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, disposeUpdates, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, disposeUpdates, disposeGpu, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
   const context = () => getContext() || {};
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
@@ -476,7 +477,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'runtime') {
       const generation = specs.find(spec => spec.type === 'local-generation');
       const runtimeSpecs = specs.filter(spec => spec !== generation);
-      return `<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape((server ? server.runtimeStatus() : context().localModels?.runtime?.status) || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(runtimeSpecs, '', generation ? renderGenerationControl() : '');
+      // Windows: GPU acceleration (the CUDA download) belongs to this computer, never to a server.
+      const gpu = !server && context().localModels?.runtime?.acceleration && request ? '<div class="gpu-runtime-panel" data-gpu-runtime-panel></div>' : '';
+      return `${gpu}<div class="settings-runtime-overview"><div class="settings-row"><span>Runtime status</span><span>${escape((server ? server.runtimeStatus() : context().localModels?.runtime?.status) || 'Unavailable')}</span></div><a class="settings-list-row" href="#/models"><span>Manage model library</span>${icon('chevronRight')}</a></div>` + form(runtimeSpecs, '', generation ? renderGenerationControl() : '');
     }
     if (name === 'memory') return form(specs) + (!id ? link('memory/advanced', 'Advanced memory', 'Partition, chunk and adapter parameters') : '');
     if (name === 'mcp' && !id) {
@@ -541,6 +544,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     disposeIntegrations?.(); disposeIntegrations = undefined;
     disposeUsage?.(); disposeUsage = undefined;
     disposeUpdates?.(); disposeUpdates = undefined;
+    disposeGpu?.(); disposeGpu = undefined;
     disposeReport?.(); disposeReport = undefined;
     const [name, id] = page.split('/');
     const server = serverFor(page);
@@ -569,6 +573,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'account') bindAccountPage();
     if (name === 'usage') disposeUsage = mountUsagePage(root.querySelector('[data-usage-page]'));
     if (name === 'about') disposeUpdates = mountUpdatesPanel(root.querySelector('[data-updates-panel]'));
+    if (name === 'runtime' && request) disposeGpu = mountGpuRuntimePanel(root.querySelector('[data-gpu-runtime-panel]'), { request, getRuntime: () => context().localModels?.runtime });
     if (name === 'report-bug') disposeReport = mountReportBugPage(root.querySelector('[data-report-bug-page]'), { mode: context().server ? 'remote' : 'local' });
     if (name === 'mcp' && id === 'import') bindMcpImport();
     else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();

@@ -22,6 +22,7 @@ export const DIAGNOSTIC_EVENTS = {
   "local_runtime.exited": { exitCode: z.number().int(), signal: diagnosticCode },
   "app.update_failed": { stage: z.enum(["check", "download", "install"]), code: diagnosticCode, trigger: z.enum(["user", "background"]) },
   "local_runtime.oom_retry": { placement: diagnosticCode },
+  "local_runtime.install_failed": { backend: diagnosticCode, stage: z.enum(["download", "install", "check", "activate"]), code: diagnosticCode },
   "workflow.failed": { nodeType: diagnosticCode, category: diagnosticCode },
   "chat_run.failed": { category: diagnosticCode },
   "schedule.failed": { category: diagnosticCode },

@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { readFileSync } from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
@@ -11,6 +12,7 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { estimateModelMemory, evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
 import { LocalRuntimePool } from "./LocalRuntimePool";
+import { GpuRuntimeError, GpuRuntimeService } from "./GpuRuntimeService";
 import { inspectModelStorage } from "./ModelStorageInventory";
 import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
 import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact } from "./types";
@@ -36,12 +38,15 @@ export class LocalModelService implements LocalModelManager {
   private storageCheckedAt = 0;
   private storageInspection?: Promise<void>;
   private readonly fileErrors = new Map<string, string>();
+  /** The Windows desktop app's CUDA download; absent on other platforms and on the server. */
+  private readonly gpu?: GpuRuntimeService;
 
-  constructor(private options: LocalModelOptions, private readonly logger: Logger) {
+  constructor(private options: LocalModelOptions, private readonly logger: Logger, gpu?: GpuRuntimeService) {
     this.store = new ModelLibraryStore(options.dataDir, options.modelsDir);
     this.catalog = new HuggingFaceCatalog(options.dataDir);
     this.downloads = new ModelDownloadService(this.store, () => { this.storageCheckedAt = 0; this.emit(); });
-    this.runtime = new LocalRuntimePool(options, logger, () => this.emit());
+    this.gpu = gpu ?? (options.runtimesDir && process.platform === "win32" ? this.createGpuRuntime(options) : undefined);
+    this.runtime = new LocalRuntimePool(this.effective(options), logger, () => this.emit());
     this.scheduler = new LocalInferenceScheduler(() => this.emit());
     this.events.setMaxListeners(30);
   }
@@ -76,6 +81,8 @@ export class LocalModelService implements LocalModelManager {
       }
       await this.catalog.init();
       await this.runtime.init();
+      // An NVIDIA GPU is looked for once, in the background: it decides the CUDA offer.
+      if (this.gpu) void this.gpu.detect().catch(error => this.logger.warn("GPU detection failed", { error: error instanceof Error ? error.message : String(error) }));
       this.freeDiskBytes = await getFreeDiskBytes(this.options.modelsDir);
       if (!this.initializationError) await this.inspectStorage();
       this.emit();
@@ -89,7 +96,7 @@ export class LocalModelService implements LocalModelManager {
     if (JSON.stringify(options) === JSON.stringify(this.options)) return;
     await this.scheduler.runExclusive(async () => {
       if (path.resolve(options.modelsDir) !== path.resolve(this.options.modelsDir)) await this.moveStorage(options);
-      else { await this.runtime.reconfigure(options); this.options = options; }
+      else { await this.runtime.reconfigure(this.effective(options)); this.options = options; }
       this.emit();
     }, this.lifetime.signal);
   }
@@ -113,6 +120,7 @@ export class LocalModelService implements LocalModelManager {
   snapshot(): LocalModelSnapshot {
     const runtime = this.runtime.snapshot();
     runtime.queueLength = this.scheduler.queueLength; runtime.busy = this.scheduler.busy;
+    if (this.gpu) runtime.acceleration = this.gpu.snapshot();
     if (this.initializationError) { runtime.status = "unavailable"; runtime.error = this.initializationError; }
     const models = this.store.listModels().map((model): LibraryModel => {
       const current = this.runtime.forModel(model.id);
@@ -461,7 +469,7 @@ export class LocalModelService implements LocalModelManager {
       for (const model of models) await copyOwnedFolder(oldStore.modelDirectory(model.id), nextStore.modelDirectory(model.id), allModelArtifacts(model), false);
       for (const job of pendingJobs) await copyOwnedFolder(oldStore.stagingDirectory(job.id), nextStore.stagingDirectory(job.id), allModelArtifacts(job), true);
       this.lifetime.signal.throwIfAborted();
-      await this.runtime.reconfigure(options);
+      await this.runtime.reconfigure(this.effective(options));
       this.store = nextStore; this.options = options;
       this.downloads = new ModelDownloadService(nextStore, () => { this.storageCheckedAt = 0; this.emit(); });
       this.storageCheckedAt = 0;
@@ -474,11 +482,61 @@ export class LocalModelService implements LocalModelManager {
         for (const folder of created.reverse()) await fs.rm(folder, { recursive: true, force: true }).catch(() => {});
         await nextStore.dispose();
         this.downloads = new ModelDownloadService(oldStore, () => { this.storageCheckedAt = 0; this.emit(); });
-        await this.runtime.reconfigure(this.options);
+        await this.runtime.reconfigure(this.effective(this.options));
       }
       throw error;
     } finally { this.switchingStorage = false; }
   }
+  /** The runtime models use: a downloaded CUDA build when one is installed and working, else the
+   * bundled build (a development override of the executable always wins). Settings never choose it. */
+  private effective(options: LocalModelOptions): LocalModelOptions {
+    const cuda = options.executablePath ? undefined : this.gpu?.activeRuntimeDir();
+    return cuda ? { ...options, runtimeDir: cuda } : options;
+  }
+
+  private createGpuRuntime(options: LocalModelOptions): GpuRuntimeService {
+    let manifest: unknown;
+    try { manifest = JSON.parse(readFileSync(path.join(path.dirname(options.runtimeDir), "runtime-manifest.json"), "utf8")); } catch { manifest = undefined; }
+    return new GpuRuntimeService({ runtimesDir: options.runtimesDir!, bundledRuntimeDir: options.runtimeDir, manifestFile: path.join(path.dirname(options.runtimeDir), "runtime-manifest.json"),
+      dataDir: options.dataDir, changed: () => this.emit(), activate: () => this.activateRuntime() }, manifest);
+  }
+
+  /** After the CUDA build was installed or removed: models move to the runtime now chosen, and the
+   * loaded ones load again once their requests finish. A CUDA build that sees no CUDA device leaves
+   * them on the bundled build, with the reason shown. */
+  async activateRuntime(): Promise<void> {
+    await this.init();
+    await this.scheduler.runExclusive(async () => {
+      const loaded = this.runtime.snapshot().loadedModelIds ?? [];
+      await this.runtime.reconfigure(this.effective(this.options));
+      const problem = await this.gpu?.problem();
+      if (problem) {
+        await this.gpu!.markFailed(problem);
+        await this.runtime.reconfigure(this.effective(this.options));
+      }
+      for (const id of loaded) {
+        try { await this.ensureLoaded(id, this.lifetime.signal); }
+        catch (error) { this.logger.warn("A model did not load again after the runtime changed", { modelId: id, error: error instanceof Error ? error.message : String(error) }); }
+      }
+      this.emit();
+    }, this.lifetime.signal);
+  }
+
+  private gpuRuntime(): GpuRuntimeService {
+    if (!this.gpu) throw new LocalModelError("GPU acceleration downloads are part of the Windows app.", 404, "gpu_runtime_unsupported");
+    return this.gpu;
+  }
+  private static gpuError(error: unknown): never {
+    if (error instanceof GpuRuntimeError) throw new LocalModelError(error.message, error.code === "license_required" ? 400 : 409, error.code);
+    throw error;
+  }
+  /** Starts the CUDA download after the user agreed to NVIDIA's license; progress comes with the snapshot. */
+  async installCuda(license: unknown): Promise<void> { await this.init(); await this.gpuRuntime().install(license).catch(LocalModelService.gpuError); }
+  cancelCuda(): void { this.gpuRuntime().cancel(); }
+  async removeCuda(): Promise<void> { await this.init(); await this.gpuRuntime().remove().catch(LocalModelService.gpuError); }
+  async dismissCudaOffer(): Promise<void> { await this.gpuRuntime().dismissOffer(); }
+  async detectGpu(): Promise<void> { await this.gpuRuntime().detect(); }
+
   private assertLibrary(): void { if (this.initializationError) throw new LocalModelError(this.initializationError, 503, "library_unavailable"); if (this.switchingStorage) throw new LocalModelError("The model library is being moved. Wait for the storage change to finish.", 409, "storage_moving"); if (this.lifetime.signal.aborted) throw new LocalModelError("The local model service is shutting down.", 503); }
   private emit(): void {
     if (!this.scheduler || !this.runtime) return;

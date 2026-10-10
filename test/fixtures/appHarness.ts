@@ -27,6 +27,9 @@ const bootstrap = () => ({
   availableModels: [], loadedModels: [{ providerId: "ollama", id: "llama3.2" }], allManagedModels: [], localModels: { runtime: { status: "stopped" } }, systemMetrics: {}
 });
 
+/** The bootstrap a test starts from when it changes only part of it. */
+export const defaultBootstrap = () => bootstrap();
+
 export const flush = async (turns = 20) => { for (let index = 0; index < turns; index++) await new Promise(resolve => setTimeout(resolve, 0)); };
 
 export interface Harness {
