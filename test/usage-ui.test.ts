@@ -44,7 +44,7 @@ test("periods, Monday weeks and a cumulative line from one year of days", () => 
 test("the page: lifetime, the period, Token Activity, where it ran; a connected server adds its unsent part", async () => {
   const requests: unknown[][] = [];
   const remote = {
-    status: async () => ({ ok: true, value: { state: "connected", hostId: "host-1", hostName: "fedora", capabilities: ["usage.pending"] } }),
+    status: async () => ({ ok: true, value: { state: "online", hostId: "host-1", hostName: "fedora", capabilities: ["usage.pending"] } }),
     runtime: { request: async (op: string, payload: unknown, hostId: string) => { requests.push([op, payload, hostId]);
       return { ok: true, value: { available: true, name: "fedora", unsent: 2, lifetime: totals(46, { requests: 2 }), before: totals(0, { requests: 0 }), days: [{ date: "2026-10-09", ...totals(46) }], firstEventAt: "2026-10-09T17:00:00.000Z" } }; } }
   };

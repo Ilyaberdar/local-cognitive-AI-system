@@ -11,7 +11,7 @@ const bundle = buildSync({ entryPoints: ["public/assets/report-bug.js"], bundle:
 const prepared = (reportId: string): PreparedReport => ({
   reportId, createdAt: "2026-10-10T08:00:00.000Z", appVersion: "0.1.0",
   diagnostics: { client: clientDiagnostics({ versions: { electron: "35.1.0", chrome: "134.0" }, osVersion: "15.4", signedIn: true, modeHint: "remote",
-    remote: { state: "connected", serverVersion: "0.1.0", capabilities: ["a", "b"], hostName: "fedora-secret" } as never }), runtime: { runtimeKind: "desktop" } },
+    remote: { state: "online", serverVersion: "0.1.0", capabilities: ["a", "b"], hostName: "fedora-secret" } as never }), runtime: { runtimeKind: "desktop" } },
   log: [{ at: "2026-10-10T07:00:00.000Z", event: "provider.call_failed", fields: { httpStatus: 401 }, n: 1 }],
   screenshot: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
   server: { snapshot: { runtimeKind: "server" } }
