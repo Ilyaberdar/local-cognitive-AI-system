@@ -22,9 +22,12 @@ const OUT_OF_MEMORY = /out of memory|ErrorOutOfDeviceMemory|unable to allocate \
  * does not know (files made for a modified llama.cpp, such as Prism ML's PQ2_0) or an architecture
  * it does not support yet. */
 export const incompatibleModel = (log: string): string | undefined => {
-  const type = /tensor '[^']*' has invalid ggml type (\d{1,5})/.exec(log)?.[1];
+  const type = /tensor '[^']*' has invalid ggml type (\d{1,5})/.exec(log)?.[1]
+    // A type llama.cpp removed keeps its id with block size 0, so it fails the row check instead.
+    ?? /tensor '[^']*' of type (\d{1,5}) \([^)]*\) has \d+ elements per row, not a multiple of block size \(0\)/.exec(log)?.[1];
   if (type) return `This file stores weights in a format (tensor type ${type}) that the local runtime cannot read. It was made for a modified runtime; choose another file.`;
-  const architecture = /unknown model architecture: '([\w.-]{1,40})'/.exec(log)?.[1];
+  // Unknown to this build, or named but without a model (gptj).
+  const architecture = /(?:unknown|unsupported) model architecture: '([\w.-]{1,40})'/.exec(log)?.[1];
   return architecture ? `The local runtime does not support the ${architecture} model architecture yet.` : undefined;
 };
 

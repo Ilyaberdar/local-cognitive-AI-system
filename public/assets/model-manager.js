@@ -162,7 +162,8 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
   function errorSummary(error) {
     const text = String(typeof error === "string" ? error : error?.message || "Model operation failed.");
     // The runtime's own reason for a file this build cannot run (a server before 0.1.0 sends only its log).
-    const tensorType = /has invalid ggml type (\d{1,5})/.exec(text)?.[1], architecture = /unknown model architecture: '([\w.-]{1,40})'/.exec(text)?.[1];
+    const tensorType = /has invalid ggml type (\d{1,5})/.exec(text)?.[1] ?? /of type (\d{1,5}) \([^)]*\) has \d+ elements per row, not a multiple of block size \(0\)/.exec(text)?.[1];
+    const architecture = /(?:unknown|unsupported) model architecture: '([\w.-]{1,40})'/.exec(text)?.[1];
     if (tensorType) return `This file stores weights in a format (tensor type ${tensorType}) that the local runtime cannot read. It was made for a modified runtime; choose another file.`;
     if (architecture) return `The local runtime does not support the ${architecture} model architecture yet.`;
     if (/has offset .*expected|failed to read tensor data/i.test(text)) return "Model format is incompatible with this runtime, or the file is damaged.";

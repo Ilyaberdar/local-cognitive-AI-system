@@ -156,11 +156,14 @@ export const readGGUFMetadata = async (filePath: string): Promise<GGUFMetadata> 
     const metadata = new Map<string, unknown>();
     for (let index = 0; index < count; index++) {
       const key = await string(); const type = await u32();
-      const keep = /^(general\.(architecture|name|type)|tokenizer\.chat_template|clip\.has_vision_encoder)$|\.(context_length|embedding_length|block_count|nextn_predict_layers|full_attention_interval|attention\.(head_count|head_count_kv|key_length|value_length|recurrent_layers)|ssm\.(conv_kernel|inner_size|state_size|group_count))$/.test(key);
+      const keep = /^(general\.(architecture|name|type)|split\.no|tokenizer\.chat_template|clip\.has_vision_encoder)$|\.(context_length|embedding_length|block_count|nextn_predict_layers|full_attention_interval|attention\.(head_count|head_count_kv|key_length|value_length|recurrent_layers)|ssm\.(conv_kernel|inner_size|state_size|group_count))$/.test(key);
       const item = await value(type, keep);
       if (keep) metadata.set(key, item);
     }
     const architecture = String(metadata.get("general.architecture") ?? "");
+    // Parts 2..N of a split model (llama.cpp's gguf-split) carry only the split keys: part 1 names the model.
+    const splitIndex = metadata.get("split.no");
+    if (!architecture && typeof splitIndex === "number" && splitIndex > 0) return { inspectionVersion: GGUF_INSPECTION_VERSION, version, architecture: "", splitIndex };
     if (!architecture) throw new LocalModelError("The GGUF file does not identify a model architecture.");
     const number = (suffix: string) => { const item = metadata.get(`${architecture}.${suffix}`); return typeof item === "number" && item > 0 ? item : undefined; };
     const recurrent = metadata.get(`${architecture}.attention.recurrent_layers`);

@@ -114,6 +114,9 @@ process.exitCode = 1;
   assert.equal(runtime.status, "stopped"); assert.equal(runtime.snapshot().modelId, undefined, "dismissing the error leaves nothing loaded");
   assert.equal(incompatibleModel("llama_model_load: error loading model: unknown model architecture: 'newarch'"), "The local runtime does not support the newarch model architecture yet.");
   assert.equal(incompatibleModel("ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000.00 MiB on device 0: cudaMalloc failed: out of memory"), undefined);
+  // A type llama.cpp removed (block size 0), and an architecture it names without a model (gptj).
+  assert.match(incompatibleModel("gguf_init_from_reader: tensor 'blk.0.attn_q.weight' of type 4 (q4_2) has 4096 elements per row, not a multiple of block size (0)") ?? "", /tensor type 4\)/);
+  assert.equal(incompatibleModel("llama_model_load: error loading model: unsupported model architecture: 'gptj'"), "The local runtime does not support the gptj model architecture yet.");
 });
 
 test("native runtime uses loopback authentication, unload/reload, and recovers after a process crash", { skip: process.platform === "win32" }, async (t) => {

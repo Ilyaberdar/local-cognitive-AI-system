@@ -96,7 +96,10 @@ export interface CatalogPage {
 export interface GGUFMetadata {
   inspectionVersion?: number;
   version: number;
+  /** Empty for parts 2..N of a split model, which name no architecture (`splitIndex` is set). */
   architecture: string;
+  /** A split model's part after the first (0-based `split.no`). */
+  splitIndex?: number;
   generalType?: string;
   name?: string;
   chatTemplate?: boolean;

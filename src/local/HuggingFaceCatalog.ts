@@ -135,7 +135,8 @@ export const groupVariants = (siblings: NonNullable<HfRecord["siblings"]>): Cata
   }
   return [...groups.entries()].filter(([, group]) => !group.parts || (group.parts === group.files.length && Array.from({ length: group.parts }, (_, index) => index + 1).every((index) => group.indices.has(index))))
     .map(([id, group]) => {
-      const quantization = path.basename(id).match(/(IQ\d(?:_[A-Z0-9]+)*|Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32)/i)?.[1]?.toUpperCase() || "GGUF";
+      // The whole quantization word: a fork's PQ2_0 or PTQ1_0 must not read as llama.cpp's own Q2_0 or Q1_0.
+      const quantization = path.basename(id).match(/(?<![A-Z0-9])([A-Z]*Q\d(?:_[A-Z0-9]+)*|MXFP4|NVFP4|BF16|F16|F32)(?![A-Z0-9])/i)?.[1]?.toUpperCase() || "GGUF";
       return { id, name: quantization, quantization, sizeBytes: group.files.reduce((sum, file) => sum + file.sizeBytes, 0), files: group.files.sort((a, b) => a.path.localeCompare(b.path)) };
     }).sort((a, b) => a.sizeBytes - b.sizeBytes);
 };

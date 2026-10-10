@@ -6,7 +6,7 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { HuggingFaceCatalog, collectProjectors, groupVariants } from "../src/local/HuggingFaceCatalog";
-import { evaluateCompatibility, GGUF_INSPECTION_VERSION } from "../src/local/ModelCompatibility";
+import { evaluateCompatibility, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "../src/local/ModelCompatibility";
 import { LocalModelService } from "../src/local/LocalModelService";
 import { ModelDownloadService } from "../src/local/ModelDownloadService";
 import { ModelLibraryStore } from "../src/local/ModelLibraryStore";
@@ -51,6 +51,34 @@ test("catalog separates DSpark drafters from main weights and vision projectors"
   const catalog = new HuggingFaceCatalog(root, async () => Response.json({ id: "fixture/Bonsai-GGUF", sha: "b".repeat(40), siblings }));
   await catalog.init();
   assert.deepEqual((await catalog.getModel("fixture/Bonsai-GGUF")).variants, variants);
+});
+
+test("a split model's later parts, which name no architecture, read as its parts; fork quantizations keep their own names", async t => {
+  const { root } = await setup(t);
+  const header = (entries: Array<[string, number, Buffer]>) => {
+    const u32 = (n: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
+    const u64 = (n: number) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
+    const string = (text: string) => Buffer.concat([u64(Buffer.byteLength(text)), Buffer.from(text)]);
+    return Buffer.concat([Buffer.from("GGUF"), u32(3), u64(0), u64(entries.length), ...entries.map(([key, type, value]) => Buffer.concat([string(key), u32(type), value])), Buffer.alloc(64)]);
+  };
+  const u16 = (n: number) => { const b = Buffer.alloc(2); b.writeUInt16LE(n); return b; };
+  const i32 = (n: number) => { const b = Buffer.alloc(4); b.writeInt32LE(n); return b; };
+  // What llama.cpp's gguf-split writes into parts 2..N: the split keys and nothing else.
+  const later = path.join(root, "A-Q4_K_M-00002-of-00002.gguf");
+  await fs.writeFile(later, header([["split.no", 2, u16(1)], ["split.count", 2, u16(2)], ["split.tensors.count", 5, i32(0)]]));
+  assert.deepEqual(await readGGUFMetadata(later), { inspectionVersion: GGUF_INSPECTION_VERSION, version: 3, architecture: "", splitIndex: 1 });
+  const first = path.join(root, "A-Q4_K_M-00001-of-00002.gguf");
+  await fs.writeFile(first, header([["split.no", 2, u16(0)], ["split.count", 2, u16(2)]]));
+  await assert.rejects(readGGUFMetadata(first), /does not identify a model architecture/, "the first part must name the model");
+
+  const label = (name: string) => groupVariants([{ rfilename: name, lfs: { size: 1, sha256: "a".repeat(64) } }])[0]?.quantization;
+  assert.equal(label("Ternary-Bonsai-2-27B-PQ2_0.gguf"), "PQ2_0", "Prism ML's own format, not llama.cpp's Q2_0");
+  assert.equal(label("Bonsai-8B-PTQ1_0.gguf"), "PTQ1_0");
+  assert.equal(label("Qwen3.8-27B-UD-Q2_K_XL.gguf"), "Q2_K_XL");
+  assert.equal(label("Llama-3.2-1B-Instruct-IQ4_XS.gguf"), "IQ4_XS");
+  assert.equal(label("gpt-oss-20b-MXFP4.gguf"), "MXFP4");
+  assert.equal(label("Qwen3-0.6B-Q8_0.gguf"), "Q8_0");
+  assert.equal(label("Qwen3-0.6B-BF16.gguf"), "BF16");
 });
 
 test("old pinned catalog caches filter DSpark even when offline", async t => {
