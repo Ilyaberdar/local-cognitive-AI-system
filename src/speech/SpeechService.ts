@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { spawn } from "node:child_process";
+import { spawnGuarded } from "../local/guardedProcess";
 import { childProcessEnv } from "../config/secrets";
 
 export const SPEECH_MODELS = [
@@ -191,17 +191,17 @@ async function runSpeechProcess(executable: string, args: string[], cancellation
   cancellation.throwIfAborted();
   const signal = AbortSignal.any([cancellation, AbortSignal.timeout(300000)]);
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(__dirname, "../local/RuntimeProcessHost.js"), executable, JSON.stringify(args)], {
-      stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true, env: { ...childProcessEnv(), ELECTRON_RUN_AS_NODE: "1" }
-    });
+    const guarded = spawnGuarded(executable, args, { env: childProcessEnv(), stdout: "ignore", stderr: "pipe" });
+    const child = guarded.process;
     // Native output may contain recognized speech. Never forward it to application logs.
     child.stderr?.resume();
-    const stop = () => { child.kill("SIGTERM"); };
+    const stop = () => { guarded.stop(); };
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     child.once("error", error => { signal.removeEventListener("abort", stop); reject(error); });
     child.once("close", code => {
       signal.removeEventListener("abort", stop);
+      void guarded.kill();
       if (signal.aborted) reject(new Error(cancellation.aborted ? "Dictation cancelled." : "Recognition timed out. Try a shorter recording."));
       else if (code !== 0) reject(new Error("Speech recognition failed. Try again or reinstall the voice model."));
       else resolve();
