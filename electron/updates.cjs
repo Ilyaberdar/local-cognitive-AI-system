@@ -11,11 +11,13 @@ const path = require("path");
 // app-update.yml).
 
 /** Errors that mean no app release is published yet: the app is as new as it gets. Releases of other
- * things only (the server's CUDA runtime is a prerelease) leave GitHub without a latest release; the
- * updater then reports its feed as unreadable, naming the missing latest version inside. */
+ * things only (the server's CUDA runtime is a prerelease) leave GitHub without a latest release:
+ * /releases/latest then redirects to /releases, which answers the updater's JSON request with 406, and
+ * the updater reports its feed as unreadable with that answer inside. */
 const NO_RELEASE = new Set(["ERR_XML_MISSED_ELEMENT", "ERR_UPDATER_LATEST_VERSION_NOT_FOUND"]);
+const LATEST_MISSING = /Unable to find latest version on GitHub \([^)]*\), please ensure a production release exists: HttpError: 40[46]\b/;
 const noRelease = error => NO_RELEASE.has(error?.code)
-  || (error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED" && /ERR_UPDATER_LATEST_VERSION_NOT_FOUND/.test(String(error?.message)));
+  || (error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED" && LATEST_MISSING.test(String(error?.message)));
 const NOTES_LIMIT = 64 * 1024;
 const HOUR = 60 * 60 * 1000;
 /** Phases in which a background check may look: nothing the user started is under way. */

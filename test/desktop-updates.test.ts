@@ -83,14 +83,24 @@ test("nothing is published yet: the app is up to date, not failing", async () =>
   assert.equal(state.error, undefined);
   assert.deepEqual(recorded, []);
 
-  // Only prereleases of other things (the server's CUDA runtime): GitHub has no latest release, which
-  // electron-updater wraps as an unreadable feed. Any other unreadable feed is still an error.
-  const prereleasesOnly = Object.assign(new Error("Cannot parse releases feed: Error: Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: ERR_UPDATER_LATEST_VERSION_NOT_FOUND"), { code: "ERR_UPDATER_INVALID_RELEASE_FEED" });
-  const runtimeOnly = setup({ updater: fakeUpdater({ check: () => Promise.reject(prereleasesOnly) }) });
-  assert.equal((await runtimeOnly.call("check")).phase, "up-to-date");
-  assert.deepEqual(runtimeOnly.recorded, []);
-  const broken = setup({ updater: fakeUpdater({ check: () => Promise.reject(Object.assign(new Error("Cannot parse releases feed: unexpected token"), { code: "ERR_UPDATER_INVALID_RELEASE_FEED" })) }) });
-  assert.deepEqual((await broken.call("check")).error, { stage: "check", code: "err_updater_invalid_release_feed" });
+  // Only prereleases of other things (the server's CUDA runtime): GitHub has no latest release, and
+  // /releases/latest redirects to /releases, which answers JSON with 406. electron-updater wraps that
+  // as an unreadable feed; built here with its own error helpers. Any other unreadable feed is still an error.
+  const { createHttpError, newError } = require("builder-util-runtime");
+  const feedError = (status: number, statusMessage: string) => {
+    const answer = createHttpError({ statusCode: status, statusMessage, headers: { "content-type": "text/html" } }, "method: GET url: https://github.com/o/r/releases");
+    const latest = newError(`Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: ${answer.stack}`, "ERR_UPDATER_LATEST_VERSION_NOT_FOUND");
+    return newError(`Cannot parse releases feed: ${latest.stack},\nXML:\n<feed/>`, "ERR_UPDATER_INVALID_RELEASE_FEED");
+  };
+  for (const [status, statusMessage] of [[406, "Not Acceptable"], [404, "Not Found"]] as const) {
+    const runtimeOnly = setup({ updater: fakeUpdater({ check: () => Promise.reject(feedError(status, statusMessage)) }) });
+    assert.equal((await runtimeOnly.call("check")).phase, "up-to-date", `HTTP ${status}`);
+    assert.deepEqual(runtimeOnly.recorded, []);
+  }
+  for (const error of [feedError(500, "Internal Server Error"), feedError(403, "Forbidden"), Object.assign(new Error("Cannot parse releases feed: unexpected token"), { code: "ERR_UPDATER_INVALID_RELEASE_FEED" })]) {
+    const broken = setup({ updater: fakeUpdater({ check: () => Promise.reject(error) }) });
+    assert.deepEqual((await broken.call("check")).error, { stage: "check", code: "err_updater_invalid_release_feed" });
+  }
 });
 
 test("check, download with progress, then the update is ready; nothing happens on its own", async () => {
