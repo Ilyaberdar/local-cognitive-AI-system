@@ -6,7 +6,7 @@
 //
 //   npm run build && node scripts/pack-server.mjs --out release/server [--platform linux --arch x64]
 //     [--node 22.23.3] [--channel stable] [--url-base https://github.com/<repo>/releases/download/v<version>/]
-//     [--notes-file NOTES.md] [--skip-llama]
+//     [--notes-file NOTES.md] [--skip-llama] [--commit <sha>]
 //
 // Run it on the target platform (CI on Linux for linux-x64): optional native packages are chosen
 // for the platform npm runs on.
@@ -80,12 +80,35 @@ for (const unused of ["include", "share", "lib/node_modules", "bin/npm", "bin/np
 
 // The CPU llama.cpp runtime of the platform (the CUDA one is prepared on the host).
 if (!flag("--skip-llama")) {
+  const runtime = path.join(stage, "resources", "llama", `${platform}-${arch}`);
   execFileSync(process.execPath, [path.join(root, "scripts", "prepare-llama-runtime.mjs"), "--platform", platform, "--arch", arch,
-    "--destination", path.join(stage, "resources", "llama", `${platform}-${arch}`)], { stdio: "inherit" });
+    "--destination", runtime], { stdio: "inherit" });
+  // Upstream's Linux libraries come as libX.so → libX.so.0 → libX.so.0.<version>, and the updater refuses
+  // links. The name the binaries load (the SONAME, libX.so.0) becomes the file; the link-time name and
+  // the versioned original go.
+  if (platform === "linux") {
+    const home = fs.realpathSync(runtime);
+    for (const entry of fs.readdirSync(runtime, { withFileTypes: true }).filter(item => item.isSymbolicLink())) {
+      const link = path.join(runtime, entry.name), target = fs.realpathSync(link);
+      if (path.dirname(target) !== home) fail(`${entry.name} in the llama.cpp runtime points outside it`);
+      fs.rmSync(link);
+      if (/\.so\.\d+$/.test(entry.name)) fs.copyFileSync(target, link);
+    }
+    for (const name of fs.readdirSync(runtime)) {
+      const loaded = name.replace(/(\.so\.\d+)(\.\d+)+$/, "$1");
+      if (loaded !== name && fs.existsSync(path.join(runtime, loaded))) fs.rmSync(path.join(runtime, name));
+    }
+  }
+  // The binaries still start with what is packed (where this machine can run them).
+  if (platform === process.platform && arch === process.arch) {
+    execFileSync(path.join(runtime, platform === "win32" ? "llama-server.exe" : "llama-server"), ["--version"],
+      { env: { ...process.env, LD_LIBRARY_PATH: runtime }, stdio: "ignore" });
+  }
 }
 
-let commit = "";
-try { commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { /* Not a checkout. */ }
+// The commit packed; --commit where the sources are not a git checkout.
+let commit = option("--commit", "");
+if (!commit) try { commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { /* Not a checkout. */ }
 fs.writeFileSync(path.join(stage, "RELEASE.json"), `${JSON.stringify({ product: "local-cognitive-server", version, platform, arch, node: nodeVersion, ...(commit ? { commit } : {}) }, null, 2)}\n`);
 
 // Links in the release would be refused by the updater: none may be packed.
