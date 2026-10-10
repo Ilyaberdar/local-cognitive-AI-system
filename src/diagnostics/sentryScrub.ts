@@ -75,6 +75,23 @@ export const scrubSentryEvent = <T extends Json>(event: T, automatic: boolean): 
   return out as T;
 };
 
+/** A server's own files in stack frames as app:/// paths (as the desktop SDK does), so they keep
+ * their source lines; any other path is masked by scrubSentryEvent. */
+export const rewriteAppFrames = <T extends Json>(event: T, root: string): T => {
+  const prefix = root.replace(/[\\/]+$/, "");
+  const rewrite = (stacktrace: unknown) => {
+    for (const frame of ((stacktrace as { frames?: Json[] } | undefined)?.frames ?? [])) {
+      for (const key of ["filename", "abs_path"] as const) {
+        const value = frame[key];
+        if (typeof value === "string" && (value === prefix || value.startsWith(`${prefix}/`) || value.startsWith(`${prefix}\\`))) frame[key] = `app:///${value.slice(prefix.length + 1).replace(/\\/g, "/")}`;
+      }
+    }
+  };
+  for (const value of ((event.exception as { values?: Json[] } | undefined)?.values ?? [])) rewrite(value.stacktrace);
+  for (const thread of ((event.threads as { values?: Json[] } | undefined)?.values ?? [])) rewrite(thread.stacktrace);
+  return event;
+};
+
 /** Only the technical log's breadcrumbs: no console lines, requests, window titles or clicks. */
 export const scrubSentryBreadcrumb = <T extends Json>(breadcrumb: T): T | null =>
   breadcrumb.category === DIAGNOSTIC_BREADCRUMB ? breadcrumb : null;

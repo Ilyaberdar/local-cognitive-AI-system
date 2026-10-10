@@ -81,7 +81,7 @@ export async function startDaemon(t: TestContext, origin: string, extraEnv: Reco
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "lc-e2e-"));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, "d"), keyFile = path.join(base, "k", "vault.key");
-  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, LOCAL_COGNITIVE_CLOUD_URL: origin, MEMORY_ADAPTER: "local-json",
+  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, LOCAL_COGNITIVE_CLOUD_URL: origin, MEMORY_ADAPTER: "local-json", LOCAL_COGNITIVE_SENTRY: "off",
     TELEGRAM_ENABLED: "false", ...extraEnv };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args, "--data-dir", root], { env, encoding: "utf8" });
   assert.equal(run("init", "--vault-key-file", keyFile).status, 0);

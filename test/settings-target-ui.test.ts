@@ -370,3 +370,26 @@ test("a change sent before another server was selected is not reported as not sa
   await assert.rejects(save(), (error: any) => error.code === "host_changed" && /Nothing was sent/.test(error.message));
   assert.equal(sent.length, 2, "nothing is sent once another server is selected");
 });
+
+test("fedora's error reports: its owner turns them on from Data & Privacy, and the page says it was saved", async t => {
+  const fedora = fedoraWithSettings();
+  let consent: { available: boolean; automatic: boolean; decidedAt: string | null } = { available: true, automatic: false, decidedAt: null };
+  const request = fedora.bridge.runtime.request;
+  fedora.bridge.runtime.request = async (op: string, payload: any) => {
+    if (op === "diagnostics.consent.get") return { ok: true, value: consent };
+    if (op === "diagnostics.consent.set") { consent = { available: true, automatic: payload.automatic === true, decidedAt: T0 }; return { ok: true, value: consent }; }
+    return request(op, payload);
+  };
+  const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  open(app, "data"); await settle();
+  const toggle = inRoot(app, "[data-server-error-reports]");
+  assert.equal(toggle.checked, false, "off until the owner turns it on");
+  assert.match(text(app, ".settings-consent"), /Send fedora's error reports[\s\S]*not included/);
+  toggle.checked = true;
+  toggle.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+  await settle();
+  assert.equal(consent.automatic, true);
+  assert.match(text(app, ".settings-consent"), /Saved · on/);
+});

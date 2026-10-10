@@ -72,7 +72,7 @@ test("a device pairs with a server through the Cloud relay, reconnects without t
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "lc-e2e-"));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, "d"), keyFile = path.join(base, "k", "vault.key");
-  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, LOCAL_COGNITIVE_CLOUD_URL: origin, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false" };
+  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, LOCAL_COGNITIVE_CLOUD_URL: origin, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false", LOCAL_COGNITIVE_SENTRY: "off" };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args, "--data-dir", root], { env, encoding: "utf8" });
   assert.equal(run("init", "--vault-key-file", keyFile).status, 0);
   const daemon = spawn(process.execPath, [cli, "start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none")],
