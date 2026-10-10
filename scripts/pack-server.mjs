@@ -101,6 +101,17 @@ for (const link of links) {
   else fail(`The release would contain a link: ${link}`);
 }
 
+// Modes as a release needs them, whatever the build machine's filesystem reported (a Docker Desktop
+// mount can turn copies into 0200): readable by everyone, executable where the owner could run it.
+const normalizeModes = directory => {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) { fs.chmodSync(full, 0o755); normalizeModes(full); }
+    else if (entry.isFile()) fs.chmodSync(full, fs.statSync(full).mode & 0o100 ? 0o755 : 0o644);
+  }
+};
+normalizeModes(stage);
+
 console.log("Checking for secrets…");
 execFileSync(process.execPath, [path.join(root, "scripts", "verify-package-secrets.mjs"), stage], { stdio: "inherit" });
 
@@ -124,4 +135,11 @@ const manifest = {
   artifacts: [{ platform, arch, url: `${urlBase}${name}.tar.gz`, size: bytes.length, sha256 }]
 };
 fs.writeFileSync(path.join(out, "server-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(`${tarball}\n  ${(bytes.length / 1024 ** 2).toFixed(1)} MB, sha256 ${sha256}\n${path.join(out, "server-manifest.json")} (sign it: node scripts/release-key.mjs sign …)`);
+
+// The installer people run with curl, trusting this build's release keys: published beside the manifest.
+const { RELEASE_KEYS } = require(path.join(root, "dist", "src", "update", "releaseKeys.js"));
+if (!RELEASE_KEYS.length) console.warn("No release keys in src/update/releaseKeys.ts: the installer will refuse every release.");
+const installer = fs.readFileSync(path.join(root, "deploy", "server", "install.sh"), "utf8");
+if (!/^RELEASE_KEYS=""$/m.test(installer)) fail("deploy/server/install.sh has no RELEASE_KEYS=\"\" line to fill in.");
+fs.writeFileSync(path.join(out, "install.sh"), installer.replace(/^RELEASE_KEYS=""$/m, `RELEASE_KEYS="${RELEASE_KEYS.map(key => `${key.id}:${key.publicKey}`).join(" ")}"`), { mode: 0o755 });
+console.log(`${tarball}\n  ${(bytes.length / 1024 ** 2).toFixed(1)} MB, sha256 ${sha256}\n${path.join(out, "server-manifest.json")} (sign it: node scripts/release-key.mjs sign …)\n${path.join(out, "install.sh")}`);

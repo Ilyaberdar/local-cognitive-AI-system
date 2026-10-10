@@ -248,6 +248,29 @@ Notes:
 - macOS builds use Electron's default icon until a project `.icns` asset is
   configured in the `build.mac.icon` field.
 
+### Headless server: install and connect
+
+On a Linux server with systemd (Ubuntu 22.04+, Debian 12+, Fedora, RHEL 9+), one command installs
+the newest signed release as a service and prints a connection key:
+
+```bash
+curl -fsSL https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/install.sh | sudo bash
+```
+
+On your computer: Local Cognitive → Remote → Connect, then paste the key. No sign-in is needed on
+the server: the first account that connects owns it, and only that account's computers can connect
+later (each with a new key). The server only needs outbound HTTPS; no ports are opened.
+
+```bash
+sudo local-cognitive-server pair       # a key for another computer; waits until it connects
+sudo local-cognitive-server status     # running? reachable? how many computers?
+sudo local-cognitive-server update     # newest release: backed up, rolled back if it fails
+sudo local-cognitive-server logs | restart | devices | uninstall
+```
+
+`node scripts/test-server-install.mjs [--distro fedora|ubuntu]` checks the installer end to end in
+Docker with a throwaway signing key.
+
 ### Linux server runtime (NVIDIA)
 
 The headless server (`local-cognitive-server`, see `deploy/server/`) prefers a
