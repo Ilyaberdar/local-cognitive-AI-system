@@ -445,3 +445,4 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .usage-source { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 .usage-source:last-child { border-bottom: 0; }
 .usage-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); padding: 20px 0; }
+.settings-consent { margin: 0 0 18px; }

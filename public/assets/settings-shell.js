@@ -54,7 +54,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, accountPending, accountNotice;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, accountPending, accountNotice, diagnosticsConsent;
   const context = () => getContext() || {};
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
@@ -463,7 +463,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
     if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata'], ['Selected server', context().server && [context().server.hostName(), context().server.version()].filter(Boolean).join(' · ')]].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>`;
     if (name === 'data' && server) return form(specs);
-    if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p><button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
+    if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
     if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerNames[key] || key, provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
     if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button></div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
@@ -564,6 +564,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
     if (name === 'plugins' || name === 'connections') disposeIntegrations = mountIntegrationPage(root.querySelector('[data-integrations-page]'), { pluginId: id, connectionsPage: name === 'connections', mcpCount: mcpServerCount(clientSettings()) });
     root.querySelector('[data-open-data]')?.addEventListener('click', openDataFolder);
+    if (name === 'data') bindErrorReports();
     if (name === 'mcp') loadMcpSnapshot();
     if (page === 'about' && !appInfo) void (window.desktopApp?.getInfo?.() || fetch('/app/info').then(response => response.json())).then(info => { appInfo = info; if (active && page === 'about') render(); }).catch(() => { appInfo = { version: 'Unavailable' }; if (active && page === 'about') render(); });
   }
@@ -864,6 +865,24 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       const hasNewerEdits = Object.keys(dirty(key)).length > 0;
       setStatus(key, { text: hasNewerEdits ? 'Unsaved changes · test used the previous configuration' : result.ok ? 'Test succeeded' : 'Test failed', error: !result.ok, success: result.ok && !hasNewerEdits });
       if (active && placeOf(page).key === key) { const scroll = root.querySelector('.settings-content').scrollTop; render(); root.querySelector('.settings-content').scrollTop = scroll; }
+    });
+  }
+  /** Consent to error and crash reports (desktop): off until the user turns it on. */
+  function errorReportsRow() {
+    if (!window.desktopDiagnostics || !diagnosticsConsent?.available) return '';
+    return `<div class="settings-rows settings-consent"><div class="settings-row"><div><label for="error-reports">Send error reports and crash dumps</label><p>When something fails or crashes, a report goes to the developer (Sentry, EU region): error types, codes, app version and system. Chats, prompts, model answers, keys, file contents and paths are not included. A crash dump is a snapshot of the crashed process's memory and may contain fragments of what it was doing.</p></div><div class="settings-control"><input id="error-reports" data-error-reports type="checkbox" role="switch" ${diagnosticsConsent.automatic ? 'checked' : ''} /></div></div></div>`;
+  }
+  function bindErrorReports() {
+    const toggle = root.querySelector('[data-error-reports]');
+    if (!toggle) {
+      if (window.desktopDiagnostics && !diagnosticsConsent) void window.desktopDiagnostics.consent().then(value => { diagnosticsConsent = value; if (active && page === 'data') render(); }).catch(() => {});
+      return;
+    }
+    toggle.addEventListener('change', async () => {
+      toggle.disabled = true;
+      try { diagnosticsConsent = await window.desktopDiagnostics.setConsent(toggle.checked); }
+      catch { toggle.checked = Boolean(diagnosticsConsent?.automatic); }
+      toggle.disabled = false;
     });
   }
   async function openDataFolder() {
