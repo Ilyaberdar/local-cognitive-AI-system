@@ -1,3 +1,5 @@
+import os from "node:os";
+
 /** What leaves for Sentry (crash and error reports, bug reports), decided here, before sending.
  * Allowlists, not clean-up: only the listed contexts, the technical log's own breadcrumbs, stack
  * frames without variables, and error texts cut short with paths, addresses and tokens masked.
@@ -14,9 +16,22 @@ const DEVICE_FIELDS = new Set(["arch", "family", "model", "memory_size", "free_m
 const APP_FIELDS = new Set(["app_name", "app_version", "app_build", "app_start_time", "app_memory", "build_type"]);
 const ELECTRON_FIELDS = new Set(["details", "crashed_process", "crashed_url"]);
 
+// This computer's name and the account's user name, wherever a message carries them.
+const literals = (() => {
+  const names: string[] = [];
+  try { names.push(os.hostname(), os.hostname().replace(/\.local$/, "")); } catch { /* Unknown. */ }
+  try { names.push(os.userInfo().username); } catch { /* Unknown. */ }
+  return [...new Set(names.filter(name => name.length >= 4))].sort((a, b) => b.length - a.length);
+})();
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const literalPattern = literals.length ? new RegExp(literals.map(escapeRegExp).join("|"), "gi") : undefined;
+
 /** A text that may hold a path, an address, a token or a user's words: cut short, and the
- * recognisable parts masked. Not a privacy guarantee on its own; it bounds what a message carries. */
+ * recognisable parts masked, quoted text among them (a JSON error quotes the text it could not
+ * read: a model's answer). Not a privacy guarantee on its own; it bounds what a message carries. */
 export const maskText = (value: unknown, limit = 300): string => String(value ?? "")
+  .replace(/"[^"\n]{12,}"|'[^'\n]{12,}'|`[^`\n]{12,}`/g, quoted => `${quoted[0]}…${quoted[0]}`)
+  .replace(literalPattern ?? /$^/, "<name>")
   .replace(/eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, "<token>")
   .replace(/\b(?:Bearer|Basic)\s+\S+/gi, "<credential>")
   .replace(/\b(?:sk|pk|rk|ghp|gho|ghs|xox[abprs]|AKIA|AIza)[-_]?[A-Za-z0-9_-]{12,}/g, "<secret>")
