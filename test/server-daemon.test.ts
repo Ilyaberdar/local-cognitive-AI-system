@@ -7,6 +7,7 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { parseServerArgs } from "../src/server/args";
+import { describeStatus } from "../src/server/cli";
 import { controlSocketPathFor, initDataRoot, readServerConfig } from "../src/server/dataRoot";
 import { selectInference } from "../src/server/inference";
 import { serverEnvironment } from "../src/server/serverEnv";
@@ -21,6 +22,26 @@ test("arguments are validated per command", () => {
   for (const argv of [["start"], ["start", "--data-dir", "/x", "--inference", "gpu"], ["frob"], ["start", "--data-dir", "/x", "--bogus"], ["start", "--data-dir", "/x", "--http-port", "70000"]]) {
     assert.throws(() => parseServerArgs(argv, {}), (error: { exitCode?: number }) => error.exitCode === 64, argv.join(" "));
   }
+});
+
+test("pair waits for the computer unless told not to; connect-key only prints the key", () => {
+  assert.equal(parseServerArgs(["pair", "--data-dir", "/srv/lc"]).wait, true);
+  assert.equal(parseServerArgs(["pair", "--data-dir", "/srv/lc", "--no-wait", "--ttl", "5"]).wait, false);
+  assert.equal(parseServerArgs(["pair", "--data-dir", "/srv/lc", "--ttl", "5"]).ttlMinutes, 5);
+  assert.throws(() => parseServerArgs(["pair"], {}), (error: { exitCode?: number }) => error.exitCode === 64);
+});
+
+test("status says whether computers can reach the server and what to do next", () => {
+  const base = { phase: "running", pid: 7, version: "0.2.0", activeWork: { total: 0 }, inference: { backend: "cuda", active: "CUDA" } };
+  const online = describeStatus({ ...base, remote: { state: "online", claimed: true, devices: 2, sessions: 1 } });
+  assert.match(online, /^Local Cognitive Server 0\.2\.0 — running$/m);
+  assert.match(online, /Remote: +online, 2 computers paired, 1 connected now/);
+  assert.match(online, /Inference: +cuda/);
+  assert.match(online, /Work: +idle/);
+  assert.match(describeStatus({ ...base, remote: { state: "online", claimed: false, devices: 0, sessions: 0 } }), /no owner yet: run pair to connect your computer/);
+  assert.match(describeStatus({ ...base, remote: { state: "off", reason: "Remote is turned off (LOCAL_COGNITIVE_REMOTE=off)." } }), /Remote: +off \(Remote is turned off/);
+  assert.match(describeStatus({ ...base, remote: { state: "offline", claimed: true, devices: 1, sessions: 0, lastError: "getaddrinfo ENOTFOUND" } }), /Remote: +offline \(getaddrinfo ENOTFOUND\), 1 computer paired/);
+  assert.match(describeStatus({ ...base, activeWork: { total: 3 }, update: { available: "0.3.0" } }), /Work: +3 tasks running[\s\S]*Update: +0\.3\.0 is available: sudo local-cognitive-server update/);
 });
 
 test("init creates a private layout once and server.json carries no secrets", { skip: !posix }, t => {
@@ -124,6 +145,16 @@ test("init → start → status → MCP bridge → drain, with a second start re
   const health = await fetch(`http://127.0.0.1:${status.http!.port}/health`);
   assert.equal(health.status, 200);
   assert.equal((await fetch(`http://127.0.0.1:${status.http!.port}/`)).status, 404, "the server serves no UI");
+
+  // Someone other than the server's user is refused by the system: the CLI says to use sudo.
+  const runtimeDir = path.join(root, "app", "runtime");
+  fs.chmodSync(runtimeDir, 0o000);
+  try {
+    const denied = run("status", "--data-dir", root);
+    assert.equal(denied.status, 78, denied.stderr);
+    assert.match(denied.stderr, /^Permission denied: the server's files belong to its user\. Run: sudo local-cognitive-server status$/m);
+    assert.doesNotMatch(denied.stderr, /\bat \S+ \(/, "no stack trace");
+  } finally { fs.chmodSync(runtimeDir, 0o700); }
 
   const second = run("start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none"));
   assert.equal(second.status, 75, second.stderr);

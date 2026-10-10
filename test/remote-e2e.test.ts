@@ -83,11 +83,16 @@ test("a device pairs with a server through the Cloud relay, reconnects without t
   const remoteState = () => { const result = run("status", "--json"); return result.status === 0 ? JSON.parse(result.stdout).remote?.state : undefined; };
   await until(remoteState, state => state === "online").catch(error => { throw new Error(`${error.message}\n${log}`); });
 
-  const issued = run("connect-key", "--json");
-  assert.equal(issued.status, 0, issued.stderr);
-  const { key, claimed } = JSON.parse(issued.stdout);
-  assert.equal(claimed, false);
-  assert.equal(log.includes(key), false, "the key never reaches the service log");
+  assert.match(run("status").stdout, /Remote: +online, no owner yet: run pair to connect your computer/);
+  // pair prints the key and waits, like pairing two devices, until a computer uses it.
+  const pairing = spawn(process.execPath, [cli, "pair", "--data-dir", root], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let pairOutput = "";
+  pairing.stdout.on("data", chunk => { pairOutput += chunk; }); pairing.stderr.on("data", chunk => { pairOutput += chunk; });
+  t.after(() => { if (pairing.exitCode === null) pairing.kill("SIGKILL"); });
+  const pairExit = new Promise<number | null>(resolve => pairing.on("exit", code => resolve(code)));
+  const key = await until(() => /^\s+(LCR1-\S+)$/m.exec(pairOutput)?.[1], value => Boolean(value));
+  assert.match(pairOutput, /No account owns this server yet: the account that connects first becomes its owner\. No sign-in is needed here\./);
+  assert.equal(log.includes(key!), false, "the key never reaches the service log");
 
   const account = async (subject: string) => {
     const accessToken = await token(subject);
@@ -97,8 +102,11 @@ test("a device pairs with a server through the Cloud relay, reconnects without t
   const alice = await account("auth0|alice");
   const mac = new RemoteClient({ cloudUrl: origin, vault: memoryVault(), account: async () => alice, deviceName: "Alice's Mac", platform: "macos", backoff: { baseMs: 50, maxMs: 200 } });
   t.after(() => mac.dispose());
-  const paired = await mac.pair(key);
+  const paired = await mac.pair(key!);
   assert.equal(paired.state, "online", JSON.stringify(paired));
+  assert.equal(await pairExit, 0, pairOutput);
+  assert.match(pairOutput, /✓ Alice's Mac is connected\./);
+  assert.match(run("status").stdout, /Remote: +online, 1 computer paired, 1 connected now/);
   assert.equal((await mac.request<{ version: string }>("host.info")).version.length > 0, true);
   const status = await mac.request<{ phase: string; inference: { backend: string } }>("host.status");
   assert.equal(status.phase, "running");
@@ -112,7 +120,7 @@ test("a device pairs with a server through the Cloud relay, reconnects without t
   const again = await mac.connect(paired.hostId!);
   assert.equal(again.state, "online", JSON.stringify(again));
 
-  const reused = await new RemoteClient({ cloudUrl: origin, vault: memoryVault(), account: async () => alice, deviceName: "Second", platform: "linux" }).pair(key);
+  const reused = await new RemoteClient({ cloudUrl: origin, vault: memoryVault(), account: async () => alice, deviceName: "Second", platform: "linux" }).pair(key!);
   assert.equal(reused.error?.code, "invitation_used");
   const bob = await account("auth0|bob");
   const bobsKey = JSON.parse(run("connect-key", "--json").stdout).key;
