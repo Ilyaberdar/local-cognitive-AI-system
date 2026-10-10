@@ -14,10 +14,10 @@ export function reportBugHtml(view) {
   const toggle = (name, label, text, disabled = false) => `<div class="settings-row"><div><label for="report-${name}">${label}</label><p>${text}</p></div><div class="settings-control"><input id="report-${name}" type="checkbox" role="switch" data-report-include="${name}" ${form.include[name] ? 'checked' : ''} ${disabled ? 'disabled' : ''} /></div></div>`;
   const show = name => `<button type="button" class="settings-text-button" data-report-show="${name}" aria-expanded="${shown[name]}">${shown[name] ? 'Hide' : 'Show what is sent'}</button>`;
   const status = busy ? 'Sending…' : view.error || (form.message.trim() ? 'Goes to the developer (Sentry, EU region).' : 'Describe the problem to send it.');
-  return `<p class="settings-description">Something broke? Describe it and press Send. The app adds what it knows about the problem.</p>
+  return `<p class="settings-description">Something broke? Describe it in detail and press Send. For a quick note, use the bug button at the top of the app.</p>
   <div class="settings-rows report-card">
-    <div class="settings-row report-message-row"><div><label for="report-message">What went wrong?</label><p>In your own words: what you did and what happened.</p></div>
-      <div class="settings-control"><textarea id="report-message" data-report-message rows="5" maxlength="4000" placeholder="For example: the model stopped answering after I attached a file.">${escape(form.message)}</textarea></div></div>
+    <div class="settings-row report-message-row"><div><label for="report-message">Describe the problem</label><p>What you did, what happened, and what you expected: as much as helps. The app adds what it knows.</p></div>
+      <div class="settings-control"><textarea id="report-message" data-report-message rows="8" maxlength="4000" placeholder="For example: I attached a PDF to a chat with the local model, and it stopped answering after a minute.">${escape(form.message)}</textarea></div></div>
     ${toggle('diagnostics', 'Attach diagnostics', `Versions, states and error codes, and what the app did before the problem. No chats, prompts, keys or files${prepared.diagnostics?.server ? ', and the same from the connected server' : ''}. ${show('diagnostics')}`)}
     ${shown.diagnostics ? `<div class="report-preview-row"><pre class="report-preview" aria-label="Diagnostics">${escape(JSON.stringify(prepared.diagnostics, null, 2))}</pre></div>` : ''}
     ${toggle('screenshot', 'Attach a screenshot', prepared.screenshot ? `The window as it was when you opened Report a bug. ${show('screenshot')}` : 'Open Report a bug from the profile menu to capture the window you were in.', !prepared.screenshot)}

@@ -2898,3 +2898,16 @@ a {
 @keyframes activity-breathe { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .activity-trace.is-live .activity-trace__dot, .workflow-activity__current.status-running > strong::before { animation: none; } }
 html[data-animations="off"] .activity-trace__dot, html[data-animations="off"] .workflow-activity__current > strong::before { animation: none; }
+
+/* Report a bug: the top bar's button and its small form. */
+.topbar-report .ui-icon { width: 16px; height: 16px; }
+.quick-report { position: fixed; inset: auto; margin: 0; width: 340px; max-width: calc(100vw - 16px); padding: 14px; border: 1px solid var(--line-strong); border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-panel) 97%, transparent); color: var(--text); box-shadow: var(--popover-shadow); backdrop-filter: blur(32px) saturate(1.08); -webkit-backdrop-filter: blur(32px) saturate(1.08); }
+.quick-report__form { display: grid; gap: 10px; }
+.quick-report__title { font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; }
+.quick-report textarea { width: 100%; box-sizing: border-box; min-height: 92px; resize: vertical; border-radius: 9px; font: inherit; padding: 7px 10px; border: 1px solid var(--line); background: var(--control-bg); color: var(--text); }
+.quick-report textarea::placeholder { color: var(--faint); }
+.quick-report__status { margin: 0; min-height: 1em; }
+.quick-report__status:empty { display: none; }
+.quick-report__actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.quick-report__actions > span { display: flex; gap: 8px; }
