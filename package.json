@@ -145,10 +145,11 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Dictate messages using local speech recognition. Audio stays on your computer."
       },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "minimumSystemVersion": "13.0"
     },
     "win": {
-      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",

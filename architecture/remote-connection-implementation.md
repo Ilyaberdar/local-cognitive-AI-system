@@ -1270,6 +1270,14 @@ Client/server обмениваются protocol/capability versions. Несов�
     - macOS (на macOS): `.app`, а также app внутри dmg и zip — подпись Developer ID, team ID (`--team-id`), hardened runtime, Gatekeeper принимает как notarized, ticket вшит.
     - Windows: подпись Authenticode у каждого `.exe` (на Windows через `Get-AuthenticodeSignature`, в других системах через `osslsigncode`, `--publisher`).
     - Локальные сборки остаются неподписанными. Release workflow соберёт с `-c.forceCodeSigning=true` и прогонит гейт перед загрузкой.
+    - `forceCodeSigning` гейт не заменяет: он принимает ad-hoc и любую другую identity из keychain, в PR-сборках молча пропускает подпись и не проверяет notarization.
+  - Entitlements для hardened runtime: `build/entitlements.mac.plist` для приложения и вложенного кода (allow-jit, allow-unsigned-executable-memory, disable-library-validation, `device.audio-input`). Без микрофонного entitlement диктовка в подписанной сборке молча не работает. Проверено сборкой с ad-hoc identity: entitlements есть у приложения и у llama-server.
+  - Windows: подпись и редактирование exe снова включены (`signAndEditExecutable` был выключен с первой настройки упаковки). Иначе подписанный релиз падает на `forceCodeSigning`, а exe остаются неподписанными.
+  - Для release workflow:
+    - только macOS-раннер для mac, не на `pull_request`, с сетью (notarytool, Gatekeeper);
+    - notarization: `APPLE_API_KEY` (путь к .p8) + `APPLE_API_KEY_ID` + `APPLE_API_ISSUER`;
+    - dmg electron-builder не подписывает и не нотаризует — проверяется app внутри;
+    - для обновлений нельзя менять Team ID (macOS) и имя издателя сертификата (`publisherName`, Windows) без переходного периода.
   - Несобранный dev-запуск на macOS хранит секреты в файловом dev-vault, а не в Keychain. Собранное приложение использует Keychain.
 - **Проверено.**
   - Тесты обновления, отката, adopt и подписи.
