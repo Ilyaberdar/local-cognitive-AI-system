@@ -3,6 +3,7 @@ import { createAccountState, entityPatch, localProfileView, mcpServerCount } fro
 import { mountIntegrationPage } from './plugins-ui.js';
 import { mountUsagePage } from './usage-ui.js';
 import { mountReportBugPage } from './report-bug.js';
+import { openAvatarCropper } from './avatar-crop.js';
 
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
@@ -932,15 +933,18 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       const input = event.currentTarget, file = input.files?.[0];
       input.value = '';
       if (!file) return;
-      if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 900 * 1024) {
-        setProfileStatus('Choose a PNG, JPEG or WebP image smaller than 900 KB.', true);
+      // Any size: what is saved is the chosen square, 512 px.
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 20 * 1024 * 1024) {
+        setProfileStatus('Choose a PNG, JPEG or WebP image smaller than 20 MB.', true);
         return;
       }
       try {
         const reader = new FileReader();
         const image = await new Promise((resolve, reject) => { reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error || new Error('Could not read image.')); reader.readAsDataURL(file); });
         if (typeof image !== 'string' || !/^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i.test(image)) throw new Error('Choose a valid PNG, JPEG or WebP image.');
-        await saveProfile({ avatarDataUrl: image }, 'Avatar saved.');
+        const cropped = await openAvatarCropper(image);
+        if (!cropped) { setProfileStatus('The avatar was not changed.'); return; }
+        await saveProfile({ avatarDataUrl: cropped }, 'Avatar saved.');
       } catch (error) { setProfileStatus(error.message || 'Could not save image.', true); }
     });
     root.querySelector('[data-remove-profile-avatar]')?.addEventListener('click', () => { void saveProfile({ avatarDataUrl: '' }, 'Avatar removed.'); });
