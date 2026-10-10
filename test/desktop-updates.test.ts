@@ -82,6 +82,15 @@ test("nothing is published yet: the app is up to date, not failing", async () =>
   assert.equal(state.phase, "up-to-date");
   assert.equal(state.error, undefined);
   assert.deepEqual(recorded, []);
+
+  // Only prereleases of other things (the server's CUDA runtime): GitHub has no latest release, which
+  // electron-updater wraps as an unreadable feed. Any other unreadable feed is still an error.
+  const prereleasesOnly = Object.assign(new Error("Cannot parse releases feed: Error: Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: ERR_UPDATER_LATEST_VERSION_NOT_FOUND"), { code: "ERR_UPDATER_INVALID_RELEASE_FEED" });
+  const runtimeOnly = setup({ updater: fakeUpdater({ check: () => Promise.reject(prereleasesOnly) }) });
+  assert.equal((await runtimeOnly.call("check")).phase, "up-to-date");
+  assert.deepEqual(runtimeOnly.recorded, []);
+  const broken = setup({ updater: fakeUpdater({ check: () => Promise.reject(Object.assign(new Error("Cannot parse releases feed: unexpected token"), { code: "ERR_UPDATER_INVALID_RELEASE_FEED" })) }) });
+  assert.deepEqual((await broken.call("check")).error, { stage: "check", code: "err_updater_invalid_release_feed" });
 });
 
 test("check, download with progress, then the update is ready; nothing happens on its own", async () => {
