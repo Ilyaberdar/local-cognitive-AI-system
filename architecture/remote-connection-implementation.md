@@ -1283,7 +1283,7 @@ Client/server обмениваются protocol/capability versions. Несов�
   - Тесты обновления, отката, adopt и подписи.
   - darwin-релиз запущен как настоящий сервер.
   - linux-x64 релизы (90.6 MB без llama) собраны на fedora.
-  - Полная репетиция adopt → update → rollback → неудачный update на systemd fedora с тестовым ключом не выполнена: нужен root на fedora и разрешение владельца.
+  - Полная репетиция в настоящем systemd (Docker, Fedora 42 и Ubuntu 24.04, `scripts/test-server-install.mjs`, одноразовый ключ): установка → update N→N+1 → rollback с данными до обновления → снова update → неудачный update с автоматическим откатом. Она нашла баг: бэкап не хранил пустые папки, и откатанная версия не стартовала (нет `sessions`); исправлено.
 - **Ждёт владельца.**
   - Ключ релизов и его хранение.
   - Developer ID и notarization, подпись Windows.
