@@ -72,7 +72,9 @@ test("a device browses the catalog and downloads, pauses, resumes and installs a
 
   const progressed = await f.call("models.local.watch", { epoch: first.epoch, after: first.sequence, waitMs: 5000 });
   assert.ok(progressed.sequence > first.sequence && progressed.snapshot);
-  await until(() => f.call("models.downloads.list"), (jobs: any[]) => jobs[0]?.downloadedBytes > 0);
+  // Progress counts a chunk as it passes, a moment before it is on disk: past the first 16 KiB
+  // chunk, that one is written, so the resume has a partial file to continue from.
+  await until(() => f.call("models.downloads.list"), (jobs: any[]) => jobs[0]?.downloadedBytes > 16 * 1024);
   const paused = await f.call("models.downloads.pause", { downloadId: job.id });
   assert.equal(paused.state, "paused");
   f.hub.state.chunkDelayMs = 0;
