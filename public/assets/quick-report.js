@@ -28,7 +28,9 @@ export function createQuickReport({ bridge = window.desktopBugReport, mode = () 
     busy = true; refresh(); note('Sending…');
     try {
       await prepare();
-      const result = await bridge.submit(payload());
+      let result = await bridge.submit(payload());
+      // Its diagnostics expired (the app restarted, or an hour passed): prepared again, sent once more.
+      if (result?.error?.code === 'report_expired') { prepared = undefined; preparing = undefined; await prepare(); result = await bridge.submit(payload()); }
       if (!result?.ok) throw new Error(result?.error?.message || 'The report failed.');
       failed = false;
       note('Sent. Thank you!', 'is-success');
