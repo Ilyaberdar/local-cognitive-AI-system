@@ -1,4 +1,6 @@
 const { randomUUID } = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 // Desktop updates (Settings → About), driven by the user: check, read what's new, download, then
 // "Restart and update". Nothing is checked, downloaded or installed on its own. Releases come from the
@@ -35,13 +37,22 @@ const downloadSize = (info, platform, arch) => {
   return typeof file?.size === "number" ? file.size : null;
 };
 
+/** Whether this build's update feed names the Windows publisher: only then does the updater check the
+ * installer's Authenticode signature before running it (electron-builder writes it once builds are signed). */
+const feedNamesPublisher = resourcesPath => {
+  try { return /^\s*publisherName\s*:/m.test(fs.readFileSync(path.join(resourcesPath, "app-update.yml"), "utf8")); } catch { return false; }
+};
+
 function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, prepareForExit, record,
-  platform = process.platform, arch = process.arch, env = process.env, loadUpdater = () => require("electron-updater") }) {
+  platform = process.platform, arch = process.arch, env = process.env, resourcesPath = process.resourcesPath, loadUpdater = () => require("electron-updater") }) {
   const development = !app.isPackaged;
   // A development run checks against a local feed only (and never installs); otherwise it has no updates.
   const developmentFeed = development ? env.LOCAL_COGNITIVE_UPDATE_FEED : undefined;
   const appPath = app.getAppPath();
+  // Windows: until the builds are signed, nothing would check who made a downloaded installer, so a
+  // changed one would run. The new version is shown, and comes from the website instead.
   const blocker = development && !developmentFeed ? "development"
+    : platform === "win32" && !development && !feedNamesPublisher(resourcesPath) ? "windows-unsigned"
     : platform === "darwin" && !development && !app.isInApplicationsFolder?.() && /\/AppTranslocation\/|^\/Volumes\//.test(appPath) ? "move-to-applications" : undefined;
   // idle | checking | up-to-date | available | downloading | ready | installing, with `error` beside any.
   let state = { phase: "idle", current: app.getVersion(), ...(blocker ? { blocker } : {}) };
@@ -113,7 +124,7 @@ function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, pr
   }
 
   async function install(confirmed) {
-    if (state.phase !== "ready" || development) return { started: false, state };
+    if (state.phase !== "ready" || development || state.blocker) return { started: false, state };
     // Work running on this computer stops with a restart: the window asks first. Runs on a server go on.
     const work = getBackend()?.activeWork?.();
     if (work?.total > 0 && !confirmed) return { started: false, work, state };

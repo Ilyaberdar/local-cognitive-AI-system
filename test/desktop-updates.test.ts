@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +14,11 @@ const { JSDOM } = require("jsdom");
 type State = { phase: string; current: string; blocker?: string; error?: { stage: string; code: string }; available?: { version: string; size: number | null; notes: Array<{ version: string; html: string }> }; progress?: { percent: number } };
 
 class FakeToken { cancelled = false; cancel() { this.cancelled = true; } }
+
+// Resources folders with the updater's feed: a signed Windows build names its publisher there.
+const feedFolder = (text: string) => { const folder = fs.mkdtempSync(path.join(os.tmpdir(), "lc-feed-")); fs.writeFileSync(path.join(folder, "app-update.yml"), text); return folder; };
+const signedFeed = feedFolder("owner: Ilyaberdar\nrepo: local-cognitive-AI-system\nprovider: github\npublisherName:\n  - Local Cognitive\n");
+const unsignedFeed = feedFolder("owner: Ilyaberdar\nrepo: local-cognitive-AI-system\nprovider: github\n");
 
 /** electron-updater as the main process sees it, scripted per test. */
 const fakeUpdater = (script: { check?: () => Promise<unknown>; download?: (updater: EventEmitter, token: FakeToken) => Promise<unknown> } = {}) => {
@@ -27,7 +34,7 @@ const fakeUpdater = (script: { check?: () => Promise<unknown>; download?: (updat
   return updater;
 };
 
-const setup = (options: { packaged?: boolean; platform?: string; arch?: string; work?: { total: number; chatRuns?: number }; env?: Record<string, string>; updater?: ReturnType<typeof fakeUpdater> } = {}) => {
+const setup = (options: { packaged?: boolean; platform?: string; arch?: string; work?: { total: number; chatRuns?: number }; env?: Record<string, string>; updater?: ReturnType<typeof fakeUpdater>; resourcesPath?: string } = {}) => {
   const handlers = new Map<string, (event: unknown, value?: unknown) => unknown>();
   const sent: State[] = [], recorded: Array<[string, unknown]> = [], order: string[] = [];
   const updater = options.updater ?? fakeUpdater();
@@ -37,7 +44,7 @@ const setup = (options: { packaged?: boolean; platform?: string; arch?: string; 
     getWindow: () => ({ isDestroyed: () => false, webContents: { send: (_channel: string, state: State) => sent.push(state) } }),
     getBackend: () => ({ activeWork: () => options.work ?? { total: 0 } }),
     prepareForExit: async () => { order.push("prepare"); }, record: (event: string, fields: unknown) => recorded.push([event, fields]),
-    platform: options.platform ?? "darwin", arch: options.arch ?? "arm64", env: options.env ?? {},
+    platform: options.platform ?? "darwin", arch: options.arch ?? "arm64", env: options.env ?? {}, resourcesPath: options.resourcesPath ?? signedFeed,
     loadUpdater: () => ({ autoUpdater: updater, CancellationToken: FakeToken })
   });
   const call = (name: string, value?: unknown) => handlers.get(`updates:${name}`)!({}, value) as Promise<State & { started?: boolean; work?: unknown; state?: State }>;
@@ -115,6 +122,16 @@ test("restart and update asks first when local work runs; Windows shuts the back
   await windows.call("install", false);
   assert.deepEqual(windows.order, ["prepare", "installer"]);
   assert.deepEqual(windows.updater.installs, [[true, true]], "silent, then the new version starts");
+});
+
+test("Windows never installs an update whose signer it cannot check: until builds are signed, the new version is only shown", async () => {
+  const unsigned = setup({ platform: "win32", resourcesPath: unsignedFeed, updater: fakeUpdater({ check: () => Promise.resolve(release) }) });
+  assert.equal((await unsigned.call("state")).blocker, "windows-unsigned");
+  assert.equal((await unsigned.call("check")).phase, "available", "the new version is still shown");
+  assert.equal((await unsigned.call("download")).phase, "available", "but not downloaded");
+  assert.deepEqual(unsigned.updater.installs, []);
+  const signed = setup({ platform: "win32", resourcesPath: signedFeed, updater: fakeUpdater({ check: () => Promise.resolve(release) }) });
+  assert.equal((await signed.call("state")).blocker, undefined, "signed builds name their publisher: the updater checks the installer");
 });
 
 test("a refused install on macOS (not our signature) keeps the app running and says so", async () => {
