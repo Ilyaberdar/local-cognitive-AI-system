@@ -30,6 +30,8 @@ test("a newer signed release is reported with its notes; the same version, a bad
   const forged = await new UpdateChecker({ manifestUrl: url, keys: release.keys, currentVersion: "0.1.0", enabled: true,
     fetchImpl: serving({ [url]: release.manifest, [`${url}.sig`]: signed("0.2.0").signature }) }).checkNow();
   assert.deepEqual([forged.available, forged.error], [null, "unknown_key"], "never shown unless our key signed it");
+  const unpublished = await new UpdateChecker({ manifestUrl: url, keys: release.keys, currentVersion: "0.1.0", enabled: true, fetchImpl: serving({}) }).checkNow();
+  assert.deepEqual([unpublished.available, unpublished.error, typeof unpublished.checkedAt], [null, undefined, "string"], "no release yet is not an error");
   const offline = await new UpdateChecker({ manifestUrl: url, keys: release.keys, currentVersion: "0.1.0", enabled: true,
     fetchImpl: (async () => { throw new TypeError("fetch failed"); }) as typeof fetch }).checkNow();
   assert.equal(offline.error, "unreachable");

@@ -161,7 +161,7 @@ test("nothing is stopped for a changed download, a link in the release, a wrong 
   assert.equal(f.settings(), '{"schema":"0.1.0"}');
 });
 
-test("update from the command line: --check only looks; installing needs root; no trusted key, no update", { skip: !posix || process.getuid?.() === 0, timeout: 60_000 }, async t => {
+test("update from the command line: --check only looks; installing needs root; a foreign signature is refused; nothing published is no update", { skip: !posix || process.getuid?.() === 0, timeout: 60_000 }, async t => {
   const { parseServerArgs } = await import("../src/server/args");
   const parsed = parseServerArgs(["update", "--check", "--data-dir", "/srv/lc", "--manifest-url", "https://example/m.json"], {});
   assert.deepEqual({ ...parsed.update }, { check: true, wait: false, manifestUrl: "https://example/m.json", prefix: "/opt/local-cognitive", unit: "local-cognitive", user: "local-cognitive" });
@@ -182,14 +182,20 @@ test("update from the command line: --check only looks; installing needs root; n
     assert.equal(refused.status, 78, command);
     assert.match(refused.stderr, /as root/);
   }
-  // A manifest on loopback: this build trusts no release key yet.
+  // A manifest on loopback that this build's release key did not sign; then nothing published at all.
   const http = await import("node:http");
-  const server = http.createServer((_request, response) => { response.end(JSON.stringify({ schema: 1 })); });
+  const server = http.createServer((request, response) => {
+    if (request.url?.startsWith("/none/")) { response.statusCode = 404; response.end(); return; }
+    response.end(JSON.stringify({ schema: 1 }));
+  });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const port = (server.address() as { port: number }).port;
   const check = await run("update", "--check", "--manifest-url", `http://127.0.0.1:${port}/server-manifest.json`);
   assert.equal(check.status, 1);
-  assert.match(check.stderr, /no release key/);
+  assert.match(check.stderr, /does not trust/);
+  const none = await run("update", "--check", "--manifest-url", `http://127.0.0.1:${port}/none/server-manifest.json`);
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(none.stderr, /No server release is published yet\./);
   assert.equal((await run("update", "--check", "--manifest-url", "http://releases.example/m.json")).status, 64, "only https away from loopback");
 });

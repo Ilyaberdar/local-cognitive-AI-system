@@ -80,6 +80,8 @@ export const adoptRelease = (options: { prefix: string; fromApp: string; fromNod
 
 const fetchBytes = async (fetchImpl: typeof fetch, url: string, limit: number): Promise<Buffer> => {
   const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(60_000) });
+  // 404 before the first release is published: nothing to install yet, not a failure.
+  if (response.status === 404) throw new UpdateError("No server release is published yet.", "not_published");
   if (!response.ok) throw new UpdateError(`${url} answered HTTP ${response.status}.`, "download_failed");
   const declared = Number(response.headers.get("content-length") ?? 0);
   if (declared > limit) throw new UpdateError(`${url} is larger than expected.`, "download_failed");

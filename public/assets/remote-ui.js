@@ -80,7 +80,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
     ];
     // A newer release is installed by the server's administrator: the server cannot update itself.
     const notice = update ? `<div class="account-card remote-update" role="status"><div><h2>Local Cognitive ${escape(update.version)} is available for ${escape(status.hostName || "the server")}</h2>
-      <p>On the server, run <code>sudo local-cognitive-server update --data-dir /srv/local-cognitive</code>. It backs the data up, installs the release beside the running one, and goes back if the new one does not start.</p>
+      <p>On the server, run <code>sudo local-cognitive-server update</code>. It backs the data up, installs the release beside the running one, and goes back if the new one does not start.</p>
       ${update.notes ? `<details><summary>What's new</summary><pre class="remote-update-notes">${escape(update.notes)}</pre></details>` : ""}</div></div>` : "";
     return `<div class="settings-rows remote-server-status">${rows.map(([label, value]) => `<div class="settings-row"><div><label>${label}</label></div><div class="settings-control">${value}</div></div>`).join("")}</div>${notice}`;
   }
