@@ -9,7 +9,7 @@ const httpStatus = z.number().int().min(100).max(599);
 /** Every event the technical log may hold, and the only fields each may carry. Adding one is a
  * reviewed change here; nothing else reaches the log, Sentry or a bug report automatically. */
 export const DIAGNOSTIC_EVENTS = {
-  "app.started": { runtimeKind: z.enum(["desktop", "server", "mcp-stdio", "test"]), previousShutdown: z.enum(["clean", "unclean", "none"]) },
+  "app.started": { runtimeKind: z.enum(["desktop", "server", "mcp-stdio", "maintenance", "test"]), previousShutdown: z.enum(["clean", "unclean", "none"]) },
   "startup.failed": { category: diagnosticCode },
   "app.crash": { process: z.enum(["main", "renderer", "gpu", "utility", "other"]), reason: diagnosticCode, exitCode: z.number().int() },
   "renderer.error": { category: diagnosticCode },
