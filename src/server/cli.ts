@@ -152,6 +152,8 @@ const pair = async (args: ServerArgs, wait: boolean) => {
   ].join("\n"), result);
   if (!wait || args.json) return ExitCode.ok;
   process.stdout.write("\nWaiting for the computer to connect… (Ctrl+C stops waiting; the key stays valid)\n");
+  // Ctrl+C ends the wait, not the key: said plainly, and a normal exit (no "Interrupt" from runuser).
+  process.once("SIGINT", () => { process.stdout.write(`\nStopped waiting. The key stays valid until ${until}.\n`); process.exit(130); });
   while (Date.now() < result.expiresAt) {
     await new Promise(resolve => setTimeout(resolve, 2_000));
     const used = await remoteRequest(args, { op: "invitation", invitationId: result.invitationId }) as { consumed: boolean; deviceName?: string };
@@ -268,7 +270,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "console": {
         if (!process.stdin.isTTY || !process.stdout.isTTY) throw new CliError("The console needs a terminal.", ExitCode.usage);
         const { runConsole } = await import("./console");
-        return await runConsole({ dataDir: args.dataDir! });
+        return await runConsole({ dataDir: args.dataDir!, ...(args.noColor ? { color: false } : {}), ...(args.ascii ? { ascii: true } : {}) });
       }
       case "pair": return await pair(args, args.wait);
       case "connect-key": return await pair(args, false);

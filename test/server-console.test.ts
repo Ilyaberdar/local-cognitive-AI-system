@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activityBetween, banner, box, COMMANDS, statusPanel, summaryLine, terminalStyle, uptime, visibleWidth, type Overview } from "../src/server/console";
+import { activityBetween, banner, box, COMMANDS, statusPanel, summaryLine, terminalStyle, uptime, visibleWidth, watchFrame, type Overview } from "../src/server/console";
 
 const plain = { color: false, unicode: true, width: 100 };
 const ascii = { color: false, unicode: false, width: 60 };
@@ -16,11 +16,15 @@ const running: Overview = {
 };
 
 test("the console adapts to the terminal: colours, box drawing and the banner's size", () => {
-  assert.deepEqual(terminalStyle({ LANG: "en_US.UTF-8" }, { isTTY: true, columns: 120 }), { color: true, unicode: true, width: 120 });
-  assert.equal(terminalStyle({ LANG: "en_US.UTF-8", NO_COLOR: "" }, { isTTY: true }).color, false);
-  assert.equal(terminalStyle({ TERM: "dumb" }, { isTTY: true }).color, false);
+  const tty = { TERM: "xterm-256color", LANG: "en_US.UTF-8" };
+  assert.deepEqual(terminalStyle(tty, { isTTY: true, columns: 120 }), { color: true, unicode: true, width: 120, fancy: true });
+  assert.equal(terminalStyle({ ...tty, NO_COLOR: "" }, { isTTY: true }).color, false);
+  assert.deepEqual(terminalStyle({ ...tty, TERM: "dumb" }, { isTTY: true }), { color: false, unicode: true, width: 80, fancy: false }, "no colours and no live view on a dumb terminal");
   assert.equal(terminalStyle({ LANG: "C" }, { isTTY: false }).unicode, false);
   assert.equal(terminalStyle({ FORCE_COLOR: "1" }, { isTTY: false }).color, true);
+  // sudo drops NO_COLOR: the flags work under sudo.
+  assert.deepEqual(terminalStyle(tty, { isTTY: true }, { color: false, ascii: true }), { color: false, unicode: false, width: 80, fancy: true });
+  assert.equal(visibleWidth("\x1b]8;;https://example.test\x07link\x1b]8;;\x07 \x1b[1mbold\x1b[0m"), 9, "OSC and SGR take no columns");
   assert.equal(banner({ ...plain, width: 100 }).length, 8, "the large logo on a wide terminal");
   assert.equal(banner({ ...plain, width: 80 }).length, 5, "a smaller one on 80 columns");
   assert.deepEqual(banner({ ...plain, width: 60 }), ["◆ Local Cognitive"], "one line when narrow");
@@ -52,6 +56,19 @@ test("status shows the computers, the GPU, the models, the work and an available
   assert.match(statusPanel(plain, { ...running, remote: { state: "online", claimed: false, devices: 0 }, connected: [] }).join("\n"), /no owner yet: type pair to connect your computer/);
   assert.match(summaryLine(plain, running), /^fedora · 0\.2\.0 · CUDA · ● Remote online · 1 computer connected$/);
   assert.equal(uptime("2026-10-08T10:00:00.000Z", Date.parse("2026-10-10T12:00:00.000Z")), "2d 2h");
+});
+
+test("a watch frame fits the terminal: never taller, no line wider, the newest activity first", () => {
+  const activity = Array.from({ length: 40 }, (_, index) => `12:00:${String(index).padStart(2, "0")}  Event ${index}`);
+  for (const [width, rows] of [[100, 40], [60, 16], [40, 8]] as const) {
+    const frame = watchFrame({ ...plain, width }, running, activity, rows);
+    assert.ok(frame.length <= rows, `${frame.length} lines on ${rows} rows`);
+    for (const line of frame) assert.ok(visibleWidth(line) <= width - 1, `${visibleWidth(line)} > ${width - 1}: ${line}`);
+    assert.match(frame.at(-1)!, /q or Esc: back to the console/);
+  }
+  const roomy = watchFrame(plain, running, activity, 40).join("\n");
+  assert.match(roomy, /Event 0\n/, "the newest first");
+  assert.match(watchFrame(plain, undefined, [], 20).join("\n"), /The server is not answering/);
 });
 
 test("watch turns changes into activity: computers, models, work, updates", () => {
@@ -90,7 +107,8 @@ test("the console runs status, watch and exit against a live control socket, and
   const output = Object.assign(new PassThrough(), { isTTY: true, columns: 100 }) as unknown as NodeJS.WriteStream;
   let text = "";
   output.on("data", chunk => { text += chunk; });
-  const done = runConsole({ dataDir: root, input, output, env: { LANG: "en_US.UTF-8", NO_COLOR: "1" }, run: async () => 0 });
+  const calls: string[][] = [];
+  const done = runConsole({ dataDir: root, input, output, env: { LANG: "en_US.UTF-8", TERM: "xterm-256color", NO_COLOR: "1" }, run: async args => { calls.push(args); return 0; } });
   const waitFor = async (pattern: RegExp) => {
     for (let attempt = 0; attempt < 250 && !pattern.test(text); attempt++) await delay(20);
     assert.match(text, pattern);
@@ -103,8 +121,21 @@ test("the console runs status, watch and exit against a live control socket, and
   await waitFor(/q or Esc: back to the console/);
   input.write("q");
   await waitFor(/\x1b\[\?1049l/);
-  input.write("exit\r");
-  assert.equal(await done, 0, "exit works after watch: the prompt reads again");
+  // Tab completes the command and config's word; the command line command gets the terminal.
+  input.write("con\t");
+  input.write("err\t");
+  input.write("\r");
+  for (let attempt = 0; attempt < 250 && !calls.length; attempt++) await delay(20);
+  assert.deepEqual(calls, [["error-reports"]]);
+  // Ctrl+C clears a typed line without leaving; on an empty line it asks, and the second one leaves.
+  input.write("stat");
+  input.write("\x03");
+  await waitFor(/\(To leave, type exit or press Ctrl\+C again\. The server keeps running\.\)/).catch(() => undefined);
+  assert.equal(/\(To leave/.test(text), false, "clearing a typed line does not count");
+  input.write("\x03");
+  await waitFor(/\(To leave, type exit or press Ctrl\+C again\. The server keeps running\.\)/);
+  input.write("\x03");
+  assert.equal(await done, 0, "Ctrl+C twice on an empty line leaves; the prompt read again after watch");
   assert.match(text, /Bye\. The server keeps running\./);
   assert.equal(text.includes("\u001b]52"), false, "the computer's OSC 52 never reaches the terminal");
   assert.equal(text.includes("\u0007"), false);

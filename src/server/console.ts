@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import readline from "readline";
+import { stripVTControlCharacters } from "util";
 import { controlRequest } from "./ControlServer";
 import { controlSocketPathFor, dataDirectories } from "./dataRoot";
 import { printableDeep } from "./terminalText";
@@ -27,19 +28,30 @@ const SMALL = [
   "                                     |___/"
 ];
 
-export interface Style { color: boolean; unicode: boolean; width: number }
+export interface Style { color: boolean; unicode: boolean; width: number; /** Cursor control and the live view (a real terminal). */ fancy?: boolean }
 
-/** What the terminal can show: colours unless NO_COLOR or TERM=dumb, box drawing on UTF-8. */
-export const terminalStyle = (env: NodeJS.ProcessEnv, stream: { isTTY?: boolean; columns?: number }): Style => ({
-  color: env.FORCE_COLOR !== undefined && env.FORCE_COLOR !== "0" ? true : Boolean(stream.isTTY) && env.NO_COLOR === undefined && env.TERM !== "dumb",
-  unicode: /utf-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || ""),
-  width: stream.columns || 80
-});
+/** What the terminal can show: colours unless NO_COLOR, TERM=dumb or --no-color (sudo drops
+ * NO_COLOR and FORCE_COLOR, so the flags exist); box drawing on UTF-8 unless --ascii. */
+export const terminalStyle = (env: NodeJS.ProcessEnv, stream: { isTTY?: boolean; columns?: number }, flags: { color?: boolean; ascii?: boolean } = {}): Style => {
+  const terminal = Boolean(stream.isTTY) && Boolean(env.TERM) && env.TERM !== "dumb";
+  const forced = env.FORCE_COLOR !== undefined && !["0", "false"].includes(env.FORCE_COLOR);
+  return {
+    color: flags.color === false ? false : forced || (terminal && env.NO_COLOR === undefined),
+    unicode: !flags.ascii && /utf-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || ""),
+    width: stream.columns || 80,
+    fancy: terminal
+  };
+};
 
-const BLUE = "38;5;39", GREEN = "38;5;42", GREY = "38;5;245", YELLOW = "38;5;221", RED = "38;5;203";
+// The 16 basic colours: every terminal has them (256-colour codes read as blink on some).
+const BLUE = "94", GREEN = "32", GREY = "90", YELLOW = "33", RED = "31";
 const paint = (style: Style, code: string, text: string) => style.color ? `\x1b[${code}m${text}\x1b[0m` : text;
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
-export const visibleWidth = (text: string) => [...text.replace(ANSI, "")].length;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** Columns a text takes: escape sequences take none, a character with its marks takes one. */
+export const visibleWidth = (text: string) => { let width = 0; for (const _ of graphemes.segment(stripVTControlCharacters(text))) width++; return width; };
+/** A line cut to the terminal: plain (colours dropped) and ended with … when it is too wide. */
+const fitLine = (line: string, width: number) => visibleWidth(line) <= width ? line
+  : `${[...graphemes.segment(stripVTControlCharacters(line))].slice(0, Math.max(0, width - 1)).map(part => part.segment).join("")}…`;
 const padTo = (text: string, width: number) => text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 const arrow = (style: Style) => style.unicode ? "›" : ">";
 const dot = (style: Style, code: string) => paint(style, code, style.unicode ? "●" : "*");
@@ -185,6 +197,19 @@ export const activityBetween = (before: Overview | undefined, after: Overview): 
   return events;
 };
 
+/** One frame of `watch`: never taller than the terminal, no line wider than it. */
+export const watchFrame = (style: Style, overview: Overview | undefined, activity: string[], rows: number): string[] => {
+  const width = Math.max(20, style.width - 1);
+  const rule = paint(style, GREY, (style.unicode ? "─" : "-").repeat(width));
+  const top = [`${paint(style, `${BLUE};1`, "Local Cognitive Server")}${paint(style, GREY, overview?.hostName ? ` · ${overview.hostName}` : "")}`, rule,
+    ...(overview ? statusPanel(style, overview) : [paint(style, YELLOW, "The server is not answering (stopped or starting)…")]), rule, paint(style, BLUE, "Activity")];
+  // The way back stays on screen however small the terminal: the middle gives way first.
+  const bottom = rows >= 4 ? ["", paint(style, GREY, "q or Esc: back to the console")] : [paint(style, GREY, "q or Esc: back")];
+  const room = Math.max(0, rows - bottom.length);
+  const feed = (activity.length ? activity : [paint(style, GREY, "Nothing yet: changes appear here as they happen.")]).slice(0, Math.max(0, room - top.length));
+  return [...[...top, ...feed].slice(0, room), ...bottom].slice(-Math.max(1, rows)).map(line => fitLine(line, width));
+};
+
 export interface ConsoleOptions {
   dataDir: string;
   /** Runs a command line command (pair, logs, update…) with the terminal; resolves with its exit code. */
@@ -192,14 +217,17 @@ export interface ConsoleOptions {
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
   env?: NodeJS.ProcessEnv;
+  /** --no-color and --ascii: sudo drops NO_COLOR, so the console takes flags. */
+  color?: boolean;
+  ascii?: boolean;
 }
 
 /** The release's command script when installed (it switches users and knows the unit), else this CLI. */
 const defaultRunner = (dataDir: string) => (args: string[]) => new Promise<number>(resolve => {
   const prefix = process.env.LC_PREFIX;
   const script = prefix ? path.join(prefix, "current", "deploy", "server", "local-cognitive-server") : undefined;
-  // LC_IN_CONSOLE: `start` from here does not open a second console.
-  const env = { ...process.env, LC_IN_CONSOLE: "1" };
+  // `start` typed here does not open a second console.
+  const env = { ...process.env, LOCAL_COGNITIVE_CONSOLE_CHILD: "1" };
   const child = script ? spawn("bash", [script, ...args], { stdio: "inherit", env })
     : spawn(process.execPath, [path.join(__dirname, "cli.js"), ...args, "--data-dir", dataDir], { stdio: "inherit", env });
   child.on("error", () => resolve(127));
@@ -209,7 +237,7 @@ const defaultRunner = (dataDir: string) => (args: string[]) => new Promise<numbe
 /** Runs the console until `exit`, Ctrl+D or Ctrl+C twice. */
 export const runConsole = async (options: ConsoleOptions): Promise<number> => {
   const input = options.input ?? process.stdin, output = options.output ?? process.stdout, env = options.env ?? process.env;
-  const style = () => terminalStyle(env, output);
+  const style = () => terminalStyle(env, output, { color: options.color, ascii: options.ascii });
   const socket = controlSocketPathFor(dataDirectories(path.resolve(options.dataDir)).app);
   let denied = false;
   const overview = async (): Promise<Overview | undefined> => {
@@ -221,77 +249,111 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
   const run = options.run ?? defaultRunner(options.dataDir);
   const write = (lines: string[]) => output.write(`${lines.join("\n")}\n`);
   const welcome = async () => {
-    const s = style(), state = await overview();
+    const s = style();
+    // The banner at once; the summary when the server has answered.
     write(["", ...banner(s), "",
       `${paint(s, `${GREEN};1`, `${arrow(s)} Welcome to Local Cognitive Server!`)}`,
       `  ${paint(s, GREY, "Your models on your GPU, for your computers anywhere.")}`,
       `  ${paint(s, GREY, "Built for your machine. Your context. Your control.")}`,
-      "",
-      `  ${state ? summaryLine(s, state) : unavailable(s)}`,
+      ""]);
+    const state = await overview();
+    write([`  ${state ? summaryLine(s, state) : unavailable(s)}`,
       "", ...box(s, "Available commands:", COMMANDS), "",
       paint(s, GREY, "Ready when you are. Type a command to get started.")]);
   };
 
   const names = ["status", "watch", "pair", "devices", "revoke", "logs", "start", "stop", "restart", "update", "config", "clear", "help", "exit"];
+  const following: Record<string, string[]> = { config: ["error-reports"], "error-reports": ["on", "off"] };
+  /** One Tab completes a single match (with a space); two list them. Words after the first: config's. */
+  const completer = (line: string): [string[], string] => {
+    const words = line.trimStart().split(/\s+/);
+    const current = words[words.length - 1] ?? "";
+    const pool = words.length <= 1 ? names : following[words[words.length - 2] ?? ""] ?? [];
+    const hits = pool.filter(name => name.startsWith(current));
+    return [hits.length === 1 ? [`${hits[0]} `] : hits, current];
+  };
   // Created after the welcome is shown: anything typed earlier waits in the terminal, not lost.
   let rl!: readline.Interface;
   const prompt = () => { rl.setPrompt(`${paint(style(), `${GREEN};1`, arrow(style()))} `); rl.prompt(); };
+
+  // Whatever ends the console (q, a signal, a dropped SSH session, an exception), the terminal is
+  // given back as it was: normal screen, cursor shown, line wrap on, no raw mode.
+  const ALT_ON = "\x1b[?1049h\x1b[?25l\x1b[?7l", ALT_OFF = "\x1b[?7h\x1b[?25h\x1b[?1049l";
+  let altScreen = false, childRunning = false;
+  const restoreTerminal = () => {
+    if (altScreen) { altScreen = false; try { output.write(ALT_OFF); } catch { /* The terminal is gone. */ } }
+    try { if (input.isTTY && input.isRaw) input.setRawMode(false); } catch { /* The terminal is gone. */ }
+  };
+  const onSignal = (code: number) => () => { restoreTerminal(); process.exit(code); };
+  const signals: Array<[NodeJS.Signals, () => void]> = [["SIGTERM", onSignal(143)], ["SIGHUP", onSignal(129)], ["SIGQUIT", onSignal(131)],
+    // Ctrl+C reaches a child (pair, logs) and the console alike: the child stops, the console stays.
+    ["SIGINT", () => { if (!childRunning) onSignal(130)(); }]];
+  for (const [signal, handler] of signals) process.on(signal, handler);
+  process.on("exit", restoreTerminal);
+  const releaseSignals = () => { for (const [signal, handler] of signals) process.off(signal, handler); process.off("exit", restoreTerminal); };
 
   // A child (pair, logs, update…) gets the terminal: Ctrl+C reaches it, not the console.
   const handOver = async (args: string[]) => {
     rl.pause();
     if (input.isTTY) input.setRawMode(false);
-    const ignore = () => undefined;
-    process.on("SIGINT", ignore);
+    childRunning = true;
     try { return await run(args); }
     finally {
-      process.off("SIGINT", ignore);
+      childRunning = false;
+      // The child may have left the cursor mid-line (after ^C) or hidden it.
+      if (style().fancy) output.write(`${" ".repeat(Math.max(0, (output.columns || 80) - 1))}\r\x1b[?25h`);
       if (input.isTTY) input.setRawMode(true);
       rl.resume();
     }
   };
 
-  let restore: (() => void) | undefined;
   const watch = () => new Promise<void>(resolve => {
-    const s = () => style();
     const activity: string[] = [];
-    let previous: Overview | undefined, timer: NodeJS.Timeout | undefined, stopped = false;
-    output.write("\x1b[?1049h\x1b[?25l");
-    const draw = async () => {
+    let latest: Overview | undefined, previous: Overview | undefined, timer: NodeJS.Timeout | undefined, stopped = false;
+    // Drawn over the previous frame (no clearing, so no flicker), one terminal high and wide.
+    const paintFrame = () => {
+      if (stopped) return;
+      const lines = watchFrame(style(), latest, activity, output.rows || 24);
+      output.write(`\x1b[?2026h\x1b[H${lines.map(line => `${line}\x1b[K`).join("\n")}\x1b[J\x1b[?2026l`);
+    };
+    // Fetched apart from drawing: a slow answer never overlaps the next, and a resize redraws at once.
+    const poll = async () => {
       const next = await overview();
       if (stopped) return;
       const time = new Date().toTimeString().slice(0, 8);
-      if (next) for (const event of activityBetween(previous, next)) activity.unshift(`${paint(s(), GREY, time)}  ${event}`);
-      activity.splice(12);
-      previous = next ?? previous;
-      const rule = paint(s(), GREY, (s().unicode ? "─" : "-").repeat(Math.min(s().width, 100)));
-      const header = `${paint(s(), `${BLUE};1`, "Local Cognitive Server")}${paint(s(), GREY, ` · ${next?.hostName ?? ""}`)}`;
-      const lines = [header, rule, ...(next ? statusPanel(s(), next) : [paint(s(), YELLOW, "The server is not answering (stopped or starting)…")]), rule,
-        paint(s(), BLUE, "Activity"), ...(activity.length ? activity : [paint(s(), GREY, "Nothing yet: changes appear here as they happen.")]), "",
-        paint(s(), GREY, "q or Esc: back to the console")];
-      output.write(`\x1b[H\x1b[2J${lines.join("\n")}\n`);
-      timer = setTimeout(() => void draw(), 1_000);
-    };
-    const finish = () => {
-      if (stopped) return;
-      stopped = true;
-      clearTimeout(timer);
-      input.off("keypress", onKey);
-      output.write("\x1b[?25h\x1b[?1049l");
-      resolve();
+      if (next) for (const event of activityBetween(previous, next)) activity.unshift(`${paint(style(), GREY, time)}  ${event}`);
+      activity.splice(50);
+      if (next) previous = next;
+      latest = next;
+      paintFrame();
+      timer = setTimeout(() => void poll(), 1_000);
     };
     const onKey = (_text: string, key: { name?: string; ctrl?: boolean } = {}) => {
       if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) finish();
     };
-    // The prompt's own key handling steps aside: keys go to the dashboard until it closes.
+    // The prompt's own key handling steps aside: keys go to the live view until it closes.
     const prompting = input.listeners("keypress") as Array<(...args: unknown[]) => void>;
     input.removeAllListeners("keypress");
     readline.emitKeypressEvents(input);
     input.on("keypress", onKey);
-    restore = () => { for (const listener of prompting) input.on("keypress", listener); };
+    output.on("resize", paintFrame);
+    function finish() {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(timer);
+      input.off("keypress", onKey);
+      for (const listener of prompting) input.on("keypress", listener);
+      output.off("resize", paintFrame);
+      restoreTerminal();
+      if (input.isTTY) input.setRawMode(true);
+      resolve();
+    }
+    if (input.isTTY) input.setRawMode(true);
     input.resume();
-    void draw();
-  }).finally(() => restore?.());
+    output.write(ALT_ON);
+    altScreen = true;
+    void poll();
+  });
 
   const execute = async (line: string): Promise<boolean> => {
     const [command = "", ...rest] = line.trim().split(/\s+/);
@@ -299,13 +361,15 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
     switch (command) {
       case "": return true;
       case "help": write(["", ...box(s, "Available commands:", COMMANDS), ""]); return true;
-      case "clear": output.write("\x1b[H\x1b[2J"); await welcome(); return true;
+      case "clear": if (s.fancy) output.write("\x1b[H\x1b[2J"); await welcome(); return true;
       case "status": {
         const state = await overview();
         write(["", ...(state ? statusPanel(s, state).map(text => `  ${text}`) : [`  ${unavailable(s)}`]), ""]);
         return true;
       }
-      case "watch": await watch(); return true;
+      case "watch":
+        if (!s.fancy) { const state = await overview(); write(["", ...(state ? statusPanel(s, state).map(text => `  ${text}`) : [`  ${unavailable(s)}`]), paint(s, GREY, "  (the live view needs a terminal)"), ""]); return true; }
+        await watch(); return true;
       case "pair": case "devices": case "logs": case "start": case "stop": case "restart": case "update":
         await handOver([command, ...rest]); return true;
       case "revoke":
@@ -328,10 +392,9 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
   };
 
   await welcome();
-  rl = readline.createInterface({ input, output, terminal: true, historySize: 200,
-    completer: (line: string) => { const hits = names.filter(name => name.startsWith(line.trim())); return [hits.length ? hits : names, line]; } });
+  rl = readline.createInterface({ input, output, terminal: true, historySize: 200, removeHistoryDuplicates: true, completer });
   return await new Promise<number>(resolve => {
-    let interrupted = 0, working = false;
+    let armed = false, working = false;
     // Commands run one at a time and in order, also when several lines arrive at once (pasted).
     const queue: string[] = [];
     const work = async () => {
@@ -346,14 +409,17 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
       working = false;
       prompt();
     };
-    rl.on("line", line => { interrupted = 0; queue.push(line); void work(); });
+    rl.on("line", line => { armed = false; queue.push(line); void work(); });
+    // Ctrl+C clears a typed line; on an empty line it asks once, and the second one leaves.
     rl.on("SIGINT", () => {
-      if (++interrupted >= 2) { rl.close(); return; }
-      output.write(`\n${paint(style(), GREY, "  (type exit to leave; the server keeps running. Ctrl+C again leaves too.)")}\n`);
-      rl.write(null, { ctrl: true, name: "u" });
+      if (rl.line.length > 0) { armed = false; rl.write(null, { ctrl: true, name: "e" }); rl.write(null, { ctrl: true, name: "u" }); return; }
+      if (armed) { rl.close(); return; }
+      armed = true;
+      output.write(`\n${paint(style(), GREY, "  (To leave, type exit or press Ctrl+C again. The server keeps running.)")}\n`);
       prompt();
     });
-    rl.on("close", () => { output.write(`\n${paint(style(), GREY, "Bye. The server keeps running.")}\n`); resolve(0); });
+    rl.on("SIGTSTP", () => undefined);
+    rl.on("close", () => { releaseSignals(); restoreTerminal(); output.write(`\n${paint(style(), GREY, "Bye. The server keeps running.")}\n`); resolve(0); });
     prompt();
   });
 };
