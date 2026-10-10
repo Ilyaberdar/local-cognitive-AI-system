@@ -55,7 +55,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, accountPending, accountNotice, diagnosticsConsent;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
   const context = () => getContext() || {};
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
@@ -584,12 +584,13 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   async function save({ key, store }) {
     const draft = dirty(key), snapshot = { ...draft };
-    if (!Object.keys(snapshot).length) return true;
+    // Pressing Save always answers, also when there was nothing to change.
+    if (!Object.keys(snapshot).length) { setStatus(key, { text: 'All changes are saved.', success: true }); return true; }
     setStatus(key, { text: 'Saving…', busy: true });
     try {
       await store.save(entityPatch(snapshot));
       for (const [name, value] of Object.entries(snapshot)) if (draft[name] === value) delete draft[name];
-      setStatus(key, { text: Object.keys(draft).length ? 'Unsaved changes' : 'Saved' });
+      setStatus(key, Object.keys(draft).length ? { text: 'Unsaved changes' } : { text: 'Saved. The changes apply now.', success: true });
       return true;
     } catch (error) {
       // The server may have made a change whose answer was lost: say so rather than "Not saved".
@@ -874,7 +875,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   /** Consent to error and crash reports (desktop): off until the user turns it on. */
   function errorReportsRow() {
     if (!window.desktopDiagnostics || !diagnosticsConsent?.available) return '';
-    return `<div class="settings-rows settings-consent"><div class="settings-row"><div><label for="error-reports">Send error reports and crash dumps</label><p>When something fails or crashes, a report goes to the developer (Sentry, EU region): error types, codes, app version and system. Chats, prompts, model answers, keys, file contents and paths are not included. A crash dump is a snapshot of the crashed process's memory and may contain fragments of what it was doing.</p></div><div class="settings-control"><input id="error-reports" data-error-reports type="checkbox" role="switch" ${diagnosticsConsent.automatic ? 'checked' : ''} /></div></div></div>`;
+    return `<div class="settings-rows settings-consent"><div class="settings-row"><div><label for="error-reports">Send error reports and crash dumps</label><p>When something fails or crashes, a report goes to the developer (Sentry, EU region): error types, codes, app version and system. Chats, prompts, model answers, keys, file contents and paths are not included. A crash dump is a snapshot of the crashed process's memory and may contain fragments of what it was doing.</p></div><div class="settings-control settings-consent-control"><span class="settings-save-status ${diagnosticsSaved ? 'is-success' : ''}" role="status" aria-live="polite" data-error-reports-status>${diagnosticsSaved ? `Saved · ${diagnosticsConsent.automatic ? 'on' : 'off'}` : ''}</span><input id="error-reports" data-error-reports type="checkbox" role="switch" ${diagnosticsConsent.automatic ? 'checked' : ''} /></div></div></div>`;
   }
   function bindErrorReports() {
     const toggle = root.querySelector('[data-error-reports]');
@@ -884,8 +885,15 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     }
     toggle.addEventListener('change', async () => {
       toggle.disabled = true;
-      try { diagnosticsConsent = await window.desktopDiagnostics.setConsent(toggle.checked); }
-      catch { toggle.checked = Boolean(diagnosticsConsent?.automatic); }
+      const status = root.querySelector('[data-error-reports-status]');
+      try {
+        diagnosticsConsent = await window.desktopDiagnostics.setConsent(toggle.checked);
+        diagnosticsSaved = true;
+        if (status) { status.textContent = `Saved · ${diagnosticsConsent.automatic ? 'on' : 'off'}`; status.classList.add('is-success'); status.classList.remove('is-error'); }
+      } catch {
+        toggle.checked = Boolean(diagnosticsConsent?.automatic);
+        if (status) { status.textContent = 'Not saved. Try again.'; status.classList.add('is-error'); status.classList.remove('is-success'); }
+      }
       toggle.disabled = false;
     });
   }

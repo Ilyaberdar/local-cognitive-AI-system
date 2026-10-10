@@ -34,6 +34,7 @@ test("Data & Privacy: error reports are off until the user turns them on, and th
   toggle()!.dispatchEvent(new dom.window.Event("change"));
   await until(() => calls.length === 1, "saved");
   assert.deepEqual(calls, [true]);
+  await until(() => /Saved · on/.test(dom.window.document.querySelector("[data-error-reports-status]")?.textContent ?? ""), "visible confirmation");
 });
 
 test("the window's uncaught errors go to the main process; other sites' scripts do not", () => {
@@ -47,4 +48,22 @@ test("the window's uncaught errors go to the main process; other sites' scripts 
   assert.equal(reports.length, 1);
   assert.equal(reports[0].name, "TypeError");
   dom.window.close();
+});
+
+test("Save / Apply always answers: saved, or nothing to save", async t => {
+  const dom = new JSDOM('<main><div id="root"></div></main>', { url: "http://localhost/#/chat", runScripts: "outside-only", pretendToBeVisual: true });
+  t.after(() => dom.window.close());
+  dom.window.eval(`${shellBundle}\nwindow.SettingsShell = SettingsShell;`);
+  const saved: unknown[] = [];
+  const store = { save: async (patch: unknown) => { saved.push(patch); } };
+  const shell = dom.window.SettingsShell.createSettingsShell({ app: dom.window.document.getElementById("root"),
+    getContext: () => ({ appSettings: { memory: {}, profile: {}, workspace: { outputDir: "/tmp/out", fileAccessMode: "restricted", allowedDirectories: [] } } }),
+    data: { integrations: [], ...store }, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
+  shell.route("#/settings/data");
+  const form = () => dom.window.document.querySelector("#settings-entity-form") as HTMLFormElement | null;
+  await until(() => Boolean(form()), "form");
+  form()!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+  const status = () => dom.window.document.querySelector(".settings-form-footer .settings-save-status");
+  await until(() => /All changes are saved/.test(status()?.textContent ?? ""), "nothing to save");
+  assert.ok(status()!.classList.contains("is-success"));
 });
