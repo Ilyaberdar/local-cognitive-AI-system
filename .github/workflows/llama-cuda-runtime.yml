@@ -1,9 +1,10 @@
 name: llama.cpp CUDA runtime
 
 # Builds the linux-x64 CUDA overlay (scripts/build-llama-cuda-overlay.mjs). Manual only.
-# Publishing redistributes NVIDIA libraries: it needs the owner's CUDA EULA sign-off, given as
-# the required reviewer of the `cuda-release` environment. Without `publish` nothing leaves CI
-# except a 14-day workflow artifact.
+# Publishing redistributes NVIDIA libraries under the CUDA EULA (Attachment A); the owner signed
+# off on 2026-10-10. Only a run started with `publish` (by someone who can write to the
+# repository) creates a release; otherwise nothing leaves CI except a 14-day workflow artifact.
+# Required reviewers on the `cuda-release` environment, if set, approve each publish.
 on:
   workflow_dispatch:
     inputs:
@@ -24,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Re-check both digests before the first run.
+  # The image index of 12.8.1-devel-ubuntu22.04, pinned by digest (checked 2026-10-10).
   CUDA_DEVEL_IMAGE: nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73b72ec4c4301653a84586e05bfc9a2aa2d58027e97
   CUDA_ARCHITECTURES: 50-virtual;61-real;70-virtual;75-real;80-real;86-real;89-real;90-real;90-virtual;120a-real
 
@@ -33,10 +34,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 340
     steps:
-      - name: Validate tag
-        env:
-          TAG: ${{ inputs.release_tag }}
-        run: '[[ "$TAG" =~ ^llama-b[0-9]+-cuda12\.8\.1-r[0-9]+$ ]] || { echo "bad tag" >&2; exit 1; }'
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -45,6 +42,14 @@ jobs:
           node-version: 22
       - id: pin
         run: echo "commit=$(node -p "require('./resources/llama/runtime-manifest.json').commit")" >> "$GITHUB_OUTPUT"
+      # Before hours of building: the tag names the pinned build and is not taken yet.
+      - name: Validate tag
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          build=$(node -p "require('./resources/llama/runtime-manifest.json').build")
+          [[ "$TAG" =~ ^llama-${build}-cuda12\.8\.1-r[0-9]+$ ]] || { echo "bad tag: the manifest pins $build" >&2; exit 1; }
+          if git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" >/dev/null; then echo "$TAG exists; bump -rN" >&2; exit 1; fi
       - uses: actions/checkout@v4
         with:
           repository: ggml-org/llama.cpp
@@ -52,11 +57,17 @@ jobs:
           path: .llama-src
           persist-credentials: false
       - name: Free disk
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL && df -h /
       - name: Build libggml-cuda.so
         run: >-
           node scripts/build-llama-cuda-overlay.mjs module --source .llama-src --out .cuda-build
           --image "$CUDA_DEVEL_IMAGE" --architectures "$CUDA_ARCHITECTURES" --jobs 3
+      # The compiler's errors are in the build's own logs.
+      - name: Build log tail
+        if: failure()
+        run: tail -n 150 .cuda-build/configure.log .cuda-build/build.log 2>/dev/null || true
+      - name: Drop the CUDA devel image before packaging
+        run: docker image prune --all --force && df -h /
       - name: Package overlay and smoke-test with the real prepare and verify scripts
         env:
           TAG: ${{ inputs.release_tag }}
