@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import type { Duplex } from "stream";
-import { ChannelError, connectTls, FramedChannel, pairingExporter, pairingProof, PROTOCOL_VERSION } from "../channel";
+import { ChannelError, connectTls, FramedChannel, MIN_PROTOCOL_VERSION, pairingExporter, pairingProof, PROTOCOL_VERSION } from "../channel";
 import type { TlsIdentity } from "../identity";
 import { closingMessage, deniedMessage, errorMessage, MAX_REQUESTS_IN_FLIGHT, responseMessage, welcomeMessage, type WelcomeMessage } from "../messages";
 
@@ -56,6 +56,11 @@ export class RemoteSession extends EventEmitter {
     if (denied.success) { channel.destroy(); throw new RemoteRequestError(denied.data.message, denied.data.code); }
     const welcome = welcomeMessage.safeParse(first);
     if (!welcome.success || welcome.data.hostId !== start.hostId) { channel.destroy(); throw new ChannelError("The server sent an unexpected answer.", "protocol"); }
+    // A server answers in a version this app speaks, or it is too new for it.
+    if (welcome.data.protocol < MIN_PROTOCOL_VERSION || welcome.data.protocol > PROTOCOL_VERSION) {
+      channel.destroy();
+      throw new RemoteRequestError(`Local Cognitive on the server (${welcome.data.serverVersion}) is newer than this app. Update the app on this computer.`, "client_too_old");
+    }
     return new RemoteSession(channel, welcome.data);
   }
 

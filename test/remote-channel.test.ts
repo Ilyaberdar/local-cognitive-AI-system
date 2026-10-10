@@ -216,3 +216,18 @@ test("a saved identity is restored only with its own key", () => {
   assert.deepEqual(loadTlsIdentity({ keyPem: identity.keyPem, certPem: identity.certPem }).spkiSha256, identity.spkiSha256);
   assert.throws(() => loadTlsIdentity({ keyPem: createTlsIdentity("x").keyPem, certPem: identity.certPem }), /does not match/);
 });
+
+test("a computer newer than its server is told to update the server, with the server's version", async t => {
+  const f = fixture(t), mac = device();
+  const key = decodeConnectionKey(f.host.createInvitation().key);
+  const [hostSide, deviceSide] = linkedPair();
+  void f.host.serve(hostSide, { streamId: "s", purpose: "pair", ticketId: crypto.randomUUID(), accountId: mac.accountId, deviceId: mac.deviceId,
+    deviceSpkiSha256: mac.identity.spkiSha256.toString("hex"), invitationId: key.invitationId, authExpiresAt: Date.now() + 60_000 });
+  const socket = await connectTls(deviceSide, mac.identity, key.hostSpkiSha256);
+  const channel = new FramedChannel(socket);
+  channel.send({ type: "hello", protocol: 99, purpose: "pair", accountId: mac.accountId, deviceId: mac.deviceId, invitationId: key.invitationId });
+  const reply = await new Promise(resolve => channel.once("message", resolve)) as { code: string; message: string; serverVersion: string };
+  assert.equal(reply.code, "server_too_old");
+  assert.match(reply.message, /Update the server: sudo local-cognitive-server update/);
+  assert.equal(reply.serverVersion, "0.1.0");
+});

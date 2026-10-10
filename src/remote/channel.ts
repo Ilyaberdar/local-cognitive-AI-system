@@ -8,6 +8,9 @@ import { peerSpkiSha256, type TlsIdentity } from "./identity";
  * authentication over any byte stream, normally a WebSocket through the relay. The host is
  * the TLS server. Both sides pin SHA-256(SPKI); certificate fields are never trusted. */
 export const PROTOCOL_VERSION = 1;
+/** The oldest protocol this side still speaks: a new version keeps the previous one working for a
+ * while, so a computer and its server need not be updated at the same moment. */
+export const MIN_PROTOCOL_VERSION = 1;
 export const EXPORTER_LABEL = "EXPORTER-local-cognitive-remote-v1";
 export const MAX_FRAME_BYTES = 1024 * 1024;
 const TLS_VERSION = { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" } as const;

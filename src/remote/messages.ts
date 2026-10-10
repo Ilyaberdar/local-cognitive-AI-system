@@ -14,7 +14,7 @@ export const welcomeMessage = z.object({
 });
 export type WelcomeMessage = z.infer<typeof welcomeMessage>;
 
-export const deniedMessage = z.object({ type: z.literal("denied"), code: z.string().max(64), message: z.string().max(500) });
+export const deniedMessage = z.object({ type: z.literal("denied"), code: z.string().max(64), message: z.string().max(500), serverVersion: z.string().max(64).optional() });
 export const requestMessage = z.object({ type: z.literal("request"), id: z.number().int().nonnegative(), op: z.string().min(1).max(64), payload: z.unknown().optional() }).strict();
 export const responseMessage = z.object({ type: z.literal("response"), id: z.number().int().nonnegative(), result: z.unknown().optional() });
 export const errorMessage = z.object({ type: z.literal("error"), id: z.number().int().nonnegative(), code: z.string().max(64), message: z.string().max(2000) });
