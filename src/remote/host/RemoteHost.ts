@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { EventEmitter } from "events";
 import type { Duplex } from "stream";
 import { Logger } from "../../utils/Logger";
-import { acceptTls, FramedChannel, pairingExporter, pairingProof, PROTOCOL_VERSION } from "../channel";
+import { acceptTls, FramedChannel, MIN_PROTOCOL_VERSION, pairingExporter, pairingProof, PROTOCOL_VERSION } from "../channel";
 import { encodeConnectionKey } from "../connectionKey";
 import type { SigningIdentity, TlsIdentity } from "../identity";
 import { helloMessage, MAX_REQUESTS_IN_FLIGHT, requestMessage, type HelloMessage } from "../messages";
@@ -40,7 +40,9 @@ const DENIALS: Record<string, string> = {
   owner_mismatch: "This server belongs to another account.",
   proof_invalid: "The connection key is not valid for this server.",
   not_authorized: "This device has no access to this server. Connect it again with a new key.",
-  protocol: "This version of Local Cognitive cannot talk to this server."
+  protocol: "This version of Local Cognitive cannot talk to this server.",
+  client_too_old: "Local Cognitive on this computer is too old for this server. Update the app on this computer.",
+  server_too_old: "Local Cognitive on the server is older than this app. Update the server: sudo local-cognitive-server update --data-dir <data dir>."
 };
 
 /** The host end of Remote sessions (spec §6.2–6.3). Transport-agnostic: the agent hands it a
@@ -79,7 +81,8 @@ export class RemoteHost extends EventEmitter {
       channel.on("failure", (error: Error) => this.options.logger?.warn("Remote session error", { streamId: open.streamId, error: error.message }));
       const deny = (code: keyof typeof DENIALS) => {
         this.options.logger?.warn("Remote connection refused", { streamId: open.streamId, deviceId: open.deviceId, code });
-        channel!.send({ type: "denied", code, message: DENIALS[code] });
+        // The server's version, so the computer can say which side to update.
+        channel!.send({ type: "denied", code, message: DENIALS[code], serverVersion: this.options.serverVersion.slice(0, 64) });
         channel!.close();
       };
       if (!timingSafeHexEqual(deviceSpkiSha256.toString("hex"), open.deviceSpkiSha256)) { deny("device_key_mismatch"); return; }
@@ -87,14 +90,16 @@ export class RemoteHost extends EventEmitter {
       const premature = () => channel?.destroy();
       const hello = helloMessage.safeParse(await firstMessage(channel, HELLO_TIMEOUT_MS, premature));
       if (!hello.success) { deny("protocol"); return; }
-      if (hello.data.protocol !== PROTOCOL_VERSION) { deny("protocol"); return; }
+      if (hello.data.protocol < MIN_PROTOCOL_VERSION) { deny("client_too_old"); return; }
+      if (hello.data.protocol > PROTOCOL_VERSION) { deny("server_too_old"); return; }
       if (hello.data.purpose !== open.purpose || hello.data.accountId !== open.accountId || hello.data.deviceId !== open.deviceId
         || (open.purpose === "pair" && hello.data.invitationId !== open.invitationId)) { deny("hello_mismatch"); return; }
       const granted = open.purpose === "pair" ? this.pair(channel, open, hello.data, deviceSpkiSha256) : this.authorize(open);
       if (typeof granted === "string") { deny(granted); return; }
       this.options.store.touch(open.deviceId, new Date(this.now()));
       channel.removeListener("message", premature);
-      this.run(channel, open, granted);
+      // The computer's version within the range spoken here: the session runs at it.
+      this.run(channel, open, granted, hello.data.protocol);
     } catch (error) {
       this.options.logger?.warn("Remote connection failed", { streamId: open.streamId, error: error instanceof Error ? error.message : String(error) });
       channel?.destroy(); transport.destroy();
@@ -133,7 +138,7 @@ export class RemoteHost extends EventEmitter {
     return grant;
   }
 
-  private run(channel: FramedChannel, open: StreamOpen, grant: RemoteGrant): void {
+  private run(channel: FramedChannel, open: StreamOpen, grant: RemoteGrant, protocol = PROTOCOL_VERSION): void {
     const hostId = this.options.store.hostId()!;
     let set = this.sessions.get(grant.deviceId);
     if (!set) this.sessions.set(grant.deviceId, set = new Set());
@@ -142,7 +147,7 @@ export class RemoteHost extends EventEmitter {
     expiry.unref?.();
     const closed = new AbortController();
     channel.once("close", () => { closed.abort(); clearTimeout(expiry); set!.delete(channel); if (!set!.size) this.sessions.delete(grant.deviceId); });
-    channel.send({ type: "welcome", protocol: PROTOCOL_VERSION, hostId, hostName: this.options.hostName, serverVersion: this.options.serverVersion,
+    channel.send({ type: "welcome", protocol, hostId, hostName: this.options.hostName, serverVersion: this.options.serverVersion,
       capabilities: Object.keys(this.options.operations), authExpiresAt: open.authExpiresAt });
     let inFlight = 0;
     const context: OperationContext = { accountId: grant.accountId, deviceId: grant.deviceId, signal: closed.signal };
