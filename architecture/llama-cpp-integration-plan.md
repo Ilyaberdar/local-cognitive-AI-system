@@ -189,8 +189,8 @@ llama.cpp распространяется под [MIT](https://github.com/ggml-
 
 Предлагаемые места для весов:
 
-- macOS: `~/Library/Application Support/local-cognitive-ai-system/models`;
-- Windows: `%LOCALAPPDATA%/local-cognitive-ai-system/models`;
+- macOS: `~/Library/Application Support/Local Cognitive/models` (у dev-запуска своя папка `local-cognitive-ai-system`);
+- Windows: сейчас `%APPDATA%/Local Cognitive/models`, то есть roaming-профиль; перенести в `%LOCALAPPDATA%` при работе над Windows (M4);
 - возможность выбрать другой диск; файлы не помещать внутрь `.app`, installer или roaming-профиля Windows.
 
 Метаданные и журнал скачиваний хранить под `APP_DATA_DIR/local-models`; существующие `app/settings.json` и настройки сессий остаются отдельными. На диске библиотека привязана к repo + immutable revision + набору файлов/хешей. В UI используется стабильный внутренний ID; имя модели не служит путём. Shards одного варианта публикуются как готовая модель только после проверки всего набора. Внешний импорт помечается отдельно от принадлежащих приложению файлов.

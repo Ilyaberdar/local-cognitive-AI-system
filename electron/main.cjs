@@ -82,6 +82,8 @@ const configureRuntimeEnvironment = async () => {
   process.env.LOCAL_MODELS_DIR = path.join(dataRoot, "models");
   process.env.APP_DATA_DIR = path.join(dataRoot, "app");
   process.env.MEMORY_DIR = path.join(dataRoot, "memory");
+  // Its default is relative to the working directory, which is inside the signed app.
+  process.env.OPENMEMORY_DB_PATH = path.join(dataRoot, "memory", "openmemory.db");
   process.env.SESSION_DIR = path.join(dataRoot, "sessions");
   process.env.OUTPUT_DIR = path.join(dataRoot, "output");
   process.env.PLUGINS_DIR = path.join(appRoot, "plugins");

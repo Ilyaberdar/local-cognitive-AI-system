@@ -64,11 +64,11 @@ The MCP client normally launches the second command and communicates with it ove
 
 Stdio starts a separate runtime that owns its model process; it does not connect to the desktop UI's running backend. To use the same installed library, configure the same `APP_DATA_DIR` (settings and manifests) and `LOCAL_MODELS_DIR` (GGUF files). Relative paths are resolved against the working directory; use absolute paths in the MCP client.
 
-For the default macOS desktop data directory in this installation:
+For the default macOS data directory of the installed app (a development run keeps its own data in `~/Library/Application Support/local-cognitive-ai-system`):
 
 ```sh
-APP_DATA_DIR="$HOME/Library/Application Support/local-cognitive-ai-system/app" \
-LOCAL_MODELS_DIR="$HOME/Library/Application Support/local-cognitive-ai-system/models" \
+APP_DATA_DIR="$HOME/Library/Application Support/Local Cognitive/app" \
+LOCAL_MODELS_DIR="$HOME/Library/Application Support/Local Cognitive/models" \
 npm run --silent mcp:stdio
 ```
 

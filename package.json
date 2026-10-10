@@ -99,6 +99,9 @@
       }
     ],
     "productName": "Local Cognitive",
+    "extraMetadata": {
+      "productName": "Local Cognitive"
+    },
     "icon": "icon.png",
     "asar": false,
     "directories": {
@@ -113,6 +116,7 @@
       "!**/.env.*"
     ],
     "mac": {
+      "type": "distribution",
       "category": "public.app-category.productivity",
       "target": [
         {
