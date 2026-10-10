@@ -40,7 +40,13 @@ const fail = (error: unknown): never => {
 /** update, rollback and adopt: releases side by side under <prefix>/releases, `current` the running one. */
 export const updateCommand = async (args: ServerArgs): Promise<number> => {
   const options = args.update!;
-  const log = (line: string) => process.stdout.write(`${line}\n`);
+  // An SSH session that drops mid-update must not stop it halfway (the server stopped, the links
+  // half switched): sudo passes the hangup on, so it is ignored, and a gone terminal is not an error.
+  if (args.command !== "update" || !options.check) {
+    process.on("SIGHUP", () => undefined);
+    for (const stream of [process.stdout, process.stderr]) stream.on("error", () => undefined);
+  }
+  const log = (line: string) => { try { process.stdout.write(`${line}\n`); } catch { /* The terminal is gone; the journal records each step. */ } };
   if (args.command === "update" && options.check) {
     const manifest = await checkForUpdate({ manifestUrl: manifestUrlOf(options.manifestUrl), keys: RELEASE_KEYS, currentVersion: appVersion() }).catch(fail);
     if (args.json) log(JSON.stringify(manifest ? { current: appVersion(), available: manifest.version, notes: manifest.notes } : { current: appVersion(), available: null }));

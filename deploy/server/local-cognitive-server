@@ -66,11 +66,12 @@ case "$command" in
     need_root "$@"
     systemctl "$command" "$UNIT"
     # `start` in a terminal goes on to the console (not when typed in the console itself).
-    if [ "$command" = start ] && [ -t 0 ] && [ -t 1 ] && [ -z "${LC_IN_CONSOLE:-}" ]; then exec bash "$0" console; fi ;;
+    if [ "$command" = start ] && [ -t 0 ] && [ -t 1 ] && [ -z "${LOCAL_COGNITIVE_CONSOLE_CHILD:-}" ]; then exec bash "$0" console; fi ;;
   console)
     need_root "$@"
     cd /
-    exec env LOCAL_COGNITIVE_DATA_DIR="$DATA_DIR" "$NODE" "$CLI" console ;;
+    shift
+    exec env LOCAL_COGNITIVE_DATA_DIR="$DATA_DIR" "$NODE" "$CLI" console "$@" ;;
   uninstall)
     uninstall "$@" ;;
   cuda)

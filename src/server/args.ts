@@ -32,6 +32,9 @@ export interface ServerArgs {
   /** update/rollback/adopt (run as root): where releases live, the unit and the server's user. */
   update?: { check: boolean; wait: boolean; manifestUrl?: string; prefix: string; unit: string; user: string; fromApp?: string; fromNode?: string };
   yes: boolean;
+  /** console: no colours (sudo drops NO_COLOR) and plain ASCII drawing. */
+  noColor?: boolean;
+  ascii?: boolean;
 }
 
 const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "backup", "backups", "restore", "update", "rollback", "adopt"];
@@ -44,6 +47,7 @@ Commands:
   status    Show whether the server runs and what it is doing
   drain     Finish accepted work, then stop the server
   console                The interactive console (as root): status, live view, the commands below
+                         (--no-color, --ascii)
   pair                   Connect a computer: prints a one-time key and waits until it is used
                          (on the computer: Local Cognitive → Remote → Connect; --no-wait, --ttl)
   connect-key            The same as pair, without waiting
@@ -104,7 +108,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
       quiet: { type: "boolean" }, "allow-root": { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean" },
       ttl: { type: "string" }, yes: { type: "boolean" }, label: { type: "string" }, "allow-create": { type: "boolean" },
       check: { type: "boolean" }, wait: { type: "boolean" }, "manifest-url": { type: "string" }, prefix: { type: "string" }, unit: { type: "string" },
-      user: { type: "string" }, "from-app": { type: "string" }, "from-node": { type: "string" }
+      user: { type: "string" }, "from-app": { type: "string" }, "from-node": { type: "string" }, "no-color": { type: "boolean" }, ascii: { type: "boolean" }
     } });
   } catch (error) { throw new CliError(error instanceof Error ? error.message : String(error), ExitCode.usage); }
   const { values, positionals } = parsed;
@@ -144,6 +148,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
     wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}),
     ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {}),
+    ...(values["no-color"] ? { noColor: true } : {}), ...(values.ascii ? { ascii: true } : {}),
     ...(["update", "rollback", "adopt"].includes(command) ? { update: { check: Boolean(values.check), wait: Boolean(values.wait),
       ...(values["manifest-url"] ? { manifestUrl: values["manifest-url"] } : {}), prefix: values.prefix ?? "/opt/local-cognitive",
       unit: values.unit ?? "local-cognitive", user: values.user ?? "local-cognitive",
