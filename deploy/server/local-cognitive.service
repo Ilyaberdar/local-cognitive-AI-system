@@ -1,14 +1,8 @@
-# Local Cognitive Server (headless). A release is unpacked to /opt/local-cognitive/releases/<version>
-# (with its own Node in node/), and /opt/local-cognitive/current points to the running one.
-# Install:
-#   sudo useradd --system --create-home --home-dir /var/lib/local-cognitive local-cognitive
-#   sudo -u local-cognitive /opt/local-cognitive/current/node/bin/node /opt/local-cognitive/current/dist/src/server/cli.js init \
-#     --data-dir /srv/local-cognitive --vault-key-file /etc/local-cognitive/vault.key
-#   (create /srv/local-cognitive and /etc/local-cognitive owned by local-cognitive first)
-#   sudo cp local-cognitive.service /etc/systemd/system/ && sudo systemctl enable --now local-cognitive
-# Status: sudo -u local-cognitive /opt/local-cognitive/current/node/bin/node /opt/local-cognitive/current/dist/src/server/cli.js status --data-dir /srv/local-cognitive
-# Update: sudo /opt/local-cognitive/current/node/bin/node /opt/local-cognitive/current/dist/src/server/cli.js update --data-dir /srv/local-cognitive
-#   (backs the data up, installs beside the running release, checks it, and rolls back if it fails)
+# Local Cognitive Server (headless). Installed by deploy/server/install.sh:
+#   curl -fsSL https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/install.sh | sudo bash
+# A release is unpacked to /opt/local-cognitive/releases/<version> (with its own Node in node/), and
+# /opt/local-cognitive/current points to the running one. Day to day:
+#   sudo local-cognitive-server pair | status | devices | logs | update | uninstall
 [Unit]
 Description=Local Cognitive Server
 After=network-online.target

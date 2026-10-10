@@ -74,7 +74,7 @@ export const describeStatus = (result: StatusResult): string => {
   const remote = result.remote;
   const devices = remote?.devices ?? 0, sessions = remote?.sessions ?? 0;
   const computers = `${devices} computer${devices === 1 ? "" : "s"} paired${sessions ? `, ${sessions} connected now` : ""}`;
-  const remoteLine = !remote || remote.state === "off" ? `off${remote?.reason ? ` (${remote.reason})` : ""}`
+  const remoteLine = !remote || remote.state === "off" ? `off${remote?.reason ? ` — ${remote.reason.replace(/\.$/, "")}` : ""}`
     : remote.state === "online" ? `online, ${remote.claimed ? computers : "no owner yet: run pair to connect your computer"}`
       : `${remote.state ?? "unknown"}${remote.lastError ? ` (${remote.lastError})` : ""}, ${computers}`;
   const work = result.activeWork.total ? `${result.activeWork.total} task${result.activeWork.total === 1 ? "" : "s"} running` : "idle";

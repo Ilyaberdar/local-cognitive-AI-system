@@ -39,7 +39,7 @@ test("status says whether computers can reach the server and what to do next", (
   assert.match(online, /Inference: +cuda/);
   assert.match(online, /Work: +idle/);
   assert.match(describeStatus({ ...base, remote: { state: "online", claimed: false, devices: 0, sessions: 0 } }), /no owner yet: run pair to connect your computer/);
-  assert.match(describeStatus({ ...base, remote: { state: "off", reason: "Remote is turned off (LOCAL_COGNITIVE_REMOTE=off)." } }), /Remote: +off \(Remote is turned off/);
+  assert.match(describeStatus({ ...base, remote: { state: "off", reason: "Remote is turned off (LOCAL_COGNITIVE_REMOTE=off)." } }), /Remote: +off — Remote is turned off \(LOCAL_COGNITIVE_REMOTE=off\)$/m);
   assert.match(describeStatus({ ...base, remote: { state: "offline", claimed: true, devices: 1, sessions: 0, lastError: "getaddrinfo ENOTFOUND" } }), /Remote: +offline \(getaddrinfo ENOTFOUND\), 1 computer paired/);
   assert.match(describeStatus({ ...base, activeWork: { total: 3 }, update: { available: "0.3.0" } }), /Work: +3 tasks running[\s\S]*Update: +0\.3\.0 is available: sudo local-cognitive-server update/);
 });

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# local-cognitive-server: the server's commands, shipped with each release. install.sh puts a small
+# root-owned /usr/local/bin/local-cognitive-server that sets this host's LC_* settings and runs the
+# current release's copy of this script; settings are never read from a file the server's user can
+# change, since admins run it with sudo.
+#
+#   sudo local-cognitive-server pair          connect a computer (Local Cognitive → Remote → Connect)
+#   sudo local-cognitive-server status        is it running, can computers reach it
+#   sudo local-cognitive-server devices       computers that can connect; revoke-device <id>
+#   sudo local-cognitive-server update        install the newest release (backed up, rolled back if it fails)
+#   sudo local-cognitive-server logs | restart | stop | start
+#   sudo local-cognitive-server cuda          install the CUDA runtime (NVIDIA GPU, driver 570+)
+#   sudo local-cognitive-server uninstall     remove the server (keeps its data)
+set -euo pipefail
+
+PREFIX="${LC_PREFIX:-/opt/local-cognitive}"
+DATA_DIR="${LC_DATA_DIR:-/srv/local-cognitive}"
+SERVICE_USER="${LC_SERVICE_USER:-local-cognitive}"
+UNIT="${LC_UNIT:-local-cognitive}"
+VAULT_KEY_FILE="${LC_VAULT_KEY_FILE:-/etc/local-cognitive/vault.key}"
+
+NODE="$PREFIX/current/node/bin/node"
+CLI="$PREFIX/current/dist/src/server/cli.js"
+command="${1:-help}"
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then echo "Run: sudo local-cognitive-server $*" >&2; exit 78; fi
+}
+has_option() {
+  local name="$1"; shift
+  local argument
+  for argument in "$@"; do case "$argument" in "$name" | "$name="*) return 0 ;; esac; done
+  return 1
+}
+
+uninstall() {
+  need_root "$@"
+  echo "Stopping and removing Local Cognitive Server…"
+  systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$UNIT.service"
+  systemctl daemon-reload || true
+  rm -rf "$PREFIX"
+  rm -f /usr/local/bin/local-cognitive-server
+  echo "Removed. Kept: the data in $DATA_DIR, the credential key in $VAULT_KEY_FILE and the user $SERVICE_USER."
+  echo "To delete them too: sudo rm -rf $DATA_DIR $(dirname "$VAULT_KEY_FILE") && sudo userdel $SERVICE_USER"
+  echo "The server stays in your computer's Remote list until you choose Forget there."
+}
+
+case "$command" in
+  help | --help | -h)
+    echo "Local Cognitive Server"
+    grep '^#   ' "$0" | sed 's/^#   /  /'
+    echo
+    exec "$NODE" "$CLI" help ;;
+  version | --version)
+    exec "$NODE" "$CLI" version ;;
+  logs)
+    shift
+    exec journalctl -u "$UNIT" -n 200 -f "$@" ;;
+  start | stop | restart)
+    need_root "$@"
+    exec systemctl "$command" "$UNIT" ;;
+  uninstall)
+    uninstall "$@" ;;
+  cuda)
+    need_root "$@"
+    case "$(uname -m)" in x86_64 | amd64) variant=linux-x64-cuda12 ;; *) variant="linux-$(uname -m)-cuda12" ;; esac
+    release=$(readlink -f "$PREFIX/current")
+    grep -q "\"$variant\"" "$release/resources/llama/runtime-manifest.json" 2>/dev/null \
+      || { echo "This release has no CUDA runtime for $(uname -m) yet: models run on the CPU." >&2; exit 1; }
+    echo "The CUDA runtime includes NVIDIA CUDA libraries, redistributed under the NVIDIA CUDA Toolkit license:"
+    echo "  https://docs.nvidia.com/cuda/eula/"
+    (cd / && "$NODE" "$release/scripts/prepare-llama-runtime.mjs" --variant "$variant" --destination "$release/resources/llama/$variant")
+    chown -R root:root "$release/resources" && chmod -R go-w "$release/resources"
+    exec systemctl restart "$UNIT" ;;
+  update | rollback | adopt)
+    need_root "$@"
+    extra=()
+    has_option --data-dir "$@" || extra+=(--data-dir "$DATA_DIR")
+    has_option --prefix "$@" || extra+=(--prefix "$PREFIX")
+    has_option --unit "$@" || extra+=(--unit "$UNIT")
+    has_option --user "$@" || extra+=(--user "$SERVICE_USER")
+    exec "$NODE" "$CLI" "$@" "${extra[@]}" ;;
+  *)
+    # Everything else runs as the server's user: its files and control socket are private to it.
+    cd /
+    settings=(LOCAL_COGNITIVE_DATA_DIR="$DATA_DIR" LOCAL_COGNITIVE_VAULT_KEY_FILE="$VAULT_KEY_FILE")
+    if [ "$(id -un)" = "$SERVICE_USER" ]; then exec env "${settings[@]}" "$NODE" "$CLI" "$@"; fi
+    need_root "$@"
+    exec runuser -u "$SERVICE_USER" -- env "${settings[@]}" "$NODE" "$CLI" "$@" ;;
+esac
