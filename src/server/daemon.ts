@@ -7,6 +7,9 @@ import { createUsageOperations } from "../runtime/usageOperations";
 import { createDiagnosticsOperations } from "../runtime/diagnosticsOperations";
 import { consentFilePath, liveConsent } from "../diagnostics/consentFile";
 import { flushServerErrorReports, startServerErrorReports } from "../diagnostics/serverSentry";
+import { UpdateChecker } from "../update/updateChecker";
+import { RELEASE_KEYS } from "../update/releaseKeys";
+import { DEFAULT_MANIFEST_URL } from "./updateCommand";
 import { RemoteHostStore } from "../remote/host/RemoteHostStore";
 import { DataRootLockedError } from "../runtime/db/DataRootLock";
 import { resolveHeadlessVault } from "../security/headlessVault";
@@ -52,6 +55,10 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     throw error;
   }
   const backend = handle;
+  // Newer releases, looked for once a day (never installed from here: `update` runs as root).
+  const updates = new UpdateChecker({ manifestUrl: process.env.LOCAL_COGNITIVE_UPDATE_URL || DEFAULT_MANIFEST_URL, keys: RELEASE_KEYS, currentVersion: appVersion(),
+    enabled: process.env.LOCAL_COGNITIVE_UPDATE_CHECK !== "off" });
+  updates.start();
   // Error reports only while the owner's consent is on (error-reports on, or Settings through Remote).
   const consentFile = consentFilePath(config.appDataDir);
   startServerErrorReports({ consent: liveConsent(consentFile), diagnosticLog: backend.diagnosticLog });
@@ -71,6 +78,7 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     stopping = true;
     // A watchdog guarantees exit even if a dependency hangs during shutdown.
     setTimeout(() => process.exit(1), 45_000).unref();
+    updates.stop();
     for (const socket of mcpSessions) socket.destroy();
     remote.close();
     await control.close();
@@ -130,11 +138,11 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       let loadedModels: string[] = [];
       try { loadedModels = backend.runtimeManager.getRuntime().localModelService.snapshot().runtime.loadedModelIds ?? []; } catch { /* Runtime not built. */ }
       const { fallbackReason, ...current } = inference();
-      return { version: appVersion(), phase, activeWork, scheduler, telegram, loadedModels,
+      return { version: appVersion(), update: updates.status(), phase, activeWork, scheduler, telegram, loadedModels,
         inference: { ...current, ...(fallbackReason ? { fallbackReason: publicError(fallbackReason) } : {}) } };
     } });
   const control = await ControlServer.listen(controlSocketPathFor(config.appDataDir), {
-    status: () => ({ pid: process.pid, version: appVersion(), inference: inference(),
+    status: () => ({ pid: process.pid, version: appVersion(), update: updates.status(), inference: inference(),
       remote: remote.agent ? remote.agent.status() : { state: "off", reason: remote.disabledReason },
       vault: { configured: vault.configured, keyIds: vault.keyIds }, mcpSessions: mcpSessions.size, ...backend.status() }),
     drain: async (timeoutSec, progress) => {
