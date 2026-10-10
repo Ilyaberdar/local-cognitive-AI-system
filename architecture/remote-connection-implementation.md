@@ -208,6 +208,10 @@ service стартует после reboot без GUI. CLI обращается 
   - тег и занятость тега проверяются до сборки;
   - при ошибке в лог выводится хвост логов сборки;
   - перед упаковкой образ CUDA удаляется, чтобы освободить место.
+- **Опубликовано (2026-10-10):** пререлиз `llama-b10809-cuda12.8.1-r1`.
+  - Состав: overlay 724 МБ и `manifest-fragment.json`, слитый в `runtime-manifest.json`. Сборка в CI заняла 93 мин; архитектуры `50-virtual;61-real;70-virtual;75-real;80-real;86-real;89-real;90-real;90-virtual;120a-real`.
+  - На fedora `sudo local-cognitive-server cuda` поставил опубликованную сборку за 1 мин и заменил ручную (`61-real`, копия в `/opt/local-cognitive/cuda-61-real.backup`).
+  - llama-bench на GTX 1070 Ti, Qwen2.5-0.5B Q4_K_M: pp512 8575 t/s, tg128 224 t/s.
 - Сервер выбирает CUDA, только если `runtime.json` этого каталога — `cuda` той же
   сборки, что manifest; `status` показывает выбранный и фактический backend и причину
   CPU fallback, UI моделей — плашку «CPU fallback».

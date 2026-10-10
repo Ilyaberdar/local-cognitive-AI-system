@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 2,
   "version": "0.4.0",
   "build": "b10809",
   "commit": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
@@ -31,6 +32,31 @@
       "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-ubuntu-x64.tar.gz",
       "sha256": "5e34434ddc6d03cd1584f403201aff0d4bd1a5793a72ff7e286532dfd1e4b941",
       "validation": "not tested on target hardware"
+    }
+  },
+  "runtimes": {
+    "linux-x64-cuda12": {
+      "platform": "linux",
+      "arch": "x64",
+      "backend": "cuda",
+      "base": "linux-x64",
+      "executable": "llama-server",
+      "overlay": {
+        "url": "https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/download/llama-b10809-cuda12.8.1-r1/llama-b10809-linux-x64-cuda12.8.1-overlay.tar.gz",
+        "sha256": "7cac7a13354543974938cd3b2b49d7cc187d2d347ea4d2c484bbd64269d7bf28"
+      },
+      "files": {
+        "libggml-cuda.so": "0b52c9e0311179f0c87422e9a2120c158bcbe6431eeed6d563651cd59c80cdca",
+        "libcudart.so.12": "c3a75b33af334a3486d197dbd1584a2985183ba4688d237a2be5f2f679329920",
+        "libcublas.so.12": "031ce6c2cbfbb9468f040527cab5c599069ce5609e73e28f87503881063eac21",
+        "libcublasLt.so.12": "10b5e6631cf8115c661eb895ed1533826308b58f7956466f53d236a40c9b622c"
+      },
+      "notices": [
+        "CUDA_NOTICE.txt",
+        "licenses/llama.cpp-LICENSE",
+        "licenses/NVIDIA-CUDA-EULA.txt"
+      ],
+      "validation": "Published overlay verified on Fedora 43, GTX 1070 Ti (sm_61), driver 580, 2026-10-10: llama-bench Qwen2.5-0.5B Q4_K_M pp512 8575 t/s, tg128 224 t/s"
     }
   }
 }
