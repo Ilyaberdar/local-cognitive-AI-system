@@ -8,6 +8,7 @@ import { DataRootLock } from "../src/runtime/db/DataRootLock";
 import { HostDatabase } from "../src/runtime/db/HostDatabase";
 import { hostMigrations } from "../src/runtime/db/hostSchema";
 import { backupDataRoot, listBackups, restoreDataRoot } from "../src/update/dataBackup";
+import { checkDataRoot } from "../src/server/dataRoot";
 
 const posix = process.platform !== "win32";
 const cli = path.resolve(__dirname, "..", "src", "server", "cli.js");
@@ -63,6 +64,25 @@ test("a restore puts the state back and keeps what it replaced; models stay", (t
   assert.match(fs.readFileSync(path.join(replaced, "app", "settings.json"), "utf8"), /migrated/, "the replaced state is kept aside");
   assert.equal(fs.statSync(path.join(root, "models", "big.gguf")).size, 1024);
   assert.throws(() => restoreDataRoot(root, path.join(os.tmpdir())), /Not a backup/);
+});
+
+test("a restore gives back a complete data directory, empty folders included: the server checks its layout at start", { skip: !posix }, (t) => {
+  const { root } = dataRoot(t);
+  // A new server: no chats yet, and nothing kept in memory.
+  fs.rmSync(path.join(root, "sessions", "s1.json"));
+  fs.rmSync(path.join(root, "memory", "link"));
+  const { directory } = backupDataRoot(root, { label: "before-0.2.0", now: new Date("2026-10-10T10:00:00Z") });
+  assert.ok(fs.statSync(path.join(directory, "sessions")).isDirectory(), "the backup keeps the empty folder");
+  assert.equal(fs.statSync(path.join(directory, "sessions")).mode & 0o777, 0o700);
+  fs.writeFileSync(path.join(root, "sessions", "after.json"), "{}");
+  restoreDataRoot(root, directory, new Date("2026-10-10T10:05:00Z"));
+  assert.deepEqual(fs.readdirSync(path.join(root, "sessions")), [], "the chat made after the backup is set aside");
+  assert.doesNotThrow(() => checkDataRoot(root), "the server's layout check passes");
+  // A backup from before folders were kept: the restore still makes them.
+  fs.rmSync(path.join(directory, "memory"), { recursive: true });
+  fs.rmSync(path.join(directory, "sessions"), { recursive: true });
+  restoreDataRoot(root, directory, new Date("2026-10-10T10:06:00Z"));
+  assert.doesNotThrow(() => checkDataRoot(root));
 });
 
 test("backup, backups and restore from the command line, never while the server runs", { skip: !posix, timeout: 60_000 }, async (t) => {
