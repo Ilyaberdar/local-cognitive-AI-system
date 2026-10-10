@@ -196,7 +196,7 @@
       }
     ],
     "electronFuses": {
-      "runAsNode": true,
+      "runAsNode": false,
       "enableNodeOptionsEnvironmentVariable": false,
       "enableNodeCliInspectArguments": false,
       "grantFileProtocolExtraPrivileges": false,

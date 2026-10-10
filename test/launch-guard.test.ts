@@ -17,9 +17,11 @@ test("a development run keeps its debugging switches", () => {
   assert.equal(refusedSwitch({ isPackaged: false, hasSwitch: switches("remote-debugging-port", "use-mock-keychain") }), undefined);
 });
 
-test("the packaged app's fuses ignore NODE_OPTIONS, --inspect and file:// privileges, and a build publishes nothing", () => {
+test("the packaged app's fuses refuse running it as Node, NODE_OPTIONS, --inspect and file:// privileges, and a build publishes nothing", () => {
   const manifest = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
   const fuses = manifest.build.electronFuses;
+  // Native runtimes start through /bin/sh or directly (src/local/guardedProcess.ts), not as Node children.
+  assert.equal(fuses.runAsNode, false);
   assert.equal(fuses.enableNodeOptionsEnvironmentVariable, false);
   assert.equal(fuses.enableNodeCliInspectArguments, false);
   assert.equal(fuses.grantFileProtocolExtraPrivileges, false);

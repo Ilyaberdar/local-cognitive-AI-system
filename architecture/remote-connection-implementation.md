@@ -1258,9 +1258,13 @@ Client/server обмениваются protocol/capability versions. Несов�
   - Relay hello несёт `appVersion`, Cloud хранит её у хоста.
 - **Desktop.**
   - Electron 44.7, electron-builder 26.15 (а не 25, как написано выше).
-  - Fuses: выключены NODE_OPTIONS, `--inspect` и привилегии file://. После переключения fuses сборка без подписи заново подписывается ad hoc, иначе macOS убивает её при запуске.
-  - `runAsNode` пока включён: на нём живут надзиратели llama и speech. Их перенос на `utilityProcess` требует проверки уборки llama-server при падении приложения на собранной сборке.
-  - Собранное приложение не запускается с `--remote-debugging-port/pipe` и `--use-mock-keychain` (выход 64): для этих ключей fuses нет.
+  - Fuses: выключены `runAsNode`, NODE_OPTIONS, `--inspect` и привилегии file://. После переключения fuses сборка без подписи заново подписывается ad hoc, иначе macOS убивает её при запуске.
+  - Нативные рантаймы (llama-server, whisper) больше не запускаются через Node-надзирателя с `ELECTRON_RUN_AS_NODE` (`src/local/guardedProcess.ts`).
+    - POSIX: `/bin/sh` в новой сессии запускает рантайм и следит за pipe от приложения. EOF (приложение остановило модель, вышло, упало или убито SIGKILL) → SIGTERM группе, через 2 с SIGKILL. Shell игнорирует TERM и ждёт рантайм: его выход значит, что рантайм завершён.
+    - Windows: рантайм запускается напрямую, libuv держит его в job object приложения.
+    - `utilityProcess` не подходит: при SIGKILL приложения он гибнет мгновенно, не выполнив очистку, и llama-server остаётся сиротой (проверено).
+    - Проверено: сторож — на macOS и Fedora; настоящий llama-server под Electron на macOS (`kill -9` приложения убирает его за 1,5 с). Windows ещё не проверен вживую.
+  - Собранное приложение не запускается с `--remote-debugging-port/pipe` и `--use-mock-keychain` (выход 64): для этих ключей fuses нет. С `ELECTRON_RUN_AS_NODE=1` оно стартует как приложение, а не как Node.
   - macOS: dmg + zip (zip с blockmap — для будущего updater). Сборка ничего не публикует (`publish: null`, `--publish never`).
   - Несобранный dev-запуск на macOS хранит секреты в файловом dev-vault, а не в Keychain. Собранное приложение использует Keychain.
 - **Проверено.**

@@ -1,9 +1,8 @@
 import { diagnostics } from "../diagnostics/DiagnosticLog";
 import fs from "fs/promises";
-import path from "path";
 import net from "net";
 import { randomBytes } from "crypto";
-import { spawn, ChildProcess } from "child_process";
+import { ChildProcess } from "child_process";
 import { setTimeout as delay } from "timers/promises";
 import { LLMRequest, LLMResponse } from "../types";
 import { Logger } from "../utils/Logger";
@@ -12,6 +11,7 @@ import { LocalModelError, LocalModelOptions, LocalPlacementSnapshot, LocalRuntim
 import { fetchLocalInference } from "./fetchLocalInference";
 import { childProcessEnv } from "../config/secrets";
 import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf, runtimeEnv } from "./RuntimeInstall";
+import { endingSignal, GuardedProcess, spawnGuarded, STOP_GRACE_SEC } from "./guardedProcess";
 
 export { llamaExecutable };
 
@@ -26,6 +26,7 @@ const legacyGpuLayers = (gpuLayers: number | "auto") => gpuLayers === "auto" ? (
 
 export class LlamaCppRuntime {
   private child?: ChildProcess;
+  private guarded?: GuardedProcess;
   private endpoint?: string;
   private token = "";
   private state: LocalRuntimeSnapshot["status"] = "stopped";
@@ -86,32 +87,24 @@ export class LlamaCppRuntime {
       "--ctx-size", String(this.options.contextSize), ...(launch ? [] : ["--n-gpu-layers", String(legacyGpuLayers(this.options.gpuLayers))]),
       "--parallel", "1", "--slots", "--jinja", "--no-webui", "--no-agent", ...(launch?.args ?? [])];
     if (projectorPath) args.push("--mmproj", projectorPath);
-    const compiledHost = path.join(__dirname, "RuntimeProcessHost.js");
-    const compiled = await fs.access(compiledHost).then(() => true, () => false);
-    const hostArgs = compiled ? [compiledHost] : [require.resolve("tsx/cli"), path.join(__dirname, "RuntimeProcessHost.ts")];
     // The runtime directory is the working directory: ggml also loads backends from there.
     const directory = runtimeDirOf(this.options);
-    const child = spawn(process.execPath, [...hostArgs, this.executable(), JSON.stringify(args)], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true, shell: false, cwd: directory,
-      env: { ...runtimeEnv(childProcessEnv(), directory), ...launch?.env, ELECTRON_RUN_AS_NODE: "1", LLAMA_API_KEY: this.token, LLAMA_ARG_MCP_SERVERS: "", LLAMA_ARG_TOOLS: "", LLAMA_ARG_AGENT: "0" }
-    });
-    this.child = child;
-    let nativePid: number | undefined;
-    child.on("message", (message) => {
-      const event = message as { type?: string; pid?: number };
-      if (event?.type === "native-started" && Number.isSafeInteger(event.pid) && event.pid! > 0) nativePid = event.pid;
-    });
+    const guarded = spawnGuarded(this.executable(), args, { cwd: directory, stdout: "pipe", stderr: "pipe",
+      env: { ...runtimeEnv(childProcessEnv(), directory), ...launch?.env, LLAMA_API_KEY: this.token, LLAMA_ARG_MCP_SERVERS: "", LLAMA_ARG_TOOLS: "", LLAMA_ARG_AGENT: "0" } });
+    const child = guarded.process;
+    this.child = child; this.guarded = guarded;
     const append = (chunk: Buffer) => { this.logTail = (this.logTail + chunk.toString("utf8")).slice(-65536); };
     child.stderr?.on("data", append); child.stdout?.on("data", append);
     child.once("error", (error) => { if (this.child === child) this.setState("error", `Local runtime failed to start: ${error.message}`); });
     child.once("exit", (code, signal) => {
-      // A SIGKILL of the guardian must not leave a second native model consuming memory.
-      if (nativePid) this.nativeCleanup = this.terminateNative(nativePid);
+      // Whatever ended the watcher, nothing it started may keep a model in memory.
+      this.nativeCleanup = guarded.kill();
       if (this.child !== child) return;
-      this.child = undefined; this.endpoint = undefined; this.effectiveContextSize = undefined;
+      this.child = undefined; this.guarded = undefined; this.endpoint = undefined; this.effectiveContextSize = undefined;
       if (this.state !== "stopping") {
-        this.setState("error", `Local runtime exited (${code ?? "signal"}).\n${this.logTail}`);
-        diagnostics().record("local_runtime.exited", { ...(code !== null ? { exitCode: code } : {}), ...(signal ? { signal: signal.toLowerCase() } : {}) });
+        const ended = endingSignal(code, signal);
+        this.setState("error", `Local runtime exited (${ended ?? code ?? "signal"}).\n${this.logTail}`);
+        diagnostics().record("local_runtime.exited", ended ? { signal: ended.toLowerCase() } : code !== null ? { exitCode: code } : {});
         this.logger.warn("Local inference runtime exited", { code, modelId });
       }
     });
@@ -203,20 +196,21 @@ export class LlamaCppRuntime {
   }
   async dispose(): Promise<void> { this.lifetime.abort(); await this.stop(); }
   private async stopChild(): Promise<void> {
-    const child = this.child;
-    if (child) {
+    const child = this.child, guarded = this.guarded;
+    if (child && guarded) {
       this.setState("stopping");
       await new Promise<void>((resolve) => {
         let finished = false;
         const done = () => { if (finished) return; finished = true; clearTimeout(timer); resolve(); };
-        const timer = setTimeout(() => { child.kill("SIGTERM"); setTimeout(() => { child.kill("SIGKILL"); done(); }, 2000).unref(); }, 3000);
+        // The watcher kills the runtime after the grace period itself; this is for a stuck watcher.
+        const timer = setTimeout(() => { void guarded.kill().then(done); }, (STOP_GRACE_SEC + 3) * 1000);
         child.once("exit", done);
-        try { if (child.connected) child.send("stop"); else child.kill("SIGTERM"); } catch { child.kill("SIGTERM"); }
+        guarded.stop();
         if (child.exitCode !== null || child.signalCode !== null) done();
       });
     }
     await this.nativeCleanup;
-    this.child = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined; this.projectorPath = undefined; this.effectiveContextSize = undefined;
+    this.child = undefined; this.guarded = undefined; this.endpoint = undefined; this.token = ""; this.modelId = undefined; this.projectorPath = undefined; this.effectiveContextSize = undefined;
     this.placement = undefined;
     this.setState("stopped");
   }
@@ -236,13 +230,6 @@ export class LlamaCppRuntime {
       if (signal.aborted) throw error;
       this.logger.warn("Could not verify the native runtime context", { error: error instanceof Error ? error.message : String(error) });
     }
-  }
-  private async terminateNative(pid: number): Promise<void> {
-    if (process.platform !== "win32") { try { process.kill(-pid, "SIGKILL"); } catch {} return; }
-    await new Promise<void>((resolve) => {
-      const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
-      killer.once("exit", () => resolve()); killer.once("error", () => { try { process.kill(pid, "SIGKILL"); } catch {} resolve(); });
-    });
   }
   private setState(state: LocalRuntimeSnapshot["status"], error?: string): void { this.state = state; this.error = error; this.changed(); }
 }
