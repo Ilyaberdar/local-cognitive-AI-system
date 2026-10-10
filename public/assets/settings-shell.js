@@ -467,7 +467,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
     if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
     if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata'], ['Selected server', context().server && [context().server.hostName(), context().server.version()].filter(Boolean).join(' · ')]].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>${link('report-bug', 'Report a bug', 'Tell the developer what went wrong')}`;
-    if (name === 'data' && server) return form(specs);
+    if (name === 'data' && server) return serverErrorReportsRow(server) + form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
     if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerNames[key] || key, provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
@@ -561,6 +561,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       root.querySelector('.settings-content').classList.add('is-offline');
       root.querySelectorAll('.settings-content-inner :is(form, .settings-test-actions) :is(input, select, textarea, button)').forEach(control => { control.disabled = true; });
     }
+    if (name === 'data' && server) bindServerErrorReports(server);
     if (server) return;
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
@@ -875,6 +876,38 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       if (active && placeOf(page).key === key) { const scroll = root.querySelector('.settings-content').scrollTop; render(); root.querySelector('.settings-content').scrollTop = scroll; }
     });
   }
+  /** A server's error reports: its owner's choice, kept on the server (asked through Remote).
+   * Hidden for a server too old to offer it. */
+  const serverConsents = new Map();
+  function serverErrorReportsRow(server) {
+    const state = serverConsents.get(server.key);
+    if (!state || state.unsupported) return '';
+    const name = escape(server.hostName());
+    const status = state.error ? `<span class="settings-save-status is-error" role="status">${escape(state.error)}</span>` : state.saved ? `<span class="settings-save-status is-success" role="status">Saved · ${state.automatic ? 'on' : 'off'}</span>` : '';
+    return `<div class="settings-rows settings-consent"><div class="settings-row"><div><label for="server-error-reports">Send ${name}'s error reports</label><p>When the server fails, a report goes to the developer (Sentry, EU region): error types, codes, versions and system. Chats, prompts, model answers, keys, file contents and paths are not included. Only the server's owner can change this.</p></div><div class="settings-control settings-consent-control">${status}<input id="server-error-reports" data-server-error-reports type="checkbox" role="switch" ${state.automatic ? 'checked' : ''} ${state.loading || !state.available ? 'disabled' : ''} /></div></div></div>`;
+  }
+  function bindServerErrorReports(server) {
+    const runtime = window.desktopRemote?.runtime, hostId = server.key;
+    if (!runtime || !hostId) return;
+    const refresh = () => { if (active && page.split('/')[0] === 'data' && serverFor(page)?.key === hostId) render(); };
+    if (!serverConsents.has(hostId)) {
+      serverConsents.set(hostId, { loading: true });
+      void runtime.request('diagnostics.consent.get', {}, hostId).then(result => {
+        // A server that cannot answer (an older version) shows no row.
+        serverConsents.set(hostId, result?.ok ? { ...result.value } : { unsupported: true });
+        refresh();
+      }).catch(() => { serverConsents.set(hostId, { unsupported: true }); refresh(); });
+      return;
+    }
+    root.querySelector('[data-server-error-reports]')?.addEventListener('change', async event => {
+      const toggle = event.currentTarget, previous = serverConsents.get(hostId);
+      toggle.disabled = true;
+      const result = await runtime.request('diagnostics.consent.set', { automatic: toggle.checked }, hostId).catch(error => ({ ok: false, error }));
+      serverConsents.set(hostId, result?.ok ? { ...result.value, saved: true } : { ...previous, error: `Not saved. ${result?.error?.message || 'The server did not answer.'}` });
+      refresh();
+    });
+  }
+
   /** Consent to error and crash reports (desktop): off until the user turns it on. */
   function errorReportsRow() {
     if (!window.desktopDiagnostics || !diagnosticsConsent?.available) return '';

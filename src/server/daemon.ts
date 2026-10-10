@@ -4,6 +4,8 @@ import { config } from "../config/config";
 import { startBackend } from "../index";
 import { createUsageOperations } from "../runtime/usageOperations";
 import { createDiagnosticsOperations } from "../runtime/diagnosticsOperations";
+import { consentFilePath, liveConsent } from "../diagnostics/consentFile";
+import { flushServerErrorReports, startServerErrorReports } from "../diagnostics/serverSentry";
 import { RemoteHostStore } from "../remote/host/RemoteHostStore";
 import { DataRootLockedError } from "../runtime/db/DataRootLock";
 import { resolveHeadlessVault } from "../security/headlessVault";
@@ -42,6 +44,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   try { handle = await startBackend(config, { vault: vault.vault }, { runtimeKind: "server" }); }
   catch (error) { if (error instanceof DataRootLockedError) throw new CliError(error.message, ExitCode.locked); throw error; }
   const backend = handle;
+  // Error reports only while the owner's consent is on (error-reports on, or Settings through Remote).
+  const consentFile = consentFilePath(config.appDataDir);
+  startServerErrorReports({ consent: liveConsent(consentFile), diagnosticLog: backend.diagnosticLog });
   const runtime = backend.runtimeManager.getRuntime();
   const settings = await backend.runtimeManager.getSettings();
   const mcpSessions = new Set<net.Socket>();
@@ -62,6 +67,7 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     remote.close();
     await control.close();
     await backend.dispose();
+    await flushServerErrorReports().catch(() => false);
     logger.info("Server stopped", { code });
     finish(code);
   };
@@ -101,7 +107,7 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       ...createModelOperations({ runtimeManager: backend.runtimeManager }),
       ...createUsageOperations({ ledger: backend.usage, outbox: backend.usageOutbox, owner: () => new RemoteHostStore(host.database).owner() }),
       ...createDiagnosticsOperations({ runtimeManager: backend.runtimeManager, diagnosticLog: backend.diagnosticLog, owner: () => new RemoteHostStore(host.database).owner(),
-        status: () => backend.status() }),
+        status: () => backend.status(), consentFile }),
       ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders,
         scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
       ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),

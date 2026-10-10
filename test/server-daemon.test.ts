@@ -96,7 +96,7 @@ test("init → start → status → MCP bridge → drain, with a second start re
   const root = path.join(base, "d"), keyFile = path.join(base, "k", "vault.key");
   // Remote off: with a vault the server would otherwise register itself with the real Cloud.
   const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_VAULT_KEY_FILE: keyFile, MEMORY_ADAPTER: "local-json", TELEGRAM_ENABLED: "false",
-    LOCAL_COGNITIVE_REMOTE: "off" };
+    LOCAL_COGNITIVE_REMOTE: "off", LOCAL_COGNITIVE_SENTRY: "off" };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { env, encoding: "utf8" });
 
   const init = run("init", "--data-dir", root, "--vault-key-file", keyFile, "--json");
@@ -150,7 +150,7 @@ test("folders: an admin shares, lists and stops sharing folders for connected co
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, "data"), keyFile = path.join(base, "key", "vault.key"), shared = path.join(base, "shared");
   fs.mkdirSync(shared);
-  const env = { PATH: process.env.PATH ?? "", HOME: base };
+  const env = { PATH: process.env.PATH ?? "", HOME: base, LOCAL_COGNITIVE_SENTRY: "off" };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args, "--data-dir", root], { env, encoding: "utf8" });
   assert.equal(run("init", "--vault-key-file", keyFile).status, 0);
   assert.match(run("folders").stdout, /No folders are shared/);

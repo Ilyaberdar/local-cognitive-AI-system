@@ -33,7 +33,6 @@ function startSentry() {
     environment: app.isPackaged ? "production" : "development",
     // LOCAL_COGNITIVE_SENTRY_DEBUG=1: the SDK logs what it sends (development).
     debug: process.env.LOCAL_COGNITIVE_SENTRY_DEBUG === "1",
-    sendDefaultPii: false,
     sendClientReports: false,
     dataCollection: { userInfo: false, cookies: false, httpHeaders: false, httpBodies: [], urlQueryParams: false, genAI: { inputs: false, outputs: false }, databaseQueryData: false },
     // No console lines, requests, window events, local variables, renderer injection or screenshots.

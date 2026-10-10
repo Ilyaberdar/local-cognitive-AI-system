@@ -19,6 +19,9 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "usage.pending": { kind: "request", timeoutMs: 15_000 },
   // The server's diagnostics for its owner's bug report, shown before it is sent.
   "diagnostics.collect": { kind: "request", timeoutMs: 30_000 },
+  // The server's error reports to the developer: its owner's consent.
+  "diagnostics.consent.get": { kind: "request", timeoutMs: 15_000 },
+  "diagnostics.consent.set": { kind: "request", timeoutMs: 15_000 },
   // Chat (R4)
   "sessions.list": { kind: "request", timeoutMs: 30_000 },
   "sessions.create": { kind: "request", timeoutMs: 30_000 },

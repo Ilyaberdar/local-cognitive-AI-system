@@ -7,6 +7,7 @@ import { initVaultKey } from "../security/vaultKey";
 import { parseServerArgs, ServerArgs, usage } from "./args";
 import { controlRequest } from "./ControlServer";
 import { checkDataRoot, controlSocketPathFor, dataDirectories, initDataRoot, readServerConfig } from "./dataRoot";
+import { consentFilePath, readConsent, writeConsent } from "../diagnostics/consentFile";
 import { CliError, ExitCode } from "./exitCodes";
 import { selectInference } from "./inference";
 import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from "../runtime/hostFolders";
@@ -125,6 +126,22 @@ const devices = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** Error reports to the developer (Sentry, EU): the owner's choice, off until turned on. A file
+ * in the data directory, read again by the running server: no restart is needed. */
+const errorReports = (args: ServerArgs) => {
+  // Run as the server's user: a file root writes is one the server cannot read (reports stay off).
+  if (process.getuid?.() === 0 && !args.allowRoot) throw new CliError("Run error-reports as the server's user (sudo -u <user> …), or pass --allow-root.", ExitCode.config);
+  const root = path.resolve(args.dataDir!);
+  checkDataRoot(root);
+  const file = consentFilePath(dataDirectories(root).app);
+  const consent = args.errorReports === "on" || args.errorReports === "off" ? writeConsent(file, args.errorReports === "on") : readConsent(file);
+  if (args.json) process.stdout.write(`${JSON.stringify(consent)}\n`);
+  else process.stdout.write(`Error reports to the developer are ${consent.automatic ? "on" : "off"}.${consent.automatic
+    ? " Uncaught errors are sent to Sentry (EU region) without chats, prompts, keys, paths or file contents."
+    : " Turn them on with: local-cognitive-server error-reports on"}\n`);
+  return ExitCode.ok;
+};
+
 /** Shared folders are a file in the data directory, read at every use: no restart is needed. */
 const folders = async (args: ServerArgs) => {
   // Run as the server's user: a list root writes is one the server cannot read (it would share nothing).
@@ -176,6 +193,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "connect-key": return await connectKey(args);
       case "devices": return await devices(args);
       case "folders": return await folders(args);
+      case "error-reports": return errorReports(args);
       case "revoke-device": {
         const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
         print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });
