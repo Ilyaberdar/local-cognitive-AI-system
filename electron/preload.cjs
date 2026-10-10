@@ -68,6 +68,12 @@ contextBridge.exposeInMainWorld("desktopUpdates", {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on("updates:changed", listener);
     return () => ipcRenderer.removeListener("updates:changed", listener);
+  },
+  // A click on the update notification: the window opens Settings → About.
+  onOpen: callback => {
+    const listener = () => callback();
+    ipcRenderer.on("updates:open", listener);
+    return () => ipcRenderer.removeListener("updates:open", listener);
   }
 });
 

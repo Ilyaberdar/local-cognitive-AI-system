@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
@@ -27,6 +27,9 @@ const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) app.quit();
 let account;
 let remote;
+let updates;
+// Windows names a notification after the Start menu shortcut with this id (the installer's).
+if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? require("./app-id.cjs").APP_ID : process.execPath);
 const pendingDeepLinks = [];
 // Deep links can arrive before the window and account service exist (cold start on macOS).
 const deliverDeepLink = raw => {
@@ -113,6 +116,13 @@ const focusWindow = () => {
   mainWindow.show();
   mainWindow.focus();
   if (process.platform === "darwin") app.focus({ steal: true });
+};
+
+// The update button and the update notification open Settings → About (a closed window on macOS opens there).
+const openUpdatesPage = () => {
+  if (shutdownPromise) return;
+  if (mainWindow && !mainWindow.isDestroyed()) { focusWindow(); mainWindow.webContents.send("updates:open"); }
+  else if (applicationOrigin) void createWindow(`${applicationOrigin}/#/settings/about`);
 };
 
 // Model calls are recorded for the account signed in when they run; none signed in, they stay on this computer.
@@ -250,20 +260,18 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     registerDiagnostics();
     const bugReport = require("./bug-report.cjs").registerBugReport({ app, ipcMain, dialog, assertSender: assertAppSender, getWindow: () => mainWindow, sentry,
       backend: backendHandle, remote, accountService: account.service });
-    require("./updates.cjs").registerUpdates({ app, ipcMain, assertSender: assertAppSender, getWindow: () => mainWindow, getBackend: () => backendHandle,
-      prepareForExit: shutdown, record: (event, fields) => backendHandle?.diagnosticLog.record(event, fields) });
-    // The standard menus, with Help → Report a Bug… instead of Electron's own links.
-    Menu.setApplicationMenu(Menu.buildFromTemplate([
-      ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
-      { role: "fileMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
-      { role: "help", submenu: [{ label: "Report a Bug…", click: () => void bugReport.openReport() }] }
-    ]));
+    updates = require("./updates.cjs").registerUpdates({ app, ipcMain, assertSender: assertAppSender, getWindow: () => mainWindow, getBackend: () => backendHandle,
+      prepareForExit: shutdown, record: (event, fields) => backendHandle?.diagnosticLog.record(event, fields),
+      openUpdates: openUpdatesPage, Notification, powerMonitor, dataDir: app.getPath("userData") });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(require("./app-menu.cjs").menuTemplate({
+      isPackaged: app.isPackaged, platform: process.platform, openReport: () => void bugReport.openReport() })));
     // A window's or helper process's crash, as codes in the technical log (never a dump of its memory here).
     const crashed = (process, details) => { if (details.reason !== "clean-exit") backendHandle.diagnosticLog.record("app.crash", { process, reason: details.reason, exitCode: details.exitCode }); };
     app.on("render-process-gone", (_event, _contents, details) => crashed("renderer", details));
     app.on("child-process-gone", (_event, details) => crashed(details.type === "GPU" ? "gpu" : details.type === "Utility" ? "utility" : "other", details));
     await waitForServer(runtime.url);
     await createWindow(runtime.url);
+    updates.start();
     const { isDeepLinkArgument } = require("./account.cjs");
     for (const link of [...pendingDeepLinks.splice(0), ...process.argv.filter(isDeepLinkArgument)]) account.handleDeepLink(link);
   } catch (error) {
@@ -295,6 +303,7 @@ app.on("second-instance", (_event, argv) => {
 // One shutdown for a quit and for an update (on Windows it runs before the installer starts).
 let shutdownPromise;
 const shutdown = () => shutdownPromise ??= (async () => {
+  updates?.dispose();
   account?.dispose();
   remote?.dispose();
   try { await Promise.all([backendHandle?.dispose(), voiceInput?.dispose()]); } catch (error) { console.error("Shutdown failed", error); }

@@ -2899,6 +2899,14 @@ a {
 @media (prefers-reduced-motion: reduce) { .activity-trace.is-live .activity-trace__dot, .workflow-activity__current.status-running > strong::before { animation: none; } }
 html[data-animations="off"] .activity-trace__dot, html[data-animations="off"] .workflow-activity__current > strong::before { animation: none; }
 
+/* Updates: the top bar's button while a new version waits; Settings → About has the details. */
+.update-pill-slot { display: inline-flex; }
+.update-pill-slot:empty { display: none; }
+.update-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; box-sizing: border-box; padding: 0 9px; border: 1px solid var(--accent-border); border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent-text); font-size: calc(10px * var(--font-scale, 1)); font-weight: 550; line-height: 1; text-decoration: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.update-pill:hover, .update-pill:focus-visible { filter: brightness(1.12); }
+.update-pill .ui-icon { width: 12px; height: 12px; }
+
 /* Report a bug: the top bar's button and its small form. */
 .topbar-report .ui-icon { width: 16px; height: 16px; }
 .quick-report { position: fixed; inset: auto; margin: 0; width: 340px; max-width: calc(100vw - 16px); padding: 14px; border: 1px solid var(--line-strong); border-radius: 16px;

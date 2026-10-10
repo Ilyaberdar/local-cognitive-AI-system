@@ -6,6 +6,7 @@ import { createAccountState, createSettingsData } from "./settings-data.js";
 import { motionEnabled, setAnimations } from "./motion.js";
 import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createQuickReport } from "./quick-report.js";
+import { createUpdatePill } from "./updates-ui.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuidance, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
@@ -559,6 +560,9 @@ const quickReport = window.desktopBugReport ? createQuickReport({
 // Help → Report a Bug… in the app menu opens the full report page (the window was captured first).
 window.desktopBugReport?.onOpen?.(() => { location.hash = "#/settings/report-bug"; });
 
+// The top bar's button while an update waits (desktop app only); the update notification opens the same page.
+const updatePill = createUpdatePill({ onOpen: () => { location.hash = "#/settings/about"; } });
+
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
   render();
@@ -941,6 +945,7 @@ function renderAppTopbar(nativeTitlebar) {
     ${nativeTitlebar ? `<div class="window-navigation">${renderSidebarToggle()}<span class="brand-name">Cognitive</span></div>` : ""}
     <div class="app-topbar__title"><button class="icon-button mobile-sessions-button" data-action="toggle-mobile-sessions" aria-label="Show conversations" aria-expanded="false">${icon("sidebar")}</button><span class="topbar-mark">${icon(state.route)}</span><h1>${escapeHtml(state.route === "chat" ? getCurrentSessionSummary()?.title || currentProject()?.name || "New chat" : routeTitle(state.route))}</h1></div>
     <div class="app-topbar__actions">
+      ${updatePill ? `<span class="update-pill-slot" data-update-pill>${updatePill.html()}</span>` : ""}
       ${quickReport ? `<button type="button" class="icon-button topbar-report" data-action="quick-report" aria-label="Report a bug" title="Report a bug">${icon("bug")}</button>` : ""}
       ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
       ${chatTarget?.visible() ? renderTargetSwitch(chatTarget)

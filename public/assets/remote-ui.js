@@ -88,7 +88,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
   function connectForm() {
     const disabled = pending || busyStates.includes(status.state) ? " disabled" : "";
     return `<form class="account-card remote-connect" data-remote-form>
-      <div><h2>Connect a server</h2><p>On the server, run <code>local-cognitive-server connect-key</code> and paste the key here. A key works once and expires after 10 minutes.</p></div>
+      <div><h2>Connect a server</h2><p>On the server, run <code>sudo local-cognitive-server pair</code> and paste the key here. A key works once and expires after 10 minutes.</p></div>
       <textarea class="remote-key" data-remote-key rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="LCR1-…" aria-label="Connection key"${disabled}>${escape(keyDraft)}</textarea>
       <div class="account-actions"><button type="submit" class="primary-button"${disabled || !keyDraft.trim() ? " disabled" : ""}>${pending === "pair" ? "Connecting…" : "Connect"}</button></div>
     </form>`;

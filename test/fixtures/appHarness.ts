@@ -47,6 +47,8 @@ export interface Harness {
 
 export interface BootOptions {
   remote?: { bridge: any; account?: any };
+  /** The desktop app's update bridge (window.desktopUpdates). */
+  updates?: any;
   /** Answers a request before the defaults; return undefined to fall through. */
   route?: (method: string, url: string, body?: string) => unknown;
   bootstrap?: () => object;
@@ -110,6 +112,7 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
     window.desktopRemote = { ...bridge, runtime: Object.fromEntries(Object.entries(bridge.runtime).map(([name, fn]) =>
       [name, name === "onEvent" ? fn : record(`runtime.${name}`, fn as (...args: any[]) => any)])) };
   }
+  if (options.updates) window.desktopUpdates = options.updates;
   window.eval(bundled());
   await flush(30);
   return {

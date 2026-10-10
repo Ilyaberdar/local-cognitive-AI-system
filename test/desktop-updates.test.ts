@@ -34,21 +34,42 @@ const fakeUpdater = (script: { check?: () => Promise<unknown>; download?: (updat
   return updater;
 };
 
-const setup = (options: { packaged?: boolean; platform?: string; arch?: string; work?: { total: number; chatRuns?: number }; env?: Record<string, string>; updater?: ReturnType<typeof fakeUpdater>; resourcesPath?: string } = {}) => {
+/** Electron's Notification as the updater sees it: the ones shown, and whether the system has any. */
+const fakeNotifications = (supported = true) => {
+  const shown: Array<EventEmitter & { options: { title: string; body: string } }> = [];
+  class FakeNotification extends EventEmitter {
+    static isSupported() { return supported; }
+    constructor(readonly options: { title: string; body: string }) { super(); }
+    show() { shown.push(this); }
+  }
+  return { Notification: FakeNotification, shown };
+};
+
+type SetupOptions = { packaged?: boolean; platform?: string; arch?: string; work?: { total: number; chatRuns?: number }; env?: Record<string, string>; updater?: ReturnType<typeof fakeUpdater>;
+  resourcesPath?: string; appPath?: string; inApplications?: boolean; dataDir?: string; notifications?: ReturnType<typeof fakeNotifications>; powerMonitor?: EventEmitter;
+  now?: () => number; random?: () => number; firstDelayMs?: number; intervalMs?: number };
+
+const setup = (options: SetupOptions = {}) => {
   const handlers = new Map<string, (event: unknown, value?: unknown) => unknown>();
   const sent: State[] = [], recorded: Array<[string, unknown]> = [], order: string[] = [];
   const updater = options.updater ?? fakeUpdater();
-  const app = { isPackaged: options.packaged ?? true, getVersion: () => "0.1.0", getAppPath: () => "/Applications/Local Cognitive.app/Contents/Resources/app", isInApplicationsFolder: () => true };
+  const notifications = options.notifications ?? fakeNotifications();
+  let opened = 0;
+  const app = { isPackaged: options.packaged ?? true, getVersion: () => "0.1.0", getAppPath: () => options.appPath ?? "/Applications/Local Cognitive.app/Contents/Resources/app",
+    isInApplicationsFolder: () => options.inApplications ?? true };
   const registered = registerUpdates({
     app, ipcMain: { handle: (name: string, handler: (event: unknown, value?: unknown) => unknown) => handlers.set(name, handler) }, assertSender: () => undefined,
     getWindow: () => ({ isDestroyed: () => false, webContents: { send: (_channel: string, state: State) => sent.push(state) } }),
     getBackend: () => ({ activeWork: () => options.work ?? { total: 0 } }),
     prepareForExit: async () => { order.push("prepare"); }, record: (event: string, fields: unknown) => recorded.push([event, fields]),
     platform: options.platform ?? "darwin", arch: options.arch ?? "arm64", env: options.env ?? {}, resourcesPath: options.resourcesPath ?? signedFeed,
-    loadUpdater: () => ({ autoUpdater: updater, CancellationToken: FakeToken })
+    loadUpdater: () => ({ autoUpdater: updater, CancellationToken: FakeToken }),
+    openUpdates: () => { opened++; }, Notification: notifications.Notification, powerMonitor: options.powerMonitor, dataDir: options.dataDir,
+    ...(options.now ? { now: options.now } : {}), ...(options.random ? { random: options.random } : {}),
+    ...(options.firstDelayMs !== undefined ? { firstDelayMs: options.firstDelayMs } : {}), ...(options.intervalMs !== undefined ? { intervalMs: options.intervalMs } : {})
   });
   const call = (name: string, value?: unknown) => handlers.get(`updates:${name}`)!({}, value) as Promise<State & { started?: boolean; work?: unknown; state?: State }>;
-  return { registered, updater, call, sent, recorded, order };
+  return { registered, updater, call, sent, recorded, order, shown: notifications.shown, opened: () => opened };
 };
 
 const release = { isUpdateAvailable: true, updateInfo: { version: "0.2.0", releaseDate: "2026-11-01T00:00:00Z",
@@ -101,7 +122,7 @@ test("a download can be cancelled; a failed one says why, as a code", async () =
   await broken.call("check");
   const failed = await broken.call("download");
   assert.deepEqual([failed.phase, failed.error], ["available", { stage: "download", code: "err_checksum_mismatch" }]);
-  assert.deepEqual(broken.recorded, [["app.update_failed", { stage: "download", code: "err_checksum_mismatch" }]]);
+  assert.deepEqual(broken.recorded, [["app.update_failed", { stage: "download", code: "err_checksum_mismatch", trigger: "user" }]]);
   assert.equal(JSON.stringify(failed).includes("/Users/"), false, "no path reaches the window");
 });
 
@@ -211,3 +232,212 @@ test("the update panel: phases, what's new made harmless, progress in place, a c
   assert.deepEqual(installs, [false, true]);
   assert.match(panel.textContent!, /Preparing the update/);
 });
+
+// Background checks and the notice. Tests shorten the schedule to milliseconds.
+const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "lc-updates-"));
+const releaseOf = (version: string) => ({ ...release, updateInfo: { ...release.updateInfo, version } });
+/** An updater whose checks are counted; each answers with what `answer` gives at that moment. */
+const countingUpdater = (answer: () => Promise<unknown>) => {
+  const counter = { checks: 0, stagingIds: [] as unknown[] };
+  const updater: ReturnType<typeof fakeUpdater> = fakeUpdater({ check: () => {
+    counter.checks++;
+    counter.stagingIds.push((updater as unknown as { requestHeaders?: Record<string, string> }).requestHeaders?.["x-user-staging-id"]);
+    return answer();
+  } });
+  return { counter, updater };
+};
+const upToDate = { isUpdateAvailable: false, updateInfo: { version: "0.1.0" } };
+
+test("an installed app looks for a new version by itself and announces each version once, across restarts", async () => {
+  const dataDir = tempDir();
+  let offered: unknown = release;
+  const { updater, counter } = countingUpdater(async () => offered);
+  const first = setup({ updater, dataDir, firstDelayMs: 0, intervalMs: 40 });
+  first.registered.start();
+  await delay(20);
+  assert.equal(first.sent.at(-1)?.phase, "available");
+  assert.equal(first.sent.at(-1)?.available?.version, "0.2.0");
+  assert.equal(first.shown.length, 1);
+  assert.deepEqual(first.shown[0]!.options, { title: "Local Cognitive", body: "Version 0.2.0 is available. Click to see what's new." });
+  first.shown[0]!.emit("click");
+  assert.equal(first.opened(), 1, "a click opens Settings → About");
+  await delay(100);
+  assert.ok(counter.checks >= 2, "it keeps looking every interval");
+  assert.ok(counter.stagingIds.every(id => typeof id === "string") && new Set(counter.stagingIds).size === counter.stagingIds.length, "each check carries a new random id");
+  assert.equal(first.shown.length, 1, "the same version is announced once");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "update-notice.json"), "utf8")).version, "0.2.0");
+  first.registered.dispose();
+  const checks = counter.checks;
+  await delay(100);
+  assert.equal(counter.checks, checks, "no more checks after dispose");
+
+  // After a restart the version is still shown in the window, but the system does not say it again.
+  const second = setup({ updater: countingUpdater(async () => offered).updater, dataDir, firstDelayMs: 0, intervalMs: 40 });
+  second.registered.start();
+  await delay(20);
+  assert.equal(second.sent.at(-1)?.available?.version, "0.2.0");
+  assert.equal(second.shown.length, 0);
+  offered = releaseOf("0.3.0");
+  await delay(100);
+  assert.equal(second.shown.length, 1, "a newer version is announced");
+  assert.match(second.shown[0]!.options.body, /^Version 0\.3\.0 is available\./);
+  second.registered.dispose();
+});
+
+test("background checks stay quiet: up to date, nothing published or a failure changes nothing in the window", async () => {
+  for (const answer of [async () => upToDate, () => Promise.reject(Object.assign(new Error("No published versions"), { code: "ERR_XML_MISSED_ELEMENT" }))]) {
+    const quiet = setup({ updater: fakeUpdater({ check: answer }) });
+    await quiet.registered.backgroundCheck();
+    assert.deepEqual(quiet.sent, [], "the window was told nothing");
+    assert.deepEqual(quiet.recorded, []);
+    assert.equal(quiet.shown.length, 0);
+  }
+  const offline = setup({ updater: fakeUpdater({ check: () => Promise.reject(new Error("net::ERR_INTERNET_DISCONNECTED")) }) });
+  await offline.registered.backgroundCheck();
+  assert.deepEqual(offline.sent, []);
+  assert.deepEqual(offline.recorded, [["app.update_failed", { stage: "check", code: "net_err_internet_disconnected", trigger: "background" }]], "only the technical log knows");
+  assert.equal((await offline.call("state")).error, undefined);
+});
+
+test("a check the user starts during a background one asks once and shows the user its result", async () => {
+  let fail!: (error: Error) => void;
+  const { updater, counter } = countingUpdater(() => new Promise((_resolve, reject) => { fail = reject; }));
+  const { registered, call, recorded } = setup({ updater });
+  const background = registered.backgroundCheck();
+  const user = call("check");
+  await delay(5);
+  fail(new Error("net::ERR_TIMED_OUT"));
+  await background;
+  const state = await user;
+  assert.equal(counter.checks, 1, "one request to GitHub");
+  assert.deepEqual(state.error, { stage: "check", code: "net_err_timed_out" });
+  assert.deepEqual(recorded, [["app.update_failed", { stage: "check", code: "net_err_timed_out", trigger: "user" }]], "reported once, by the user's check");
+});
+
+test("no background check while downloading or ready to install; a download waits for a check still running", async () => {
+  let finishDownload!: () => void;
+  const { updater, counter } = countingUpdater(async () => release);
+  updater.downloadUpdate = () => new Promise(resolve => { finishDownload = () => resolve([]); });
+  const busy = setup({ updater });
+  await busy.call("check");
+  const downloading = busy.call("download");
+  await delay(5);
+  await busy.registered.backgroundCheck();
+  assert.equal(counter.checks, 1, "not while downloading");
+  finishDownload();
+  assert.equal((await downloading).phase, "ready");
+  await busy.registered.backgroundCheck();
+  assert.equal(counter.checks, 1, "not while an update waits to install");
+
+  let answer!: (value: unknown) => void, calls = 0, downloadStarted = false;
+  const later = fakeUpdater({ check: () => ++calls === 1 ? Promise.resolve(release) : new Promise(resolve => { answer = resolve; }) });
+  later.downloadUpdate = async () => { downloadStarted = true; return []; };
+  const waiting = setup({ updater: later });
+  await waiting.call("check");
+  const background = waiting.registered.backgroundCheck();
+  const download = waiting.call("download");
+  await delay(10);
+  assert.equal(downloadStarted, false, "the download waits for the check's answer");
+  answer(releaseOf("0.2.1"));
+  await background;
+  assert.equal((await download).phase, "ready");
+  assert.ok(downloadStarted);
+});
+
+test("a development run never looks by itself, and LOCAL_COGNITIVE_UPDATE_CHECK=off turns the schedule off", async () => {
+  for (const options of [{ packaged: false }, { env: { LOCAL_COGNITIVE_UPDATE_CHECK: "off" } }]) {
+    const { updater, counter } = countingUpdater(async () => release);
+    const { registered } = setup({ ...options, updater, firstDelayMs: 0, intervalMs: 20 });
+    registered.start();
+    await delay(60);
+    assert.equal(counter.checks, 0);
+    registered.dispose();
+  }
+  // Pointed at a local feed, a development run does look: that is how the schedule is tried out.
+  const { updater, counter } = countingUpdater(async () => release);
+  const feed = setup({ packaged: false, env: { LOCAL_COGNITIVE_UPDATE_FEED: "http://127.0.0.1:8765/" }, updater, firstDelayMs: 0, intervalMs: 1000 });
+  feed.registered.start();
+  await delay(20);
+  assert.equal(counter.checks, 1);
+  feed.registered.dispose();
+});
+
+test("the notice says what to do when the app cannot install an update itself; a version found by Check is not announced", async () => {
+  const windows = setup({ platform: "win32", resourcesPath: unsignedFeed, updater: fakeUpdater({ check: async () => release }) });
+  await windows.registered.backgroundCheck();
+  assert.equal(windows.shown[0]!.options.body, "Version 0.2.0 is available. Click to see how to get it.");
+  const fromDiskImage = setup({ appPath: "/Volumes/Local Cognitive/Local Cognitive.app/Contents/Resources/app", inApplications: false, updater: fakeUpdater({ check: async () => release }) });
+  await fromDiskImage.registered.backgroundCheck();
+  assert.equal(fromDiskImage.shown[0]!.options.body, "Version 0.2.0 is available. Move Local Cognitive to Applications to install it.");
+  const unsupported = setup({ notifications: fakeNotifications(false), updater: fakeUpdater({ check: async () => release }) });
+  await unsupported.registered.backgroundCheck();
+  assert.equal(unsupported.sent.at(-1)?.phase, "available", "the window shows it without system notifications");
+  assert.equal(unsupported.shown.length, 0);
+
+  const dataDir = tempDir();
+  const seen = setup({ dataDir, updater: fakeUpdater({ check: async () => release }) });
+  await seen.call("check");
+  await seen.registered.backgroundCheck();
+  assert.equal(seen.shown.length, 0, "the user saw it already");
+  const restarted = setup({ dataDir, updater: fakeUpdater({ check: async () => release }) });
+  await restarted.registered.backgroundCheck();
+  assert.equal(restarted.shown.length, 0);
+});
+
+test("after the computer wakes, a check that came due runs soon", async () => {
+  const power = new EventEmitter();
+  let clock = 1_000_000;
+  const { updater, counter } = countingUpdater(async () => upToDate);
+  const { registered } = setup({ updater, powerMonitor: power, now: () => clock, firstDelayMs: 60_000, intervalMs: 30 });
+  registered.start();
+  await delay(10);
+  assert.equal(counter.checks, 0, "the first check is still a minute away");
+  clock += 31;   // asleep for longer than an interval: timers did not run meanwhile
+  power.emit("resume");
+  await delay(50);
+  assert.ok(counter.checks >= 1);
+  registered.dispose();
+  assert.equal(power.listenerCount("resume"), 0);
+});
+
+test("the top bar's update button: only when there is something to do, progress in place, said once to a screen reader", async () => {
+  const bundle = buildSync({ entryPoints: ["public/assets/updates-ui.js"], bundle: true, write: false, format: "iife", globalName: "UpdatesUi" }).outputFiles[0]!.text;
+  const dom = new JSDOM("<header><span data-update-pill></span></header>", { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(`${bundle}\nwindow.UpdatesUi = UpdatesUi;`);
+  const ui = dom.window.UpdatesUi;
+  const available = { phase: "available", current: "0.1.0", available: { version: "0.2.0", notes: [] } };
+  assert.equal(ui.updatePillText(available), "Update to 0.2.0");
+  for (const phase of ["idle", "checking", "up-to-date", "installing"]) assert.equal(ui.updatePillText({ ...available, phase }), null, phase);
+  assert.equal(ui.updatePillText({ ...available, blocker: "development" }), null);
+  assert.equal(ui.updatePillText({ ...available, blocker: "windows-unsigned" }), "Version 0.2.0 available");
+  assert.equal(ui.updatePillText({ ...available, phase: "downloading", progress: { percent: 41.6 } }), "Downloading 42%");
+  assert.equal(ui.updatePillText({ ...available, phase: "ready" }), "Restart to update");
+  assert.doesNotMatch(ui.updatePillHtml({ ...available, available: { version: '<img src=x onerror="steal()">' } }), /<img/);
+  assert.match(ui.updatePillHtml(available), /<a id="update-pill" class="update-pill" href="#\/settings\/about"/);
+
+  let listener: (state: unknown) => void = () => undefined, open: () => void = () => undefined;
+  const opened: string[] = [];
+  const pill = ui.createUpdatePill({ doc: dom.window.document, onOpen: () => opened.push("about"), bridge: {
+    state: async () => ({ phase: "idle", current: "0.1.0" }), onChange: (callback: typeof listener) => { listener = callback; }, onOpen: (callback: () => void) => { open = callback; } } });
+  await delay(5);
+  const slot = dom.window.document.querySelector("[data-update-pill]")!;
+  const status = dom.window.document.querySelector('[role="status"]')!;
+  assert.equal(slot.textContent, "");
+  assert.equal(pill.html(), "");
+  listener(available);
+  assert.equal(slot.textContent, "Update to 0.2.0");
+  assert.equal(status.textContent, "Version 0.2.0 is available.");
+  listener({ ...available, phase: "downloading", progress: { percent: 10 } });
+  const link = slot.querySelector("#update-pill");
+  listener({ ...available, phase: "downloading", progress: { percent: 42 } });
+  assert.equal(slot.textContent, "Downloading 42%");
+  assert.equal(slot.querySelector("#update-pill"), link, "progress changes the words, not the button");
+  assert.equal(status.textContent, "Version 0.2.0 is available.", "progress is not read out");
+  listener({ ...available, phase: "ready" });
+  assert.equal(slot.textContent, "Restart to update");
+  assert.equal(status.textContent, "Version 0.2.0 is ready to install.");
+  assert.match(pill.html(), /Restart to update/);
+  open();
+  assert.deepEqual(opened, ["about"], "the notification's click opens Settings → About");
+});
+

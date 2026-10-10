@@ -1,7 +1,9 @@
 // Settings → About → Updates: the user checks for a new version, reads what's new, downloads it and
-// chooses when to restart into it. The main process does the work (electron/updates.cjs); this
-// shows its state. Release notes are GitHub's HTML: shown only through renderReleaseNotes.
+// chooses when to restart into it; the top bar has a button while one waits. The main process does
+// the work (electron/updates.cjs); this shows its state. Release notes are GitHub's HTML: shown only
+// through renderReleaseNotes.
 import { renderReleaseNotes } from './markdown-renderer.js';
+import { icon } from './ui-primitives.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const megabytes = bytes => `${(Math.max(0, Number(bytes) || 0) / 1024 ** 2).toFixed(1)} MB`;
@@ -102,4 +104,54 @@ export function mountUpdatesPanel(container, { bridge = window.desktopUpdates, r
   });
   void bridge.state().then(apply);
   return () => { disposed = true; off?.(); };
+}
+
+/** The top bar's button for an update: its words, or null when there is nothing to do. */
+export function updatePillText(state) {
+  const version = state?.available?.version;
+  if (!version || state.blocker === 'development') return null;
+  // Windows before signed builds, or an app run from the disk image: the panel says what to do.
+  if (state.phase === 'available') return state.blocker ? `Version ${version} available` : `Update to ${version}`;
+  if (state.phase === 'downloading') return `Downloading ${Math.round(state.progress?.percent || 0)}%`;
+  if (state.phase === 'ready') return 'Restart to update';
+  return null;
+}
+
+/** The button: a link to Settings → About, where the update panel is. */
+export function updatePillHtml(state) {
+  const text = updatePillText(state);
+  return text ? `<a id="update-pill" class="update-pill${state.phase === 'ready' ? ' is-ready' : ''}" href="#/settings/about" title="Software update">${icon(state.phase === 'ready' ? 'refresh' : 'arrowDown')}<span data-update-pill-text>${escape(text)}</span></a>` : '';
+}
+
+/**
+ * Keeps the top bar's button current. Full renders take `html()`; changes repaint the
+ * `[data-update-pill]` slot in place. A screen reader hears a new version and a finished download
+ * once each, never the progress. `onOpen` runs when the update notification is clicked.
+ */
+export function createUpdatePill({ bridge = window.desktopUpdates, doc = document, onOpen } = {}) {
+  if (!bridge) return null;
+  let state;
+  const status = doc.createElement('div');
+  status.className = 'sr-only';
+  status.setAttribute('role', 'status');
+  doc.body.append(status);
+  const repaint = before => {
+    const slot = doc.querySelector('[data-update-pill]');
+    if (!slot) return;
+    const text = slot.querySelector('[data-update-pill-text]');
+    if (text && before?.phase === state?.phase) text.textContent = updatePillText(state) ?? '';
+    else slot.innerHTML = updatePillHtml(state);
+  };
+  const apply = next => {
+    const before = state;
+    state = next;
+    const changed = next?.phase !== before?.phase || next?.available?.version !== before?.available?.version;
+    if (changed && next?.phase === 'available' && updatePillText(next)) status.textContent = `Version ${next.available.version} is available.`;
+    else if (changed && next?.phase === 'ready') status.textContent = `Version ${next.available?.version ?? ''} is ready to install.`;
+    repaint(before);
+  };
+  bridge.onChange?.(apply);
+  bridge.onOpen?.(() => onOpen?.());
+  void Promise.resolve(bridge.state?.()).then(apply).catch(() => undefined);
+  return { html: () => updatePillHtml(state) };
 }

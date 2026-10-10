@@ -2,15 +2,22 @@ const { randomUUID } = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-// Desktop updates (Settings → About), driven by the user: check, read what's new, download, then
-// "Restart and update". Nothing is checked, downloaded or installed on its own. Releases come from the
-// public GitHub repository without a token (github.com's feed and assets, never api.github.com).
-// macOS installs only an update signed with the same Developer ID (Squirrel checks it); Windows
-// checks the signer once the builds are signed (publisherName in app-update.yml).
+// Desktop updates (Settings → About, and a button in the top bar while one waits). An installed app
+// looks for a new version shortly after launch and every 6 hours, and announces each new version
+// once with a system notification; downloading and installing happen only when the user presses
+// the buttons. Releases come from the public GitHub repository without a token (github.com's feed
+// and assets, never api.github.com). macOS installs only an update signed with the same Developer ID
+// (Squirrel checks it); Windows checks the signer once the builds are signed (publisherName in
+// app-update.yml).
 
 /** Errors that mean nothing is published yet: the app is as new as it gets. */
 const NO_RELEASE = new Set(["ERR_XML_MISSED_ELEMENT", "ERR_UPDATER_LATEST_VERSION_NOT_FOUND"]);
 const NOTES_LIMIT = 64 * 1024;
+const HOUR = 60 * 60 * 1000;
+/** Phases in which a background check may look: nothing the user started is under way. */
+const QUIET = new Set(["idle", "up-to-date", "available"]);
+/** The version announced last, in the app's data folder: once per version, across restarts. */
+const NOTICE_FILE = "update-notice.json";
 
 /** A code for the window and the technical log: never a message, a URL or a path. */
 const errorCode = error => {
@@ -43,8 +50,14 @@ const feedNamesPublisher = resourcesPath => {
   try { return /^\s*publisherName\s*:/m.test(fs.readFileSync(path.join(resourcesPath, "app-update.yml"), "utf8")); } catch { return false; }
 };
 
-function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, prepareForExit, record,
-  platform = process.platform, arch = process.arch, env = process.env, resourcesPath = process.resourcesPath, loadUpdater = () => require("electron-updater") }) {
+/** What the system notification says about a new version. */
+const noticeText = (version, blocker) => blocker === "windows-unsigned" ? `Version ${version} is available. Click to see how to get it.`
+  : blocker === "move-to-applications" ? `Version ${version} is available. Move Local Cognitive to Applications to install it.`
+  : `Version ${version} is available. Click to see what's new.`;
+
+function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, prepareForExit, record, openUpdates, Notification, powerMonitor, dataDir,
+  platform = process.platform, arch = process.arch, env = process.env, resourcesPath = process.resourcesPath, loadUpdater = () => require("electron-updater"),
+  now = Date.now, random = Math.random, firstDelayMs, intervalMs = 6 * HOUR }) {
   const development = !app.isPackaged;
   // A development run checks against a local feed only (and never installs); otherwise it has no updates.
   const developmentFeed = development ? env.LOCAL_COGNITIVE_UPDATE_FEED : undefined;
@@ -56,19 +69,21 @@ function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, pr
     : platform === "darwin" && !development && !app.isInApplicationsFolder?.() && /\/AppTranslocation\/|^\/Volumes\//.test(appPath) ? "move-to-applications" : undefined;
   // idle | checking | up-to-date | available | downloading | ready | installing, with `error` beside any.
   let state = { phase: "idle", current: app.getVersion(), ...(blocker ? { blocker } : {}) };
-  let updater, token, sentAt = 0;
+  let updater, token, sentAt = 0, inflight, timer, lastCheckAt = 0, started = false, notification;
+  const noticeFile = dataDir ? path.join(dataDir, NOTICE_FILE) : undefined;
+  let announced = (() => { try { return noticeFile && JSON.parse(fs.readFileSync(noticeFile, "utf8")).version; } catch { return undefined; } })();
 
   const send = () => { const window = getWindow(); if (window && !window.isDestroyed()) window.webContents.send("updates:changed", state); };
   const set = (patch, throttle = false) => {
     state = { ...state, ...patch };
     for (const key of Object.keys(patch)) if (patch[key] === undefined) delete state[key];
-    if (throttle && Date.now() - sentAt < 250) return;
-    sentAt = Date.now();
+    if (throttle && now() - sentAt < 250) return;
+    sentAt = now();
     send();
   };
   const fail = (stage, error, phase) => {
     const code = errorCode(error);
-    record?.("app.update_failed", { stage, code });
+    record?.("app.update_failed", { stage, code, trigger: "user" });
     set({ phase, error: { stage, code }, progress: undefined });
   };
 
@@ -82,7 +97,7 @@ function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, pr
     updater.disableWebInstaller = true;
     updater.logger = null;                 // its lines carry URLs and paths
     // No lasting id for GitHub: staged rollouts are not used, so each run sends a new random one
-    // instead of the id the updater would keep in userData/.updaterId.
+    // instead of the id the updater would keep in userData/.updaterId (and each check another, see query).
     updater.getOrCreateStagingUserId = async () => randomUUID();
     if (developmentFeed) { updater.forceDevUpdateConfig = true; updater.setFeedURL({ provider: "generic", url: developmentFeed }); }
     updater.on("download-progress", progress => set({ progress: { percent: progress.percent, transferred: progress.transferred, total: progress.total, bytesPerSecond: progress.bytesPerSecond } }, true));
@@ -92,23 +107,79 @@ function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, pr
     return updater;
   };
 
+  // One request at a time: a check the user starts during a background one shares its answer. Each
+  // carries a new random staging id, so GitHub cannot link the checks of one run either.
+  const query = () => inflight ??= (async () => {
+    const instance = load();
+    instance.requestHeaders = { ...instance.requestHeaders, "x-user-staging-id": randomUUID() };
+    lastCheckAt = now();
+    return instance.checkForUpdates();
+  })().finally(() => { inflight = undefined; });
+
+  const availableFrom = info => ({ version: String(info.version), date: info.releaseDate ?? null, size: downloadSize(info, platform, arch), notes: releaseNotes(info) });
+
+  /** Notes a version as announced: written whole and renamed; if that fails, this run still remembers. */
+  const remember = version => {
+    announced = version;
+    if (!noticeFile) return;
+    const temporary = `${noticeFile}.${process.pid}.tmp`;
+    try { fs.writeFileSync(temporary, JSON.stringify({ version, at: new Date(now()).toISOString() }), { mode: 0o600 }); fs.renameSync(temporary, noticeFile); }
+    catch { try { fs.rmSync(temporary, { force: true }); } catch { /* nothing to clean up */ } }
+  };
+  /** A new version, said once: a system notification that opens Settings → About when clicked. */
+  const announce = version => {
+    if (announced === version) return;
+    remember(version);
+    try {
+      if (!Notification?.isSupported?.()) return;
+      // Kept for the whole run: a notification that is collected disappears from Notification Center.
+      notification = new Notification({ title: "Local Cognitive", body: noticeText(version, state.blocker) });
+      notification.on("click", () => openUpdates?.());
+      notification.show();
+    } catch { /* A courtesy: the button in the window still says it. */ }
+  };
+
   async function check() {
-    if (state.blocker === "development" || ["checking", "downloading", "installing"].includes(state.phase)) return state;
+    if (state.blocker === "development" || ["checking", "downloading", "ready", "installing"].includes(state.phase)) return state;
     set({ phase: "checking", error: undefined });
     try {
-      const result = await load().checkForUpdates();
+      const result = await query();
       const info = result?.updateInfo;
-      if (!result?.isUpdateAvailable || !info) set({ phase: "up-to-date", checkedAt: Date.now(), available: undefined });
-      else set({ phase: "available", checkedAt: Date.now(),
-        available: { version: String(info.version), date: info.releaseDate ?? null, size: downloadSize(info, platform, arch), notes: releaseNotes(info) } });
+      if (!result?.isUpdateAvailable || !info) set({ phase: "up-to-date", checkedAt: now(), available: undefined });
+      else {
+        set({ phase: "available", checkedAt: now(), available: availableFrom(info) });
+        // The user is looking at it already: no notification for this version later.
+        if (announced !== state.available.version) remember(state.available.version);
+      }
     } catch (error) {
-      if (NO_RELEASE.has(error?.code)) set({ phase: "up-to-date", checkedAt: Date.now(), available: undefined });
+      if (NO_RELEASE.has(error?.code)) set({ phase: "up-to-date", checkedAt: now(), available: undefined });
       else fail("check", error, "idle");
     }
     return state;
   }
 
+  /** A check nobody asked for: the window changes only for a new version, which the system then
+   * announces. Its failures go to the technical log, never to the window. */
+  async function backgroundCheck() {
+    if (!QUIET.has(state.phase)) return;
+    try {
+      const result = await query();
+      const info = result?.updateInfo;
+      // Up to date, or the user started something meanwhile: the window stays as it is.
+      if (!result?.isUpdateAvailable || !info || !QUIET.has(state.phase)) return;
+      if (state.phase !== "available" || state.available?.version !== String(info.version)) {
+        set({ phase: "available", checkedAt: now(), available: availableFrom(info), ...(state.error?.stage === "check" ? { error: undefined } : {}) });
+      }
+      announce(state.available.version);
+    } catch (error) {
+      // A check the user started meanwhile shares this answer and reports it itself.
+      if (!NO_RELEASE.has(error?.code) && QUIET.has(state.phase)) record?.("app.update_failed", { stage: "check", code: errorCode(error), trigger: "background" });
+    }
+  }
+
   async function download() {
+    // The download uses the release found by the last check: one still running finishes first.
+    if (inflight) await inflight.catch(() => undefined);
     if (state.phase !== "available" || state.blocker) return state;
     token = new (loadUpdater().CancellationToken)();
     set({ phase: "downloading", error: undefined, progress: { percent: 0 } });
@@ -142,13 +213,35 @@ function registerUpdates({ app, ipcMain, assertSender, getWindow, getBackend, pr
     return { started: true, state };
   }
 
+  // Shortly after launch (spread over 10–30 s), then every 6 hours give or take a few minutes.
+  const schedule = delay => {
+    clearTimeout(timer);
+    timer = setTimeout(() => void backgroundCheck().finally(() => { if (started) schedule(intervalMs * (0.96 + random() * 0.08)); }), delay);
+    timer.unref?.();
+  };
+  // Timers count only time awake: after a sleep, a check that came due runs a minute after waking.
+  const resumed = () => { if (started && (now() - lastCheckAt >= intervalMs || now() < lastCheckAt)) schedule(Math.min(60_000, intervalMs)); };
+
+  /** Background checks: an installed app, or a development run pointed at a local feed. */
+  function start() {
+    if (started || state.blocker === "development" || env.LOCAL_COGNITIVE_UPDATE_CHECK === "off") return;
+    started = true;
+    schedule(firstDelayMs ?? 10_000 + random() * 20_000);
+    powerMonitor?.on?.("resume", resumed);
+  }
+  function dispose() {
+    started = false;
+    clearTimeout(timer);
+    powerMonitor?.removeListener?.("resume", resumed);
+  }
+
   const handle = (name, action) => ipcMain.handle(`updates:${name}`, (event, value) => { assertSender(event); return action(value); });
   handle("state", () => state);
   handle("check", check);
   handle("download", download);
   handle("cancel", () => { token?.cancel(); return state; });
   handle("install", value => install(value === true));
-  return { state: () => state, check, download, install };
+  return { state: () => state, check, backgroundCheck, download, install, start, dispose };
 }
 
-module.exports = { registerUpdates, errorCode, releaseNotes, downloadSize };
+module.exports = { registerUpdates, errorCode, releaseNotes, downloadSize, noticeText };
