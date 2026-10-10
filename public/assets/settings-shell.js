@@ -2,12 +2,13 @@ import { icon, bindGlassLighting } from './ui-primitives.js';
 import { createAccountState, entityPatch, localProfileView, mcpServerCount } from './settings-data.js';
 import { mountIntegrationPage } from './plugins-ui.js';
 import { mountUsagePage } from './usage-ui.js';
+import { mountReportBugPage } from './report-bug.js';
 
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
   ['AI System', [['providers', 'Models & Providers', 'models'], ['runtime', 'Local Runtime', 'models'], ['agents', 'Agents', 'workflow'], ['memory', 'Memory', 'folder']]],
   ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connected accounts', 'externalLink']]],
-  ['System', [['data', 'Data & Privacy', 'shield'], ['about', 'About', 'info']]]
+  ['System', [['data', 'Data & Privacy', 'shield'], ['about', 'About', 'info'], ['report-bug', 'Report a bug', 'bug']]]
 ];
 // With a server selected, these pages show and change that server's settings (R5-3); plugins and
 // MCP are each machine's own and are not offered for a server yet. Every other page is this device's.
@@ -54,7 +55,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, accountPending, accountNotice, diagnosticsConsent;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, accountPending, accountNotice, diagnosticsConsent;
   const context = () => getContext() || {};
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
@@ -457,11 +458,12 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'profile') return profileEditor();
     if (name === 'account') return `<div data-account-page>${accountPanel()}</div>`;
     if (name === 'usage') return '<div data-usage-page></div>';
+    if (name === 'report-bug') return '<div data-report-bug-page></div>';
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. Configurable desktop notifications are not available in this release.');
     if (name === 'connections') return '<div data-integrations-page></div>';
     if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
     if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
-    if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata'], ['Selected server', context().server && [context().server.hostName(), context().server.version()].filter(Boolean).join(' · ')]].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>`;
+    if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive AI System'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata'], ['Selected server', context().server && [context().server.hostName(), context().server.version()].filter(Boolean).join(' · ')]].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>${link('report-bug', 'Report a bug', 'Tell the developer what went wrong')}`;
     if (name === 'data' && server) return form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
@@ -534,6 +536,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     disposeVoice?.(); disposeVoice = undefined;
     disposeIntegrations?.(); disposeIntegrations = undefined;
     disposeUsage?.(); disposeUsage = undefined;
+    disposeReport?.(); disposeReport = undefined;
     const [name, id] = page.split('/');
     const server = serverFor(page);
     server?.ensureLoaded();
@@ -559,6 +562,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
     if (name === 'usage') disposeUsage = mountUsagePage(root.querySelector('[data-usage-page]'));
+    if (name === 'report-bug') disposeReport = mountReportBugPage(root.querySelector('[data-report-bug-page]'), { mode: context().server ? 'remote' : 'local' });
     if (name === 'mcp' && id === 'import') bindMcpImport();
     else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
@@ -945,10 +949,14 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function openMenu() {
     if (menu.matches(':popover-open')) { closeMenu(); return; }
     const user = localProfileView(clientSettings());
-    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>${escape(accountSubtitle(account.get()))}</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
+    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>${escape(accountSubtitle(account.get()))}</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info'], ['report-bug', 'Report a bug', 'bug']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
     menu.querySelectorAll('[data-profile-route]').forEach(button => button.addEventListener('click', () => {
       closeMenu(false);
       if (button.dataset.profileRoute === 'data-folder') { void openDataFolder(); document.getElementById('local-profile-button')?.focus(); }
+      // The window the user was in, before the report page covers it (sent only if they tick it).
+      else if (button.dataset.profileRoute === 'report-bug' && window.desktopBugReport) {
+        void window.desktopBugReport.capture().catch(() => {}).finally(() => { location.hash = '#/settings/report-bug'; });
+      }
       else location.hash = `#/settings/${button.dataset.profileRoute}`;
     }));
     menu.showPopover();

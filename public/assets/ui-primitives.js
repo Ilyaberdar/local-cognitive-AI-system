@@ -2,6 +2,7 @@
 const paths = {
   profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>',
+  bug: '<rect x="8" y="7" width="8" height="12" rx="4"/><path d="M12 11v8M8 12H4m16 0h-4M8 16H5m14 0h-3M9 7.5 7 5m8 2.5L17 5M10 4.5h4"/>',
   folder: '<path d="M3 7h7l2 2h9v10H3Z"/><path d="M3 7V4h6l3 3"/>',
   archive: '<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v12h14V8m-10 4h6"/>',
   moreHorizontal: '<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>',
