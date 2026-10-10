@@ -16,16 +16,22 @@ const releaseDir = (t: TestContext) => {
   return directory;
 };
 
-/** A minimal PE32+ file; `signature` sets the size of its security (Authenticode) directory. */
+/** A minimal PE32+ file; with `signature` bytes, its certificate table holds a PKCS#7 WIN_CERTIFICATE. */
 const peFile = (file: string, signature: number) => {
   const bytes = Buffer.alloc(0x200);
   bytes.write("MZ", 0, "latin1");
   bytes.writeUInt32LE(0x40, 0x3c);
   bytes.write("PE\0\0", 0x40, "latin1");
-  bytes.writeUInt16LE(0x20b, 0x40 + 24);
-  const security = 0x40 + 24 + 112 + 4 * 8;
-  bytes.writeUInt32LE(signature ? 0x100 : 0, security);
-  bytes.writeUInt32LE(signature, security + 4);
+  const optional = 0x40 + 24;
+  bytes.writeUInt16LE(0x20b, optional);
+  bytes.writeUInt32LE(16, optional + 108);
+  if (signature) {
+    bytes.writeUInt32LE(0x100, optional + 144);
+    bytes.writeUInt32LE(signature, optional + 148);
+    bytes.writeUInt32LE(signature, 0x100);
+    bytes.writeUInt16LE(0x0200, 0x104);
+    bytes.writeUInt16LE(0x0002, 0x106);
+  }
   fs.writeFileSync(file, bytes);
 };
 
@@ -62,7 +68,8 @@ test("the release gate refuses an ad-hoc signed macOS app, with each reason", { 
   execFileSync("codesign", ["--sign", "-", "--force", app], { stdio: "ignore" });
   const result = verify(directory);
   assert.equal(result.status, 1);
-  for (const reason of [/signed ad hoc, not with a Developer ID/, /no team identifier/, /hardened runtime/, /Gatekeeper does not accept it as notarized/, /no stapled notarization ticket/]) {
+  for (const reason of [/signed ad hoc, not with a Developer ID/, /no team identifier/, /hardened runtime/, /Gatekeeper does not accept it as notarized/,
+    /no stapled notarization ticket/, /lacks the com\.apple\.security\.device\.audio-input entitlement: dictation cannot open the microphone/]) {
     assert.match(result.output, reason);
   }
   assert.match(result.output, /1 of 1 artifacts are not ready to publish/);
