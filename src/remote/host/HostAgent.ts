@@ -1,3 +1,5 @@
+import { diagnostics } from "../../diagnostics/DiagnosticLog";
+import { errorCategory } from "../../diagnostics/errorCategory";
 import { EventEmitter } from "events";
 import WebSocket from "ws";
 import { z } from "zod";
@@ -142,6 +144,7 @@ export class HostAgent extends EventEmitter {
       socket.on("close", (code, reason) => this.onClose(socket, code, reason.toString()));
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
+      diagnostics().record("remote.host_event", { event: "connect_failed", code: errorCategory(error) });
       this.schedule();
     }
   }
@@ -243,6 +246,7 @@ export class HostAgent extends EventEmitter {
       this.options.store.clearHostId();
     } else if (code === 4409) this.options.logger.warn("Another process connected as this host");
     this.lastError ??= `closed (${code}${reason ? ` ${reason}` : ""})`;
+    diagnostics().record("remote.host_event", { event: "control_closed", code: `ws_${code}` });
     this.setState("offline");
     this.schedule();
   }

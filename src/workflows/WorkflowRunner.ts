@@ -1,3 +1,5 @@
+import { diagnostics } from "../diagnostics/DiagnosticLog";
+import { errorCategory } from "../diagnostics/errorCategory";
 import { withFileLock } from "../utils/fileStore";
 import { randomUUID } from "crypto";
 import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
@@ -221,6 +223,7 @@ export class WorkflowRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown_error";
       result = { status: "failed", event: "node.failed", summary: message, data: {}, error: message };
+      if (!controller.signal.aborted) diagnostics().record("workflow.failed", { nodeType: node.type, category: errorCategory(error) });
     }
     finished = true;
     await progressWrite;

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LLMResponse, TokenUsage, UsageAttemptHook } from "../types";
 import type { UsageScope } from "./UsageScope";
+import { diagnostics } from "../diagnostics/DiagnosticLog";
 
 /** How one HTTP request to a model ended: answered, refused with an error status (nothing was
  * generated), lost before an answer (network, timeout), or cancelled by the user. */
@@ -67,7 +68,7 @@ export class UsageCall implements UsageAttemptHook {
     // The tokens belong to the last request that was answered; the provider read them from it.
     const answered = [...this.attempts].reverse().find(attempt => !attempt.outcome);
     const now = new Date().toISOString();
-    this.recorder.record(this.attempts.map((attempt, index) => {
+    const records = this.attempts.map((attempt, index): UsageAttemptRecord => {
       const outcome = attempt.outcome ?? (attempt === answered && response ? "completed" : cancelled ? "cancelled" : "failed");
       const usage = attempt === answered && response?.usage ? response.usage : undefined;
       return {
@@ -77,6 +78,10 @@ export class UsageCall implements UsageAttemptHook {
         ...(attempt.status !== undefined ? { httpStatus: attempt.status } : {}),
         usageSource: usage ? "reported" : "unknown", ...(usage ? { usage } : {})
       };
-    }));
+    });
+    // A refused or lost request is a provider failure in the technical log (a cancellation is not).
+    for (const record of records) if (record.outcome === "rejected" || record.outcome === "failed")
+      diagnostics().record("provider.call_failed", { provider: record.provider, outcome: record.outcome, ...(record.httpStatus !== undefined ? { httpStatus: record.httpStatus } : {}) });
+    this.recorder.record(records);
   }
 }

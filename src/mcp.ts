@@ -14,6 +14,7 @@ import path from "node:path";
 import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
 import { UsageLedger } from "./usage/UsageLedger";
+import { DiagnosticLog, setDiagnosticSink } from "./diagnostics/DiagnosticLog";
 
 class StderrLogger extends Logger {
   override log(level: "info" | "warn" | "error" | "debug", message: string, meta?: Record<string, unknown>): void {
@@ -42,6 +43,9 @@ const bootstrapMcp = async (): Promise<void> => {
     throw new Error(`${error.message} Run the MCP server with its own APP_DATA_DIR, SESSION_DIR, MEMORY_DIR and LOCAL_MODELS_DIR.`);
   }
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
+  const diagnosticLog = new DiagnosticLog(path.join(config.appDataDir, "diagnostics"));
+  setDiagnosticSink(diagnosticLog);
+  diagnosticLog.record("app.started", { runtimeKind: "mcp-stdio", previousShutdown: lock.previousShutdown });
   // Its model calls are recorded too, on this computer only: it knows no signed-in account.
   let database: HostDatabase | undefined;
   try { database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations); }
@@ -66,7 +70,7 @@ const bootstrapMcp = async (): Promise<void> => {
   });
 
   const transport = new StdioServerTransport();
-  const dispose = async () => { await runtimeManager.dispose(); await server.close(); database?.close(); lock.release(); };
+  const dispose = async () => { await runtimeManager.dispose(); await server.close(); database?.close(); diagnosticLog.flush(); lock.release(); };
   process.once("SIGINT", () => { void dispose().finally(() => process.exit(0)); });
   process.once("SIGTERM", () => { void dispose().finally(() => process.exit(0)); });
   process.stdin.once("end", () => { void dispose(); });

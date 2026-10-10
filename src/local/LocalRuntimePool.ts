@@ -1,3 +1,5 @@
+import { diagnostics } from "../diagnostics/DiagnosticLog";
+import { errorCategory } from "../diagnostics/errorCategory";
 import { LLMRequest, LLMResponse } from "../types";
 import { Logger } from "../utils/Logger";
 import { getSystemMemory } from "../utils/systemMemory";
@@ -77,24 +79,31 @@ export class LocalRuntimePool {
       this.instances.set(id, runtime);
     }
     const target = runtime;
+    let placement = "unplanned";
     await this.exclusive(signal, async () => {
       if (target.isReadyFor(id, projector)) return;
       if (!estimate) { await target.load(id, file, signal, projector); return; }
       await target.stop();
       let plan = await this.plan(id, estimate);
+      placement = plan.kind;
       try {
         await target.load(id, file, signal, projector, this.launch(plan, false));
       } catch (error) {
         // One retry with the next layout: estimates can be short for a specific model or driver.
         if (!(error instanceof LocalModelError) || error.code !== "out_of_memory" || plan.manual || plan.kind === "unified" || plan.kind === "cpu" || signal?.aborted) throw error;
         this.logger.warn("Model ran out of memory; retrying with another placement", { modelId: id, placement: plan.kind });
+        diagnostics().record("local_runtime.oom_retry", { placement: plan.kind });
         await new Promise(resolve => setTimeout(resolve, 500));
         // A row split that ran short first tries the same GPUs split by layers.
         plan = plan.launch.args.includes("row")
           ? await this.plan(id, estimate, { layerSplit: true, policy: { safetyFactor: 1.2 } })
           : await this.plan(id, estimate, { after: plan.kind, policy: { safetyFactor: 1.2 } });
+        placement = plan.kind;
         await target.load(id, file, signal, projector, this.launch(plan, true));
       }
+    }).catch(error => {
+      if (!signal?.aborted) diagnostics().record("local_runtime.load_failed", { code: errorCategory(error), placement });
+      throw error;
     });
   }
 
