@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
 import { keyIdOf, MANIFEST_SIGNATURE_CONTEXT, type ReleaseKey } from "../src/update/manifest";
-import { adoptRelease, linkedRelease, pointLink, releasesDir, updateServer, UpdateError, type ReleaseRunner, type ServiceControl } from "../src/update/serverUpdate";
+import { adoptRelease, fetchBytes, linkedRelease, pointLink, releasesDir, updateServer, UpdateError, type ReleaseRunner, type ServiceControl } from "../src/update/serverUpdate";
 
 const posix = process.platform !== "win32";
 const dataBackup = path.resolve(__dirname, "..", "src", "update", "dataBackup.js");
@@ -198,4 +198,34 @@ test("update from the command line: --check only looks; installing needs root; a
   assert.equal(none.status, 0, none.stderr);
   assert.match(none.stderr, /No server release is published yet\./);
   assert.equal((await run("update", "--check", "--manifest-url", "http://releases.example/m.json")).status, 64, "only https away from loopback");
+});
+
+test("a slow download takes as long as it needs; one that stops sending is given up", async () => {
+  // Like fetch: the body arrives in pieces, and aborting the request errors the body with the reason.
+  const serve = (pieces: number, gapMs: number, stopAfter = Infinity) => (async (_url: string, init?: RequestInit) => {
+    const signal = init!.signal!;
+    let cancelled = false;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+        void (async () => {
+          for (let index = 0; index < Math.min(pieces, stopAfter); index++) {
+            await new Promise(resolve => setTimeout(resolve, gapMs));
+            if (signal.aborted || cancelled) return;
+            controller.enqueue(new Uint8Array([index]));
+          }
+          if (stopAfter >= pieces) controller.close();
+        })();
+      },
+      cancel() { cancelled = true; }
+    }));
+  }) as typeof fetch;
+  // Ten pieces 50 ms apart: half a second in all, longer than the 400 ms without data that ends a download.
+  assert.deepEqual([...await fetchBytes(serve(10, 50), "https://releases.example/slow", 1024, 400)], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const stopped = (error: unknown) => error instanceof UpdateError && error.code === "download_failed" && /nothing arrived/.test(error.message);
+  await assert.rejects(fetchBytes(serve(10, 50, 2), "https://releases.example/stalls", 1024, 400), stopped);
+  const silent = (async (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) =>
+    init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }))) as typeof fetch;
+  await assert.rejects(fetchBytes(silent, "https://releases.example/silent", 1024, 400), stopped);
+  await assert.rejects(fetchBytes(serve(10, 1), "https://releases.example/large", 3, 400), /larger than expected/);
 });

@@ -232,7 +232,8 @@ main() {
         case "$answer" in [nN]*) cpu=true ;; esac
       fi
       if ! $cpu; then
-        (cd / && "$release/node/bin/node" "$release/scripts/prepare-llama-runtime.mjs" --variant "$cuda" --destination "$release/resources/llama/$cuda") \
+        # About 2.5 GB is downloaded and unpacked: /var/tmp is on disk, while /tmp is often memory (tmpfs).
+        (cd / && TMPDIR=/var/tmp "$release/node/bin/node" "$release/scripts/prepare-llama-runtime.mjs" --variant "$cuda" --destination "$release/resources/llama/$cuda") \
           || say "The CUDA runtime could not be installed: models run on the CPU. Try again later: sudo local-cognitive-server cuda"
         chown -R root:root "$release/resources" && chmod -R go-w "$release/resources"
       fi

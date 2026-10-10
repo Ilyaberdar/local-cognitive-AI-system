@@ -1,11 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { createWriteStream } from 'node:fs';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { download } from './lib/download.mjs';
 import { normalizeManifest, overlayMayContain, runtimeEntry, sha256File } from './lib/llama-manifest.mjs';
 
 // Usage: node scripts/prepare-llama-runtime.mjs [--platform p --arch a | --variant id] [--manifest file]
@@ -20,13 +18,6 @@ const variant = value('--variant', `${platform}-${arch}`);
 const target = runtimeEntry(manifest, variant);
 const destination = path.resolve(value('--destination', path.join(root, 'resources/llama', variant)));
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'prepare-llama-'));
-
-const download = async (url, file, what) => {
-  console.log(`Downloading ${what}`);
-  const response = await fetch(url, { signal: AbortSignal.timeout(600000) });
-  if (!response.ok || !response.body) throw new Error(`${what} download failed: HTTP ${response.status}`);
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(file));
-};
 
 /** Files below a directory as relative paths; anything but plain files and directories is refused. */
 const walk = async (directory, prefix = '') => {

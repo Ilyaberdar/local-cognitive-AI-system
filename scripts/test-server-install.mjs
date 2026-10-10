@@ -70,9 +70,10 @@ try {
   const pkgFile = path.join(source, "package.json");
   fs.writeFileSync(pkgFile, `${JSON.stringify({ ...JSON.parse(fs.readFileSync(pkgFile, "utf8")), version: VERSION }, null, 2)}\n`);
   const keysFile = path.join(source, "dist", "src", "update", "releaseKeys.js");
-  const keys = fs.readFileSync(keysFile, "utf8");
-  if (!/exports\.RELEASE_KEYS = \[\];/.test(keys)) throw new Error("dist/src/update/releaseKeys.js has an unexpected shape.");
-  fs.writeFileSync(keysFile, keys.replace("exports.RELEASE_KEYS = [];", `exports.RELEASE_KEYS = [{ id: "${keyIdOf(raw)}", publicKey: "${raw.toString("base64url")}" }];`));
+  const keys = fs.readFileSync(keysFile, "utf8"), trusted = /exports\.RELEASE_KEYS = \[[^\]]*\];/;
+  if (!trusted.test(keys)) throw new Error("dist/src/update/releaseKeys.js has an unexpected shape.");
+  // The test releases trust only the throwaway key.
+  fs.writeFileSync(keysFile, keys.replace(trusted, `exports.RELEASE_KEYS = [{ id: "${keyIdOf(raw)}", publicKey: "${raw.toString("base64url")}" }];`));
 
   // The next release, and one whose server does not start (its own commands still work).
   const sources = [VERSION, NEXT, BROKEN].map((version, index) => {

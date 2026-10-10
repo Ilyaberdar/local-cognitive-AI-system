@@ -35,6 +35,8 @@ export interface UpdateOptions {
   /** Wait for accepted work to finish instead of refusing. */
   wait?: boolean;
   healthTimeoutMs?: number;
+  /** A download that receives nothing for this long is given up (60 s); tests shorten it. */
+  stallMs?: number;
   log?: (line: string) => void;
   now?: () => Date;
 }
@@ -43,6 +45,7 @@ export class UpdateError extends Error { constructor(message: string, readonly c
 
 const MAX_MANIFEST_BYTES = 256 * 1024;
 const RELEASES_KEPT = 3;
+const STALL_MS = 60_000;
 
 export const releasesDir = (prefix: string) => path.join(prefix, "releases");
 export const journalFile = (prefix: string) => path.join(prefix, "update.json");
@@ -78,16 +81,36 @@ export const adoptRelease = (options: { prefix: string; fromApp: string; fromNod
   return version;
 };
 
-const fetchBytes = async (fetchImpl: typeof fetch, url: string, limit: number): Promise<Buffer> => {
-  const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(60_000) });
-  // 404 before the first release is published: nothing to install yet, not a failure.
-  if (response.status === 404) throw new UpdateError("No server release is published yet.", "not_published");
-  if (!response.ok) throw new UpdateError(`${url} answered HTTP ${response.status}.`, "download_failed");
-  const declared = Number(response.headers.get("content-length") ?? 0);
-  if (declared > limit) throw new UpdateError(`${url} is larger than expected.`, "download_failed");
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > limit) throw new UpdateError(`${url} is larger than expected.`, "download_failed");
-  return bytes;
+/** The body of `url`, at most `limit` bytes. A slow connection takes as long as it needs; a download
+ * that receives nothing for `stallMs` (the wait for the answer included) is given up. */
+export const fetchBytes = async (fetchImpl: typeof fetch, url: string, limit: number, stallMs = STALL_MS): Promise<Buffer> => {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const alive = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new UpdateError(`The download from ${url} stopped: nothing arrived for ${Math.round(stallMs / 1000)} s.`, "download_failed")), stallMs);
+  };
+  alive();
+  try {
+    const response = await fetchImpl(url, { redirect: "follow", signal: controller.signal });
+    // 404 before the first release is published: nothing to install yet, not a failure.
+    if (response.status === 404) throw new UpdateError("No server release is published yet.", "not_published");
+    if (!response.ok) throw new UpdateError(`${url} answered HTTP ${response.status}.`, "download_failed");
+    const declared = Number(response.headers.get("content-length") ?? 0);
+    if (declared > limit) throw new UpdateError(`${url} is larger than expected.`, "download_failed");
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    const reader = response.body?.getReader();
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      alive();
+      length += value.byteLength;
+      if (length > limit) { void reader.cancel().catch(() => undefined); throw new UpdateError(`${url} is larger than expected.`, "download_failed"); }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks, length);
+  } finally { clearTimeout(timer); }
 };
 
 /** The newest release's manifest, signature checked; undefined when it is not newer than this one. */
@@ -129,7 +152,7 @@ export const stageRelease = async (manifest: ServerManifest, options: UpdateOpti
   const tarball = path.join(downloads, `local-cognitive-server-${manifest.version}.tar.gz`);
   if (!fs.existsSync(tarball) || sha256File(tarball) !== artifact.sha256) {
     log(`Downloading ${manifest.version} (${Math.ceil(artifact.size / 1024 ** 2)} MB)…`);
-    const bytes = await fetchBytes(options.fetchImpl ?? fetch, artifact.url, artifact.size);
+    const bytes = await fetchBytes(options.fetchImpl ?? fetch, artifact.url, artifact.size, options.stallMs);
     fs.writeFileSync(`${tarball}.partial`, bytes, { mode: 0o644 });
     fs.renameSync(`${tarball}.partial`, tarball);
   }

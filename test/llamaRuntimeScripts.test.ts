@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
@@ -125,4 +127,35 @@ test("prepare refuses overlays that do not match the manifest or could escape th
   fs.writeFileSync(path.join(foreign.destination, "notes.txt"), "mine");
   assert.match(foreign.prepare().stderr, /not a prepared runtime; refusing to replace it/);
   assert.equal(fs.readFileSync(path.join(foreign.destination, "notes.txt"), "utf8"), "mine");
+});
+
+test("downloads take as long as they need and give up only when nothing arrives", async t => {
+  const { download } = await importModule(pathToFileURL(script("lib/download.mjs")).href);
+  // Ten bytes 50 ms apart; /stalls sends two and then keeps the connection open.
+  const server = http.createServer((request, response) => {
+    if (request.url === "/missing") { response.writeHead(404).end(); return; }
+    const stopAfter = request.url === "/stalls" ? 2 : 10;
+    response.writeHead(200, { "content-length": "10" });
+    let sent = 0;
+    const timer = setInterval(() => {
+      if (sent === stopAfter) { clearInterval(timer); return; }
+      response.write(Buffer.from([sent]));
+      if (++sent === 10) { clearInterval(timer); response.end(); }
+    }, 50);
+    request.on("close", () => clearInterval(timer));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "download-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const lines: string[] = [];
+  const log = (line: string) => lines.push(line);
+  // Half a second in all, longer than the 400 ms without data that ends a download.
+  await download(`${base}/slow`, path.join(directory, "slow"), "the slow file", { stallMs: 400, progressMs: 0, log });
+  assert.deepEqual([...fs.readFileSync(path.join(directory, "slow"))], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.equal(lines[0], "Downloading the slow file");
+  assert.ok(lines.length > 1, "progress is shown while it lasts");
+  await assert.rejects(download(`${base}/stalls`, path.join(directory, "stalls"), "the stalled file", { stallMs: 400, log }), /the stalled file download stopped: nothing arrived/);
+  await assert.rejects(download(`${base}/missing`, path.join(directory, "missing"), "the missing file", { stallMs: 400, log }), /HTTP 404/);
 });

@@ -89,7 +89,8 @@ case "$command" in
     fi
     echo "The CUDA runtime includes NVIDIA CUDA libraries, redistributed under the NVIDIA CUDA Toolkit license:"
     echo "  https://docs.nvidia.com/cuda/eula/"
-    (cd / && "$NODE" "$release/scripts/prepare-llama-runtime.mjs" --variant "$variant" --destination "$release/resources/llama/$variant")
+    # About 2.5 GB is downloaded and unpacked: /var/tmp is on disk, while /tmp is often memory (tmpfs).
+    (cd / && TMPDIR=/var/tmp "$NODE" "$release/scripts/prepare-llama-runtime.mjs" --variant "$variant" --destination "$release/resources/llama/$variant")
     chown -R root:root "$release/resources" && chmod -R go-w "$release/resources"
     exec systemctl restart "$UNIT" ;;
   update | rollback | adopt)
