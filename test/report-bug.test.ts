@@ -17,27 +17,27 @@ const prepared = (reportId: string): PreparedReport => ({
   server: { snapshot: { runtimeKind: "server" } }
 });
 
-test("a report carries the user's words, and only the parts they ticked", () => {
+test("a report carries the user's words, and only the parts they chose", () => {
   const reportId = randomUUID();
-  const form = bugReportFormSchema.parse({ reportId, summary: "The model hangs", description: "It stops at 50%", steps: "1. Load\n2. Ask", expected: "", actual: "", contact: "me@example.com" });
+  const form = bugReportFormSchema.parse({ reportId, message: "The model stops answering after I attach a file" });
   const plain = composeBugReport(form, prepared(reportId));
-  assert.equal(plain.message, "The model hangs\n\nWhat happened:\nIt stops at 50%\n\nSteps to reproduce:\n1. Load\n2. Ask");
-  assert.equal(plain.email, "me@example.com");
+  assert.equal(plain.message, "The model stops answering after I attach a file");
   assert.deepEqual(plain.attachments, [], "nothing by default");
   assert.deepEqual(plain.contexts.lc, { report_id: reportId, mode: "remote", attached: "none" });
   assert.equal("diagnostics" in plain.file, false);
-  const all = composeBugReport({ ...form, include: { diagnostics: true, screenshot: true, server: true } }, prepared(reportId));
-  assert.deepEqual(all.attachments.map(item => [item.filename, item.contentType]), [["diagnostics.json", "application/json"], ["server-diagnostics.json", "application/json"], ["screenshot.jpg", "image/jpeg"]]);
-  assert.match(String(all.attachments[0]!.data), /provider\.call_failed/);
+  const all = composeBugReport({ ...form, include: { diagnostics: true, screenshot: true } }, prepared(reportId));
+  assert.deepEqual(all.attachments.map(item => [item.filename, item.contentType]), [["diagnostics.json", "application/json"], ["screenshot.jpg", "image/jpeg"]]);
+  const diagnostics = JSON.parse(String(all.attachments[0]!.data));
+  assert.deepEqual(Object.keys(diagnostics), ["client", "runtime", "log", "server"], "the technical log and the connected server's part are in the diagnostics");
   assert.equal((all.file.screenshot as { base64: string }).base64, "/9j/2Q==");
   assert.equal(JSON.stringify(all.file).includes("fedora-secret"), false, "the server's name is not in the diagnostics");
 });
 
-test("the form: a summary is required, the email must be one, nothing else is accepted; the mode is believed only when connected", () => {
+test("the form: a message is required and nothing else is accepted; the mode is believed only when connected", () => {
   const reportId = randomUUID();
-  assert.equal(bugReportFormSchema.safeParse({ reportId, summary: "  " }).success, false);
-  assert.equal(bugReportFormSchema.safeParse({ reportId, summary: "x", contact: "not an email" }).success, false);
-  assert.equal(bugReportFormSchema.safeParse({ reportId, summary: "x", path: "/etc" }).success, false);
+  assert.equal(bugReportFormSchema.safeParse({ reportId, message: "  " }).success, false);
+  assert.equal(bugReportFormSchema.safeParse({ reportId, message: "x", steps: "1." }).success, false);
+  assert.equal(bugReportFormSchema.safeParse({ reportId, message: "x", include: { server: true } }).success, false);
   assert.equal(clientDiagnostics({ versions: {}, osVersion: "1", signedIn: false, modeHint: "remote" }).mode, "local");
 });
 
@@ -46,7 +46,7 @@ async function until(check: () => boolean, label: string) {
   while (!check()) { if (Date.now() - start > 2000) throw new Error(`Timed out: ${label}`); await new Promise(resolve => setTimeout(resolve, 5)); }
 }
 
-test("the page: nothing ticked, each part shown before it is sent, the ID after sending, a file when sending fails", async t => {
+test("the page: a message and Send; diagnostics on when error reports are allowed, each part shown on request, a file only when sending fails", async t => {
   const dom = new JSDOM('<div id="page"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
   t.after(() => dom.window.close());
   dom.window.eval(`${bundle}\nwindow.ReportBug = ReportBug;`);
@@ -54,35 +54,32 @@ test("the page: nothing ticked, each part shown before it is sent, the ID after 
   const calls: unknown[][] = [];
   let failSend = true;
   const bridge = {
-    prepare: async (request: unknown) => { calls.push(["prepare", request]); return { ok: true, value: { reportId, diagnostics: { client: { mode: "local" }, runtime: { app: { version: "0.1.0" } } },
-      log: [{ event: "mcp.connection_failed", n: 2 }], screenshot: "data:image/jpeg;base64,AAAA", server: { name: "fedora" }, sendAvailable: true } }; },
-    serverDiagnostics: async () => { calls.push(["server"]); return { ok: true, value: { snapshot: { runtimeKind: "server" } } }; },
+    prepare: async (request: unknown) => { calls.push(["prepare", request]); return { ok: true, value: { reportId, diagnosticsByDefault: true, sendAvailable: true,
+      diagnostics: { client: { mode: "local" }, runtime: {}, log: [{ event: "mcp.connection_failed", n: 2 }], server: { snapshot: { runtimeKind: "server" } } }, screenshot: "data:image/jpeg;base64,AAAA" } }; },
     submit: async (form: unknown) => { calls.push(["submit", form]); return failSend ? { ok: false, error: { message: "Offline." } } : { ok: true, value: { reportId, eventId: "e1" } }; },
     export: async (form: unknown) => { calls.push(["export", form]); return { ok: true, value: { saved: true } }; }
   };
   const container = dom.window.document.getElementById("page");
   dom.window.ReportBug.mountReportBugPage(container, { bridge, mode: "local" });
   const $ = (selector: string) => container.querySelector(selector);
-  await until(() => Boolean($('[data-report-field="summary"]')), "form");
-  assert.deepEqual([...container.querySelectorAll("[data-report-include]")].map((box: any) => [box.dataset.reportInclude, box.checked]), [["diagnostics", false], ["screenshot", false], ["server", false]]);
-  assert.equal($("pre.report-preview"), null, "no preview of unticked parts");
-  assert.equal(($("[data-report-send]") as HTMLButtonElement).disabled, true, "a summary first");
-  const type = (name: string, value: string) => { const input = $(`[data-report-field="${name}"]`) as HTMLInputElement; input.value = value; input.dispatchEvent(new dom.window.Event("input", { bubbles: true })); };
-  type("summary", "MCP does not connect");
-  type("steps", "Open Blender");
-  const tick = (name: string) => { const box = $(`[data-report-include="${name}"]`) as HTMLInputElement; box.checked = true; box.dispatchEvent(new dom.window.Event("change", { bubbles: true })); };
-  tick("diagnostics");
-  assert.match($("pre.report-preview")!.textContent!, /mcp\.connection_failed/);
-  tick("screenshot");
-  assert.ok($("img.report-screenshot"));
-  tick("server");
-  await until(() => /runtimeKind/.test(container.querySelectorAll("pre.report-preview")[1]?.textContent ?? ""), "server preview");
+  await until(() => Boolean($("[data-report-message]")), "form");
+  assert.equal(container.querySelectorAll("textarea, input:not([type=checkbox])").length, 1, "one field");
+  assert.deepEqual([...container.querySelectorAll("[data-report-include]")].map((box: any) => [box.dataset.reportInclude, box.checked]), [["diagnostics", true], ["screenshot", false]]);
+  assert.equal($("[data-report-export]"), null, "no file button until sending fails");
+  assert.equal(($("[data-report-send]") as HTMLButtonElement).disabled, true, "a message first");
+  assert.equal($("pre.report-preview"), null);
+  ($('[data-report-show="diagnostics"]') as HTMLButtonElement).click();
+  assert.match($("pre.report-preview")!.textContent!, /mcp\.connection_failed[\s\S]*runtimeKind/, "the technical log and the server's part, before sending");
+  const area = $("[data-report-message]") as HTMLTextAreaElement;
+  area.value = "MCP does not connect"; area.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  const box = $('[data-report-include="screenshot"]') as HTMLInputElement;
+  box.checked = true; box.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  assert.ok($("img.report-screenshot"), "turning the screenshot on shows it");
   ($("[data-report-send]") as HTMLButtonElement).click();
-  await until(() => /Offline\. You can save it to a file instead\./.test(container.textContent), "failure");
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.find(call => call[0] === "submit")![1])), { reportId, summary: "MCP does not connect", description: "", steps: "Open Blender", expected: "", actual: "", contact: "",
-    include: { diagnostics: true, screenshot: true, server: true } });
+  await until(() => /Not sent\. Offline\./.test(container.textContent), "failure");
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.find(call => call[0] === "submit")![1])), { reportId, message: "MCP does not connect", include: { diagnostics: true, screenshot: true } });
   ($("[data-report-export]") as HTMLButtonElement).click();
-  await until(() => /saved to a file/.test(container.textContent), "saved");
+  await until(() => /Saved to a file/.test(container.textContent), "saved");
   failSend = false;
   ($("[data-report-send]") as HTMLButtonElement).click();
   await until(() => /the report was sent/.test(container.textContent), "sent");

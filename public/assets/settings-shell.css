@@ -449,22 +449,15 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .usage-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); padding: 20px 0; }
 .settings-consent { margin: 0 0 18px; }
 
-/* Report a bug */
-.report-page { display: grid; gap: 16px; max-width: 760px; }
-.report-page .settings-description { margin: 0; }
-.report-fields { display: grid; gap: 12px; }
-.report-field { display: grid; gap: 5px; }
-.report-field > span { font-size: calc(12px * var(--font-scale, 1)); color: var(--text); font-weight: 450; }
-.report-field input, .report-field textarea { width: 100%; box-sizing: border-box; font: inherit; }
-.report-field textarea { resize: vertical; }
-.report-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.report-attachments { display: grid; gap: 10px; border: 1px solid var(--line); background: var(--surface); border-radius: 16px; padding: 14px 18px; }
-.report-check { display: flex; gap: 10px; align-items: flex-start; }
-.report-check input { margin-top: 3px; flex-shrink: 0; }
-.report-check span { display: grid; gap: 3px; }
-.report-check small { color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); line-height: 1.55; }
-.report-preview { max-height: 260px; overflow: auto; margin: 0 0 4px 26px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--control-bg, transparent);
-  font-size: calc(11px * var(--font-scale, 1)); white-space: pre-wrap; word-break: break-word; }
-.report-screenshot { display: block; max-width: min(480px, 100%); margin: 0 0 4px 26px; border: 1px solid var(--line); border-radius: 10px; }
-.report-error { margin: 0; color: var(--danger, #d14343); }
-.report-sent code { user-select: all; }
+/* Report a bug: a settings card with the message, two switches and their previews. */
+.report-message-row { flex-direction: column; align-items: stretch; gap: 10px; }
+.report-message-row > div:first-child, .report-message-row .settings-control { flex: none; width: 100%; }
+.report-message-row textarea { width: 100%; min-height: 110px; }
+.settings-text-button { display: inline; padding: 0; min-height: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.settings-text-button:hover { text-decoration: underline; background: none; }
+.report-preview-row { padding: 0 0 16px; border-bottom: 1px solid var(--line); }
+.report-preview-row:last-child { border-bottom: 0; }
+.report-preview { max-height: 260px; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--control-bg);
+  font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.report-screenshot { display: block; max-width: min(480px, 100%); border: 1px solid var(--line); border-radius: 9px; }
+.report-id { user-select: all; }

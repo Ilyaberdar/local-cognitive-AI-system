@@ -1,18 +1,19 @@
 const fs = require("fs");
 const { randomUUID } = require("crypto");
-const { bugReportFormSchema, clientDiagnostics, composeBugReport } = require("../dist/src/diagnostics/BugReport.js");
+const { bugReportFormSchema, clientDiagnostics, composeBugReport, reportDiagnostics } = require("../dist/src/diagnostics/BugReport.js");
 const { collectRuntimeDiagnostics } = require("../dist/src/diagnostics/snapshot.js");
 
-// Report a bug (spec §11): the user writes what happened, ticks what to attach after seeing it,
-// and sends it through Sentry (or saves it to a file). The screenshot and the server's
-// diagnostics stay in this process; the window gets previews. What is sent is what was shown.
+// Report a bug (spec §11): the user writes what went wrong and presses Send. Diagnostics (with the
+// technical log of what the app did before, and the connected server's) and a screenshot are
+// attached as they chose, after a preview; it goes through Sentry, tied to a recent error if one
+// was reported. The screenshot stays in this process until sent; the window gets previews.
 function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sentry, backend, remote, accountService }) {
   const handle = (name, action) => ipcMain.handle(`bugReport:${name}`, async (event, ...args) => {
     assertSender(event);
     try { return { ok: true, value: await action(...args) }; }
     catch (error) { return { ok: false, error: { code: error.code || "error", message: error.message || "The report failed." } }; }
   });
-  let screenshot, prepared, serverPreview;
+  let screenshot, prepared;
   const fail = (message, code = "invalid_request") => { throw Object.assign(new Error(message), { code }); };
   const remoteStatus = () => { try { return remote?.client?.status(); } catch { return undefined; } };
 
@@ -40,34 +41,26 @@ function registerBugReport({ app, ipcMain, dialog, assertSender, getWindow, sent
       log: backend.diagnosticLog.tail({ days: 14, maxBytes: 64 * 1024 }),
       ...(screenshot && Date.now() - screenshot.at < 10 * 60_000 ? { screenshot: screenshot.jpeg } : {})
     };
-    serverPreview = undefined;
-    const server = status?.state === "connected" && (status.capabilities || []).includes("diagnostics.collect") ? { name: status.hostName || "the server" } : null;
-    return { reportId, diagnostics: prepared.diagnostics, log: prepared.log, screenshot: prepared.screenshot ? `data:image/jpeg;base64,${Buffer.from(prepared.screenshot).toString("base64")}` : null,
-      server, sendAvailable: sentry.enabled };
-  });
-
-  // The server's diagnostics, fetched only when the user ticks them, and shown before sending.
-  handle("server-diagnostics", async () => {
-    const status = remoteStatus();
-    if (!prepared) fail("Open the report again.");
-    if (status?.state !== "connected") fail("No server is connected.", "unavailable");
-    serverPreview = await remote.client.request("diagnostics.collect", { includeLog: true }, 30_000);
-    prepared.server = serverPreview;
-    return serverPreview;
+    // The connected server's diagnostics are part of the diagnostics (shown in the same preview).
+    if (status?.state === "connected" && (status.capabilities || []).includes("diagnostics.collect")) {
+      try { prepared.server = await remote.client.request("diagnostics.collect", { includeLog: true }, 10_000); }
+      catch { /* An unreachable server is left out. */ }
+    }
+    return { reportId, diagnostics: reportDiagnostics(prepared), screenshot: prepared.screenshot ? `data:image/jpeg;base64,${Buffer.from(prepared.screenshot).toString("base64")}` : null,
+      diagnosticsByDefault: sentry.consent().automatic === true, sendAvailable: sentry.enabled };
   });
 
   const compose = input => {
     const form = bugReportFormSchema.safeParse(input);
-    if (!form.success) fail("Write a short summary of the problem (and a valid email, if you give one).");
+    if (!form.success) fail("Write what went wrong.");
     if (!prepared || prepared.reportId !== form.data.reportId) fail("Open the report again.");
-    if (form.data.include.server && !prepared.server) fail("Load the server's diagnostics first.");
     return composeBugReport(form.data, prepared);
   };
 
   handle("submit", async input => {
     if (!sentry.enabled) fail("Sending reports is not available in this build. Save the report to a file instead.", "unavailable");
     const report = compose(input);
-    const eventId = await sentry.sendFeedback({ message: report.message, email: report.email, tags: report.tags, contexts: report.contexts, attachments: report.attachments });
+    const eventId = await sentry.sendFeedback({ message: report.message, tags: report.tags, contexts: report.contexts, attachments: report.attachments });
     return { reportId: input.reportId, eventId };
   });
 
