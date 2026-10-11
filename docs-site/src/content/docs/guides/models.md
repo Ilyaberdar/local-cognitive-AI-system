@@ -5,7 +5,7 @@ description: The catalog, the library on your disk, GPU acceleration, memory and
 
 Local models run with a built-in **llama.cpp** (build b10809, the same on every platform). No other program is needed.
 
-<video controls playsinline preload="none" poster="/videos/models.jpg" src="/videos/models.mp4" aria-label="Models: a catalog model's memory estimate, then the installed Qwen3.8 27B checked against this Mac and opened in a chat"></video>
+<video controls playsinline preload="none" poster="/videos/models.jpg" aria-label="Models: a catalog model's memory estimate, then the installed Qwen3.8 27B checked against this Mac and opened in a chat"><source src="/videos/models-720.mp4" type="video/mp4" media="(max-width: 900px)" /><source src="/videos/models.mp4" type="video/mp4" /></video>
 
 *A real recording on an M4 Pro Mac, in real time. Nothing is downloaded in it.*
 
