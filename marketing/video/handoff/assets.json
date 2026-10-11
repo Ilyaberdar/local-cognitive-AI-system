@@ -1,0 +1,61 @@
+{
+  "updated": "2026-10-11",
+  "appCommit": "4f390c2",
+  "brand": [
+    {
+      "path": "public/brand/logo-1024.png",
+      "source": "icon.png (app repo root, 1254×1254 RGBA), resized with sips -Z 1024",
+      "use": "title and end cards"
+    },
+    {
+      "path": "public/brand/logo-256.png",
+      "source": "docs-site/src/assets/logo.png",
+      "use": "small marks"
+    },
+    {
+      "path": "public/brand/landing-og.png",
+      "source": "local-cognitive-landing/public/og.png (1200×630)",
+      "use": "reference for the title-card look; not shown in videos"
+    }
+  ],
+  "fonts": [
+    {
+      "path": "public/fonts/Geist-Variable.woff2",
+      "source": "local-cognitive-landing/public/fonts",
+      "license": "SIL OFL 1.1 (public/fonts/OFL.txt)"
+    },
+    {
+      "path": "public/fonts/GeistMono-Variable.woff2",
+      "source": "local-cognitive-landing/public/fonts",
+      "license": "SIL OFL 1.1 (public/fonts/OFL.txt)"
+    }
+  ],
+  "stills": [
+    {
+      "path": "public/stills/chat-empty-light-115.png",
+      "kind": "real screenshot",
+      "how": "node scripts/capture/still.mjs --profile style --theme light --font-scale 115 --out public/stills/chat-empty-light-115.png",
+      "app": "development build at 4f390c2, empty isolated profile",
+      "use": "style frames StyleShot and StyleMotion only"
+    },
+    {
+      "path": "public/stills/chat-empty-dark-115.png",
+      "kind": "real screenshot",
+      "how": "same, --theme dark",
+      "app": "development build at 4f390c2, empty isolated profile",
+      "use": "the dark-theme alternative for the owner to compare"
+    }
+  ],
+  "captures": [],
+  "audio": [],
+  "notUsedAsFootage": [
+    {
+      "path": "local-cognitive-landing/public/assets/landing.js",
+      "why": "animated mock windows (chat, workflow, Synthesis); illustrations, not recordings"
+    },
+    {
+      "path": "images/*.png (app repo)",
+      "why": "real screenshots, but chat.png shows the owner's name and avatar; recordings use isolated profiles instead"
+    }
+  ]
+}

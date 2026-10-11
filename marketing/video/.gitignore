@@ -1,0 +1,31 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Raw screen recordings, voice-over audio and renders stay on this machine.
+# Each folder keeps a .gitkeep so it exists after a fresh clone.
+/public/captures/*
+!/public/captures/.gitkeep
+/public/audio/*
+!/public/audio/.gitkeep
+/out/*
+!/out/.gitkeep
+
+# Media masters anywhere in the project (ProRes, lossless, intermediates).
+*.mov
+*.mp4
+*.m4v
+*.webm
+*.mkv
+*.wav
+*.aif
+*.aiff
+*.mp3
+*.m4a
+*.flac
+
+# Isolated app data folders used while recording.
+/.profiles/
