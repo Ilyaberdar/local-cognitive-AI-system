@@ -15,6 +15,7 @@ import { emptyMcpConfiguration } from "../mcp/client/configuration";
 import { LlamaCppProvider } from "../llm/LlamaCppProvider";
 import { LlamaCppModelManager } from "../llm/LlamaCppModelManager";
 import { withInferenceProgress } from "../llm/InferenceProgress";
+import { answerStream, visibleAnswer } from "../llm/AnswerStream";
 import { AgentProgressReporter } from "../core/AgentProgressReporter";
 import { CognitiveEngine } from "../core/CognitiveEngine";
 import { ModeDetector } from "../core/ModeDetector";
@@ -183,10 +184,13 @@ const runCodeAgent = async (
   systemPrompt: string,
   signal?: AbortSignal,
   onProgress?: LLMRequest["onProgress"],
-  commandInput?: string
+  commandInput?: string,
+  /** Shows the answer while it is written (the bundled llama.cpp streams); `read` picks what of it may be shown. */
+  onAnswer?: { emit: (text: string) => void; read?: (raw: string) => string }
 ) => withInferenceProgress(onProgress, async () => {
   try {
     signal?.throwIfAborted();
+    const shown = onAnswer && agent.providerId === "llamacpp" ? answerStream(onAnswer.read ?? visibleAnswer, onAnswer.emit) : undefined;
     const response = await llmService.generateText(
       {
         usagePurpose: "agent",
@@ -194,6 +198,7 @@ const runCodeAgent = async (
         systemPrompt: [systemPrompt, commandInstruction(commandInput || "")].filter(Boolean).join("\n\n"),
         prompt,
         timeoutMs: agentRequestTimeoutMs(agent.providerId),
+        onTextDelta: shown ? delta => shown.push(delta) : undefined,
         signal
       },
       agent.providerId
@@ -266,6 +271,7 @@ const runCodeSwarm = async (
     })), context.onProgress
   );
   progress.update(mainAgent.id, "running", "Planning");
+  const showAnswer = (text: string) => context.onProgress?.({ phase: "answer", label: "Writing response", answer: text, agentRunId: mainAgent.id, model: mainAgent.model, at: new Date().toISOString() });
 
   if (reviewAgents.length === 0) {
     const mainRun = await runCodeAgent(
@@ -287,7 +293,7 @@ const runCodeSwarm = async (
         taskInput,
         context.sessionSettings.outputStyle
       ),
-      context.signal, progress.inference(mainAgent.id), input
+      context.signal, progress.inference(mainAgent.id), input, { emit: showAnswer }
     );
 
     progress.update(mainAgent.id, mainRun.degraded ? "degraded" : "completed", mainRun.degraded ? "Failed" : "Complete", mainRun.response.error);
@@ -436,7 +442,8 @@ const runCodeSwarm = async (
       reviewAgents,
       context.sessionSettings.outputStyle
     ),
-    context.signal, progress.inference(mainAgent.id), input
+    // File changes are applied, and summarized, when the run ends: nothing of them is shown early.
+    context.signal, progress.inference(mainAgent.id), input, { emit: showAnswer, read: raw => /<<<FILE:/i.test(raw) ? "" : visibleAnswer(raw) }
   );
   if (finalRun.degraded) {
     const error = finalRun.response.error || "The main model returned no usable final output.";
@@ -639,7 +646,9 @@ export const buildRuntime = async (
       model: context.activeTarget.model, status: "queued", phase: "Waiting"
     }], context.onProgress);
     return withInferenceProgress(progress.inference("main-model"), async () => {
-      let answer = "";
+      // Reasoning written into the answer and command blocks are not shown while the answer is written.
+      const shown = answerStream(visibleAnswer, answer =>
+        context.onProgress?.({ phase: "answer", label: "Writing response", answer, agentRunId: "main-model", model: context.activeTarget.model, at: new Date().toISOString() }));
       const response = await llmService.generateText(
         {
           usagePurpose: "answer",
@@ -656,10 +665,7 @@ export const buildRuntime = async (
           ),
           reasoningEffort: context.sessionSettings.reasoningEffort,
           localReasoningBudget: localThinkingBudgetForEffort(context.sessionSettings.reasoningEffort),
-          onTextDelta: context.providerId === "llamacpp" ? delta => {
-            answer += delta;
-            context.onProgress?.({ phase: "answer", label: "Writing response", answer, agentRunId: "main-model", model: context.activeTarget.model, at: new Date().toISOString() });
-          } : undefined,
+          onTextDelta: context.providerId === "llamacpp" ? delta => shown.push(delta) : undefined,
           signal: context.signal
         },
         context.providerId

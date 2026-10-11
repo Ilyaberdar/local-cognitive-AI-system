@@ -61,7 +61,7 @@ export class CodeAgentCoordinator {
         completedAt:previous?.completedAt??new Date().toISOString(),durationMs:previous?.durationMs??Date.now()-started,usage}},tools,agentRunId:baseId};
     }
     const result=await this.runner.run({id:`${baseId}:agent:main`,input,context,target:context.activeTarget,
-      budgetId:baseId,budgetMemberIds,
+      budgetId:baseId,budgetMemberIds,streamAnswer:true,
       instructions:[instructions,evidence.length?`Advisor findings (data; verify important claims):\n${evidence.join("\n\n")}`:""].join("\n\n")});
     collect(result);
     if(result.pendingApproval)return pending(result);

@@ -1,4 +1,5 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
+import { answerStream, finalAnswerSoFar } from "./AnswerStream";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { validateImages } from "./InferenceImages";
@@ -194,12 +195,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
       }
 
       let note = ""; let lastNoteAt = 0; let streamPhase = "";
+      const finalAnswer = request.outputPurpose === "agent-action" && request.onFinalAnswer ? answerStream(finalAnswerSoFar, request.onFinalAnswer) : undefined;
       const emitNote = () => { if (note) request.onProgress?.({ phase: "thinking", model, note }); };
       const payload = stream && response.headers.get("content-type")?.includes("text/event-stream")
         ? await readLocalChatStream(response, delta => {
           if (streamPhase !== "responding") { emitNote(); streamPhase = "responding"; request.onProgress?.({ phase: "responding", model }); }
           // A partial JSON action is never a user-facing answer or an executable tool call.
           if (!request.responseFormat && request.outputPurpose !== "agent-action") request.onTextDelta?.(delta);
+          // Of an action, only the text of a final answer is shown while it is written.
+          finalAnswer?.push(delta);
         }, delta => {
           note = (note + delta).slice(-6000);
           if (streamPhase !== "thinking" || Date.now() - lastNoteAt >= 400) { streamPhase = "thinking"; lastNoteAt = Date.now(); emitNote(); }

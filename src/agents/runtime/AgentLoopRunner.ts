@@ -17,6 +17,8 @@ import { catalogEntry } from "../../plugins/catalog";
 export interface AgentLoopInput {
   id:string;input:string;instructions:string;context:ExecutionContext;target:ProviderTarget;
   readOnly?:boolean;maxSteps?:number;
+  /** Show the final answer in the chat while the model writes it (the main agent of a chat only). */
+  streamAnswer?:boolean;
   budgetId?: string;
   budgetMemberIds?: string[];
 }
@@ -130,7 +132,13 @@ export class AgentLoopRunner {
       const thinking=localThinkingBudgetForEffort(context.sessionSettings.reasoningEffort);
       const outputBudget=boundedLocal?Math.max(128,Math.min(thinking+4096,Math.floor((localWindow??12288)/3))):undefined;
       const shown=await this.toolImages(run,input.target);
+      // A final answer is shown as it is written; a step that turns out to be anything else takes back
+      // what was shown, so the chat never keeps text the model did not finish as its answer.
+      let streamed=false;
+      const answer=(text:string)=>context.onProgress?.({phase:"answer",label:"Writing response",answer:text,agentRunId:input.id,model:input.target.model,at:new Date().toISOString()});
+      const retract=()=>{if(streamed){streamed=false;answer("");}};
       const generated=await this.generate(input,run,{
+        ...(input.streamAnswer?{onFinalAnswer:(text:string)=>{streamed=streamed||text!=="";answer(text);}}:{}),
         ...(shown.images?{images:shown.images}:{}),
         outputPurpose:"agent-action",
         tools:nativeTools,
@@ -164,8 +172,9 @@ export class AgentLoopRunner {
           shown.note,
         ].filter(Boolean).join("\n\n")
       });
-      if(!generated.response){run.error=generated.error;break;}
+      if(!generated.response){retract();run.error=generated.error;break;}
       const response=generated.response;
+      if(response.unsupportedFeature||response.error)retract();
       if(response.unsupportedFeature){
         const previous:NonNullable<AgentRun["protocol"]>=run.protocol;
         run.protocol=previous==="native"?(this.llm.supportsStructuredOutputs?.(input.target.providerId)?"schema":"json"):previous==="schema"?"json":"text";
@@ -200,6 +209,7 @@ export class AgentLoopRunner {
           if(typeof data.text!=="string"||!data.text.trim()||Object.keys(data).some(key=>!["type","text"].includes(key)))throw new Error("final requires only type and non-empty text.");
           run.final=data.text;run.status="completed";await this.store.save(run);return this.result(run);
         }
+        retract();
         if(finalOnly)throw new Error("The final turn is reserved for an answer. No further tool action was executed.");
         if(data.type!=="tool_call"||Object.keys(data).some(key=>!["type","tool","arguments"].includes(key)))throw new Error("Expected type tool_call, tool and arguments, or type final and text.");
         const action=parseAgentAction({tool:data.tool,arguments:data.arguments});
@@ -217,6 +227,7 @@ export class AgentLoopRunner {
         run.turns.push({type:"tool",content:serialized});
         await this.store.save(run);
       }catch(error){
+        retract();
         // A rejected proposal has no executed tool result. Start a fresh bounded context with
         // the diagnostic rather than replaying an older exchange as the latest model state.
         delete run.nativeContinuation;

@@ -1380,3 +1380,30 @@ test("sanitizer preserves multi-paragraph answers and delegation blocks but reje
   assert.equal(sanitizer.sanitize("<think>Only internal thinking"), "");
   assert.equal(sanitizer.sanitize("<think>hidden</think>\nFirst paragraph.\n\nSecond paragraph."), "First paragraph.\n\nSecond paragraph.");
 });
+
+test("with subagents, only the main model's final answer is shown while it is written; the draft, reviews and file blocks never are", async (t) => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-final-stream-"));
+  t.after(() => fs.rm(tmpDir, { recursive: true, force: true }));
+  const runtime = await buildRuntime(createTestConfig(tmpDir), new Logger());
+  await runtime.sessionSettingsStore.update("final-stream", { mode: "general", language: "en",
+    codeAgents: [{ id: "reviewer", name: "Reviewer", providerId: "llamacpp", model: "fixture", accessMode: "default" }] });
+  const say = (text: string, onTextDelta?: (delta: string) => void) => { for (const piece of text.match(/.{1,7}/gs) ?? []) onTextDelta?.(piece); return text; };
+  const streamedRoles: string[] = [];
+  runtime.llmService.generateText = async request => {
+    const system = request.systemPrompt ?? "";
+    const role = /final implementation writer/.test(system) ? "final" : /only implementation writer/.test(system) ? "draft" : "review";
+    if (request.onTextDelta) streamedRoles.push(role);
+    const text = role === "draft" ? "<<<DRAFT>>>\nSECRET DRAFT\n<<<END_DRAFT>>>\n<<<TASK:Reviewer>>>\nCheck the plan.\n<<<END_TASK>>>"
+      : role === "review" ? "SECRET REVIEW: looks fine."
+      : "<<<FINAL_OUTPUT>>>\nThe checklist is ready.\n<<<END_FINAL_OUTPUT>>>";
+    return { provider: "llamacpp", model: "fixture", text: say(text, request.onTextDelta) };
+  };
+  const events: ProcessProgressEvent[] = [];
+  const result = await runtime.engine.process({ input: "@Reviewer review the launch notes", providerId: "llamacpp", model: "fixture",
+    actor: { sessionId: "final-stream", channel: "http" }, onProgress: event => events.push(event) });
+  assert.equal(result.mode, "code");
+  assert.deepEqual(streamedRoles, ["final"], "only the final writer's call streams");
+  const answers = events.filter(event => event.phase === "answer").map(event => event.answer ?? "");
+  assert.equal(answers.at(-1), "The checklist is ready.");
+  assert.ok(answers.every(answer => !/SECRET|<<<|DRAFT|TASK/.test(answer)), JSON.stringify(answers));
+});

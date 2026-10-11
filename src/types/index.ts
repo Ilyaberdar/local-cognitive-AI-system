@@ -522,6 +522,9 @@ export interface LLMRequest {
   signal?: AbortSignal;
   onProgress?: (event: { phase: "queued" | "loading" | "waiting" | "thinking" | "generating" | "responding"; model: string; queuePosition?: number; note?: string }) => void;
   onTextDelta?: (delta: string) => void;
+  /** An agent action's final answer as far as it has been written (the bundled llama.cpp streams it):
+   * only the decoded text of {"type":"final","text":…}, never a tool call, JSON or reasoning. */
+  onFinalAnswer?: (text: string) => void;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   previousResponseId?: string;
   responseFormat?: LLMResponseFormat | null;
