@@ -495,7 +495,11 @@ test("the macOS profile denies before it allows, with resolved paths", async () 
   const nvm = path.join(home, ".nvm", "versions", "node", "v22.18.0", "bin");
   const profile = darwinProfile("/var/folders", [nvm, home, "/", "/Users"]);
   const lines = profile.split("\n");
-  assert.deepEqual(lines.slice(0, 4), ["(version 1)", "(allow default)", "(deny network*)", "(deny file-write*)"]);
+  assert.deepEqual(lines.slice(0, 3), ["(version 1)", "(allow default)", "(deny network*)"]);
+  // No way out through other processes: system services, Apple Events, signals.
+  for (const rule of ["(deny mach-lookup)", "(deny appleevent-send)", "(deny signal (target others))", "(deny file-write*)"]) assert.ok(lines.includes(rule), rule);
+  const denied = lines.find(line => line.startsWith("(deny file-read*"))!;
+  for (const dir of ["/Users", "/private/var/folders", "/Volumes"]) assert.ok(denied.includes(`(subpath ${JSON.stringify(dir)})`), dir);
   assert.ok(lines.findIndex(line => line.startsWith("(deny file-read*")) < lines.findIndex(line => line.startsWith("(allow file-read*")));
   if (process.platform === "darwin") assert.match(profile, /\(subpath "\/private\/var\/folders"\)/);
   // A tool folder under home opens that folder (and stat on its parents), never home itself or a parent of it.
@@ -510,7 +514,7 @@ test("the bubblewrap command shares only system folders, the tools' folders and 
   try {
     const [realWork, realTool] = [await fs.realpath(work), await fs.realpath(tool)];
     const args = bwrapArgs("/usr/bin/python3", ["-I", "x.py"], work, [tool, "/usr/bin", os.homedir(), "/", "/etc/local-cognitive"]);
-    assert.deepEqual(args.slice(0, 12), ["--unshare-all", "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr"]);
+    assert.deepEqual(args.slice(0, 14), ["--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr"]);
     assert.deepEqual(args.slice(-9), ["--bind", realWork, realWork, "--chdir", realWork, "--", "/usr/bin/python3", "-I", "x.py"]);
     assert.ok(args.includes(realTool), "the tool's folder is bound read-only");
     for (const hidden of [os.homedir(), "/", "/home", "/root", "/etc/local-cognitive", "/var/lib"]) assert.ok(!args.includes(hidden), hidden);

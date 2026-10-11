@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ContractCheck } from "../language";
-import { checkExports, checkForbidden, checkImportBoundary, checkImports } from "./architecture";
+import { checkExports, checkForbidden, checkHarnessIntegrity, checkImportBoundary, checkImports } from "./architecture";
 import { runContractTests } from "./runners";
 import { platformSandbox } from "./sandbox";
 import { CheckFiles, CheckResult, SandboxProvider } from "./types";
@@ -20,9 +20,10 @@ export async function runCheck(check: ContractCheck, files: CheckFiles, options:
     case "imports": return checkImports(files, check.pattern, { allow: check.allow, deny: check.deny });
     case "forbid": return checkForbidden(files, check.pattern, check.regex, check.message);
     case "tests": {
-      // Nothing runs that names a file outside the module, sandbox or not.
-      const boundary = checkImportBoundary(files);
-      if (boundary.status !== "Pass") return { ...boundary, message: `Tests not run: ${boundary.message}` };
+      // Nothing runs that names a file outside the module or reaches into the test harness, sandbox or not.
+      for (const guard of [checkImportBoundary(files), checkHarnessIntegrity(files)]) {
+        if (guard.status !== "Pass") return { ...guard, message: `Tests not run: ${guard.message}` };
+      }
       const workRoot = options.workRoot ?? path.join(os.tmpdir(), "lc-synthesis");
       await fs.mkdir(workRoot, { recursive: true });
       return runContractTests({ files, tests: check.files, timeoutMs: check.timeoutMs ?? 30_000, hidden: check.hidden,

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  checkExports, checkForbidden, checkImportBoundary, checkImports, extractImports, languageOf, matchesGlob, resolveImport
-} from "../src/synthesis/checks/architecture";
+import { checkExports, checkForbidden, checkImportBoundary, checkImports, extractImports, languageOf, matchesGlob, resolveImport, checkHarnessIntegrity } from "../src/synthesis/checks/architecture";
 import type { CheckFiles } from "../src/synthesis/checks/types";
 
 const files = (candidate: Record<string, string>, frozen: Record<string, string> = {}): CheckFiles => ({ candidate, frozen, suite: {} });
@@ -309,4 +307,28 @@ test("checkImportBoundary rejects absolute paths and imports that climb out of t
     ['pkg/m.py:1 imports "...": files may only import files of the module or installed packages.']);
   assert.deepEqual(checkImportBoundary(files({ "src/a.ts": 'import x from "./x";\nimport y from "../y";', "src/b.cpp": '#include <vector>\n#include "../include/x.h"' })),
     { status: "Pass", message: "Every import stays inside the module", feedback: [] });
+});
+
+test("checkHarnessIntegrity: the module may not use the test harness, read the token or end the process", () => {
+  const verdict = (file: string, source: string) => checkHarnessIntegrity({ candidate: { [file]: source }, frozen: {}, suite: {} });
+  const tampered = verdict("src/limiter.ts", "import assert from \"node:assert/strict\";\nassert.equal = () => {};\nexport class Limiter {}\n");
+  assert.equal(tampered.status, "Fail");
+  assert.match(tampered.feedback[0], /^src\/limiter\.ts:1 imports "node:assert\/strict": the module may not use the test harness\.$/);
+  assert.equal(verdict("src/a.js", "module.exports = () => process.exit(0);\n").status, "Fail");
+  assert.equal(verdict("src/a.ts", "export const done = () => { console.log(\"process.exit(0) is only text\"); };\n// process.exit(1) in a comment\n").status, "Pass");
+
+  assert.equal(verdict("src/limits.py", "import unittest\n").status, "Fail");
+  assert.equal(verdict("src/limits.py", "import os\nos._exit(0)\n").status, "Fail");
+  assert.equal(verdict("src/limits.py", "def stop():\n    exit(0)\n").status, "Fail");
+  assert.equal(verdict("src/limits.py", "def stop(door):\n    door.exit(1)\n    return 'exit(0)'\n").status, "Pass");
+  assert.equal(verdict("src/door.py", "class Door:\n    def exit(self):\n        return True\n").status, "Pass");
+
+  const main = verdict("src/core.cpp", "#include \"core.h\"\nint main() { return 0; }\n");
+  assert.equal(main.status, "Fail");
+  assert.match(main.feedback[0], /src\/core\.cpp:2 uses "int main\(": while its tests run/);
+  assert.equal(verdict("src/core.cpp", "#include \"lc_test.hpp\"\n").status, "Fail");
+  assert.equal(verdict("src/core.cpp", "#include <cstdlib>\nvoid stop() { std::exit(1); }\n").status, "Fail");
+  assert.equal(verdict("src/core.cpp", "#include <stdlib.h>\nvoid stop(bool now) { if (now) exit(1); else exit(2); }\n").status, "Fail");
+  assert.equal(verdict("src/core.cpp", "#include <cstdlib>\nconst char* home() { return getenv(\"HOME\"); }\n").status, "Fail");
+  assert.equal(verdict("src/core.cpp", "#include <algorithm>\nint clampTo(int v) { return std::max(0, v); }\nstruct Door { void exit(); };\nvoid leave(Door& d) { d.exit(); }\n").status, "Pass");
 });

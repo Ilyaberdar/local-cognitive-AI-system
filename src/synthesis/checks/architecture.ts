@@ -424,3 +424,39 @@ export function checkImportBoundary(files: CheckFiles): CheckResult {
     ? { status: "Fail", message: `${count(problems.length, "import reaches", "imports reach")} outside the module`, feedback: limited(problems) }
     : { status: "Pass", message: "Every import stays inside the module", feedback: [] };
 }
+
+// The tests run in the same process as the code under test: code that used the harness (assert,
+// node:test, unittest, lc_test.hpp), read the run's token or ended the process could fake a pass.
+const HARNESS_IMPORT: Record<CheckLanguage, RegExp> = {
+  javascript: /^(?:node:)?(?:test|assert)(?:\/strict)?$/,
+  typescript: /^(?:node:)?(?:test|assert)(?:\/strict)?$/,
+  python: /^(?:unittest|__main__|builtins|importlib|gc|inspect|ctypes)(?:\.|$)/,
+  cpp: /(?:^|\/)lc_test\.hpp$/
+};
+const HARNESS_CODE: Record<CheckLanguage, RegExp> = {
+  javascript: /\bprocess\s*\.\s*(?:exit|reallyExit|abort|kill|binding|dlopen)\b|\brequire\s*\.\s*cache\b|\bLC_REPORT_TOKEN\b/g,
+  typescript: /\bprocess\s*\.\s*(?:exit|reallyExit|abort|kill|binding|dlopen)\b|\brequire\s*\.\s*cache\b|\bLC_REPORT_TOKEN\b/g,
+  python: /\b(?:os\s*\.\s*_exit|sys\s*\.\s*exit|sys\s*\.\s*modules|sys\s*\.\s*_getframe|__import__)\b|(?<![\w.]|\bdef\s+)(?:exit|quit)\s*\(|\bLC_REPORT_TOKEN\b/g,
+  // A call to exit(), not a member declared with that name (`void exit();`).
+  cpp: /\bint\s+main\s*\(|\blc_test\b|\bLC_(?:TEST|CHECK\w*)\b|\bLC_REPORT_TOKEN\b|\b(?:getenv|_Exit|_exit|quick_exit)\s*\(|(?<![\w.>:]|\w\s+)exit\s*\(|\b(?:return|else)\s+exit\s*\(|\bstd\s*::\s*(?:exit|quick_exit|_Exit)\b/g
+};
+
+/** Run before any test executes, beside the import boundary: what the module's code may not do while
+ * its tests run in its process. Like any list it narrows the ways to cheat; it does not close them all. */
+export function checkHarnessIntegrity(files: CheckFiles): CheckResult {
+  const problems: string[] = [];
+  for (const path of Object.keys(files.candidate).sort()) {
+    const language = languageOf(path);
+    if (!language) continue;
+    const source = files.candidate[path], line = lineOf(source);
+    for (const { specifier, line: at } of extractImports(path, source)) {
+      if (HARNESS_IMPORT[language].test(specifier.replace(/^<|>$/g, ""))) problems.push(`${path}:${at} ${verb(path)} "${specifier}": the module may not use the test harness.`);
+    }
+    for (const m of scan(source, language).code.matchAll(new RegExp(HARNESS_CODE[language].source, "g"))) {
+      problems.push(`${path}:${line(m.index)} uses "${clip(m[0].replace(/\s+/g, " ").trim(), 40)}": while its tests run, the module may not end the process, read the run's environment or reach into the test harness.`);
+    }
+  }
+  return problems.length
+    ? { status: "Fail", message: `${count(problems.length, "use", "uses")} of the test harness or the process`, feedback: limited(problems) }
+    : { status: "Pass", message: "The module leaves the test harness alone", feedback: [] };
+}

@@ -36,15 +36,23 @@ const ancestors = (file: string) => {
 export function darwinProfile(workDir: string, readable: string[]): string {
   const work = real(workDir), home = real(os.homedir());
   const reads = [...new Set([work, ...readable.map(real).filter(openable)])];
-  // A folder under home stays usable only if its parents can be stat'ed (node's realpath does); listing them stays denied.
-  const parents = [...new Set(reads.flatMap(ancestors))].filter(dir => inside(dir, home));
+  const hidden = [home, "/Users", "/private/var/folders", "/Volumes"];
+  // A folder inside a hidden one stays usable only if its parents can be stat'ed (node's realpath does);
+  // listing or reading them stays denied.
+  const parents = [...new Set(reads.flatMap(ancestors))].filter(dir => hidden.some(root => inside(dir, root)));
   return [
     "(version 1)",
     "(allow default)",
     "(deny network*)",
+    // No way out through other processes: no system services (LaunchServices would start an app outside
+    // the sandbox, as `open` does), no Apple Events (`osascript` driving Terminal), no signals to others.
+    "(deny mach-lookup)",
+    "(deny appleevent-send)",
+    "(deny signal (target others))",
     "(deny file-write*)",
     `(allow file-write* (subpath ${quote(work)}) (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))`,
-    `(deny file-read* (subpath ${quote(home)}))`,
+    // Nothing of the user's: the home folder, every user's temporary and cache folders, other disks.
+    `(deny file-read* ${hidden.map(dir => `(subpath ${quote(dir)})`).join(" ")})`,
     `(allow file-read* ${reads.map(dir => `(subpath ${quote(dir)})`).join(" ")})`,
     ...(parents.length ? [`(allow file-read-metadata ${parents.map(dir => `(literal ${quote(dir)})`).join(" ")})`] : [])
   ].join("\n");
@@ -66,7 +74,7 @@ const onPath = (name: string) => [...(process.env.PATH ?? "").split(path.delimit
 
 /** The system folders a toolchain needs, read-only; /home, /root, /etc and /var stay out of the sandbox. */
 function bwrapBase(): string[] {
-  const args = ["--unshare-all", "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr"];
+  const args = ["--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr"];
   for (const dir of ["/bin", "/sbin", "/lib", "/lib64"]) {
     try {
       const stat = fs.lstatSync(dir);

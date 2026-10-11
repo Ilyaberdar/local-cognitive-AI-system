@@ -327,7 +327,14 @@ Tests that a model proposes (`propose_tests`) are never run: only the engineer's
 
 Every test run is sandboxed: no network, writes only inside its own temporary folder, and nothing read from the user's home folder or the app's data. On macOS this is the built-in `sandbox-exec`; on Linux, [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, which needs user namespaces). Windows has no sandbox yet, so `Tests` gates there are Unknown and the run ends as needs review.
 
-Before anything runs, the runtime also checks that the module's files import only files of the module or standard and system modules: no absolute paths, nothing outside its folder.
+Inside the sandbox there are no system services, Apple Events or signals to other processes on macOS, and no capabilities on Linux, so the code under test cannot ask another program to act for it.
+
+Before anything runs, the runtime also checks the module's files:
+
+- They import only files of the module, packages and system headers: no absolute paths, nothing outside its folder.
+- They leave the test harness alone. The tests run in the same process as the code they test, so the module may not import `assert`, `node:test`, `unittest` or `lc_test.hpp`, end the process (`process.exit`, `os._exit`, `exit()`), define its own `main()` in C++, or read the environment variable that signs the results.
+
+Each result line the test harness prints is signed with a token made for that run, so text the code under test prints cannot pass for a result. Together these stop the plain ways to fake a pass, not every possible one: code written on purpose to defeat its tests from inside their process could still do it. Read an accepted candidate's diff before Apply.
 
 ### `Exports`: the public shape
 
