@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.5 — 2026-10-12
+
+Answers you can watch being written, and GPU servers that keep their CUDA runtime.
+
+### Desktop and server
+
+- **Answers appear as the model writes them** in project chats, in Code mode, after subagents and in chats with a plugin or MCP server, as they already did in an ordinary chat. Only the answer is shown while it is written: never a tool call, its arguments, reasoning, a draft or a subagent's review. When the answer is done, it is shown fully formatted. This works for models that run in the app's own llama.cpp, on this computer or on your GPU server.
+
+### Server
+
+- **The CUDA runtime keeps working after updates.** An update copied the CUDA runtime from the previous release in a way that tied it to the release it was first installed into; once that old release was removed, every chat on the server failed with "Local runtime exited (127)". Updates now copy it intact, the service repairs such a runtime before it starts, and if it still cannot be used the server runs on the CPU and says why. Updating to this release repairs an affected server.
+
+### Docs
+
+- Short videos of the real app on the Models, Chats, Workflows, Synthesis and Remote pages, and a 40-second overview on the home page.
+- Review steps in workflows are approved with **Approve** (the docs and examples said Approve & continue).
+
 ## 0.1.4 — 2026-10-11
 
 Keys that do what Settings says, and Settings pages that look like one app.
