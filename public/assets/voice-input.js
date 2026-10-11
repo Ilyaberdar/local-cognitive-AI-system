@@ -427,5 +427,8 @@ export function createVoiceInput(options) {
     window.addEventListener("resize", positionPanel);
   }
   return { renderButton, renderStrip, bind, busy, mountSettings, leaveChat, cancelSession: id => { if (job?.sessionId === id) cancel(); },
-    escape: () => { if (panel?.matches(":popover-open")) { panel.hidePopover(); return true; } if (job) { cancel(); return true; } return false; } };
+    escape: () => { if (panel?.matches(":popover-open")) { panel.hidePopover(); return true; } if (job) { cancel(); return true; } return false; },
+    available: () => Boolean(bridge),
+    // The dictation shortcut: starts dictating, or finishes what is being recorded.
+    toggle: () => { if (job?.phase === "recording") void stop(); else if (!job) void start(); } };
 }

@@ -533,3 +533,23 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .cuda-offer h2 { margin: 0; font-size: calc(15px * var(--font-scale, 1)); font-weight: 600; }
 .cuda-offer p { margin: 0; line-height: 1.5; }
 .cuda-offer:not([open]) { display: none; }
+
+/* Settings → Keyboard Shortcuts: key caps, and the recording and conflict states (borders, since
+   Settings drops focus shadows). */
+.settings-shortcuts { margin-top: 32px; }
+.settings-shortcut-group { margin: 22px 0 10px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); font-weight: 550; }
+.settings-shortcuts > .appearance-section-heading + .settings-shortcut-group { margin-top: 0; }
+.settings-shortcut-standard { margin-top: 32px; }
+.settings-shortcut-control { align-items: center; }
+.settings-shortcut { min-height: 60px; padding-block: 12px; }
+.settings-shortcut.is-static { min-height: 52px; }
+.settings-shortcut p:empty { display: none; }
+.settings-shortcut p .settings-text-button { font-size: inherit; }
+.settings-keys { display: inline-flex; align-items: center; gap: 4px; min-height: 34px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); white-space: nowrap; }
+.settings-keys-caps { display: inline-flex; align-items: center; gap: 4px; }
+.settings-keys kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--control-bg); box-shadow: inset 0 -1px 0 var(--line); color: var(--text); font: 500 calc(12px * var(--font-scale, 1))/1 var(--font-ui); }
+.settings-keys.is-inline { min-height: 0; vertical-align: -1px; }
+.settings-keys.is-inline kbd { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 5px; font-size: calc(10px * var(--font-scale, 1)); }
+.settings-keys.is-empty { color: var(--faint); }
+.settings-keys.is-recording { min-width: 140px; justify-content: center; padding: 0 12px; border: 1px solid var(--accent-border); border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--control-bg)); }
+.settings-keys.is-conflict kbd { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); color: var(--danger); }

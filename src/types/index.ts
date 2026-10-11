@@ -200,6 +200,10 @@ export interface UiPreferences {
   language: LanguagePreference;
   outputStyle: OutputStyle;
   mode: SessionMode;
+  /** What sends a message: Enter (Shift+Enter adds a line), or ⌘/Ctrl+Enter (Enter adds a line). */
+  sendKey: "enter" | "mod-enter";
+  /** Keyboard shortcuts the person changed, by action ("Mod+KeyN"; null: none). A save replaces the whole map. */
+  shortcuts?: Record<string, string | null>;
 }
 
 export interface LocalProfilePreferences {

@@ -10,8 +10,8 @@ import { hostSettingsView, takesKey, withoutSecrets } from "./settingsDto";
 const TEST_TIMEOUT_MS = 300_000;
 const HOST_ONLY = "This is set on the server itself: filesystem access, folders, provider addresses, the models folder, the MCP server and Telegram can only be changed there.";
 const LATER = "MCP servers and plugins on the server come in a later update.";
-const CLIENT_SETTING = "Appearance and profile are kept on each device and are not sent to the server.";
-const CLIENT_UI = ["theme", "accentColor", "backgroundColor", "foregroundColor", "fontScale", "codeFontSize", "animations"];
+const CLIENT_SETTING = "Appearance, keyboard shortcuts and profile are kept on each device and are not sent to the server.";
+const CLIENT_UI = ["theme", "accentColor", "backgroundColor", "foregroundColor", "fontScale", "codeFontSize", "animations", "sendKey", "shortcuts"];
 
 const providerId = z.string().min(1).max(100);
 // A key is written or cleared, never read back.

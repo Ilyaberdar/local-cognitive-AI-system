@@ -6,7 +6,7 @@ import { AppSettings, AppSettingsPatch } from "../types";
 import { isMissingFile, restrictToOwner, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { constants } from "node:fs";
 import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
-import { validateSettingsPatch, defaultUiPreferences } from "./settingsValidation";
+import { validateSettingsPatch, defaultUiPreferences, readShortcuts } from "./settingsValidation";
 import { normalizeAgentLimits } from "../agents/runtime/AgentLimits";
 import { defaultLocalGenerationSettings, normalizeLocalGenerationSettings } from "../local/GenerationSettings";
 
@@ -395,6 +395,9 @@ export class AppSettingsStore {
     for (const key of ["accentColor", "backgroundColor", "foregroundColor"] as const) {
       if (typeof preferences[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(preferences[key])) delete preferences[key];
     }
+    if (!["enter", "mod-enter"].includes(preferences.sendKey)) preferences.sendKey = defaultUiPreferences.sendKey;
+    const shortcuts = readShortcuts(preferences.shortcuts);
+    if (shortcuts) preferences.shortcuts = shortcuts; else delete preferences.shortcuts;
     return preferences;
   }
 

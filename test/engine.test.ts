@@ -935,7 +935,8 @@ test("chat UI exposes cancellation, phase progress, and an in-panel full file vi
   const styles = await fs.readFile(path.resolve(process.cwd(), "public/assets/app.css"), "utf8");
   const review = await fs.readFile(path.resolve(process.cwd(), "public/assets/review-panel.js"), "utf8");
 
-  assert.match(source, /event\.key !== "Escape"/);
+  // The Stop generating shortcut (Escape unless changed in Settings) cancels the reply.
+  assert.match(source, /case "stopGeneration":[\s\S]{0,160}cancelActiveChatRequest\(\)/);
   assert.match(source, /cancelProcessRun/);
   assert.match(source, /getProcessRun/);
   assert.match(source, /data-action="open-tool-path"/);

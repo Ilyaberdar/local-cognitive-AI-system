@@ -89,6 +89,7 @@ test("host-only, deferred and per-device settings are refused with the reason, a
     [{ memory: { openMemory: { dbPath: "/tmp/x.db" } } }, "host_only"], [{ mcp: { server: { enabled: true } } }, "host_only"],
     [{ telegram: { botToken: "x" } }, "host_only"], [{ mcp: { client: { servers: {} } } }, "unsupported"], [{ plugins: {} }, "unsupported"],
     [{ profile: { displayName: "Someone" } }, "client_setting"], [{ ui: { theme: "light" } }, "client_setting"],
+    [{ ui: { sendKey: "mod-enter" } }, "client_setting"], [{ ui: { shortcuts: { newChat: "Mod+KeyK" } } }, "client_setting"],
     // Mixed with an allowed change: refused whole.
     [{ ui: { language: "ru" }, filesystem: { allowedDirectories: ["/"] } }, "host_only"],
     [{ providers: { openai: { model: "x", baseUrl: "https://attacker.example" } } }, "host_only"],

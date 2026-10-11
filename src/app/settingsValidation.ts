@@ -1,10 +1,26 @@
 import { AppSettingsPatch, UiPreferences } from "../types";
 
 export const defaultUiPreferences: UiPreferences = {
-  version: 1, theme: "dark", animations: true, fontScale: 100, codeFontSize: 12, language: "auto", outputStyle: "balanced", mode: "auto"
+  version: 1, theme: "dark", animations: true, fontScale: 100, codeFontSize: 12, language: "auto", outputStyle: "balanced", mode: "auto", sendKey: "enter"
 };
 
 export class SettingsValidationError extends Error { readonly statusCode = 400; }
+
+// A shortcut as public/assets/shortcuts.js writes it: modifiers in this order, then a physical key.
+const shortcutKeys = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Mod\+)?(?:Key[A-Z]|Digit[0-9]|Comma|Period|Slash|Backslash|BracketLeft|BracketRight|Semicolon|Quote|Backquote|Minus|Equal|Space|Escape|F(?:[1-9]|1[0-9]|2[0-4]))$/;
+const shortcutAction = /^[a-z][A-Za-z0-9]{0,39}$/;
+
+/** The readable entries of stored shortcuts (no two actions with the same keys); undefined if none is. */
+export function readShortcuts(value: unknown): Record<string, string | null> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Record<string, string | null> = {}, taken = new Set<string>();
+  for (const [action, keys] of Object.entries(value).slice(0, 64)) {
+    if (!shortcutAction.test(action)) continue;
+    if (keys === null) result[action] = null;
+    else if (typeof keys === "string" && shortcutKeys.test(keys) && !taken.has(keys)) { result[action] = keys; taken.add(keys); }
+  }
+  return result;
+}
 
 const hexColor = /^#[0-9a-f]{6}$/i;
 const avatarDataUrl = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i;
@@ -38,11 +54,15 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     const ui = object(patch.ui, "ui");
     check(ui, "ui", {
     theme: ["dark", "light", "system", "midnight"], animations: "boolean", fontScale: [85, 150], codeFontSize: [10, 20], language: ["auto", "ru", "en"],
-    outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"]
+    outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"], sendKey: ["enter", "mod-enter"]
     });
     for (const key of ["accentColor", "backgroundColor", "foregroundColor"] as const) {
       const value = ui[key];
       if (value !== undefined && (typeof value !== "string" || (value !== "" && !hexColor.test(value)))) throw new SettingsValidationError(`Invalid ui.${key}.`);
+    }
+    if (ui.shortcuts !== undefined) {
+      const shortcuts = object(ui.shortcuts, "ui.shortcuts"), entries = Object.entries(shortcuts);
+      if (entries.length > 64 || Object.keys(readShortcuts(shortcuts) ?? {}).length !== entries.length) throw new SettingsValidationError("Invalid ui.shortcuts.");
     }
   }
   if (patch.profile !== undefined) {

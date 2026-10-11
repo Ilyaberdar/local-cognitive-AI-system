@@ -6,6 +6,7 @@ import { mountUpdatesPanel } from './updates-ui.js';
 import { mountGpuRuntimePanel } from './gpu-runtime-ui.js';
 import { mountReportBugPage } from './report-bug.js';
 import { openAvatarCropper } from './avatar-crop.js';
+import { SHORTCUT_ACTIONS, checkShortcut, effectiveShortcuts, isMacPlatform, ownShortcuts, shortcutCaps, shortcutFromEvent, shortcutSpoken, shortcutText } from './shortcuts.js';
 
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
@@ -27,6 +28,22 @@ const number = (name, label, min, max, description = '') => field(name, label, '
 const link = (path, title, description = '', symbol = 'chevronRight') => `<a class="settings-list-row" href="#/settings/${escape(path)}"><span><strong>${escape(title)}</strong>${description ? `<small>${escape(description)}</small>` : ''}</span>${icon(symbol)}</a>`;
 const note = (title, description) => `<div class="settings-empty"><span class="settings-empty-icon">${icon('info')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
 const isHexColor = value => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+const MAC = isMacPlatform();
+const caps = keys => keys.map(key => `<kbd>${escape(key)}</kbd>`).join('');
+/** Keys nobody can change, shown so the page names every key the app answers to. */
+function standardKeys() {
+  const mod = MAC ? '⌘' : 'Ctrl', enter = MAC ? '↩' : 'Enter';
+  return [
+    ['Close a menu, a dialog or dictation', [['Esc']]],
+    ['Move through a menu', [['↑'], ['↓'], ['Home'], ['End']]],
+    ['Pick an @mention', [[enter], ['Tab']]],
+    ['Send a review comment or a bug report', [[mod, enter]]],
+    ['Undo and redo', [[mod, 'Z'], MAC ? ['⇧', '⌘', 'Z'] : ['Ctrl', 'Y']]],
+    ['Cut, copy and paste', [[mod, 'X'], [mod, 'C'], [mod, 'V']]],
+    ['Zoom in, zoom out, actual size', [[mod, '+'], [mod, '−'], [mod, '0']]],
+    MAC ? ['Hide, minimize, close the window, quit', [['⌘', 'H'], ['⌘', 'M'], ['⌘', 'W'], ['⌘', 'Q']]] : ['Minimize, close the window', [['Ctrl', 'M'], ['Ctrl', 'W']]]
+  ];
+}
 const appearancePresets = {
   dark: { label: 'Dark', description: 'Quiet graphite for focused work', accent: '#B4C9EB', background: '#111214', foreground: '#ECEDEF' },
   light: { label: 'Light', description: 'A softer, low-glare light surface', accent: '#466896', background: '#E9EDF2', foreground: '#273140' },
@@ -57,6 +74,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   document.body.append(menu);
   let active = false, page = 'general', previousRoute = '#/chat', appScroll, appFocus, search = '', appInfo, mcpSnapshot, mcpRequest, shownTarget = '';
   let mcpSecretsView, mcpSecretsRequest, mcpImport = {};
+  // Keyboard Shortcuts: the action whose new keys are being recorded, and a question or refusal to show.
+  let shortcutRecording, shortcutNotice;
   const drafts = new Map(), statuses = new Map(), results = new Map();
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, disposeUpdates, disposeGpu, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
   const context = () => getContext() || {};
@@ -90,6 +109,10 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       select('filesystem.accessMode', 'Built-in filesystem access', ['restricted', 'full']),
       field('filesystem.allowedDirectories', 'Allowed folders', 'textarea', { description: 'One absolute folder path per line. Session approval rules still apply.' })];
     if (name === 'voice') return [field('voice.microphone', 'Microphone', 'text', { description: 'Input device, headset, input level and permissions' }), field('voice.language', 'Language'), field('voice.recognition', 'Recognition model')];
+    if (name === 'shortcuts') {
+      const mod = MAC ? '⌘Enter' : 'Ctrl+Enter';
+      return [select('ui.sendKey', 'Send messages with', [['enter', 'Enter'], ['mod-enter', mod]], `With Enter, Shift+Enter starts a new line; with ${mod}, Enter does.`)];
+    }
     if (name === 'appearance') return [
       field('ui.theme', 'Theme', 'theme-cards', { description: 'One visual style is applied to Chat, Workflow, Synthesis, Models and Plugins.' }),
       field('ui.accentColor', 'Accent', 'color', { colorKey: 'accent' }),
@@ -445,6 +468,125 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-mcp-status>${isNew ? 'Add a server to begin.' : 'Changes apply to this server and its connections.'}</span><span class="settings-form-actions"><button type="submit" class="primary-button">${isNew ? 'Add & connect' : 'Save changes'}</button>${!isNew ? `<button type="button" class="ghost-button" data-mcp-action="${connection?.state === 'connected' ? 'disconnect' : 'connect'}" data-mcp-binding="${escape(binding?.id || '')}" ${binding ? '' : 'disabled'}>${connection?.state === 'connected' ? 'Disconnect' : 'Connect'}</button><button type="button" class="ghost-button danger-button" data-mcp-action="delete">Remove</button>` : ''}</span></div></form>
       ${!isNew ? mcpSecretsSection(server) : ''}`;
   }
+  /** Keyboard Shortcuts: each action's keys as the page shows them, unsaved choices included. */
+  const currentShortcuts = () => effectiveShortcuts(valueOf({ name: 'ui.shortcuts' }));
+  const actionOf = id => SHORTCUT_ACTIONS.find(action => action.id === id);
+  const keysMarkup = (keys, state = '') => keys
+    ? `<span class="settings-keys${state}"><span class="settings-keys-caps" aria-hidden="true">${caps(shortcutCaps(keys, MAC))}</span><span class="sr-only">${escape(shortcutSpoken(keys, MAC))}</span></span>`
+    : `<span class="settings-keys is-empty${state}">None</span>`;
+  function shortcutRow(action, current) {
+    const keys = current[action.id], notice = shortcutNotice?.id === action.id ? shortcutNotice : undefined;
+    let hint = escape(action.description || '');
+    if (notice) hint = `<span class="is-error" role="alert">${escape(`${shortcutText(notice.keys, MAC)} is used by ${actionOf(notice.conflict).label}.`)}</span> <button type="button" class="settings-text-button" data-shortcut-replace="${action.id}">Use it here instead</button> · <button type="button" class="settings-text-button" data-shortcut-keep="${action.id}">Cancel</button>`;
+    else if (keys !== action.keys) hint = action.keys
+      ? `Default ${keysMarkup(action.keys, ' is-inline')} · <button type="button" class="settings-text-button" data-shortcut-reset="${action.id}" aria-label="Reset ${escape(action.label)}">Reset</button>`
+      : `No default · <button type="button" class="settings-text-button" data-shortcut-reset="${action.id}" aria-label="Remove the shortcut for ${escape(action.label)}">Remove</button>`;
+    return `<div class="settings-row settings-shortcut" data-setting="shortcut:${action.id}" data-shortcut="${action.id}"><div><span class="settings-row-label" id="shortcut-${action.id}">${escape(action.label)}</span><p data-shortcut-hint>${hint}</p></div>`
+      + `<div class="settings-control settings-shortcut-control">${keysMarkup(notice ? notice.keys : keys, notice ? ' is-conflict' : '')}<button type="button" class="ghost-button" data-shortcut-change="${action.id}" aria-describedby="shortcut-${action.id}">Change</button></div></div>`;
+  }
+  function shortcutsMarkup() {
+    const current = currentShortcuts(), changed = SHORTCUT_ACTIONS.some(action => current[action.id] !== action.keys);
+    const actions = SHORTCUT_ACTIONS.filter(action => !action.voice || voiceInput?.available?.());
+    const groupsMarkup = [...new Set(actions.map(action => action.group))].map(group => `<h3 class="settings-shortcut-group">${escape(group)}</h3><div class="settings-rows">${actions.filter(action => action.group === group).map(action => shortcutRow(action, current)).join('')}</div>`).join('');
+    const standard = standardKeys().map(([label, combos]) => `<div class="settings-row settings-shortcut is-static"><div><span class="settings-row-label">${escape(label)}</span></div><div class="settings-control settings-shortcut-control">${combos.map(keys => `<span class="settings-keys">${caps(keys)}</span>`).join('')}</div></div>`).join('');
+    return `<div class="appearance-section-heading"><div><h2>Shortcuts</h2><p>A shortcut belongs to one action at a time.</p></div><button type="button" class="ghost-button" data-shortcut-reset-all ${changed ? '' : 'disabled'}>Reset all</button></div>${groupsMarkup}`
+      + `<div class="appearance-section-heading settings-shortcut-standard"><div><h2>Standard keys</h2><p>Menus, text fields and the window use these. They can’t be changed.</p></div></div><div class="settings-rows">${standard}</div>`;
+  }
+  /** Draws the shortcuts again, keeping focus on the same control (or on `focus`). */
+  function refreshShortcuts(focus) {
+    const section = root.querySelector('[data-shortcuts]');
+    if (!section) return;
+    const active = section.contains(document.activeElement) ? document.activeElement : undefined;
+    const attribute = active && [...active.attributes].find(item => item.name.startsWith('data-shortcut-'));
+    section.innerHTML = shortcutsMarkup();
+    const target = (focus && section.querySelector(focus)) || (attribute && section.querySelector(`[${attribute.name}="${attribute.value.replace(/["\\]/g, '\\$&')}"]`));
+    (target && !target.disabled ? target : active && section.querySelector('[data-shortcut-change]'))?.focus({ preventScroll: true });
+  }
+  /** Saves the shortcuts as the page's own setting: saved on its own, said in the page's status line. */
+  function saveShortcuts(next, id) {
+    const place = placeOf(page);
+    dirty(place.key)['ui.shortcuts'] = ownShortcuts(next);
+    shortcutNotice = undefined;
+    refreshShortcuts(id ? `[data-shortcut-change="${id}"]` : undefined);
+    void save(place);
+  }
+  function stopShortcutRecording() {
+    const recording = shortcutRecording;
+    shortcutRecording = undefined;
+    recording?.dispose();
+  }
+  /** Records new keys for an action: Esc cancels, Delete or Backspace removes its keys, keys the
+   * app or the system keep are refused with the reason, and keys of another action ask first. */
+  function recordShortcut(id) {
+    // Drawn afresh first: another row may still show its recording or its question.
+    stopShortcutRecording();
+    shortcutNotice = undefined;
+    refreshShortcuts();
+    const row = root.querySelector(`[data-shortcut="${id}"]`), action = actionOf(id);
+    if (!row || !action) return;
+    const slot = row.querySelector('.settings-keys'), hint = row.querySelector('[data-shortcut-hint]'), button = row.querySelector('[data-shortcut-change]');
+    const held = event => MAC ? [event.ctrlKey && '⌃', event.altKey && '⌥', event.shiftKey && '⇧', event.metaKey && '⌘'].filter(Boolean)
+      : [event.ctrlKey && 'Ctrl', event.altKey && 'Alt', event.shiftKey && 'Shift'].filter(Boolean);
+    const show = (modifiers = []) => { slot.innerHTML = modifiers.length ? `${caps(modifiers)}<span class="settings-keys-more" aria-hidden="true">…</span>` : 'Press keys…'; };
+    const prompt = `Press the new keys. Esc cancels${currentShortcuts()[id] ? ', Delete removes the shortcut' : ''}.`;
+    slot.className = 'settings-keys is-recording';
+    slot.setAttribute('role', 'status');
+    show(); hint.textContent = prompt;
+    button.textContent = 'Cancel';
+    button.focus({ preventScroll: true });
+    const finish = focus => { stopShortcutRecording(); refreshShortcuts(focus); };
+    const onKeydown = event => {
+      if (event.isComposing || event.keyCode === 229) return;
+      // Tab still moves focus, which ends the recording.
+      if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.repeat) return;
+      const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey, current = currentShortcuts();
+      if (event.key === 'Escape' && plain) { finish(`[data-shortcut-change="${id}"]`); return; }
+      if ((event.key === 'Backspace' || event.key === 'Delete') && plain) {
+        stopShortcutRecording();
+        if (current[id]) saveShortcuts({ ...current, [id]: null }, id); else refreshShortcuts(`[data-shortcut-change="${id}"]`);
+        return;
+      }
+      const keys = shortcutFromEvent(event, MAC);
+      if (!keys) { show(held(event)); return; }
+      if (keys === current[id]) { finish(`[data-shortcut-change="${id}"]`); return; }
+      const result = checkShortcut(keys, { mac: MAC, actionId: id, shortcuts: current });
+      if (result.error) { show(); hint.innerHTML = `<span class="is-error" role="alert">${escape(result.error)}</span> Press other keys, or Esc to cancel.`; return; }
+      stopShortcutRecording();
+      if (result.conflict) { shortcutNotice = { id, keys, conflict: result.conflict }; refreshShortcuts(`[data-shortcut-replace="${id}"]`); return; }
+      saveShortcuts({ ...current, [id]: keys }, id);
+    };
+    const onKeyup = event => { if (!event.isComposing) show(held(event)); };
+    // Leaving the row (a click elsewhere, Tab) ends the recording once focus has moved.
+    const onFocusout = event => { if (!row.contains(event.relatedTarget)) { stopShortcutRecording(); setTimeout(() => { if (active && page === 'shortcuts' && !shortcutRecording) refreshShortcuts(); }, 0); } };
+    window.addEventListener('keydown', onKeydown, true);
+    window.addEventListener('keyup', onKeyup, true);
+    row.addEventListener('focusout', onFocusout);
+    shortcutRecording = { id, dispose() { window.removeEventListener('keydown', onKeydown, true); window.removeEventListener('keyup', onKeyup, true); row.removeEventListener('focusout', onFocusout); } };
+  }
+  function bindShortcutsPage() {
+    root.querySelector('[data-shortcuts]')?.addEventListener('click', event => {
+      const target = event.target.closest('button');
+      if (!target || target.disabled) return;
+      const { shortcutChange: change, shortcutReset: reset, shortcutReplace: replace, shortcutKeep: keep } = target.dataset;
+      const current = currentShortcuts();
+      if (change) {
+        if (shortcutRecording?.id === change) { stopShortcutRecording(); refreshShortcuts(`[data-shortcut-change="${change}"]`); }
+        else recordShortcut(change);
+      } else if (reset) {
+        const keys = actionOf(reset).keys, other = keys && SHORTCUT_ACTIONS.find(action => action.id !== reset && current[action.id] === keys);
+        if (other) { shortcutNotice = { id: reset, keys, conflict: other.id }; refreshShortcuts(`[data-shortcut-replace="${reset}"]`); }
+        else saveShortcuts({ ...current, [reset]: keys }, reset);
+      } else if (replace && shortcutNotice?.id === replace) {
+        saveShortcuts({ ...current, [shortcutNotice.conflict]: null, [replace]: shortcutNotice.keys }, replace);
+      } else if (keep) {
+        shortcutNotice = undefined; refreshShortcuts(`[data-shortcut-change="${keep}"]`);
+      } else if (target.hasAttribute('data-shortcut-reset-all')) {
+        saveShortcuts(effectiveShortcuts({}));
+      }
+    });
+  }
   function blockedPage(blocked) {
     const actions = blocked.actions.map(action => action === 'use-local'
       ? '<button type="button" class="primary-button" data-server-action="use-local">Use This computer</button>'
@@ -466,7 +608,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. A new version of the app is announced once with a system notification; your system settings decide whether it is shown.');
     if (name === 'connections') return '<div data-integrations-page></div>';
     if (name === 'agents') return `<p class="settings-description">A turn is a model decision: it either requests one tool action or writes the final answer. The existing values stay unchanged. Enter 0 to remove a limit; there is no hidden upper ceiling.</p>` + form(specs) + `<a class="settings-list-row" href="#/chat"><span>Open chat setup</span>${icon('chevronRight')}</a><a class="settings-list-row" href="#/orchestration"><span>Open Workflow</span>${icon('chevronRight')}</a>`;
-    if (name === 'shortcuts') return `<div class="settings-rows">${[['Open Settings', navigator.platform.includes('Mac') ? '⌘ ,' : 'Ctrl ,'], ['Close profile menu', 'Escape'], ['Move through profile menu', '↑ / ↓ · Home / End'], ['Send chat message', 'Enter'], ['New line', 'Shift Enter'], ['Stop active chat generation (in app)', 'Escape']].map(([label, value]) => `<div class="settings-row"><span>${label}</span><kbd>${value}</kbd></div>`).join('')}</div><p class="settings-footnote">Shortcut customization is not available in this release.</p>`;
+    if (name === 'shortcuts') return `<p class="settings-description">Choose Change and press the new keys. Shortcuts work while the app window is in front, with any keyboard layout, and are kept on this device.</p>`
+      + form(specs) + `<section class="settings-shortcuts" data-shortcuts aria-label="Shortcuts">${shortcutsMarkup()}</section>`;
     if (name === 'about') return `<div class="settings-rows">${[['Application', appInfo?.name || 'Local Cognitive'], ['Version', appInfo?.version || 'Loading…'], ['Platform', appInfo?.platform || 'Browser'], ['Electron', appInfo?.electron], ['Application license', appInfo?.license || 'Not declared in application metadata'], ['Selected server', context().server && [context().server.hostName(), context().server.version()].filter(Boolean).join(' · ')]].filter(([, value]) => value).map(([label, value]) => `<div class="settings-row"><span>${escape(label)}</span><span>${escape(value)}</span></div>`).join('')}</div><div class="updates-panel" data-updates-panel></div><p class="settings-footnote">Third-party runtime notices are included with the desktop application.</p>${link('report-bug', 'Report a bug', 'Tell the developer what went wrong')}`;
     if (name === 'data' && server) return serverErrorReportsRow(server) + form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
@@ -499,7 +642,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function searchEntries() {
     const routes = groups.flatMap(([, items]) => items.map(([route]) => route));
     routes.push(...Object.keys(settingsOf('providers').providers || {}).map(id => `providers/${id}`), ...data.integrations.map(item => `plugins/${item.id}`), 'memory/advanced', 'mcp/local-cognitive');
-    return routes.flatMap(route => [{ route, label: titleFor(route) }, ...fieldsFor(route).map(spec => ({ route, label: spec.label, description: spec.description, field: spec.name }))]);
+    return [...routes.flatMap(route => [{ route, label: titleFor(route) }, ...fieldsFor(route).map(spec => ({ route, label: spec.label, description: spec.description, field: spec.name }))]),
+      ...SHORTCUT_ACTIONS.map(action => ({ route: 'shortcuts', label: action.label, description: 'Keyboard shortcut', field: `shortcut:${action.id}` }))];
   }
   function renderSearch() {
     const container = root.querySelector('.settings-search-results');
@@ -521,7 +665,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let pendingFocus;
   function focusField(name) {
     const row = name && [...root.querySelectorAll('[data-setting]')].find(row => row.dataset.setting === name);
-    if (row) { row.classList.add('settings-highlight'); row.scrollIntoView({ block: 'center', behavior: 'auto' }); row.querySelector('input,select,textarea')?.focus({ preventScroll: true }); }
+    if (row) { row.classList.add('settings-highlight'); row.scrollIntoView({ block: 'center', behavior: 'auto' }); row.querySelector('input,select,textarea,button')?.focus({ preventScroll: true }); }
     else root.querySelector('h1')?.focus({ preventScroll: true });
   }
   /** What the open page shows about machines: a new one means the page is rendered again. */
@@ -539,6 +683,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     return text ? `<p class="settings-target-note" role="note">${icon('info')}<span>${escape(text)}</span></p>` : '';
   }
   function render() {
+    stopShortcutRecording();
     disposeVoice?.(); disposeVoice = undefined;
     disposeIntegrations?.(); disposeIntegrations = undefined;
     disposeUsage?.(); disposeUsage = undefined;
@@ -574,6 +719,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'about') disposeUpdates = mountUpdatesPanel(root.querySelector('[data-updates-panel]'));
     if (name === 'runtime' && request) disposeGpu = mountGpuRuntimePanel(root.querySelector('[data-gpu-runtime-panel]'), { request, getRuntime: () => context().localModels?.runtime });
     if (name === 'report-bug') disposeReport = mountReportBugPage(root.querySelector('[data-report-bug-page]'), { mode: context().server ? 'remote' : 'local' });
+    if (name === 'shortcuts') bindShortcutsPage();
     if (name === 'mcp' && id === 'import') bindMcpImport();
     else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));
@@ -1030,8 +1176,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (event.key === 'Tab') closeMenu(false);
   });
   window.addEventListener('keydown', event => {
+    if (shortcutRecording) return;
     if (event.key === 'Escape' && closeMenu()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-    if (event.key === ',' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); location.hash = '#/settings/general'; return; }
     if (active && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); const input = root.querySelector('#settings-search'); if (search) { search = ''; input.value = ''; renderSearch(); } }
   }, true);
   window.addEventListener('resize', () => closeMenu(false));

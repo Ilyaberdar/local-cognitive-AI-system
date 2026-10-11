@@ -22,9 +22,16 @@ import { createVoiceInput, appendDictation } from "./voice-input.js";
 import { watchWorkflowRun } from "./workflow-live.js";
 import { renderMarkdown, renderCodeBlock, renderCodeLines, bindMarkdownActions } from "./markdown-renderer.js";
 import { bindMentionPicker, pluginMentionIds, mentionedAgentNames, renderMentionText } from "./mentions.js";
+import { SHORTCUT_ACTIONS, bindComposerSend, effectiveShortcuts, isMacPlatform, sendKeyCaps, shortcutAria, shortcutFromEvent, shortcutText } from "./shortcuts.js";
 
 const app = document.querySelector("#app");
 bindMarkdownActions(app);
+const MAC = isMacPlatform();
+/** This device's keyboard shortcuts and send key (Settings → Keyboard Shortcuts). */
+const shortcuts = () => effectiveShortcuts(state.bootstrap?.appSettings?.ui?.shortcuts);
+const sendKey = () => state.bootstrap?.appSettings?.ui?.sendKey === "mod-enter" ? "mod-enter" : "enter";
+/** " (⌘N)" after a control's tooltip, when its action has keys. */
+const shortcutHint = id => { const keys = shortcuts()[id]; return keys ? ` (${shortcutText(keys, MAC)})` : ""; };
 const sessionSetupMotion = createSessionSetupMotion();
 let systemMetricsPollTimer = null;
 let sessionLoadSequence = 0;
@@ -963,7 +970,7 @@ function flashSavedButton(key) {
 }
 
 function renderSidebarToggle() {
-  return `<button class="sidebar-toggle icon-button" type="button" data-action="toggle-sidebar" aria-label="Toggle navigation" aria-expanded="${!state.ui.sidebarCollapsed}" title="${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}">${icon("sidebar")}</button>`;
+  return `<button class="sidebar-toggle icon-button" type="button" data-action="toggle-sidebar" aria-label="Toggle navigation" aria-expanded="${!state.ui.sidebarCollapsed}" title="${escapeAttr(`${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}${shortcutHint("toggleSidebar")}`)}">${icon("sidebar")}</button>`;
 }
 
 function renderAppTopbar(nativeTitlebar) {
@@ -1087,7 +1094,8 @@ function renderToasts() {
 }
 
 function renderNavButton(route, label, note) {
-  const accessibleLabel = note ? `${label} (${note})` : label;
+  const action = SHORTCUT_ACTIONS.find(item => item.route === route);
+  const accessibleLabel = `${note ? `${label} (${note})` : label}${action ? shortcutHint(action.id) : ""}`;
 
   return `
     <button class="nav-button liquid-glass ${state.route === route ? "active" : ""} ${state.ui.navFlashRoute === route ? "is-activated" : ""}" data-action="route" data-route="${route}" aria-current="${state.route === route ? "page" : "false"}" aria-label="${escapeAttr(label)}" title="${escapeAttr(accessibleLabel)}">
@@ -1183,8 +1191,8 @@ function renderChatRoute() {
             <div class="composer-actions">
               ${renderEffortControl(settings)}
               ${voiceInput.renderButton()}
-              ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="Stop generation (Esc)">${icon("stop")}</button>` : ""}
-              <button class="primary-button send-button" type="submit" aria-label="Send message" title="${serverChat ? escapeAttr(`Send to ${chatTarget.hostName()}`) : "Send message"}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || (serverChat && (chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly)) ? "disabled" : ""}>${icon("arrowUp")}</button>
+              ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="${escapeAttr(`Stop generation${shortcutHint("stopGeneration")}`)}"${shortcuts().stopGeneration ? ` aria-keyshortcuts="${escapeAttr(shortcutAria(shortcuts().stopGeneration, MAC))}"` : ""}>${icon("stop")}</button>` : ""}
+              <button class="primary-button send-button" type="submit" aria-label="Send message" aria-keyshortcuts="${sendKey() === "mod-enter" ? (MAC ? "Meta+Enter" : "Control+Enter") : "Enter"}" title="${escapeAttr(`${serverChat ? `Send to ${chatTarget.hostName()}` : "Send message"} (${sendKeyCaps(sendKey(), MAC).send.join(MAC ? "" : "+")})`)}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || (serverChat && (chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly)) ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -1418,12 +1426,45 @@ function renderPendingAssistantText(pendingRequest) {
 function handleGlobalKeydown(event) {
   if (event.key === "Escape" && voiceInput.escape()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
   if (event.key === "Escape" && document.querySelector("#chat-access-menu:popover-open")) return;
-  if (event.key !== "Escape" || !state.activeChatRequest) {
-    return;
-  }
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat) return;
+  const keys = shortcutFromEvent(event, MAC), current = shortcuts();
+  const action = keys && SHORTCUT_ACTIONS.find(item => current[item.id] === keys);
+  if (action && runShortcut(action)) event.preventDefault();
+}
 
-  event.preventDefault();
-  void cancelActiveChatRequest();
+/** Runs a shortcut's action. False when it does nothing here, so the key keeps its usual effect. */
+function runShortcut(action) {
+  const settingsOpen = settingsShell.isOpen();
+  // An open dialog keeps the keyboard to itself.
+  if (document.querySelector("dialog[open]")) return false;
+  if (action.route) {
+    if (state.route === "chat" && !settingsOpen) rememberMessageStreamScroll();
+    window.location.hash = `/${action.route}`;
+    return true;
+  }
+  switch (action.id) {
+    case "stopGeneration":
+      if (settingsOpen || !state.activeChatRequest) return false;
+      void cancelActiveChatRequest();
+      return true;
+    case "newChat":
+      if (!state.loading) void runAction(() => createChatInProject(currentProject()?.archivedAt ? null : state.activeProjectId));
+      return true;
+    case "dictate":
+      if (settingsOpen || state.route !== "chat" || !voiceInput.available()) return false;
+      voiceInput.toggle();
+      return true;
+    case "openSettings":
+      window.location.hash = "#/settings/general";
+      return true;
+    case "toggleSidebar": {
+      const toggle = settingsOpen ? null : document.querySelector("[data-action='toggle-sidebar']");
+      toggle?.click();
+      return Boolean(toggle);
+    }
+    default:
+      return false;
+  }
 }
 
 async function cancelActiveChatRequest() {
@@ -3871,7 +3912,7 @@ function bindEvents() {
     if (button) {
       button.innerHTML = icon("sidebar");
       button.setAttribute("aria-expanded", String(!state.ui.sidebarCollapsed));
-      button.setAttribute("title", state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation");
+      button.setAttribute("title", `${state.ui.sidebarCollapsed ? "Show navigation" : "Hide navigation"}${shortcutHint("toggleSidebar")}`);
     }
     window.setTimeout(syncScrollToBottomButton, 340);
   });
@@ -4571,6 +4612,7 @@ function bindEvents() {
     refresh: () => isServerChat(state.activeSessionId) ? Promise.resolve([]) : refreshAvailablePlugins(true), getError: () => isServerChat(state.activeSessionId) ? "" : state.pluginsError,
     onChange: value => { if (state.activeSessionId) state.drafts[state.activeSessionId] = value; }
   });
+  bindComposerSend({ form: document.querySelector("#chat-form"), textarea: document.querySelector("#chat-form textarea[name='input']"), mode: sendKey, mac: MAC });
 
   document.querySelector("[data-action='attach-files']")?.addEventListener("click", () => {
     document.querySelector("#chat-attachment-input")?.click();
