@@ -4,6 +4,7 @@
   "private": true,
   "description": "Local Cognitive",
   "author": "Local Cognitive",
+  "license": "Elastic-2.0",
   "main": "electron/main.cjs",
   "bin": {
     "local-cognitive-server": "dist/src/server/cli.js"
@@ -108,6 +109,7 @@
       "output": "release"
     },
     "files": [
+      "LICENSE",
       "electron/*.cjs",
       "dist/src/**/*",
       "public/**/*",

@@ -2,6 +2,7 @@
   "name": "@local-cognitive/cloud",
   "version": "0.1.0",
   "private": true,
+  "license": "Elastic-2.0",
   "description": "Local Cognitive Cloud API and relay",
   "type": "module",
   "engines": {

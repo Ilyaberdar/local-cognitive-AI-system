@@ -19,7 +19,7 @@ const ignored = (file: string): boolean => {
 
 test("packaged files exclude OAuth registrations and env files", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")) as { build: { files: string[] } };
-  assert.deepEqual(manifest.build.files, ["electron/*.cjs", "dist/src/**/*", "public/**/*", "package.json", "!**/.env", "!**/.env.*"]);
+  assert.deepEqual(manifest.build.files, ["LICENSE", "electron/*.cjs", "dist/src/**/*", "public/**/*", "package.json", "!**/.env", "!**/.env.*"]);
 });
 
 test("credential-bearing local files are git-ignored and examples are not", { skip: !isGitCheckout }, () => {

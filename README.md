@@ -266,3 +266,7 @@ Settings → Plugins lists Notion, GitHub, Slack, Google Drive, Linear, Jira, Ou
 - **Remote** works over a catalog of operations (`src/runtime/operationCatalog.ts`), each request checked against its schema. Commands are written to the host's SQLite database before they are acknowledged.
 - **Synthesis language:** [docs/lc-language.md](docs/lc-language.md).
 - **Release notes:** [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Local Cognitive is source available under the [Elastic License 2.0](LICENSE). You may use it for any purpose, and copy, change and share it with these terms. You may not offer it to others as a hosted or managed service, or move, disable or get around any part of it that a license key protects. Components from other projects keep their own licenses. More: [License](https://docs.local-cognitive.com/reference/license/).

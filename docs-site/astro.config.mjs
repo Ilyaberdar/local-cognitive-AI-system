@@ -58,6 +58,7 @@ export default defineConfig({
 						{ label: 'Your data and privacy', slug: 'reference/data' },
 						{ label: 'Troubleshooting', slug: 'reference/troubleshooting' },
 						{ label: 'Release notes', slug: 'reference/release-notes' },
+						{ label: 'License', slug: 'reference/license' },
 					],
 				},
 				{
