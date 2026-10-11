@@ -36,7 +36,7 @@
 .settings-directory-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; flex: 1 1 100%; width: 100%; min-width: 0; }
 .settings-directory-control > input { width: 100%; min-width: 0; }
 .settings-directory-control > button { min-height: 34px; white-space: nowrap; }
-.settings-control input, .settings-control select, .settings-control textarea { min-height: 34px; border-radius: 9px; font: inherit; padding: 7px 10px; border: 1px solid var(--line); background: var(--control-bg); color: var(--text); box-shadow: none; }
+.settings-control input, .settings-control select, .settings-control textarea, .settings-input { min-height: 34px; border-radius: 9px; font: inherit; padding: 7px 10px; border: 1px solid var(--line); background: var(--control-bg); color: var(--text); box-shadow: none; }
 .settings-control input[type=checkbox] { appearance: none; width: 40px; min-width: 40px; height: 24px; min-height: 24px; border-radius: 20px; border: 0; background: var(--surface-3); cursor: pointer; position: relative; padding: 3px; margin: 0; box-shadow: inset 0 0 0 1px var(--line-strong); transition: background 160ms ease; }
 .settings-control input[type=checkbox]::after { content: ''; display: block; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0003; transition: transform 160ms ease; }
 .settings-control input[type=checkbox]:checked { background: var(--accent); box-shadow: none; }
@@ -199,25 +199,39 @@ html[data-theme="light"] .plugin-app-icon--github img, html[data-theme="light"] 
 .settings-connection-status:not(.is-connected) { color: var(--muted); }
 .mcp-diagnostic { margin-top: 10px; }
 .mcp-tool-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; max-height: 260px; overflow: auto; }
-.mcp-tool-choices label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
-.mcp-secrets { margin-top: 22px; }
+.mcp-tool-choices label { display: flex; align-items: center; gap: 6px; font-size: calc(12.5px * var(--font-scale, 1)); }
+.mcp-secrets { margin-top: var(--settings-card-note-gap, 24px); }
+.mcp-secrets .mcp-card-heading { padding-bottom: 16px; }
 .mcp-card-actions { display: flex; gap: 8px; align-items: center; }
-.mcp-import h3 { margin: 18px 0 6px; font-size: 14px; }
+.mcp-import h3 { margin: 18px 0 6px; font-size: calc(14px * var(--font-scale, 1)); }
 .mcp-import-sources { display: flex; flex-wrap: wrap; gap: 8px; }
-.mcp-import textarea { width: 100%; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+.mcp-import textarea { width: 100%; font-family: var(--font-mono); font-size: calc(12px * var(--font-scale, 1)); }
 .mcp-import-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.mcp-import-item { padding: 10px 12px; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 10px; }
-.mcp-import-item p { margin: 4px 0 0; font-size: 12.5px; }
-.mcp-import-secrets { margin: 6px 0 0 18px; padding: 0; font-size: 12.5px; }
-.mcp-secrets h3 { margin: 0 0 4px; font-size: 14px; }
-.mcp-secret-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
-.mcp-secret-list li { display: flex; align-items: center; gap: 10px; }
-.mcp-secret-list .is-set { color: var(--success); font-size: 12px; }
-.mcp-secret-list .is-unset { color: var(--danger, #d9534f); font-size: 12px; }
-.mcp-secret-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
-.mcp-secret-add input { min-width: 0; flex: 1 1 160px; }
-.mcp-diagnostic summary { cursor: pointer; color: var(--muted); font-size: 12px; }
-.mcp-diagnostic pre { max-height: 220px; overflow: auto; margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-2, rgba(127,127,127,.12)); font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.mcp-import-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.mcp-import-item input[type=checkbox] { accent-color: var(--accent); }
+.mcp-import-item p { margin: 4px 0 0; font-size: calc(12.5px * var(--font-scale, 1)); }
+.mcp-import-secrets { margin: 6px 0 0 18px; padding: 0; font-size: calc(12.5px * var(--font-scale, 1)); }
+.mcp-secrets-note { margin: 0; padding: 0 20px 16px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.65; }
+.mcp-secrets-note.is-error { color: var(--danger); }
+.mcp-secret-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.mcp-secret-list li { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line); }
+.mcp-secret-list code { min-width: 0; overflow-wrap: anywhere; font-size: calc(12px * var(--font-scale, 1)); }
+.mcp-secret-list .is-set, .mcp-secret-list .is-unset { font-size: calc(11px * var(--font-scale, 1)); }
+.mcp-secret-list .is-set { color: var(--success); }
+.mcp-secret-list .is-unset { color: var(--warning); }
+.mcp-secret-list li > button { margin-left: auto; }
+.mcp-secret-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px 20px 20px; border-top: 1px solid var(--line); }
+.mcp-secret-list + .mcp-secret-add { border-top: 0; }
+.mcp-secret-add select { flex: 0 1 150px; min-width: 0; }
+.mcp-secret-add input { flex: 1 1 180px; min-width: 0; }
+.mcp-secret-add .settings-save-status { flex-basis: 100%; }
+.mcp-secret-add .settings-save-status:empty { display: none; }
+@media (max-width: 640px) {
+  .mcp-secrets-note, .mcp-secret-list li, .mcp-secret-add { padding-inline: 16px; }
+  .mcp-secret-add :is(select, input) { flex-basis: 100%; }
+}
+.mcp-diagnostic summary { cursor: pointer; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); }
+.mcp-diagnostic pre { max-height: 220px; overflow: auto; margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-2, rgba(127,127,127,.12)); font-size: calc(11.5px * var(--font-scale, 1)); line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 .mcp-overview { display: grid; gap: 24px; }
 .mcp-overview-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-top: -18px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); }
 .mcp-info { display: flex; align-items: flex-start; gap: 14px; padding: 20px; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
@@ -376,9 +390,12 @@ html[data-motion=off] *, html[data-motion=off] *::before, html[data-motion=off] 
 html[data-motion=off] :is(button, .nav-button, .card, .session-item, .model-card):hover { transform: none !important; }
 html[data-motion=off] .liquid-glass { --light-x: 50% !important; --light-y: 50% !important; }
 
-.settings-control :is(input, select, textarea):hover { border-color: var(--line-strong); }
-.settings-control :is(input, textarea)::placeholder { color: var(--faint); }
-.settings-control textarea { resize: vertical; }
+.settings-control :is(input, select, textarea):hover, .settings-input:hover { border-color: var(--line-strong); }
+.settings-control :is(input, textarea)::placeholder, .settings-input::placeholder { color: var(--faint); }
+.settings-control textarea, textarea.settings-input { resize: vertical; }
+/* Disabled reads as disabled: a field's own colors cancel the browser's dimming, and app.css keeps buttons at .82. */
+:is(.settings-control :is(input:not([type=checkbox]), select, textarea), .settings-input):disabled { opacity: .45; cursor: not-allowed; }
+#settings-root :is(.ghost-button, .primary-button, .action-button):disabled { opacity: .45; }
 #settings-root :is(a, button, input, select, textarea, summary):focus-visible { outline: none !important; outline-offset: 0; box-shadow: none !important; }
 #settings-root :is(input, select, textarea):focus-visible { border-color: var(--line) !important; }
 /* Settings actions stay white in the light appearance.  They are intentionally
@@ -496,7 +513,7 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .updates-progress { width: 100%; height: 6px; appearance: none; border: 0; border-radius: 999px; overflow: hidden; background: var(--surface-2, rgba(127, 127, 127, 0.18)); }
 .updates-progress::-webkit-progress-bar { background: var(--surface-2, rgba(127, 127, 127, 0.18)); border-radius: 999px; }
 .updates-progress::-webkit-progress-value { background: var(--accent, #4f8cff); border-radius: 999px; transition: width 0.2s ease; }
-.updates-notes { border: 1px solid var(--border, rgba(127, 127, 127, 0.22)); border-radius: 12px; padding: 10px 14px; }
+.updates-notes { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .updates-notes summary { cursor: pointer; font-weight: 600; }
 .updates-notes section { margin-top: 10px; }
 .updates-notes h4 { margin: 0 0 4px; font-size: 13px; }

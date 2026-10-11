@@ -344,7 +344,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     return `<p class="settings-description">Add MCP servers you set up in another app. Nothing is saved until you import; secret values go to this computer's protected storage.</p>
       <section class="mcp-import"><h3>From an app on this computer</h3><div class="mcp-import-sources">${mcpImport.loading && !mcpImport.sources ? 'Looking…' : sources}</div>
       <h3>Or paste a snippet</h3><p class="settings-description">A Codex <code>[mcp_servers.name]</code> table, or JSON with <code>mcpServers</code> as in Claude Desktop, Cursor and most READMEs.</p>
-      <textarea data-mcp-import-text rows="6" spellcheck="false" placeholder='{"mcpServers": {"blender": {"command": "uvx", "args": ["blender-mcp"]}}}'></textarea>
+      <textarea class="settings-input" data-mcp-import-text rows="6" spellcheck="false" placeholder='{"mcpServers": {"blender": {"command": "uvx", "args": ["blender-mcp"]}}}'></textarea>
       <div class="settings-form-actions"><button type="button" class="ghost-button" data-mcp-import-paste>Preview</button></div>
       ${preview ? (preview.servers.length ? `<h3>Servers found</h3><ul class="mcp-import-list">${rows}</ul><div class="settings-form-actions"><button type="button" class="primary-button" data-mcp-import-apply>Import selected</button></div>` : '<p class="settings-description">No MCP servers were found there.</p>') : ''}
       <span role="status" aria-live="polite" class="settings-save-status ${mcpImport.error ? 'is-error' : ''}" data-mcp-import-status>${escape(mcpImport.error || mcpImport.status || '')}</span></section>`;
@@ -380,20 +380,19 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   /** A server's secrets: names with set/not set, a value field to set one; values never come back. */
   function mcpSecretsSection(server) {
     const view = mcpSecretsView?.id === server.id ? mcpSecretsView.data : undefined;
-    if (!view) { loadMcpSecrets(server.id); return '<section class="mcp-secrets"><h3>Secrets</h3><p class="settings-description">Loading…</p></section>'; }
-    if (view.error) return `<section class="mcp-secrets"><h3>Secrets</h3><p class="settings-description is-error">${escape(view.error)}</p></section>`;
     const http = server.transport === 'streamable-http';
-    const rows = view.secrets.map(item => `<li><code>${escape(item.kind === 'bearer' ? 'Bearer token' : item.name)}</code><span class="${item.set ? 'is-set' : 'is-unset'}">${item.set ? 'Set' : 'Not set'}</span><button type="button" class="ghost-button" data-mcp-secret-remove data-kind="${escape(item.kind)}" data-name="${escape(item.name)}">Remove</button></li>`).join('');
+    const card = body => `<section class="mcp-card mcp-secrets" aria-labelledby="mcp-secrets-title"><div class="mcp-card-heading"><div><h2 id="mcp-secrets-title">Secrets</h2><p>${http ? 'Headers and a bearer token sent only to this address' : 'Environment variables such as API keys'}, kept in this computer's protected storage. Their values are never shown again.</p></div></div>${body}</section>`;
+    if (!view) { loadMcpSecrets(server.id); return card('<p class="mcp-secrets-note">Loading…</p>'); }
+    if (view.error) return card(`<p class="mcp-secrets-note is-error">${escape(view.error)}</p>`);
+    const rows = view.secrets.map(item => `<li><code>${escape(item.kind === 'bearer' ? 'Bearer token' : item.name)}</code><span class="${item.set ? 'is-set' : 'is-unset'}">${item.set ? 'Set' : 'Not set'}</span><button type="button" class="ghost-button danger-button" data-mcp-secret-remove data-kind="${escape(item.kind)}" data-name="${escape(item.name)}">Remove</button></li>`).join('');
     const disabled = view.available ? '' : 'disabled';
-    return `<section class="mcp-secrets" aria-labelledby="mcp-secrets-title"><h3 id="mcp-secrets-title">Secrets</h3>
-      <p class="settings-description">${http ? 'Headers and a bearer token sent only to this address' : 'Environment variables such as API keys'}, kept in this computer's protected storage. Their values are never shown again.</p>
-      ${view.available ? '' : `<p class="settings-description is-error">${escape(view.reason || 'Protected storage is unavailable.')}</p>`}
+    return card(`${view.available ? '' : `<p class="mcp-secrets-note is-error">${escape(view.reason || 'Protected storage is unavailable.')}</p>`}
       ${rows ? `<ul class="mcp-secret-list">${rows}</ul>` : ''}
-      <div class="mcp-secret-add">${http ? `<select data-mcp-secret-kind aria-label="Secret type" ${disabled}><option value="header">Header</option><option value="bearer">Bearer token</option></select>` : ''}
-        <input data-mcp-secret-name aria-label="${http ? 'Header name' : 'Variable name'}" placeholder="${http ? 'X-Api-Key' : 'API_KEY'}" autocomplete="off" spellcheck="false" ${disabled} />
-        <input data-mcp-secret-value type="password" aria-label="Value" placeholder="Value" autocomplete="new-password" ${disabled} />
-        <button type="button" class="ghost-button" data-mcp-secret-save ${disabled}>Save secret</button></div>
-      <span role="status" aria-live="polite" class="settings-save-status" data-mcp-secret-status></span></section>`;
+      <div class="mcp-secret-add">${http ? `<select class="settings-input" data-mcp-secret-kind aria-label="Secret type" ${disabled}><option value="header">Header</option><option value="bearer">Bearer token</option></select>` : ''}
+        <input class="settings-input" data-mcp-secret-name aria-label="${http ? 'Header name' : 'Variable name'}" placeholder="${http ? 'X-Api-Key' : 'API_KEY'}" autocomplete="off" spellcheck="false" ${disabled} />
+        <input class="settings-input" data-mcp-secret-value type="password" aria-label="Value" placeholder="Value" autocomplete="new-password" ${disabled} />
+        <button type="button" class="ghost-button" data-mcp-secret-save ${disabled}>Save secret</button>
+        <span role="status" aria-live="polite" class="settings-save-status" data-mcp-secret-status></span></div>`);
   }
   function loadMcpSecrets(id) {
     if (!data.mcpSecrets || mcpSecretsRequest) return;
