@@ -22,7 +22,10 @@ export interface SynthesisRun {
   events: SynthesisEvent[];
   evidence?: {
     candidateHash: string; specHash: string; status: "Pass" | "Fail" | "Unknown";
-    gates: { id: string; evaluator: string; status: "Pass" | "Fail" | "Unknown"; message: string }[];
+    gates: { id: string; evaluator: string; status: "Pass" | "Fail" | "Unknown"; message: string;
+      /** What the model read for this gate, and the test cases a Tests gate ran. */
+      feedback?: string[];
+      cases?: { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }[] }[];
   };
 }
 export interface CandidateDiff { files: { path: string; before: string | null; after: string }[]; canApply: boolean }

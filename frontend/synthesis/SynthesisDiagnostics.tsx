@@ -43,7 +43,12 @@ export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose 
         <p className="synthesis-section-note">{evidence ? "Results for the selected run’s frozen source." : running ? "Checks will appear as this run is evaluated." : "Run this module to evaluate its candidate."}</p>
         {evidence ? <div className="synthesis-gates">{evidence.gates.length ? evidence.gates.map(gate => <details className="synthesis-gate" key={gate.id}>
           <summary><span className={`synthesis-gate__verdict status-${gate.status.toLowerCase()}`}><SynthesisIcon name={gate.status === "Pass" ? "check" : gate.status === "Fail" ? "close" : "clock"} /></span><strong>{gate.id}</strong><span className={`status-${gate.status.toLowerCase()}`}>{gate.status}</span><SynthesisIcon name="chevron" /></summary>
-          <div className="synthesis-gate__detail"><p>{gate.message}</p><span>Evaluator</span><code>{gate.evaluator}</code></div>
+          <div className="synthesis-gate__detail"><p>{gate.message}</p>
+            {gate.cases?.length ? <ul className="synthesis-gate__cases" aria-label={`Tests of ${gate.id}`}>{gate.cases.map((item, index) =>
+              <li key={index} className={item.status === "pass" ? "is-pass" : "is-fail"}><SynthesisIcon name={item.status === "pass" ? "check" : "close"} /><span><strong>{item.name}</strong>
+                {item.status === "fail" && (item.message || item.expected !== undefined) ? <small>{[item.message, item.expected !== undefined ? `expected ${item.expected}, actual ${item.actual ?? "?"}` : ""].filter(Boolean).join(" · ")}{item.file ? ` · ${item.file}${item.line ? `:${item.line}` : ""}` : ""}</small> : null}</span></li>)}</ul>
+              : gate.feedback?.length && gate.status !== "Pass" ? <ul className="synthesis-gate__cases">{gate.feedback.map((item, index) => <li key={index} className="is-fail"><SynthesisIcon name="close" /><span><small>{item}</small></span></li>)}</ul> : null}
+            <span>Evaluator</span><code>{gate.evaluator}</code></div>
         </details>) : <p className="synthesis-section-note">No individual gate results were recorded.</p>}</div> : null}
       </section>
       {run?.models?.length ? <details className="synthesis-inspector-disclosure" open>

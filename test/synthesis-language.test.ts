@@ -209,3 +209,102 @@ test("per-file source generation accepts typed format and focused instruction ar
   assert.ok(codes(specSource, flow.replace('format = "source"', "format = 1")).includes("FLOW_TYPE"));
   assert.ok(codes(specSource, flow.replace('instruction = "Implement arithmetic only."', "instruction = true")).includes("FLOW_TYPE"));
 });
+
+const contractFlow = (name: string) => `implement ${name} using "contract-v1" {
+  limit iterations 4, time 10m, cost 0usd;
+  policy = "local-files-v1";
+  available = await models.list(provider = "llamacpp");
+  selected = models.select(available, max_size = 6GiB);
+  developer = await models.load(selected);
+  spec = freeze(${name}.spec);
+  candidate = checkout("ability-system");
+  feedback = none;
+  while (!accepted(candidate, spec)) {
+    candidate = await developer.revise(candidate, spec, feedback, file = "src/AbilitySystem.cpp", format = "source");
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) { return accept(candidate, evidence); }
+    feedback = verdict.violations;
+  }
+  return unresolved();
+}`;
+
+test("a contract on rails: C++ target, frozen interface, tests and architecture gates compile", () => {
+  const source = `module AbilitySystem version "1" {
+    target { language = Cpp; }
+    description = "An engine-agnostic ability system core.";
+    artifacts {
+      frozen "include/AbilitySystem.h";
+      file "src/AbilitySystem.cpp";
+    }
+    tests { file "tests/support.hpp"; }
+    evaluate "contract-v1" {
+      hard api = Exports("include/AbilitySystem.h", ["AbilitySystem", "AbilitySystem::TryActivate"]);
+      hard layering = Imports("src/**", allow = ["include/**", "<*>"], deny = ["<thread>", "<random>"]);
+      hard deterministic = Forbid("src/**", "\\\\brand\\\\s*\\\\(|std::chrono", message = "time and randomness come from the caller");
+      hard behavior = Tests("tests/ability_system_test.cpp", timeout = 45s);
+      soft sealed = Tests("tests/holdout_test.cpp", hidden = true);
+    }
+  }`;
+  const result = compileProgram(source, contractFlow("AbilitySystem"));
+  assert.deepEqual(result.diagnostics, []);
+  const spec = result.spec!;
+  assert.deepEqual(spec.artifacts, ["src/AbilitySystem.cpp"]);
+  assert.deepEqual(spec.frozen, ["include/AbilitySystem.h"]);
+  assert.deepEqual(spec.tests, ["tests/support.hpp"]);
+  assert.deepEqual(spec.gates.map((gate) => [gate.id, gate.evaluatorId, gate.check?.kind]), [
+    ["api", "contract-exports-v1", "exports"], ["layering", "contract-imports-v1", "imports"],
+    ["deterministic", "contract-forbid-v1", "forbid"], ["behavior", "contract-tests-v1", "tests"], ["sealed", "contract-tests-v1", "tests"]
+  ]);
+  assert.deepEqual(spec.gates[1].check, { kind: "imports", pattern: "src/**", allow: ["include/**", "<*>"], deny: ["<thread>", "<random>"] });
+  assert.deepEqual(spec.gates[2].check, { kind: "forbid", pattern: "src/**", regex: "\\brand\\s*\\(|std::chrono", message: "time and randomness come from the caller" });
+  assert.deepEqual(spec.gates[3].check, { kind: "tests", files: ["tests/ability_system_test.cpp"], timeoutMs: 45000 });
+  assert.deepEqual(spec.gates[4].check, { kind: "tests", files: ["tests/holdout_test.cpp"], hidden: true });
+});
+
+test("TypeScript and Python are target languages; other targets still need an adapter", () => {
+  const spec = (target: string) => `module M version "1" {
+    target { ${target} }
+    artifacts { file "src/m.ts"; }
+    evaluate "contract-v1" { hard behavior = Tests("tests/m.test.ts"); }
+  }`;
+  const codes = (target: string) => compileProgram(spec(target), contractFlow("M")).diagnostics.map((item) => item.code);
+  assert.ok(!codes("language = TypeScript;").includes("SPEC_UNSUPPORTED_TARGET"));
+  assert.ok(!codes("language = Python;").includes("SPEC_UNSUPPORTED_TARGET"));
+  assert.ok(codes("language = Rust;").includes("SPEC_UNSUPPORTED_TARGET"));
+  assert.ok(codes("engine = UnrealEngine;").includes("SPEC_UNSUPPORTED_TARGET"));
+});
+
+test("contract gates reject malformed arguments with the forms they accept", () => {
+  const gate = (expression: string) => parseSpec(`module M version "1" {
+    artifacts { file "src/m.ts"; }
+    evaluate "contract-v1" { hard g = ${expression}; }
+  }`).diagnostics.filter((item) => item.code === "SPEC_GATE_EXPRESSION").map((item) => item.message);
+  assert.deepEqual(gate(`Tests("tests/a.test.ts", timeout = 30s)`), []);
+  assert.match(gate(`Tests()`)[0], /test files/);
+  assert.match(gate(`Tests("a.test.ts", timeout = 30)`)[0], /duration/);
+  assert.match(gate(`Tests("a.test.ts", retries = 3)`)[0], /no argument 'retries'/);
+  assert.match(gate(`Exports("src/m.ts", "Name")`)[0], /list of symbol names/);
+  assert.match(gate(`Imports("src/**")`)[0], /allow or a deny list/);
+  assert.match(gate(`Forbid("src/**")`)[0], /regular expression/);
+  assert.match(gate(`Pass("a", "b")`)[0], /one evaluator ID/);
+  assert.match(gate(`Verify("x")`)[0], /Gates use Pass/);
+});
+
+test("the analyzer checks paths, test languages, timeouts, symbols and patterns", () => {
+  const codes = (artifacts: string, gates: string, tests = "") => compileProgram(`module M version "1" {
+    artifacts { ${artifacts} }
+    ${tests}
+    evaluate "contract-v1" { ${gates} }
+  }`, contractFlow("M")).diagnostics.map((item) => item.code);
+  assert.ok(codes(`file "src/m.ts"; frozen "src/m.ts";`, `hard t = Tests("tests/m.test.ts");`).includes("SPEC_PATH_CONFLICT"));
+  assert.ok(codes(`file "tests/m.test.ts";`, `hard t = Tests("tests/m.test.ts");`).includes("SPEC_PATH_CONFLICT"));
+  assert.ok(codes(`file "src/m.ts";`, `hard t = Tests("tests/m.test.ts", "tests/m_test.py");`).includes("SPEC_TEST_TYPE"));
+  assert.ok(codes(`file "src/m.ts";`, `hard t = Tests("tests/m.test.rb");`).includes("SPEC_TEST_TYPE"));
+  assert.ok(codes(`file "src/m.ts";`, `hard t = Tests("tests/m.test.ts", timeout = 10m);`).includes("SPEC_TEST_TIMEOUT"));
+  assert.ok(codes(`file "src/m.ts";`, `hard e = Exports("src/other.ts", ["M"]);`).includes("SPEC_CHECK_FILE"));
+  assert.ok(codes(`file "src/m.ts";`, `hard e = Exports("src/m.ts", ["not a name"]);`).includes("SPEC_CHECK_SYMBOL"));
+  assert.ok(codes(`file "src/m.ts";`, `hard f = Forbid("src/**", "(unclosed");`).includes("SPEC_CHECK_PATTERN"));
+  assert.ok(codes(`file "../escape.ts";`, `hard t = Tests("tests/m.test.ts");`).includes("SPEC_ARTIFACT_PATH"));
+  assert.ok(codes(`file "src/m.ts";`, `hard t = Tests("tests/m.test.ts");`, `tests { file "/etc/passwd"; }`).includes("SPEC_TEST_PATH"));
+});

@@ -1,0 +1,18 @@
+module AbilitySystem version "1" {
+    target { language = Cpp; }
+
+    description = "An engine-agnostic ability system core in C++20, in the spirit of Unreal's Gameplay Ability System. Implement every member of lc::AbilitySystem declared in the frozen include/AbilitySystem.h, in src/AbilitySystem.cpp, which includes \"AbilitySystem.h\" and the standard library only. TryActivate checks, in order: the ability is granted, it is off cooldown (now is in seconds; ready again when now >= the time of the last activation plus cooldownSeconds), the owner has none of the spec's blockedBy tags, mana is at least the cost, the target's health is above 0. The first failed check is returned and nothing changes. On success the cost is paid once, the cooldown starts and the spec's damage is applied to the target through ApplyDamage. Granting an id again replaces its spec and clears its cooldown. Health and mana always stay within [0, max]. The core is deterministic: no clocks, randomness, threads or I/O.";
+
+    artifacts {
+        // Written by the engineer and frozen: the model reads it, never changes it.
+        frozen "include/AbilitySystem.h";
+        file "src/AbilitySystem.cpp";
+    }
+
+    evaluate "contract-v1" {
+        hard implementation = Exports("src/AbilitySystem.cpp", ["AbilitySystem::TryActivate", "AbilitySystem::Grant", "AbilitySystem::CooldownRemaining", "AbilitySystem::ApplyDamage", "AbilitySystem::RestoreMana"]);
+        hard layering = Imports("src/**", allow = ["AbilitySystem.h", "include/AbilitySystem.h", "<*>"], deny = ["<thread>", "<random>", "<chrono>", "<ctime>", "<iostream>", "<fstream>"]);
+        hard deterministic = Forbid("src/**", "\\b(s?rand|time|printf|puts)\\s*\\(|std::(cout|cerr|chrono)", message = "the core takes time from the caller and does no I/O");
+        hard behavior = Tests("tests/ability_system_test.cpp", timeout = 60s);
+    }
+}

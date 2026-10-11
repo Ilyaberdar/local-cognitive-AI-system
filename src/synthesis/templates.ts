@@ -1,4 +1,121 @@
-export type ModuleTemplate = "empty" | "calculator";
+export type ModuleTemplate = "empty" | "calculator" | "rate-limiter";
+export interface ModuleFiles { spec: string; flow: string; tests?: Record<string, string> }
+
+/** A module on rails: a TypeScript contract checked by its shape, its dependencies, a forbidden
+ * clock and the engineer's own tests, which the model reads but never writes. */
+export function rateLimiterTemplate(name = "RateLimiter"): ModuleFiles {
+  return {
+    spec: `module ${name} version "1" {
+    target { language = TypeScript; }
+
+    description = "A token-bucket rate limiter. src/rateLimiter.ts exports class RateLimiter with constructor(options: { capacity: number; refillPerSecond: number; now: () => number }), where now() returns milliseconds. tryAcquire(tokens = 1): boolean takes the tokens and returns true when enough are available; otherwise it returns false and takes nothing. available(): number returns the tokens available now, never more than capacity. Tokens refill continuously with the time that passed, at refillPerSecond, up to capacity; a new limiter starts full. Throw RangeError when capacity or refillPerSecond is not a positive finite number, or when tokens is not a positive integer. Time comes only from options.now(): no timers, no Date.";
+
+    artifacts {
+        file "src/rateLimiter.ts";
+    }
+
+    tests {
+        // The engineer's tests, next to this contract: the model reads them, never writes them.
+        file "tests/rateLimiter.test.ts";
+    }
+
+    evaluate "contract-v1" {
+        hard shape = Exports("src/rateLimiter.ts", ["RateLimiter"]);
+        hard dependencies = Imports("src/**", deny = ["**"]);
+        hard clock = Forbid("src/**", "Date\\\\.now|new Date|setTimeout|setInterval|performance\\\\.now", message = "take the time only from options.now()");
+        hard behavior = Tests("tests/rateLimiter.test.ts", timeout = 30s);
+    }
+}
+`,
+    flow: `implement ${name} using "contract-v1" {
+    limit iterations 6, time 20m, cost 0usd;
+    policy = "local-files-v1";
+
+    available = await models.list(provider = "llamacpp");
+    selected = models.select(available, max_size = 6GiB, prefer = "coder");
+    developer = await models.load(selected);
+
+    spec = freeze(${name}.spec);
+    candidate = checkout("${name === "RateLimiter" ? "rate-limiter" : `generated/${name}`}");
+    feedback = none;
+
+    while (!accepted(candidate, spec)) {
+        candidate = await developer.revise(candidate, spec, feedback, file = "src/rateLimiter.ts", format = "source");
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        checkpoint(candidate, evidence, verdict);
+
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        feedback = verdict.violations;
+    }
+    return unresolved();
+}
+`,
+    tests: { "tests/rateLimiter.test.ts": `import assert from "node:assert/strict";
+import test from "node:test";
+import { RateLimiter } from "../src/rateLimiter.ts";
+
+// A clock the test moves by hand: the limiter must take time only from options.now().
+const clock = () => {
+  let now = 0;
+  return { now: () => now, advance: (ms: number) => { now += ms; } };
+};
+
+test("starts full", () => {
+  const time = clock();
+  const limiter = new RateLimiter({ capacity: 5, refillPerSecond: 1, now: time.now });
+  assert.equal(limiter.available(), 5);
+});
+
+test("takes tokens while they last", () => {
+  const time = clock();
+  const limiter = new RateLimiter({ capacity: 3, refillPerSecond: 1, now: time.now });
+  assert.equal(limiter.tryAcquire(), true);
+  assert.equal(limiter.tryAcquire(2), true);
+  assert.equal(limiter.tryAcquire(), false);
+  assert.equal(limiter.available(), 0);
+});
+
+test("refills with the time that passed", () => {
+  const time = clock();
+  const limiter = new RateLimiter({ capacity: 4, refillPerSecond: 2, now: time.now });
+  assert.equal(limiter.tryAcquire(4), true);
+  time.advance(1000);
+  assert.equal(limiter.available(), 2);
+  time.advance(500);
+  assert.equal(limiter.tryAcquire(3), true);
+});
+
+test("never holds more than its capacity", () => {
+  const time = clock();
+  const limiter = new RateLimiter({ capacity: 2, refillPerSecond: 10, now: time.now });
+  time.advance(60_000);
+  assert.equal(limiter.available(), 2);
+});
+
+test("a refused request takes nothing", () => {
+  const time = clock();
+  const limiter = new RateLimiter({ capacity: 3, refillPerSecond: 1, now: time.now });
+  assert.equal(limiter.tryAcquire(5), false);
+  assert.equal(limiter.available(), 3);
+});
+
+test("rejects invalid settings and requests", () => {
+  const time = clock();
+  assert.throws(() => new RateLimiter({ capacity: 0, refillPerSecond: 1, now: time.now }), RangeError);
+  assert.throws(() => new RateLimiter({ capacity: 1, refillPerSecond: Number.NaN, now: time.now }), RangeError);
+  const limiter = new RateLimiter({ capacity: 1, refillPerSecond: 1, now: time.now });
+  assert.throws(() => limiter.tryAcquire(0), RangeError);
+  assert.throws(() => limiter.tryAcquire(1.5), RangeError);
+});
+` }
+  };
+}
 
 export function emptyModuleTemplate(name: string): {spec: string; flow: string} {
   return {

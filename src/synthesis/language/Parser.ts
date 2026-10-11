@@ -1,8 +1,56 @@
 import { joinSpans, lex } from "./Lexer";
 import {
-  CallArgument, Diagnostic, Expression, FlowLimits, FlowProgram, ParseResult, SourceSpan,
+  CallArgument, CallExpression, ContractCheck, Diagnostic, Expression, FlowLimits, FlowProgram, ParseResult, SourceSpan,
   SpecProgram, SpecSection, Statement, Token
 } from "./types";
+
+const GATE_FORMS = "Pass(\"evaluator-id\"), Tests(\"tests/a.test.ts\"), Exports(\"src/a.ts\", [\"Name\"]), Imports(\"src/**\", allow = [...], deny = [...]) or Forbid(\"src/**\", \"pattern\")";
+const text = (expression: Expression | undefined): string | undefined =>
+  expression?.kind === "literal" && typeof expression.value === "string" ? expression.value : undefined;
+const texts = (expression: Expression | undefined): string[] | undefined => {
+  if (expression?.kind !== "array") return undefined;
+  const values = expression.items.map(text);
+  return values.every((value): value is string => value !== undefined) ? values : undefined;
+};
+/** A gate's call as the adapter it names and, for a built-in check, its arguments; or why not. */
+function gateCall(call: CallExpression): { evaluatorId: string; check?: ContractCheck } | string {
+  const name = call.callee.kind === "identifier" ? call.callee.name : "";
+  const positional = call.args.filter((arg) => !arg.name).map((arg) => arg.value);
+  const named = new Map(call.args.filter((arg) => arg.name).map((arg) => [arg.name!, arg.value]));
+  const unknown = [...named.keys()].find((key) => !({ Tests: ["timeout", "hidden"], Imports: ["allow", "deny"], Forbid: ["message"] } as Record<string, string[]>)[name]?.includes(key));
+  if (unknown) return `${name || "This gate"} has no argument '${unknown}'.`;
+  switch (name) {
+    case "Pass": {
+      const id = text(positional[0]);
+      return positional.length === 1 && id !== undefined ? { evaluatorId: id } : "Pass takes one evaluator ID string.";
+    }
+    case "Tests": {
+      const files = positional.map(text);
+      if (!files.length || !files.every((file): file is string => file !== undefined)) return "Tests takes the contract's test files as strings.";
+      const timeout = named.get("timeout"), hidden = named.get("hidden");
+      if (timeout && (timeout.kind !== "literal" || typeof timeout.value !== "number" || !["ms", "s", "m"].includes(timeout.unit ?? ""))) return "Tests timeout must be a duration such as 30s.";
+      if (hidden && (hidden.kind !== "literal" || typeof hidden.value !== "boolean")) return "Tests hidden must be true or false.";
+      return { evaluatorId: "contract-tests-v1", check: { kind: "tests", files,
+        ...(timeout ? { timeoutMs: Number((timeout as { value: number }).value) } : {}), ...(hidden ? { hidden: (hidden as { value: boolean }).value } : {}) } };
+    }
+    case "Exports": {
+      const file = text(positional[0]), symbols = texts(positional[1]);
+      return positional.length === 2 && file !== undefined && symbols?.length ? { evaluatorId: "contract-exports-v1", check: { kind: "exports", file, symbols } }
+        : "Exports takes a file and a list of symbol names: Exports(\"src/a.ts\", [\"Name\"]).";
+    }
+    case "Imports": {
+      const pattern = text(positional[0]), allow = named.has("allow") ? texts(named.get("allow")) : [], deny = named.has("deny") ? texts(named.get("deny")) : [];
+      if (positional.length !== 1 || pattern === undefined || !allow || !deny) return "Imports takes a file pattern and allow = [...] and/or deny = [...] lists of strings.";
+      return allow.length || deny.length ? { evaluatorId: "contract-imports-v1", check: { kind: "imports", pattern, allow, deny } } : "Imports needs an allow or a deny list.";
+    }
+    case "Forbid": {
+      const pattern = text(positional[0]), regex = text(positional[1]), message = named.has("message") ? text(named.get("message")) : undefined;
+      if (positional.length !== 2 || pattern === undefined || regex === undefined || (named.has("message") && message === undefined)) return "Forbid takes a file pattern and a regular expression: Forbid(\"src/**\", \"Date\\\\.now\").";
+      return { evaluatorId: "contract-forbid-v1", check: { kind: "forbid", pattern, regex, ...(message !== undefined ? { message } : {}) } };
+    }
+    default: return `Gates use ${GATE_FORMS}.`;
+  }
+}
 
 class ParseFailure extends Error {}
 const PRECEDENCE: Record<string, number> = {
@@ -75,7 +123,7 @@ class Parser {
     const version = String(this.string().value);
     this.expect("{");
     const spec: SpecProgram = {
-      kind: "spec", module, version, evaluator: "", description: "", target: {}, artifacts: [], gates: [],
+      kind: "spec", module, version, evaluator: "", description: "", target: {}, artifacts: [], frozen: [], tests: [], gates: [],
       sections: inheritance ? [inheritance] : [], comments: this.scan.comments, span: start.span
     };
     let hasEvaluate = false;
@@ -101,7 +149,16 @@ class Parser {
       } else if (name === "artifacts") {
         this.expect("{");
         while (!this.at("}") && !this.atEnd()) {
-          this.expect("file"); spec.artifacts.push(String(this.string().value)); this.expect(";");
+          // `frozen`: a file the engineer wrote (an interface); the model reads it but never writes it.
+          if (this.consume("frozen")) spec.frozen.push(String(this.string().value));
+          else { this.expect("file"); spec.artifacts.push(String(this.string().value)); }
+          this.expect(";");
+        }
+        this.expect("}"); this.consume(";");
+      } else if (name === "tests") {
+        this.expect("{");
+        while (!this.at("}") && !this.atEnd()) {
+          this.expect("file"); spec.tests.push(String(this.string().value)); this.expect(";");
         }
         this.expect("}"); this.consume(";");
       } else if (name === "evaluate") {
@@ -125,12 +182,9 @@ class Parser {
           this.expect("=");
           const result = this.expression();
           this.expect(";");
-          if (result.kind !== "call" || result.callee.kind !== "identifier" || result.callee.name !== "Pass" ||
-              result.args.length !== 1 || result.args[0].name || result.args[0].value.kind !== "literal" || typeof result.args[0].value.value !== "string") {
-            this.diagnostic("SPEC_GATE_EXPRESSION", "V1 acceptance gates must use Pass(\"registered-evaluator-id\").", result.span);
-          } else {
-            spec.gates.push({ id, severity: gateStart.text, evaluatorId: result.args[0].value.value, span: joinSpans(gateStart.span, this.previous.span) });
-          }
+          const gate = result.kind === "call" ? gateCall(result) : `Gates use ${GATE_FORMS}.`;
+          if (typeof gate === "string") this.diagnostic("SPEC_GATE_EXPRESSION", gate, result.span);
+          else spec.gates.push({ id, severity: gateStart.text, ...gate, span: joinSpans(gateStart.span, this.previous.span) });
         }
         this.expect("}"); this.consume(";");
       } else {

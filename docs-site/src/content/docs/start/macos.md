@@ -3,7 +3,7 @@ title: Install on macOS
 description: Install Local Cognitive on a Mac with Apple silicon.
 ---
 
-Local Cognitive for macOS runs on Apple silicon (M1 and later) with macOS 13 or later. Models use the GPU through Metal and share the Mac's unified memory.
+Local Cognitive for macOS runs on Apple silicon (M1 and later) with macOS 13.3 or later. Models use the GPU through Metal and share the Mac's unified memory.
 
 ## Install
 

@@ -1,0 +1,30 @@
+implement AbilitySystem using "contract-v1" {
+    limit iterations 8, time 30m, cost 0usd;
+    policy = "local-files-v1";
+
+    available = await models.list(provider = "llamacpp");
+    selected = models.select(available, max_size = 10GiB, prefer = "coder");
+    developer = await models.load(selected);
+
+    spec = freeze(AbilitySystem.spec);
+    candidate = checkout("ability-system");
+    feedback = none;
+
+    while (!accepted(candidate, spec)) {
+        // The prompt carries the contract, the frozen header, the engineer's tests and the last
+        // failures (each with file:line, expected and actual).
+        candidate = await developer.revise(candidate, spec, feedback, file = "src/AbilitySystem.cpp", format = "source");
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        checkpoint(candidate, evidence, verdict);
+
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        feedback = verdict.violations;
+    }
+    return unresolved();
+}

@@ -8,20 +8,49 @@ import { LLMService } from "../llm/LLMService";
 import { ManagedModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { compileProgram, SourceSpan } from "./language";
+import { compileProgram, SourceSpan, SpecProgram } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
-import { ActivityEvent, Evidence, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
+import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readText, relativePath } from "./paths";
-import { calculatorTemplate, emptyModuleTemplate, ModuleTemplate } from "./templates";
+import { calculatorTemplate, emptyModuleTemplate, ModuleFiles, ModuleTemplate, rateLimiterTemplate } from "./templates";
 import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSources, sourceId } from "./modules";
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
+import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
 
 interface Services {
   projects: ProjectStore;
   models: Pick<LocalModelManagerRegistry, "listAllModels">;
   loadModel: (model: ManagedModel, signal: AbortSignal) => Promise<void>;
   llm: Pick<LLMService, "generateObject" | "generateText">;
+  /** Where Tests gates run (a sandbox and a work folder); tests of this service replace them. */
+  checks?: Omit<CheckOptions, "signal">;
 }
+/** Evidence names the evaluators that made it: the calculator adapters and the contract checks. */
+const EVALUATOR_VERSION = `${evaluatorVersion}+${contractChecksVersion}`;
+/** Source in the languages the contract checks know, plus the web files of the calculator. */
+const ARTIFACT_TYPES = /\.(?:js|mjs|cjs|ts|mts|cts|py|c|cc|cpp|cxx|h|hh|hpp|hxx|inl|json|html|css|txt|md)$/;
+const MAX_SUITE_FILES = 24, MAX_SUITE_BYTES = 512 * 1024;
+/** The contract's test files: its tests section and every file a Tests gate runs. */
+const suiteFiles = (spec: SpecProgram): string[] => [...new Set([...(spec.tests ?? []),
+  ...spec.gates.flatMap(gate => gate.check?.kind === "tests" ? gate.check.files : [])])];
+/** What the model reads next: each failing gate's own items (exact, with file:line), else its message. */
+function violations(evidence: Evidence, generationErrors: string[]): string[] {
+  const items = evidence.gates.filter(gate => gate.status !== "Pass")
+    .flatMap(gate => gate.feedback?.length ? gate.feedback.map(item => `${gate.id}: ${item}`) : [`${gate.id}: ${gate.message}`]);
+  return [...items, ...generationErrors].slice(0, 12).map(item => item.length > 300 ? `${item.slice(0, 299)}…` : item);
+}
+/** What each kind of file is, for a small model that writes one file at a time. */
+const LANGUAGE_HINTS: Array<[RegExp, string]> = [
+  [/\.css$/, "This task is ONLY a short CSS stylesheet, at most 40 simple rules. Do not put JavaScript or HTML in CSS. Other files handle all behavior. Avoid repetition."],
+  [/\.html$/, "This task is ONLY the HTML document. Use the required element IDs. Load the peer JavaScript once after all controls. Do not duplicate logic already present in peer JavaScript."],
+  [/\.js$/, "This task is ONLY JavaScript. Implement the public functions and event handlers required by the contract; no HTML or CSS."],
+  [/\.(?:mjs|cjs)$/, "This task is ONLY JavaScript for Node.js, in the module syntax the file's extension implies, with Node's built-in modules only."],
+  [/\.(?:ts|mts|cts)$/, "This task is ONLY TypeScript for Node.js: ES module imports with explicit .ts extensions for local files, erasable type syntax only (no enum, namespace or constructor parameter properties), no packages."],
+  [/\.py$/, "This task is ONLY Python 3 with the standard library."],
+  [/\.(?:c|cc|cpp|cxx)$/, "This task is ONLY C++20 source with the standard library. Implement the declarations of the frozen headers exactly as declared; include them, never redeclare them differently."],
+  [/\.(?:h|hh|hpp|hxx|inl)$/, "This task is ONLY a C++ header with #pragma once: declarations and small inline functions."],
+  [/\.json$/, "This task is ONLY a JSON document."]
+];
 /** What this runtime (V1, local files) can run, as diagnostics: Run refuses the errors, and a
  * module shows them as soon as it is opened. */
 function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPath: string, flowPath: string) {
@@ -32,13 +61,19 @@ function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPat
     add("error", "FLOW_LIMIT_RANGE", "V1 supports at most 32 iterations and 120 minutes per run.", flowPath);
   }
   if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare between 1 and 12 artifact files.", specPath);
-  for (const file of compiled.spec.artifacts) {
+  if ((compiled.spec.frozen ?? []).length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare at most 12 frozen files.", specPath);
+  for (const file of [...compiled.spec.artifacts, ...compiled.spec.frozen ?? []]) {
     try { relativePath(file); }
     catch { add("error", "SPEC_ARTIFACT_PATH", `${file}: use a project-relative path without spaces, hidden folders or "..".`, specPath); continue; }
-    if (!/\.(?:js|html|css|txt|md)$/.test(file)) add("error", "SPEC_ARTIFACT_TYPE", `${file}: local-files-v1 supports only js, html, css, txt and md artifacts.`, specPath);
+    if (!ARTIFACT_TYPES.test(file)) add("error", "SPEC_ARTIFACT_TYPE", `${file}: local-files-v1 supports source files (JavaScript, TypeScript, Python, C and C++), json, html, css, txt and md.`, specPath);
+  }
+  const suite = suiteFiles(compiled.spec);
+  if (suite.length > MAX_SUITE_FILES) add("error", "SPEC_TEST_LIMIT", `Declare at most ${MAX_SUITE_FILES} test files.`, specPath);
+  for (const file of suite) {
+    try { relativePath(file); } catch { add("error", "SPEC_TEST_PATH", `${file}: use a path relative to the contract's folder, without spaces, hidden folders or "..".`, specPath); }
   }
   for (const gate of compiled.spec.gates) {
-    if (compiled.spec.evaluator !== "calculator-v1" || !supportedEvaluators.has(gate.evaluatorId)) {
+    if (!gate.check && (compiled.spec.evaluator !== "calculator-v1" || !supportedEvaluators.has(gate.evaluatorId))) {
       add("warning", "SPEC_EVALUATOR_UNREGISTERED", `No trusted evaluator is registered for ${gate.evaluatorId}: the gate ${gate.id} will be Unknown and cannot pass.`, specPath);
     }
   }
@@ -51,7 +86,7 @@ const runId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new Synth
 // Synthesis turns produce structured source/JSON and should not inherit a creative chat profile.
 const synthesisSampling = resolveLocalGenerationSettings(preciseLocalGenerationSettings()).sampling;
 function publicRun(record: RunRecord): SynthesisRun {
-  const {files, baseline, specSource, flowSource, rootPath, specHash, spec, flow, version, outputPath, ...run} = record;
+  const {files, baseline, specSource, flowSource, rootPath, specHash, spec, flow, version, outputPath, frozen, suite, suiteHash, ...run} = record;
   return run;
 }
 
@@ -123,6 +158,12 @@ export class SynthesisService {
       // What Run would refuse is shown before it: the module is not "valid" only to fail at Run.
       ...(compiled.diagnostics.some(item => item.severity === "error") ? [] : profileDiagnostics(compiled, specPath, flowPath))];
     if (compiled.spec?.module !== name) diagnostics.push({severity: "error", code: "MODULE_NAME", message: "Filename and module declaration must match.", file: specPath, line: 1, column: 1});
+    const folder = path.posix.dirname(specPath);
+    for (const file of compiled.spec ? suiteFiles(compiled.spec) : []) {
+      const relative = folder === "." ? file : `${folder}/${file}`;
+      try { await fs.access(await containedPath(project.rootPath, relative)); }
+      catch { diagnostics.push({severity: "error", code: "SPEC_TEST_MISSING", message: `Test file ${file} was not found next to the contract (${relative}).`, file: specPath, line: 1, column: 1}); }
+    }
     return {id, name: compiled.spec?.module ?? name, specPath, flowPath, specSource, flowSource, valid: !diagnostics.some(item => item.severity === "error"), diagnostics};
   }
   async createModule(projectId: string, name = "Calculator", options: {template?: ModuleTemplate; directory?: string} = {}): Promise<SynthesisModule> {
@@ -131,8 +172,8 @@ export class SynthesisService {
     const relative = directory ? `${directory}/${name}` : name;
     const sources = moduleSources(sourceId(`${relative}/${name}`));
     const folder = await containedPath(project.rootPath, relative);
-    if (options.template !== undefined && options.template !== "calculator" && options.template !== "empty") throw new SynthesisError("Choose an empty module or calculator template.");
-    const template = options.template === "empty" ? emptyModuleTemplate(name) : calculatorTemplate(name);
+    if (options.template !== undefined && !["calculator", "empty", "rate-limiter"].includes(options.template)) throw new SynthesisError("Choose an empty module, the calculator or the rate limiter template.");
+    const template: ModuleFiles = options.template === "empty" ? emptyModuleTemplate(name) : options.template === "rate-limiter" ? rateLimiterTemplate(name) : calculatorTemplate(name);
     // Check both final paths before any mutation (including path length limits).
     const specFile = await containedPath(project.rootPath, sources.specPath);
     const flowFile = await containedPath(project.rootPath, sources.flowPath);
@@ -141,6 +182,12 @@ export class SynthesisService {
     try { await fs.mkdir(folder); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new SynthesisError(`This module already exists at ${relative}. Choose another name or folder; existing files were not changed.`, 409); throw error; }
     await fs.writeFile(specFile, template.spec, {flag: "wx"});
     await fs.writeFile(flowFile, template.flow, {flag: "wx"});
+    // The template's tests go next to the contract, as an engineer's would.
+    for (const [file, content] of Object.entries(template.tests ?? {})) {
+      const target = await containedPath(project.rootPath, `${relative}/${file}`);
+      await fs.mkdir(path.dirname(target), {recursive: true});
+      await fs.writeFile(target, content, {flag: "wx"});
+    }
     return this.module(projectId, sourceId(`${relative}/${name}`));
   }
   async editorPath(projectId: string, id?: string, file?: "spec" | "flow"): Promise<string> {
@@ -167,7 +214,7 @@ export class SynthesisService {
     if (existing) return existing;
     const record = await this.read(id);
     if (activeStatus(record.status) || record.status === "accepted") throw new SynthesisError("Only unsuccessful or interrupted runs may be restarted.", 409);
-    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, options);
+    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, options, record.suite);
   }
   /** A run, if one with this id exists. */
   async existing(id: string): Promise<SynthesisRun | undefined> {
@@ -177,18 +224,18 @@ export class SynthesisService {
   activeCount(): number { return this.active.size + this.reservations; }
   /** The server is draining: no new run starts; running ones finish. */
   stopAccepting(): void { this.accepting = false; }
-  private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, options: LaunchOptions): Promise<SynthesisRun> {
+  private launch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, options: LaunchOptions, suite?: Record<string, string>): Promise<SynthesisRun> {
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     if (!this.accepting) throw new SynthesisError("The server is shutting down. Try again when it is back.", 409);
     if (this.active.size + this.reservations >= 2) throw new SynthesisError("At most two Synthesis runs may execute concurrently.", 409);
     this.reservations++;
-    const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom, options).finally(() => {
+    const pending = this.prepareLaunch(projectId, id, specSource, flowSource, restartedFrom, options, suite).finally(() => {
       this.reservations--; this.pendingStarts.delete(pending);
     });
     this.pendingStarts.add(pending);
     return pending;
   }
-  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, {runId: reservedId, device}: LaunchOptions): Promise<SynthesisRun> {
+  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, {runId: reservedId, device}: LaunchOptions, frozenSuite?: Record<string, string>): Promise<SynthesisRun> {
     const project = await this.project(projectId);
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     const compiled = compileProgram(specSource, flowSource);
@@ -197,15 +244,18 @@ export class SynthesisService {
     if (refusal) throw new SynthesisError(refusal.message);
     if (compiled.flow.limits.iterations > 32 || compiled.flow.limits.timeMs > 7200000) throw new SynthesisError("V1 supports at most 32 iterations and 120 minutes per run.");
     if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) throw new SynthesisError("Declare between 1 and 12 artifact files.");
-    for (const file of compiled.spec.artifacts) {
+    for (const file of [...compiled.spec.artifacts, ...compiled.spec.frozen]) {
       relativePath(file);
-      if (!/\.(?:js|html|css|txt|md)$/.test(file)) throw new SynthesisError("local-files-v1 supports only js, html, css, txt and md artifacts.");
+      if (!ARTIFACT_TYPES.test(file)) throw new SynthesisError(`${file}: local-files-v1 does not support this file type.`);
     }
+    // A restart runs the tests it was started with; a new run reads them now and keeps them.
+    const suite = frozenSuite ?? await this.readSuite(project.rootPath, id, compiled.spec);
     const record: RunRecord = {
       version: 1, id: reservedId ? runId(reservedId) : randomUUID(), projectId, moduleId: id, moduleName: compiled.spec.module,
       rootPath: project.rootPath, specSource, flowSource, specHash: hash(specSource), spec: compiled.spec, flow: compiled.flow,
       status: "queued", phase: "queued", iteration: 0, createdAt: stamp(), updatedAt: stamp(), restartedFrom, ...(device ? {startedBy: "device" as const} : {}),
-      files: {}, baseline: {}, events: [], models: [], usage: {inputTokens: 0, outputTokens: 0, calls: 0}
+      files: {}, baseline: {}, events: [], models: [], usage: {inputTokens: 0, outputTokens: 0, calls: 0},
+      frozen: {}, suite, ...(Object.keys(suite).length ? {suiteHash: filesHash(suite)} : {})
     };
     await this.save(record);
     if (this.disposed) {
@@ -216,6 +266,20 @@ export class SynthesisService {
     this.active.set(record.id, item);
     item.done = this.execute(record, item, device?.guard).finally(() => { this.active.delete(record.id); });
     return publicRun(record);
+  }
+  /** The contract's test files, next to its .lcspec: the model never writes them. */
+  private async readSuite(root: string, moduleId: string, spec: SpecProgram): Promise<Record<string, string>> {
+    const folder = path.posix.dirname(moduleSources(moduleId).specPath);
+    const suite: Record<string, string> = {};
+    let total = 0;
+    for (const file of suiteFiles(spec)) {
+      const relative = folder === "." ? file : `${folder}/${file}`;
+      try { suite[file] = await readText(await containedPath(root, relative)); }
+      catch (error) { throw new SynthesisError(isMissingFile(error) ? `Test file ${file} was not found next to the contract.` : `Test file ${file} could not be read.`); }
+      total += Buffer.byteLength(suite[file]);
+      if (total > MAX_SUITE_BYTES) throw new SynthesisError("The contract's test files may hold at most 512 KiB together.");
+    }
+    return suite;
   }
   async get(id: string): Promise<SynthesisRun> { return publicRun(await this.read(id)); }
   async sources(id: string): Promise<{specSource: string; flowSource: string; specHash: string}> {
@@ -253,7 +317,8 @@ export class SynthesisService {
     const requireCandidate = (value: unknown) => { if (value !== candidate || !record.outputPath) throw new SynthesisError("Expected the checked-out candidate."); };
     const requireSpec = (value: unknown) => { if (value !== spec) throw new SynthesisError("Expected the frozen module specification."); };
     const evidenceMatches = (value: unknown): value is Evidence => value === lastEvidence && !!lastEvidence &&
-      lastEvidence.candidateHash === filesHash(record.files) && lastEvidence.specHash === record.specHash && lastEvidence.evaluatorVersion === evaluatorVersion;
+      lastEvidence.candidateHash === filesHash(record.files) && lastEvidence.specHash === record.specHash && lastEvidence.evaluatorVersion === EVALUATOR_VERSION &&
+      lastEvidence.suiteHash === record.suiteHash;
     const call = async (name: string, args: unknown[], named: Record<string, unknown>, span: SourceSpan, receiver?: unknown): Promise<unknown> => {
       signal.throwIfAborted();
       await this.event(record, name, name, "running", {line: span.start.line, file: moduleSources(record.moduleId).flowPath});
@@ -306,6 +371,12 @@ export class SynthesisService {
             record.baseline[file] = await readOptional(target);
             if (record.baseline[file] !== null) record.files[file] = record.baseline[file]!;
           }
+          record.frozen = {};
+          for (const file of record.spec.frozen ?? []) {
+            const content = await readOptional(await containedPath(record.rootPath, `${relative}/${file}`));
+            if (content === null) throw new SynthesisError(`Frozen file ${file} is missing in ${relative}: the engineer writes it before the run.`);
+            record.frozen[file] = content;
+          }
           value = candidate; break;
         }
         case "inspect": {
@@ -335,13 +406,18 @@ export class SynthesisService {
           requireCandidate(args[0]); requireSpec(args[1]);
           // Every gate judges one snapshot, and the evidence names that snapshot's hash.
           const files = {...record.files};
+          const checkFiles = {candidate: files, frozen: record.frozen ?? {}, suite: record.suite ?? {}};
           const gates: Evidence["gates"] = [];
           for (const gate of record.spec.gates) {
             signal.throwIfAborted();
-            const result = record.spec.evaluator === "calculator-v1" && supportedEvaluators.has(gate.evaluatorId)
-              ? await evaluateCalculator(files, gate.evaluatorId)
-              : {status: "Unknown" as const, message: `No trusted evaluator registered for ${gate.evaluatorId}.`};
-            gates.push({id: gate.id, evaluator: gate.evaluatorId, severity: gate.severity, ...result});
+            if (gate.check?.kind === "tests") await this.event(record, `gate.${gate.id}`, `Running ${gate.check.files.join(", ")}`, "running");
+            const result: {status: Evidence["status"]; message: string; feedback?: string[]; cases?: EvidenceCase[]} = gate.check
+              ? await runCheck(gate.check, checkFiles, {...this.services.checks, signal})
+              : record.spec.evaluator === "calculator-v1" && supportedEvaluators.has(gate.evaluatorId)
+                ? await evaluateCalculator(files, gate.evaluatorId)
+                : {status: "Unknown", message: `No trusted evaluator registered for ${gate.evaluatorId}.`};
+            gates.push({id: gate.id, evaluator: gate.evaluatorId, severity: gate.severity, status: result.status, message: result.message,
+              ...(result.feedback?.length ? {feedback: result.feedback.slice(0, 8)} : {}), ...(result.cases?.length ? {cases: result.cases.slice(0, 100)} : {})});
             await this.event(record, `gate.${gate.id}`, `${result.status}: ${result.message}`, result.status === "Pass" ? "ok" : "failed");
           }
           if (!gates.some(gate => gate.severity === "hard")) gates.push({id: "acceptance", evaluator: "registry", severity: "hard", status: "Unknown", message: "At least one trusted hard evaluator is required."});
@@ -352,14 +428,15 @@ export class SynthesisService {
           if (missing.length) await this.event(record, "gate.artifacts", `Fail: missing ${missing.join(", ")}`, "failed");
           const hard = gates.filter(gate => gate.severity === "hard");
           const status = hard.some(gate => gate.status === "Fail") ? "Fail" : hard.some(gate => gate.status === "Unknown") ? "Unknown" : "Pass";
-          lastEvidence = {candidateHash: filesHash(files), specHash: record.specHash, evaluatorVersion, status, gates};
+          lastEvidence = {candidateHash: filesHash(files), specHash: record.specHash, evaluatorVersion: EVALUATOR_VERSION,
+            ...(record.suiteHash ? {suiteHash: record.suiteHash} : {}), status, gates};
           evaluationSignatures.push(hash(JSON.stringify(gates.map(gate => [gate.id, gate.status, gate.message]))));
           record.evidence = lastEvidence; value = lastEvidence; break;
         }
         case "verify": {
           requireSpec(args[0]);
           if (!evidenceMatches(args[1])) throw new SynthesisError("Evidence is missing or stale; evaluate the exact current candidate.");
-          value = {status: lastEvidence!.status, violations: [...lastEvidence!.gates.filter(gate => gate.status !== "Pass").map(gate => `${gate.id}: ${gate.message}`), ...generationErrors]}; break;
+          value = {status: lastEvidence!.status, violations: violations(lastEvidence!, generationErrors)}; break;
         }
         case "checkpoint":
           await writeJsonAtomically(path.join(this.directory, "checkpoints", `${record.id}-${record.events.at(-1)!.sequence}.json`), record);
@@ -417,25 +494,32 @@ export class SynthesisService {
     const files = selected === undefined ? record.spec.artifacts : [String(selected)];
     if (files.some(file => !record.spec.artifacts.includes(file))) throw new SynthesisError("Role may revise only declared artifact files.");
     const errors: string[] = [];
+    // The rails a small model writes along: the engineer's frozen interfaces and visible tests.
+    const frozen = Object.entries(record.frozen ?? {});
+    const visibleTests = record.spec.gates.flatMap(gate => gate.check?.kind === "tests" && !gate.check.hidden ? gate.check.files : [])
+      .filter(name => Object.hasOwn(record.suite ?? {}, name));
+    // The flow passes verdict.violations: exact items read best as a numbered list.
+    const items = feedback.flat(2).filter((item): item is string => typeof item === "string");
+    const feedbackText = items.length ? items.map((item, index) => `${index + 1}. ${item}`).join("\n").slice(0, 4500) : JSON.stringify(feedback).slice(0, 4500);
+    const web = (name: string) => /\.(?:js|html|css)$/.test(name);
     for (const file of files) {
       signal.throwIfAborted();
       await this.event(record, "agent.generate", `Writing ${file}`, "running", {model: model.displayName, file});
       const prompt = [
-        `Implement only the file ${file}. Other files: ${record.spec.artifacts.filter(item => item !== file).join(", ")}.`,
-        file.endsWith(".css") ? "This task is ONLY a short CSS stylesheet, at most 40 simple rules. Do not put JavaScript or HTML in CSS. Other files handle all behavior. Avoid repetition."
-          : file.endsWith(".html") ? "This task is ONLY the HTML document. Use the required element IDs. Load the peer JavaScript once after all controls. Do not duplicate logic already present in peer JavaScript."
-          : file.endsWith(".js") ? "This task is ONLY JavaScript. Implement the public functions and event handlers required by the contract; no HTML or CSS."
-          : "Write only the requested file's contents; do not include other files or explanations.",
+        `Implement only the file ${file}. Other files: ${record.spec.artifacts.filter(item => item !== file).join(", ") || "none"}.`,
+        LANGUAGE_HINTS.find(([pattern]) => pattern.test(file))?.[1] ?? "Write only the requested file's contents; do not include other files or explanations.",
         options.instruction ? `Module: ${record.spec.module}. This scoped task is supplied by the authored flow; the full contract is independently verified after generation.`
           : `Contract: ${record.spec.description}`,
+        frozen.length ? `Frozen interface files, written by the engineer: implement them exactly and never change them.\n${frozen.map(([name, content]) => `--- ${name}\n${content}`).join("\n").slice(0, 8000)}` : "",
+        visibleTests.length ? `The engineer's tests that must pass (they import the module's files; do not copy them into the file):\n${visibleTests.map(name => `--- ${name}\n${record.suite![name]}`).join("\n").slice(0, 6000)}` : "",
         format === "source" ? "Return ONLY the complete source code of this file. No JSON. No explanations. At most one code fence."
           : "Return an object with exactly one key, content, containing the complete file text. No markdown fences inside content. Do not explain.",
         `Current file:\n${(record.files[file] ?? "(empty)").slice(0, 10000)}`,
         options.instruction ? "" : `Peer file context:\n${JSON.stringify(Object.fromEntries(Object.entries(record.files).filter(([name]) => name !== file).map(([name, content]) => [name, content.slice(0, 4000)]))).slice(0, 10000)}`,
-        `Feedback from trusted tests: ${JSON.stringify(feedback).slice(0, 4500)}`,
+        `Feedback from trusted tests: ${feedbackText}`,
         options.instruction ? `Your focused task for this file:\n${options.instruction}` : "",
-        `Use plain, minimal code under 100 lines. Finish ${format === "json" ? "the JSON object" : "the response"} as soon as this single file is complete. /no_think`
-      ].join("\n\n");
+        `${web(file) ? "Use plain, minimal code under 100 lines." : "Keep the code plain and as short as the contract allows."} Finish ${format === "json" ? "the JSON object" : "the response"} as soon as this single file is complete. /no_think`
+      ].filter(Boolean).join("\n\n");
       const request = {
         usagePurpose: "synthesis", model: model.id, signal, prompt, systemPrompt: `You implement only ${file}, one small file of a software module. Follow the exact public interface in the contract. The contract describes the whole module; implement only this file's responsibility. ${format === "json" ? "Output only JSON with a content string." : "Output only source code, not JSON or explanations."}`,
         temperature: 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1, maxTokens: 2600, localReasoningBudget: 0, sampling: synthesisSampling
@@ -445,7 +529,8 @@ export class SynthesisService {
       if (format === "source") {
         response = await this.services.llm.generateText(request, model.providerId);
         const text = response.text.trim();
-        const fenced = /^```[\w-]*\s*\n([\s\S]*?)\n```$/.exec(text);
+        // A language label may hold symbols: ```c++, ```c#, ```objective-c.
+        const fenced = /^```[\w+#.-]*\s*\n([\s\S]*?)\n```$/.exec(text);
         const source = fenced ? fenced[1] : text;
         // No extraction from prose or multiple files: ambiguous output remains a failed attempt.
         if (!source.includes("```") && source && (!text.includes("```") || fenced)) content = source;
@@ -479,7 +564,7 @@ export class SynthesisService {
     const first = await this.read(id);
     await withFileLock(path.join(first.rootPath, ".synthesis-apply-lock"), async () => {
       const record = await this.read(id); const project = await this.project(record.projectId);
-      if (this.active.has(id) || project.rootPath !== record.rootPath || record.status !== "accepted" || record.appliedAt || !record.outputPath || record.evidence?.status !== "Pass" || record.evidence.candidateHash !== filesHash(record.files) || record.evidence.specHash !== record.specHash || record.evidence.evaluatorVersion !== evaluatorVersion) throw new SynthesisError("Only a fresh accepted, unapplied candidate can be applied.", 409);
+      if (this.active.has(id) || project.rootPath !== record.rootPath || record.status !== "accepted" || record.appliedAt || !record.outputPath || record.evidence?.status !== "Pass" || record.evidence.candidateHash !== filesHash(record.files) || record.evidence.specHash !== record.specHash || record.evidence.evaluatorVersion !== EVALUATOR_VERSION) throw new SynthesisError("Only a fresh accepted, unapplied candidate can be applied.", 409);
       const targets: Array<{file: string; target: string; after: string}> = [];
       for (const [file, after] of Object.entries(record.files)) {
         const target = await containedPath(record.rootPath, `${record.outputPath}/${file}`);

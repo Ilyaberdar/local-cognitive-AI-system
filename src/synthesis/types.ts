@@ -12,9 +12,14 @@ export interface ActivityEvent {
   status: "running" | "ok" | "failed"; detail?: string; model?: string; file?: string; line?: number;
 }
 export type VerdictStatus = "Pass" | "Fail" | "Unknown";
+export interface EvidenceCase { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }
 export interface Evidence {
   candidateHash: string; specHash: string; evaluatorVersion: string; status: VerdictStatus;
-  gates: Array<{id: string; evaluator: string; status: VerdictStatus; message: string; severity: "hard" | "soft"}>;
+  /** The contract's test files as frozen at launch (contracts with Tests gates). */
+  suiteHash?: string;
+  gates: Array<{id: string; evaluator: string; status: VerdictStatus; message: string; severity: "hard" | "soft";
+    /** What the model reads next for this gate; the test cases a Tests gate ran. */
+    feedback?: string[]; cases?: EvidenceCase[]}>;
 }
 export interface SynthesisRun {
   id: string; projectId: string; moduleId: string; moduleName: string; status: RunStatus;
@@ -29,6 +34,8 @@ export interface RunRecord extends SynthesisRun {
   version: 1; rootPath: string; specSource: string; flowSource: string; specHash: string;
   spec: SpecProgram; flow: FlowProgram; outputPath?: string;
   files: Record<string, string>; baseline: Record<string, string | null>;
+  /** The engineer's frozen files, read at checkout; the contract's test files, read at launch. */
+  frozen?: Record<string, string>; suite?: Record<string, string>; suiteHash?: string;
 }
 export class SynthesisError extends Error {
   constructor(message: string, public readonly statusCode = 400) { super(message); }

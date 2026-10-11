@@ -9,12 +9,14 @@ export const runCommand = (
   cwd: string,
   timeoutMs: number,
   signal?: AbortSignal,
-  onOutput?: CommandOutputHandler
+  onOutput?: CommandOutputHandler,
+  /** `env` replaces the app's own environment (a sandboxed check passes only what it allows). */
+  options: { env?: NodeJS.ProcessEnv } = {}
 ): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean }> =>
   new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const grouped = process.platform !== "win32";
-    const child = spawn(executable, args, { cwd, shell: false, env: childProcessEnv(), detached: grouped });
+    const child = spawn(executable, args, { cwd, shell: false, env: options.env ?? childProcessEnv(), detached: grouped });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

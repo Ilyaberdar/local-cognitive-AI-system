@@ -20,7 +20,7 @@ const schemas = {
   project: z.object({ projectId: id }).strict(),
   module: z.object({ projectId: id, moduleId }).strict(),
   folders: z.object({ projectId: id, directory: z.string().max(240).optional() }).strict(),
-  create: z.object({ commandId, projectId: id, template: z.enum(["empty", "calculator"]), name: z.string().min(1).max(64).optional(),
+  create: z.object({ commandId, projectId: id, template: z.enum(["empty", "calculator", "rate-limiter"]), name: z.string().min(1).max(64).optional(),
     directory: z.string().max(240).optional() }).strict(),
   run: z.object({ runId }).strict(),
   get: z.object({ runId, after: z.number().int().nonnegative().optional() }).strict(),
@@ -128,7 +128,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
       const input = parse(schemas.create, payload);
       return known(input.projectId, () => command(context, "synthesis.modules.create", input, () => known(input.projectId, async () => {
         await requireProject(input.projectId, true);
-        const name = input.name ?? (input.template === "empty" ? "NewModule" : "Calculator");
+        const name = input.name ?? (input.template === "empty" ? "NewModule" : input.template === "rate-limiter" ? "RateLimiter" : "Calculator");
         return safeModule(await service().createModule(input.projectId, name, { template: input.template, ...(input.directory !== undefined ? { directory: input.directory } : {}) }),
           await scrubberFor(input.projectId), true);
       })));

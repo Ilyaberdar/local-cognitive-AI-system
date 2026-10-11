@@ -146,6 +146,13 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-gate__detail { padding: 0 0 12px 24px; color: var(--muted); overflow-wrap: anywhere; }
 .synthesis-gate__detail p { margin: 0 0 8px; font-size: var(--text-caption); }
 .synthesis-gate__detail > span { display: block; color: var(--faint); font-size: calc(10px * var(--font-scale, 1)); margin-bottom: 2px; }
+.synthesis-gate__cases { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 4px; }
+.synthesis-gate__cases li { display: flex; gap: 6px; align-items: flex-start; font-size: var(--text-caption); }
+.synthesis-gate__cases li svg { flex: none; width: 12px; height: 12px; margin-top: 2px; }
+.synthesis-gate__cases li.is-pass svg { color: var(--success); }
+.synthesis-gate__cases li.is-fail svg { color: var(--danger); }
+.synthesis-gate__cases strong { display: block; font-weight: 500; color: var(--text); }
+.synthesis-gate__cases small { display: block; color: var(--muted); overflow-wrap: anywhere; }
 .synthesis-gate__detail code { font: calc(11px * var(--font-scale, 1))/1.5 var(--font-mono); }
 .synthesis-inspector-disclosure { padding: 15px 0; border-bottom: 1px solid var(--line); }
 .synthesis-inspector-disclosure:last-child { border-bottom: 0; }

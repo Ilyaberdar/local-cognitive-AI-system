@@ -1,5 +1,5 @@
 import {
-  CallExpression, CompileOptions, Diagnostic, Expression, FlowProgram, SourceSpan, SpecProgram, Statement
+  CallExpression, CompileOptions, ContractCheck, Diagnostic, Expression, FlowProgram, SourceSpan, SpecProgram, Statement
 } from "./types";
 
 type ValueType = "string" | "number" | "boolean" | "none" | "duration" | "bytes" | "cost" |
@@ -63,25 +63,71 @@ export function analyzeSpec(spec: SpecProgram, options: CompileOptions = {}): Di
     gates.add(gate.id);
     if (!gate.evaluatorId.trim()) error("SPEC_EVALUATOR_ID", "Evaluator IDs must not be empty.", gate.span);
   }
-  const artifacts = new Set<string>();
-  for (const artifact of spec.artifacts) {
-    if (!artifact || artifact.startsWith("/") || artifact.includes("\\") || artifact.includes(":") || artifact.split("/").some((part) => ["", ".", ".."].includes(part))) {
-      error("SPEC_ARTIFACT_PATH", `Artifact '${artifact}' must be a normalized relative file path.`);
-    }
-    if (artifacts.has(artifact)) error("SPEC_DUPLICATE_ARTIFACT", `Duplicate artifact '${artifact}'.`);
-    artifacts.add(artifact);
-  }
+  const normalized = (file: string) => !!file && !file.startsWith("/") && !file.includes("\\") && !file.includes(":") && !file.split("/").some((part) => ["", ".", ".."].includes(part));
+  // Artifacts and frozen files share the checkout folder, and the test files join them in one folder
+  // when the tests run: a path may appear only once across the three.
+  const paths = new Map<string, string>();
+  const claim = (file: string, kind: string, code: string) => {
+    if (!normalized(file)) error(code, `${kind} '${file}' must be a normalized relative file path.`);
+    const previous = paths.get(file);
+    if (previous) error(previous === kind ? "SPEC_DUPLICATE_ARTIFACT" : "SPEC_PATH_CONFLICT", previous === kind ? `Duplicate ${kind.toLowerCase()} '${file}'.` : `'${file}' is both ${previous.toLowerCase()} and ${kind.toLowerCase()}: each path may appear once.`);
+    else paths.set(file, kind);
+  };
+  for (const file of spec.artifacts) claim(file, "Artifact", "SPEC_ARTIFACT_PATH");
+  for (const file of spec.frozen ?? []) claim(file, "Frozen file", "SPEC_ARTIFACT_PATH");
+  const suite = new Set(spec.tests ?? []);
+  for (const gate of spec.gates) if (gate.check?.kind === "tests") gate.check.files.forEach((file) => suite.add(file));
+  for (const file of suite) claim(file, "Test file", "SPEC_TEST_PATH");
+  for (const gate of spec.gates) if (gate.check) checkGate(gate.check, gate.span);
+
   const supported = new Set(options.supportedSpecSections ?? []);
   for (const section of spec.sections) {
     if (!supported.has(section.name)) error("SPEC_UNSUPPORTED_SECTION", `Section '${section.name}' is preserved as source, but requires a trusted evaluator adapter before it can be accepted.`, section.span);
   }
   // Target metadata must also be honored: accepting engine/platform claims without an adapter is misleading.
   for (const [key, value] of Object.entries(spec.target)) {
-    if (key === "language" && ["JavaScript", "Javascript", "JS"].includes(String(value))) continue;
+    if (key === "language" && TARGET_LANGUAGES.has(String(value))) continue;
     if (supported.has(`target.${key}`)) continue;
-    error("SPEC_UNSUPPORTED_TARGET", `Target '${key} = ${String(value)}' requires a registered target adapter.`);
+    error("SPEC_UNSUPPORTED_TARGET", key === "language"
+      ? `Target language '${String(value)}' is not supported: use JavaScript, TypeScript, Python or Cpp.`
+      : `Target '${key} = ${String(value)}' requires a registered target adapter.`);
   }
   return diagnostics;
+
+  function checkGate(check: ContractCheck, span: SourceSpan): void {
+    const artifact = (file: string) => spec.artifacts.includes(file) || (spec.frozen ?? []).includes(file);
+    switch (check.kind) {
+      case "tests": {
+        const runners = new Set(check.files.map(testRunner));
+        if (runners.has(undefined)) error("SPEC_TEST_TYPE", "Test files run as .ts/.mts/.js/.mjs/.cjs (Node.js), .py (Python) or .cpp/.cc/.cxx (C++).", span);
+        else if (runners.size > 1) error("SPEC_TEST_TYPE", "One Tests gate runs files of one language; split them into several gates.", span);
+        if (check.timeoutMs !== undefined && (check.timeoutMs < 1000 || check.timeoutMs > 120000)) error("SPEC_TEST_TIMEOUT", "Tests timeout must be between 1s and 120s.", span);
+        break;
+      }
+      case "exports":
+        if (!artifact(check.file)) error("SPEC_CHECK_FILE", `Exports names '${check.file}', which is neither an artifact nor a frozen file.`, span);
+        for (const symbol of check.symbols) if (!/^[A-Za-z_$][A-Za-z0-9_$]*(::[A-Za-z_][A-Za-z0-9_]*)*$/.test(symbol)) error("SPEC_CHECK_SYMBOL", `'${symbol}' is not a symbol name.`, span);
+        break;
+      case "imports":
+        if (!check.pattern || [...check.allow, ...check.deny].some((item) => !item || item.length > 200)) error("SPEC_CHECK_PATTERN", "Imports patterns must be non-empty, at most 200 characters.", span);
+        break;
+      case "forbid":
+        if (!check.pattern) error("SPEC_CHECK_PATTERN", "Forbid needs a file pattern.", span);
+        if (!check.regex || check.regex.length > 300) error("SPEC_CHECK_PATTERN", "Forbid's pattern must be 1–300 characters.", span);
+        else try { new RegExp(check.regex, "gm"); } catch (failure) { error("SPEC_CHECK_PATTERN", `Forbid's pattern is not a valid regular expression: ${(failure as Error).message}`, span); }
+        if ((check.message?.length ?? 0) > 200) error("SPEC_CHECK_PATTERN", "Forbid's message must be at most 200 characters.", span);
+        break;
+    }
+  }
+}
+
+const TARGET_LANGUAGES = new Set(["JavaScript", "Javascript", "JS", "TypeScript", "Typescript", "TS", "Python", "Cpp", "CPP"]);
+/** Which runner a test file needs, by its extension. */
+export function testRunner(file: string): "node" | "python" | "cpp" | undefined {
+  if (/\.(?:ts|mts|js|mjs|cjs)$/.test(file)) return "node";
+  if (/\.py$/.test(file)) return "python";
+  if (/\.(?:cpp|cc|cxx)$/.test(file)) return "cpp";
+  return undefined;
 }
 
 export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, options: CompileOptions = {}): Diagnostic[] {

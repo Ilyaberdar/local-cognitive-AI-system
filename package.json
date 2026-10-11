@@ -155,7 +155,7 @@
       },
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "13.3",
       "artifactName": "Local-Cognitive-${version}-${arch}-mac.${ext}"
     },
     "win": {

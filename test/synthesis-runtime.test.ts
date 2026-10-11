@@ -460,7 +460,7 @@ test("what Run would refuse is shown on the module before Run, and an unregister
   const f = await fixture(t);
   const files = Array.from({ length: 13 }, (_, index) => `        file "part${index}.js";`).join("\n");
   await f.writeSources({
-    spec: `module Calculator version "1" {\n    description = "Too much.";\n\n    artifacts {\n${files}\n        file "main.ts";\n        file "my file.js";\n    }\n\n    evaluate "calculator-v1" {\n        hard arithmetic = Pass("calculator-arithmetic-v1");\n    }\n}\n`,
+    spec: `module Calculator version "1" {\n    description = "Too much.";\n\n    artifacts {\n${files}\n        file "main.rb";\n        file "my file.js";\n    }\n\n    evaluate "calculator-v1" {\n        hard arithmetic = Pass("calculator-arithmetic-v1");\n    }\n}\n`,
     flow: calculatorTemplate("Calculator", "compact").flow.replace("limit iterations 6, time 15m", "limit iterations 40, time 180m")
   });
   const module = await f.service.module(f.project.id, "Calculator");

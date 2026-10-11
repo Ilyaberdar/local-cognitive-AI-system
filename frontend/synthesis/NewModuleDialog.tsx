@@ -3,7 +3,7 @@ import { encode, errorMessage, isAbort, synthesisRequest } from "./api";
 import { SynthesisIcon } from "./SynthesisIcon";
 import type { SynthesisModule, SynthesisProject } from "./types";
 
-export interface NewModuleInput { name: string; template: "empty" | "calculator"; directory: string }
+export interface NewModuleInput { name: string; template: "empty" | "calculator" | "rate-limiter"; directory: string }
 
 export function NewModuleDialog({ project, modules, onCreated, onClose, request = synthesisRequest }: {
   project: SynthesisProject; modules: SynthesisModule[];
@@ -89,10 +89,10 @@ export function NewModuleDialog({ project, modules, onCreated, onClose, request 
         </p>
         <label className="synthesis-create-field" htmlFor="synthesis-module-template">Template
           <select id="synthesis-module-template" value={template} disabled={busy} onChange={event => setTemplate(event.target.value as NewModuleInput["template"])}>
-            <option value="empty">Empty module</option><option value="calculator">Calculator example</option>
+            <option value="empty">Empty module</option><option value="calculator">Calculator example</option><option value="rate-limiter">Rate limiter (TypeScript, with tests)</option>
           </select>
         </label>
-        <p className="synthesis-form-hint">{template === "empty" ? "A neutral starter. Define the contract, agents and trusted evaluators before running." : "A working HTML/CSS/JavaScript example with built-in calculator checks. Prefers an installed 7B model."}</p>
+        <p className="synthesis-form-hint">{template === "empty" ? "A neutral starter. Define the contract, agents and trusted evaluators before running." : template === "rate-limiter" ? "A TypeScript module checked by its shape, its dependencies and your own tests, which the model reads but never writes. Needs Node.js 22.18 or newer." : "A working HTML/CSS/JavaScript example with built-in calculator checks. Prefers an installed 7B model."}</p>
         <label className="synthesis-create-field" htmlFor="synthesis-module-directory">Folder inside project</label>
         <div className="synthesis-directory-control"><input id="synthesis-module-directory" value={directory} disabled={busy} onChange={event => { setDirectory(event.target.value); setError(""); }} placeholder="Synthesis" spellCheck={false} aria-invalid={Boolean(pathError)} aria-describedby="synthesis-directory-hint" />
           <button type="button" disabled={busy} onClick={() => { setLocation(""); setBrowsing(value => !value); }} aria-expanded={browsing}><SynthesisIcon name="folder" />Browse</button>

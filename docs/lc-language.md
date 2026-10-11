@@ -6,7 +6,7 @@ An LC program has two authored files:
 
 | File | Purpose |
 | --- | --- |
-| `ModuleName.lcspec` | Define what the generated module must satisfy: its description, output files, and acceptance gates. |
+| `ModuleName.lcspec` | Define what the generated module must satisfy: its description, output files, frozen interfaces, and acceptance gates, including the engineer's own tests and architecture rules. |
 | `ModuleName.lcflow` | Define how to construct it: select models, assign roles, generate files, evaluate, branch, and repeat. |
 
 LC Flow is an interpreted programming language with variables, expressions, conditionals, and loops. It is **not JSON**, JavaScript, or a shell script. Calls are restricted to the runtime actions documented below.
@@ -18,6 +18,7 @@ The generated source code is a candidate implementation. An agent's statement th
 - [Quick start: a complete calculator program](#quick-start-a-complete-calculator-program)
 - [Basic syntax](#basic-syntax)
 - [LC Spec reference](#lc-spec-reference)
+- [Contracts on rails: tests and architecture gates](#contracts-on-rails-tests-and-architecture-gates)
 - [LC Flow reference](#lc-flow-reference)
 - [Runtime functions](#runtime-functions)
 - [Model role methods](#model-role-methods)
@@ -208,9 +209,9 @@ The version must be a nonempty string. It is authored metadata, not a package re
 
 ### `target`
 
-The current application accepts only `language = JavaScript;`, with `Javascript` and `JS` as aliases. Omitting `target` is also allowed.
+The application accepts `language = JavaScript;` (aliases `Javascript`, `JS`), `TypeScript` (`TS`), `Python` and `Cpp`. The language tells the model what it writes; each test file's extension decides how it runs. Omitting `target` is also allowed.
 
-Target fields use scalar values or bare identifiers, not expressions, arrays, or unit quantities. Additional targets such as `engine = UnrealEngine;` and `language = Cpp;` require an adapter and are rejected by the current compiler configuration.
+Target fields use scalar values or bare identifiers, not expressions, arrays, or unit quantities. Other targets, such as `engine = UnrealEngine;`, require an adapter and are rejected by the current compiler configuration.
 
 ### `description`
 
@@ -220,11 +221,20 @@ This field is natural-language model context, not a proof system. A requirement 
 
 ### `artifacts`
 
-Declare each generated file with `file "relative/path.ext";` inside `artifacts { ... }`. Paths are relative to the flow's `checkout(...)` directory, not to the `Synthesis` directory.
+Declare each file the model writes with `file "relative/path.ext";` inside `artifacts { ... }`, and each file the engineer wrote, such as an interface the model must implement, with `frozen "relative/path.ext";`. Paths are relative to the flow's `checkout(...)` directory, not to the `Synthesis` directory.
 
 For example, `file "calculator.js";` combined with `checkout("calculator")` produces `<project>/calculator/calculator.js` after Apply.
 
-The runtime allows 1–12 declared files, with lowercase `.js`, `.html`, `.css`, `.txt`, or `.md` extensions. Files cannot be added outside this list by a model. Paths must also satisfy the [project path restrictions](#project-path-restrictions). These limits, and the flow's iteration and time limits, are reported as diagnostics when the module is listed or refreshed (`SPEC_ARTIFACT_LIMIT`, `SPEC_ARTIFACT_TYPE`, `SPEC_ARTIFACT_PATH`, `FLOW_LIMIT_RANGE`), so a module that Run would refuse is never shown as valid.
+A frozen file must exist in the checkout folder when the run checks it out. The model reads its full text in every revision and may not change it: `revise` refuses it, and Apply leaves it as it is.
+
+```text
+artifacts {
+    frozen "include/AbilitySystem.h";   // the engineer's interface
+    file "src/AbilitySystem.cpp";       // the model's implementation
+}
+```
+
+The runtime allows 1–12 files the model writes and up to 12 frozen files, with lowercase extensions: `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.py`, `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, `.hxx`, `.inl`, `.json`, `.html`, `.css`, `.txt` and `.md`. Files cannot be added outside this list by a model. Paths must also satisfy the [project path restrictions](#project-path-restrictions). These limits, and the flow's iteration and time limits, are reported as diagnostics when the module is listed or refreshed (`SPEC_ARTIFACT_LIMIT`, `SPEC_ARTIFACT_TYPE`, `SPEC_ARTIFACT_PATH`, `FLOW_LIMIT_RANGE`), so a module that Run would refuse is never shown as valid.
 
 Every declared file is part of the contract: a candidate missing one, or with an empty one, fails an implicit hard gate named `artifacts` even when every declared gate passes. A run cannot be accepted with part of its files.
 
@@ -236,11 +246,16 @@ Gate syntax:
 
 ```text
 hard gate_name = Pass("registered-evaluator-id");
-soft gate_name = Pass("registered-evaluator-id");
+hard gate_name = Tests("tests/a.test.ts", timeout = 30s);
+hard gate_name = Exports("src/a.ts", ["Name"]);
+hard gate_name = Imports("src/**", allow = ["src/**"], deny = ["node:*"]);
+hard gate_name = Forbid("src/**", "Date\\.now", message = "take the time from options.now()");
+soft gate_name = Tests("tests/holdout.test.ts", hidden = true);
 ```
 
 - `gate_name` is an identifier used in diagnostics and evidence; gate names must be unique.
-- `Pass(...)` declares a required evaluator result. It is not a function you implement in the flow.
+- `Pass(...)` declares a required result of a registered evaluator. It is not a function you implement in the flow.
+- `Tests`, `Exports`, `Imports` and `Forbid` are the built-in contract checks: see [Contracts on rails](#contracts-on-rails-tests-and-architecture-gates). They work in any acceptance group; the examples use `"contract-v1"`.
 - `hard` gates determine acceptance. Any hard Fail produces Fail; otherwise any hard Unknown produces Unknown; otherwise the verdict is Pass.
 - `soft` gates are evaluated and reported but do not prevent acceptance, including when they return Fail or Unknown. Their non-Pass messages still appear in `verdict.violations`.
 
@@ -251,9 +266,99 @@ The built-in acceptance group is `"calculator-v1"`, with these evaluator IDs:
 | `"calculator-arithmetic-v1"` | The global `calculate(a, b, operation)` function, arithmetic cases, and division-by-zero behavior. |
 | `"calculator-ui-v1"` | Required HTML controls, labels and resources, script placement, and interactions in a bounded semantic DOM harness. |
 
-These checks are provided by the application, not generated by the developer model. The UI harness is not a full browser or visual-quality test. A different group name or an unregistered evaluator ID returns Unknown at runtime (and the module shows a `SPEC_EVALUATOR_UNREGISTERED` warning); changing a string does not install a new evaluator.
+These checks are provided by the application, not generated by the developer model. The UI harness is not a full browser or visual-quality test. For a `Pass(...)` gate, a different group name or an unregistered evaluator ID returns Unknown at runtime (and the module shows a `SPEC_EVALUATOR_UNREGISTERED` warning); changing a string does not install a new evaluator.
 
 `environment`, `workload`, and `soft minimize Mean(...)` from the research examples are **not executable V1 features**.
+
+### `tests`
+
+The engineer's test files live next to the contract, by path relative to the `.lcspec` folder, and the model never writes them. A `Tests(...)` gate names the files it runs; declare files the tests only use, such as fixtures or shared helpers, in a `tests` section:
+
+```text
+tests {
+    file "tests/helpers.ts";
+}
+```
+
+A run reads every test file when it starts and keeps that copy: editing them during a run changes nothing, and a restart uses the same copy. A module whose test file is missing shows `SPEC_TEST_MISSING`. At most 24 test files, 512 KiB together.
+
+When tests run, the module's files (artifacts and frozen files, at their paths under the checkout folder) and the test files (at their paths under the contract's folder) share one folder. A test imports the module by relative path: `tests/rateLimiter.test.ts` imports `../src/rateLimiter.ts`. A path may appear only once across artifacts, frozen files and test files (`SPEC_PATH_CONFLICT`).
+
+## Contracts on rails: tests and architecture gates
+
+A small local model writes better code when the contract leaves it little room: an interface it may not change, tests it must pass, and rules about what its code may use. These gates turn the engineer's architecture into checks, and every failure goes back to the model as an exact item.
+
+```text
+module RateLimiter version "1" {
+    target { language = TypeScript; }
+    description = "A token-bucket rate limiter...";
+
+    artifacts { file "src/rateLimiter.ts"; }
+    tests { file "tests/rateLimiter.test.ts"; }
+
+    evaluate "contract-v1" {
+        hard shape = Exports("src/rateLimiter.ts", ["RateLimiter"]);
+        hard dependencies = Imports("src/**", deny = ["**"]);
+        hard clock = Forbid("src/**", "Date\\.now|setTimeout", message = "take the time only from options.now()");
+        hard behavior = Tests("tests/rateLimiter.test.ts", timeout = 30s);
+    }
+}
+```
+
+New module → **Rate limiter (TypeScript, with tests)** creates this contract, its flow and its tests. [examples/synthesis-ability-system](../examples/synthesis-ability-system/README.md) is the same idea in C++: an ability system core with a frozen header.
+
+### `Tests`: the engineer's tests
+
+`Tests("file" [, more files] [, timeout = 30s] [, hidden = true])` runs the engineer's tests against the candidate. One gate runs files of one language, chosen by extension:
+
+| Files | How they run |
+| --- | --- |
+| `.ts`, `.mts`, `.js`, `.mjs`, `.cjs` | `node --test`. TypeScript runs on Node.js 22.18 or newer with erasable type syntax only (no `enum`, `namespace` or parameter properties), so local imports name the `.ts` file. The server brings its own Node.js; the desktop app uses the one installed on the computer. |
+| `.py` | Python 3 `unittest`. The folder that holds the module and the tests is on `sys.path`: `from src.rate_limiter import RateLimiter`. |
+| `.cpp`, `.cc`, `.cxx` | Built with every C and C++ source of the module (artifacts and frozen) as C++20 with `-fsanitize=address,undefined`, then run. Tests include `lc_test.hpp`, a small framework the runtime provides: `LC_TEST(name)`, `LC_CHECK(expr)`, `LC_CHECK_EQ(actual, expected)`, `LC_CHECK_NEAR(actual, expected, eps)` and `LC_CHECK_THROWS(expr)`. Each folder holding a header is on the include path. |
+
+The gate passes when at least one test ran and every test passed. It fails on a failed test, a build error, a crash or a timeout. It is Unknown when this computer has no sandbox or no toolchain for the language. The timeout (1–120 s, 30 s by default) covers running the tests; a C++ build has 90 s of its own.
+
+`hidden = true` seals the tests: the model never sees them, and its feedback says only how many failed. Use it for a holdout set beside visible tests.
+
+Tests that a model proposes (`propose_tests`) are never run: only the engineer's tests decide.
+
+### The sandbox
+
+Every test run is sandboxed: no network, writes only inside its own temporary folder, and nothing read from the user's home folder or the app's data. On macOS this is the built-in `sandbox-exec`; on Linux, [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, which needs user namespaces). Windows has no sandbox yet, so `Tests` gates there are Unknown and the run ends as needs review.
+
+Before anything runs, the runtime also checks that the module's files import only files of the module or standard and system modules: no absolute paths, nothing outside its folder.
+
+### `Exports`: the public shape
+
+`Exports("file", ["Name", ...])` passes when the file declares or exports each name:
+
+- TypeScript and JavaScript: `export` declarations and `export { … }`, or simple CommonJS `exports.Name`.
+- Python: top-level `def`, `class` or assignments.
+- C++: classes, structs, enums, namespaces, type aliases and functions. `Owner::method` passes when the module defines it.
+
+### `Imports`: what may depend on what
+
+`Imports("pattern", allow = [...], deny = [...])` checks every import of every file the model wrote that matches the pattern: `import` and `require`, Python `import` and `from`, C++ `#include`. An import fails when it matches a `deny` pattern, or, with an `allow` list, when it matches none of it.
+
+Relative imports are matched as module paths (`./math` in `src/core/a.ts` is `src/core/math`); others as written: `node:fs`, `os`, `<thread>`. In patterns, `**` matches any path and `*` any characters except `/`, so `node:*` covers Node.js built-ins and `<*>` standard C++ headers. A pattern that matches no file fails, because it is most likely a typo.
+
+### `Forbid`: what the code may not use
+
+`Forbid("pattern", "regular expression" [, message = "..."])` fails where the expression (JavaScript syntax) matches a file the model wrote, outside comments and strings. In a contract string a backslash is written twice: `"Date\\.now"`.
+
+Imports and Forbid check only the files the model wrote: frozen files and tests are the engineer's.
+
+### Feedback
+
+What each failed gate found goes back to the model in the next revision as a numbered list of short, exact items, in `verdict.violations` (at most 12):
+
+```text
+1. behavior: refills with the time that passed: Expected values to be strictly equal: 0 !== 2 (expected 2, actual 0) [tests/rateLimiter.test.ts:26]
+2. clock: src/rateLimiter.ts:12 uses "Date.now": take the time only from options.now()
+```
+
+The model also reads the frozen files and the visible tests in every revision.
 
 ## LC Flow reference
 
@@ -367,7 +472,7 @@ No eligible model is a runtime error, not `none`. Without a size limit, a model 
 
 | Function | Meaning |
 | --- | --- |
-| `await evaluate(candidate, spec [, tests])` | Run the contract's registered trusted evaluators and return evidence. `supplemental = tests` is an alternative named argument. Generated test suggestions are currently **not executed**. |
+| `await evaluate(candidate, spec [, tests])` | Run the contract's gates (registered evaluators and the built-in checks: `Tests`, `Exports`, `Imports`, `Forbid`) and return evidence. `supplemental = tests` is an alternative named argument. Tests a model proposes are **not executed**: only the engineer's tests run. |
 | `verify(spec, evidence)` | Validate evidence freshness and return `{status, violations}` as a runtime record. Stale evidence is a runtime error. |
 | `accepted(candidate, spec)` | Read acceptance state; this does not evaluate the candidate. In the usual repair loop, successful termination happens through `return accept(...)`. |
 | `checkpoint(value [, ...])` | Save the current run record and candidate snapshot. Takes 1–8 values. V1 does not separately serialize each argument as an arbitrary user checkpoint variable. |
@@ -555,7 +660,10 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `FLOW_ACCEPT_GUARD` | Put `return accept(...)` inside `if (verdict.status == Pass)` after `verify`. |
 | `FLOW_TERMINAL_RETURN` | Return terminal actions directly; do not assign or invoke them as standalone statements. |
 | `FLOW_UNKNOWN_CALL` | Use registered calls only. There is no `unreal.build`, `analyze`, `shell`, or `getAllModels` intrinsic. Use `models.list`. |
-| `SPEC_UNSUPPORTED_SECTION` / `SPEC_UNSUPPORTED_TARGET` | The requested domain semantics need a trusted adapter; adding prose or a new section name does not implement it. |
+| `SPEC_UNSUPPORTED_SECTION` / `SPEC_UNSUPPORTED_TARGET` | The requested domain semantics need a trusted adapter; adding prose or a new section name does not implement it. Express architecture with `Exports`, `Imports`, `Forbid` and the engineer's `Tests`. |
+| `SPEC_TEST_MISSING` | Put the test file next to the `.lcspec`, at the path the contract names. |
+| `SPEC_PATH_CONFLICT` | A path appears twice across artifacts, frozen files and test files; they share one folder when tests run. |
+| A `Tests` gate is Unknown | The message names what is missing: a sandbox (Windows has none yet; on Linux install bubblewrap), Node.js 22.18+ for TypeScript, Python 3, or a C++ compiler. |
 | No installed model matches | Import an eligible GGUF or change selection. `prefer` does not download a model. |
 | Unknown evaluator result | The group/ID is not registered. Use a supported evaluator or implement a trusted adapter in the application. |
 | Stale evidence | Re-run `evaluate` and `verify` after the last candidate revision. |
@@ -568,13 +676,13 @@ The research syntax is broader than this implementation. The following are **not
 - Contract inheritance with `extends`, or cross-module imports/dependency resolution.
 - Formal `interface`, `behavior`, `invariants`, `constraints`, and `architecture` sections.
 - Formal `implies`, `Eventually(...)`, lifecycle, latency, or throughput requirements.
-- Unreal/C++ targets, build actions, static analysis actions, or multiplayer evaluators.
+- Unreal Engine builds (UnrealBuildTool), engine automation tests, or multiplayer evaluators. C++ modules build and test as plain C++20 with the standard library: write an engine-agnostic core against a frozen header, then integrate it in the engine.
 - Evaluation environment/workload selection and numeric optimization objectives such as `soft minimize Mean(...)`.
 - User-defined functions, custom runtime actions declared in DSL, general object manipulation, or parallel agent orchestration.
-- Executing model-proposed tests or registering new trusted evaluators from a DSL file.
+- Executing model-proposed tests (only the engineer's tests run), or registering new trusted evaluators from a DSL file.
 - Model downloads, cloud providers, arbitrary tools, or host shell access.
 
-The parser preserves some research-style sections as source, but the compiler rejects unsupported semantics. **Parseable does not mean executable or verified.** Do not present an Ability System contract as supported until its target adapters and trusted evaluators exist.
+The parser preserves some research-style sections as source, but the compiler rejects unsupported semantics. **Parseable does not mean executable or verified.** An ability system core works today as plain C++ with a frozen header, tests and architecture gates ([example](../examples/synthesis-ability-system/README.md)); the formal sections and engine adapters do not.
 
 To extend the implementation, the primary sources are:
 
@@ -584,5 +692,6 @@ To extend the implementation, the primary sources are:
 - [AST interpreter](../src/synthesis/Interpreter.ts)
 - [Runtime capabilities](../src/synthesis/SynthesisService.ts)
 - [Trusted evaluators](../src/synthesis/evaluators.ts)
+- [Contract checks, test runners and the sandbox](../src/synthesis/checks/)
 
-For running the supplied experiments, see the [calculator README](../examples/synthesis-calculator/README.md).
+For running the supplied experiments, see the [calculator README](../examples/synthesis-calculator/README.md) and the [ability system README](../examples/synthesis-ability-system/README.md).

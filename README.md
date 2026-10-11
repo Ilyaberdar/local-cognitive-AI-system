@@ -42,7 +42,7 @@ A private AI workspace for chats, agents and workflows. Models run on your own c
 
 ## Install the app
 
-### macOS (Apple silicon, macOS 13+)
+### macOS (Apple silicon, macOS 13.3+)
 
 1. Download `Local-Cognitive-<version>-arm64-mac.dmg` from the [latest release](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest).
 2. Drag **Local Cognitive** to Applications.

@@ -43,10 +43,18 @@ export interface FlowLimits { iterations: number; timeMs: number; costUsd?: numb
 export interface LimitStatement { kind: "limit"; values: Partial<FlowLimits>; span: SourceSpan }
 export type Statement = AssignStatement | ExpressionStatement | IfStatement | WhileStatement |
   ContinueStatement | ReturnStatement | LimitStatement;
+/** A built-in check a contract names directly instead of a registered adapter's Pass("id"). */
+export type ContractCheck =
+  | { kind: "tests"; files: string[]; timeoutMs?: number; hidden?: boolean }
+  | { kind: "exports"; file: string; symbols: string[] }
+  | { kind: "imports"; pattern: string; allow: string[]; deny: string[] }
+  | { kind: "forbid"; pattern: string; regex: string; message?: string };
 export interface SpecGate {
   id: string;
   severity: "hard" | "soft";
+  /** The adapter of Pass("id"), or contract-tests-v1 and its siblings for a built-in check. */
   evaluatorId: string;
+  check?: ContractCheck;
   span: SourceSpan;
 }
 /** Opaque domain sections are preserved for adapters, never silently verified. */
@@ -58,7 +66,12 @@ export interface SpecProgram {
   evaluator: string;
   description: string;
   target: Record<string, string | number | boolean>;
+  /** Files the model writes, relative to the checkout folder. */
   artifacts: string[];
+  /** Files the engineer wrote in the checkout folder (interfaces): the model reads them, never changes them. */
+  frozen: string[];
+  /** Support files of the contract's tests, relative to the .lcspec folder (Tests() names the ones to run). */
+  tests: string[];
   gates: SpecGate[];
   sections: SpecSection[];
   comments: Comment[];
