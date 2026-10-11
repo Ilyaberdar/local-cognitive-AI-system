@@ -1,6 +1,8 @@
 import { Audio } from "@remotion/media";
 import type React from "react";
-import { Easing, interpolate, Series, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
+import { TransitionSeries, linearTiming } from "@remotion/transitions";
+import { fade } from "@remotion/transitions/fade";
+import { Easing, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { AppWindow } from "../components/AppWindow";
 import { Backdrop } from "../components/Backdrop";
 import { SpeedBadge } from "../components/SpeedBadge";
@@ -10,8 +12,13 @@ import { StyleEnd } from "../scenes/StyleBoard";
 
 // The 40-second promo, cut from the same real takes as the docs demos (public/captures/*.mov and their
 // action logs). Every shortened wait carries the speed badge; the voice-over (voice/Promo.json, the
-// chosen voice) says only what the footage shows.
+// chosen voice) says only what the footage shows. Music: scripts/voice/music.mjs (Eleven Music), ducked under the voice.
 const ease = { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(0.45, 0, 0.2, 1) } as const;
+// Where a scene skips ahead in its take, the later piece fades in over the earlier one (12 frames)
+// and the zoom's focus moves across in the same time, so the cut is a short dissolve, not a jump.
+const DISSOLVE = 12;
+const fadeIn = (frame: number, at: number) => ({ opacity: interpolate(frame, [at, at + DISSOLVE], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) });
+const across = (frame: number, at: number, from: number, to: number) => interpolate(frame, [at, at + DISSOLVE], [from, to], ease);
 
 const Line: React.FC<{ readonly id: string; readonly at: number; readonly seconds: number; readonly children: string }> = ({ id, at, seconds, children }) => {
   const { fps } = useVideoConfig();
@@ -48,13 +55,14 @@ const ChatScene: React.FC = () => {
 const ModelsScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const zoom = interpolate(frame, [0, 0.8 * fps, 2.7 * fps, 3.0 * fps, 3.1 * fps, 3.8 * fps], [1.2, 1.45, 1.45, 1.25, 1.2, 1.4], ease);
-  const focusX = frame < 3 * fps ? 0.5 : 0.3;
-  const focusY = frame < 3 * fps ? 0.6 : 0.47;
+  const zoom = interpolate(frame, [0, 0.8 * fps, 2.7 * fps, 3.2 * fps, 3.9 * fps], [1.2, 1.45, 1.45, 1.25, 1.4], ease);
+  const cut = Math.round(3 * fps);
+  const focusX = across(frame, cut, 0.5, 0.3);
+  const focusY = across(frame, cut, 0.6, 0.47);
   return (
     <Backdrop>
-      <AppWindow name="Estimate" src="captures/A-models.mov" kind="video" shotId="A" startAt={9.9} durationInFrames={Math.round(3 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
-      <AppWindow name="On device" src="captures/A-models.mov" kind="video" shotId="A" startAt={18.4} from={Math.round(3 * fps)} durationInFrames={Math.round(3 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="Estimate" src="captures/A-models.mov" kind="video" shotId="A" startAt={9.9} durationInFrames={cut + DISSOLVE} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="On device" src="captures/A-models.mov" kind="video" shotId="A" startAt={18.4} from={cut} durationInFrames={Math.round(3 * fps) + DISSOLVE} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} style={fadeIn(frame, cut)} />
       <Line id="03-models" at={0.3} seconds={4.2}>Pick a model from Hugging Face. Memory is checked before the download.</Line>
     </Backdrop>
   );
@@ -64,13 +72,14 @@ const ModelsScene: React.FC = () => {
 const WorkflowScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const zoom = interpolate(frame, [0, 0.6 * fps, 3.3 * fps, 3.5 * fps, 4.0 * fps, 5.6 * fps, 6.3 * fps], [1.3, 1.5, 1.5, 1.45, 1.5, 1.5, 1.1], ease);
-  const focusX = frame < 3.5 * fps ? 0.42 : 0.46;
-  const focusY = frame < 3.5 * fps ? 0.9 : 0.4;
+  const zoom = interpolate(frame, [0, 0.6 * fps, 5.6 * fps, 6.3 * fps], [1.3, 1.5, 1.5, 1.1], ease);
+  const cut = Math.round(3.5 * fps);
+  const focusX = across(frame, cut, 0.42, 0.46);
+  const focusY = across(frame, cut, 0.9, 0.4);
   return (
     <Backdrop>
-      <AppWindow name="Console" src="captures/D3-workflow.mov" kind="video" shotId="D3" startAt={10.0} durationInFrames={Math.round(3.5 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
-      <AppWindow name="Approve" src="captures/D3-workflow.mov" kind="video" shotId="D3" startAt={17.6} from={Math.round(3.5 * fps)} durationInFrames={Math.round(3.5 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="Console" src="captures/D3-workflow.mov" kind="video" shotId="D3" startAt={10.0} durationInFrames={cut + DISSOLVE} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="Approve" src="captures/D3-workflow.mov" kind="video" shotId="D3" startAt={17.6} from={cut} durationInFrames={Math.round(3.5 * fps) + DISSOLVE} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} style={fadeIn(frame, cut)} />
       <Line id="04-workflow" at={0.3} seconds={4.0}>Chain agents, files and commands, and watch every step run.</Line>
     </Backdrop>
   );
@@ -97,13 +106,14 @@ const avatar = [{ x: 0.004, y: 0.925, width: 0.04, height: 0.07 }];
 const RemoteScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const zoom = interpolate(frame, [0, 0.5 * fps, 2.4 * fps, 2.9 * fps], [1.3, 1.6, 1.6, 1.2], ease);
-  const focusX = frame < 2.6 * fps ? 0.92 : 0.3;
-  const focusY = frame < 2.6 * fps ? 0.04 : 0.3;
+  const zoom = interpolate(frame, [0, 0.5 * fps, 2.5 * fps, 3.0 * fps], [1.3, 1.6, 1.6, 1.2], ease);
+  const cut = Math.round(2.6 * fps);
+  const focusX = across(frame, cut, 0.92, 0.3);
+  const focusY = across(frame, cut, 0.04, 0.3);
   return (
     <Backdrop>
-      <AppWindow name="Switch" src="captures/F-remote.mov" kind="video" shotId="F" startAt={4.4} durationInFrames={Math.round(2.6 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
-      <AppWindow name="Stream 10×" src="captures/F-remote.mov" kind="video" shotId="F" startAt={16.6} speed={10} from={Math.round(2.6 * fps)} durationInFrames={Math.round(2.0 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
+      <AppWindow name="Switch" src="captures/F-remote.mov" kind="video" shotId="F" startAt={4.4} durationInFrames={cut + DISSOLVE} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
+      <AppWindow name="Stream 10×" src="captures/F-remote.mov" kind="video" shotId="F" startAt={16.6} speed={10} from={cut} durationInFrames={Math.round(2.0 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} style={fadeIn(frame, cut)} />
       <AppWindow name="Answer" src="captures/F-remote.mov" kind="video" shotId="F" startAt={46.4} from={Math.round(4.6 * fps)} durationInFrames={Math.round(0.4 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
       <SpeedBadge name="Badge" label="Sped up 10× · 20 s → 2 s" from={Math.round(2.6 * fps)} durationInFrames={Math.round(2.0 * fps)} premountFor={fps} />
       <Line id="06-remote" at={0.3} seconds={4.5}>Or run it on your own GPU server, end-to-end encrypted.</Line>
@@ -111,35 +121,54 @@ const RemoteScene: React.FC = () => {
   );
 };
 
+// The voice-over lines in promo frames (scene start + 0.3 s, for the line's caption time), from the
+// scene lengths below less the 12-frame dissolves. The music sits under them and rises in the gaps.
+const VOICE: ReadonlyArray<readonly [number, number]> = [[18, 258], [270, 558], [720, 972], [1080, 1320], [1500, 1812], [1920, 2190], [2220, 2388]];
+const musicVolume = (frame: number) => {
+  const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
+  const duck = Math.max(...VOICE.map(([start, end]) => interpolate(frame, [start - 12, start, end, end + 12], [0, 1, 1, 0], clamp)));
+  return (0.2 - 0.12 * duck) * interpolate(frame, [0, 30, 2310, 2400], [0, 1, 1, 0], clamp);
+};
+
 export const Promo: React.FC = () => {
   const { fps } = useVideoConfig();
+  const dissolve = <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: 12 })} />;
   return (
-    <Series>
-      <Series.Sequence name="P1 Open" durationInFrames={264} premountFor={fps}>
+    <>
+    <Audio name="Music" src={staticFile("audio/music/promo.mp3")} volume={musicVolume} />
+    <TransitionSeries name="Promo">
+      <TransitionSeries.Sequence name="P1 Open" durationInFrames={264} premountFor={fps}>
         <Backdrop>
           <TitleCard name="Title" eyebrow="Local Cognitive" headline="Private AI on your own machines." showLogo />
           <Line id="01-open" at={0.3} seconds={4.0}>This is Local Cognitive: private AI on your own machines.</Line>
         </Backdrop>
-      </Series.Sequence>
-      <Series.Sequence name="P2 Chat" durationInFrames={450} premountFor={fps}>
+      </TransitionSeries.Sequence>
+      {dissolve}
+      <TransitionSeries.Sequence name="P2 Chat" durationInFrames={462} premountFor={fps}>
         <ChatScene />
-      </Series.Sequence>
-      <Series.Sequence name="P3 Models" durationInFrames={360} premountFor={fps}>
+      </TransitionSeries.Sequence>
+      {dissolve}
+      <TransitionSeries.Sequence name="P3 Models" durationInFrames={372} premountFor={fps}>
         <ModelsScene />
-      </Series.Sequence>
-      <Series.Sequence name="P4 Workflow" durationInFrames={420} premountFor={fps}>
+      </TransitionSeries.Sequence>
+      {dissolve}
+      <TransitionSeries.Sequence name="P4 Workflow" durationInFrames={432} premountFor={fps}>
         <WorkflowScene />
-      </Series.Sequence>
-      <Series.Sequence name="P5 Synthesis" durationInFrames={420} premountFor={fps}>
+      </TransitionSeries.Sequence>
+      {dissolve}
+      <TransitionSeries.Sequence name="P5 Synthesis" durationInFrames={432} premountFor={fps}>
         <SynthesisScene />
-      </Series.Sequence>
-      <Series.Sequence name="P6 Remote" durationInFrames={300} premountFor={fps}>
+      </TransitionSeries.Sequence>
+      {dissolve}
+      <TransitionSeries.Sequence name="P6 Remote" durationInFrames={312} premountFor={fps}>
         <RemoteScene />
-      </Series.Sequence>
-      <Series.Sequence name="P7 End" durationInFrames={186} premountFor={fps}>
+      </TransitionSeries.Sequence>
+      {dissolve}
+      <TransitionSeries.Sequence name="P7 End" durationInFrames={198} premountFor={fps}>
         <StyleEnd />
         <Line id="07-end" at={0.3} seconds={2.8}>Get it at local-cognitive.com.</Line>
-      </Series.Sequence>
-    </Series>
+      </TransitionSeries.Sequence>
+    </TransitionSeries>
+    </>
   );
 };
