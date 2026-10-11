@@ -11,7 +11,8 @@ const logger = createLogger(config.LOG_LEVEL);
 const pool = createPool(config.DATABASE_URL, logger);
 const repo = createRemoteRepository(pool);
 const relay = new Relay({ repo, origin: config.PUBLIC_ORIGIN, logger });
-const app = createApp({ pool, auth: { issuer: config.AUTH0_ISSUER, audience: config.AUTH0_AUDIENCE }, trustProxy: config.TRUST_PROXY, logger, remote: { repo, relay } });
+const app = createApp({ pool, auth: { issuer: config.AUTH0_ISSUER, audience: config.AUTH0_AUDIENCE }, trustProxy: config.TRUST_PROXY,
+  corsOrigins: config.CORS_ORIGINS, logger, remote: { repo, relay } });
 // A plain HTTP server so the relay can attach WebSocket upgrades to the same listener.
 const server = http.createServer(app);
 server.on("upgrade", relay.handleUpgrade);

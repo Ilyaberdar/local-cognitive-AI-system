@@ -23,6 +23,17 @@ test("invalid configuration is rejected", () => {
   assert.throws(() => loadConfig({ ...base, PORT: "70000" }), /PORT/);
 });
 
+test("browser origins: the site by default, a normalised list, none when empty", () => {
+  assert.deepEqual(loadConfig(base).CORS_ORIGINS, ["https://local-cognitive.com"]);
+  assert.deepEqual(loadConfig({ ...base, CORS_ORIGINS: " https://Local-Cognitive.com:443/account/ , http://localhost:4321 " }).CORS_ORIGINS,
+    ["https://local-cognitive.com", "http://localhost:4321"]);
+  assert.deepEqual(loadConfig({ ...base, CORS_ORIGINS: "" }).CORS_ORIGINS, []);
+  assert.throws(() => loadConfig({ ...base, CORS_ORIGINS: "https://local-cognitive.com, local-cognitive.com" }),
+    /not an http\(s\) URL: "local-cognitive\.com"\s+→ at CORS_ORIGINS\[1\]/);
+  // A wildcard, or an opaque origin that would match "Origin: null", is never an entry.
+  for (const value of ["*", "null", "file:///srv/account"]) assert.throws(() => loadConfig({ ...base, CORS_ORIGINS: value }), /CORS_ORIGINS/, value);
+});
+
 test("migrations need only the database and accept a mounted secret file", (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-config-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

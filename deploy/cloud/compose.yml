@@ -48,6 +48,8 @@ services:
       TRUST_PROXY: "1"
       # Hosts sign relay challenges for this origin: it must be the public URL of the API.
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://api.local-cognitive.com}
+      # Web pages allowed to call the API from a browser. "-", not ":-": unset keeps the default, empty allows none.
+      CORS_ORIGINS: ${CORS_ORIGINS-https://local-cognitive.com}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       migrate: { condition: service_completed_successfully }

@@ -3,6 +3,8 @@ import { z } from "zod";
 
 const databaseUrl = z.url({ protocol: /^postgres(ql)?$/ });
 const issuer = z.url({ protocol: /^https$/ }).transform((value) => (value.endsWith("/") ? value : `${value}/`));
+const origin = z.url({ protocol: /^https?$/, error: (issue) => `not an http(s) URL: ${JSON.stringify(issue.input)}` })
+  .transform((value) => new URL(value).origin);
 
 const databaseSchema = z.object({ DATABASE_URL: databaseUrl });
 const schema = databaseSchema.extend({
@@ -13,7 +15,10 @@ const schema = databaseSchema.extend({
   AUTH0_AUDIENCE: z.string().min(1),
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
   // Hosts sign relay challenges for this origin; it must be the URL they connect to.
-  PUBLIC_ORIGIN: z.url({ protocol: /^https?$/ }).transform((value) => new URL(value).origin).default("https://api.local-cognitive.com"),
+  PUBLIC_ORIGIN: origin.default("https://api.local-cognitive.com"),
+  // Web pages (the account page) allowed to call /v1 from a browser, comma-separated; empty allows none.
+  CORS_ORIGINS: z.string().default("https://local-cognitive.com")
+    .transform((value) => value.split(",").map((entry) => entry.trim()).filter(Boolean)).pipe(z.array(origin)),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info")
 });
 

@@ -1,4 +1,4 @@
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import type pg from "pg";
 import { createAccountRepository, type AccountRepository } from "./accounts/accountRepository.js";
 import { toMeResponse } from "./accounts/meResponse.js";
@@ -11,15 +11,40 @@ import { createUsageRepository, type UsageRepository } from "./usage/usageReposi
 import { createUsageRouter, type UsageRouteDependencies } from "./usage/usageRoutes.js";
 
 export interface AppDependencies { pool: Pick<pg.Pool, "query">; auth: AuthOptions; trustProxy?: number; logger?: Logger; accounts?: AccountRepository;
+  /** Browser origins allowed to call /v1; none unless given. */
+  corsOrigins?: readonly string[];
   /** Remote pairing and tickets; the relay itself is attached to the HTTP server's upgrades. */
   remote?: Pick<RemoteRouteDependencies, "repo" | "relay" | "limits">;
   /** Usage statistics; built on the pool unless given. */
   usage?: { repo?: UsageRepository; limits?: UsageRouteDependencies["limits"] } }
 
+/** The account page (local-cognitive.com/account/) calls /v1 from the browser with a bearer token,
+ * so every call is preflighted. Preflights are answered here, before auth; only listed origins get
+ * the headers, and without cookies there are no credentials to allow. */
+const allowOrigins = (origins: readonly string[]): RequestHandler => {
+  const allowed = new Set(origins);
+  return (req: Request, res: Response, next: NextFunction) => {
+    res.vary("Origin");
+    const origin = req.get("origin");
+    const listed = origin !== undefined && allowed.has(origin);
+    if (listed) res.set("Access-Control-Allow-Origin", origin);
+    if (req.method === "OPTIONS" && req.get("access-control-request-method") !== undefined) {
+      if (listed) res.set({ "Access-Control-Allow-Methods": "GET, DELETE", "Access-Control-Allow-Headers": "Authorization", "Access-Control-Max-Age": "600" });
+      res.status(204).end();
+      return;
+    }
+    // Lets the page read how long to wait after a 429.
+    if (listed) res.set("Access-Control-Expose-Headers", "Retry-After");
+    next();
+  };
+};
+
 export const createApp = (deps: AppDependencies) => {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", deps.trustProxy ?? 0);
+  // Before the body parser, so its error responses carry the headers too.
+  app.use("/v1", allowOrigins(deps.corsOrigins ?? []));
   app.use(express.json({ limit: "64kb" }));
 
   app.get("/health", async (_req, res) => {
