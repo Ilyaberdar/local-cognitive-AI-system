@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-11",
+  "updated": "2026-10-12",
   "appCommit": "4f390c2",
   "brand": [
     {
@@ -58,7 +58,14 @@
       "result": "demo-output.txt written with WORKFLOW-CONSOLE-DEMO-OK; all six steps completed"
     }
   ],
-  "audio": [],
+  "audio": [
+    {
+      "path": "public/audio/D3Workflow/0{1..4}-*.mp3 (+ .json character timings)",
+      "how": "node --env-file=.env scripts/voice/generate.mjs D3Workflow",
+      "voice": "Matilda, eleven_multilingual_v2, mp3 44.1 kHz 128 kbps (best on Starter)",
+      "text": "voice/D3Workflow.json"
+    }
+  ],
   "notUsedAsFootage": [
     {
       "path": "local-cognitive-landing/public/assets/landing.js",
@@ -71,10 +78,11 @@
   ],
   "renders": [
     {
-      "path": "out/docs/D3Workflow.mp4",
       "composition": "D3Workflow",
-      "spec": "1920×1080, 30 fps, H.264 CRF 20, 19.3 s, 4.1 MB",
-      "poster": "out/docs/D3Workflow-poster.jpg (frame 520)",
+      "how": "node scripts/export/video.mjs D3Workflow --poster 17.5",
+      "master": "out/docs/D3Workflow-master-4k60.mp4 (3840×2160, 60 fps, 10.7 MB)",
+      "web": "out/docs/D3Workflow-1440p60.mp4 (2560×1440, 60 fps, 5.3 MB, voice −16 LUFS)",
+      "poster": "out/docs/D3Workflow-poster.jpg",
       "destination": "docs-site/public/videos/workflow-run.mp4 in guides/workflows.md, after the owner approves"
     }
   ]

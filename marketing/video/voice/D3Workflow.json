@@ -1,0 +1,8 @@
+{
+  "lines": [
+    { "id": "01-task", "text": "A task runs a workflow. Press Run on its card." },
+    { "id": "02-console", "text": "The console shows the command's output as it runs." },
+    { "id": "03-review", "text": "The run stops at the review step and waits for you." },
+    { "id": "04-done", "text": "Approve, and the run finishes. All six steps passed." }
+  ]
+}

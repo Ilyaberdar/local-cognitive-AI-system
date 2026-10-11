@@ -46,7 +46,7 @@ export const RemotionRoot: React.FC = () => {
         />
       </Folder>
       <Folder name="Docs">
-        <Composition id="D3Workflow" component={D3Workflow} durationInFrames={579} fps={30} width={1920} height={1080} />
+        <Composition id="D3Workflow" component={D3Workflow} durationInFrames={1158} fps={60} width={1920} height={1080} />
       </Folder>
       <Composition id="Promo" component={Promo} durationInFrames={1200} fps={30} width={1920} height={1080} />
     </>

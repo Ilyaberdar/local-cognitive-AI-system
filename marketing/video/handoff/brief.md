@@ -4,9 +4,9 @@
 
 | What | Format | Where it goes |
 |---|---|---|
-| Docs demos (D1–D8) | 1920×1080, 30 fps, H.264 MP4 plus a poster JPG. No sound. 15–45 s. Short on-screen labels in English. Under 8 MB each. | `docs-site/public/videos/<id>.mp4`, embedded in the matching page with `<video controls muted playsinline preload="none" poster=…>` |
-| Promo | 1920×1080, 30 fps, 40 s. H.264 MP4 at about 4 Mbps, about 20 MB. Optional WebM/AV1. English voice-over. Subtitles burned in, plus a `.vtt` file. | Landing `public/media/promo-v1.mp4` with a long-cache `_headers` rule, and the docs home page |
-| Masters | ProRes or lossless renders of everything | `out/` only, never in git |
+| Docs demos (D1–D8) | Web: 2560×1440, 60 fps, H.264 CRF 16, AAC 160k with the voice at −16 LUFS, plus a poster JPG. 15–45 s, about 5 MB per 20 s. The voice (Matilda) reads the captions, and each caption is exactly the spoken line. | `docs-site/public/videos/<id>.mp4`, embedded in the matching page with `<video controls playsinline preload="none" poster=…>` |
+| Promo | Same pipeline, 40 s. English voice-over. Subtitles burned in, plus a `.vtt` file. | Landing `public/media/promo-v1.mp4` with a long-cache `_headers` rule, and the docs home page |
+| Masters | 3840×2160, 60 fps, H.264 CRF 14, from PNG frames (`scripts/export/video.mjs`) | `out/` only, never in git |
 
 **Hosting limits**
 
@@ -14,6 +14,10 @@
 - The landing's CSP allows only same-origin media: `default-src 'self'` and no `media-src`. So the promo is self-hosted. YouTube and Vimeo are blocked unless `_headers` is changed.
 - The landing allows no inline scripts or styles. Video behaviour goes in `landing.js` and styling in `site.css`, followed by `npm run stamp`.
 - The landing's local `server.mjs` has no MIME type for video and no Range support. Test playback with `npx wrangler pages dev public`.
+
+**Quality rule (owner feedback 2026-10-12: the first 1080p render looked "шакальный"):**
+- Never export at 1080p, and never use JPEG frames: at 1080p the window is drawn at 45% of the recording, which smears interface text.
+- Render with `--scale=2` from PNG frames, and make the web copy from the 4K master.
 
 ## Rules for honest footage
 

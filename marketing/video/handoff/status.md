@@ -62,7 +62,7 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 
 | Shot | State | Files |
 |---|---|---|
-| D3 Workflow | ✅ recorded and edited. Waiting for the owner's OK before it goes into the docs. | `public/captures/D3-workflow.mov` and `.json`, `out/docs/D3Workflow.mp4` (4.1 MB) with `-poster.jpg` |
+| D3 Workflow | ✅ recorded, edited and voiced. v2 after owner feedback: 4K60 master, 1440p60 web copy, Matilda voice-over. Waiting for the owner's OK before it goes into the docs. | `public/captures/D3-workflow.mov` and `.json`, `public/audio/D3Workflow/`, `out/docs/D3Workflow-1440p60.mp4` (5.3 MB), `-master-4k60.mp4`, `-poster.jpg` |
 | D1, D2, D4–D8, P2–P6 | not started | |
 
 ## Tools
@@ -99,6 +99,8 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 
 ```bash
 cd marketing/video
+node --env-file=.env scripts/voice/generate.mjs D3Workflow   # voice-over lines from voice/D3Workflow.json
+node scripts/export/video.mjs D3Workflow --poster 17.5        # 4K60 master, 1440p60 web copy, poster
 npm ci                                   # dependencies
 npm run dev -- --port 3123               # Remotion Studio → http://localhost:3123
 npx tsc --noEmit && npx eslint src       # checks
@@ -113,10 +115,10 @@ Before recording, the development build must match HEAD. Run `npm run build` in 
 
 ## Next step
 
-1. The owner watches `out/docs/D3Workflow.mp4`.
+1. The owner watches `out/docs/D3Workflow-1440p60.mp4` (with sound).
 2. Once it is OK, place it in the docs:
-   - copy it to `docs-site/public/videos/workflow-run.mp4` with its poster;
-   - add `<video controls muted playsinline preload="none" poster="/videos/workflow-run.jpg" src="/videos/workflow-run.mp4"></video>` to `guides/workflows.md`, under the editor section;
+   - copy the 1440p60 file to `docs-site/public/videos/workflow-run.mp4` with its poster;
+   - add `<video controls playsinline preload="none" poster="/videos/workflow-run.jpg" src="/videos/workflow-run.mp4"></video>` to `guides/workflows.md`, under the editor section;
    - build `docs-site`.
    Pushing publishes the docs, so ask first.
 3. Next shots:

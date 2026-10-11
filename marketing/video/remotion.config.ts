@@ -11,7 +11,8 @@ import os from "node:os";
 import path from "node:path";
 
 Config.setRspack(true);
-Config.setVideoImageFormat("jpeg");
+// Lossless frames: JPEG intermediates smear small interface text.
+Config.setVideoImageFormat("png");
 Config.setOverwriteOutput(true);
 
 // The headless shell Remotion downloads crashes on this Mac (macOS 26: its GPU process exits with
