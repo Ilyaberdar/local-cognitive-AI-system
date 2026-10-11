@@ -58,31 +58,30 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 
 **Owner:** don't touch the mouse or keyboard during a take. If "Ghostty is requesting to bypass the system private window picker" appears, press Allow.
 
-## Stage 2: recordings (2026-10-12)
+## Stage 2: done (2026-10-12)
 
-| Shot | Take | Edit / export | Docs |
-|---|---|---|---|
-| A Models | `scripts/capture/a-models.mjs`, real time | `AModels` → out/docs/AModels-1440p60.mp4 | guides/models.md (built locally, not pushed) |
-| B Chat | `b-chat.mjs`, Qwen3.8-27B Q4; the answer lists the three notes (same at every Effort in rehearsal) | `BChat`, wait 6× with badge | guides/chats.md (not pushed) |
-| C Subagent | `c-subagent.mjs`, Qwen3.5-9B Q8 from LM Studio's folder (27B too slow; 1-bit Bonsai's subagent repeated its instructions) | `CSubagent`, 3 min 36 s at 40× with badge | guides/chats.md § Subagents (not pushed) |
-| D3 Workflow | `d3-workflow.mjs`, real time | `D3Workflow` | guides/workflows.md (published a084238) |
-| D4 Synthesis | `d4-synthesis.mjs`, Rate limiter on Qwen3.8-27B, Accepted in 1 iteration | `D4Synthesis`, 61 s at 10× with badge | guides/synthesis.md (not pushed) |
-| F Remote | `f-remote.mjs`, installed app (owner allowed); records only right of the sidebar; paste via ⌘V; stops if another app is in front | pending | guides/remote.md later |
-| Overview | all demos + title cards | `Overview` (F placeholder) | — |
-| Promo 40 s | cut from the takes, voice-over `voice/Promo.json` | `Promo` → out/docs/Promo-1440p60.mp4 (F placeholder) | landing later |
+| Video | Take / model | Published |
+|---|---|---|
+| A Models | `a-models.mjs`, Qwen3.8-27B (APFS clone) | docs guides/models.md |
+| B Chat | `b-chat.mjs`, release-checklist prompt, Qwen3.8-27B, streams then formats | docs guides/chats.md |
+| C Subagent | `c-subagent.mjs`, Qwen3.5-9B Q8 (LM Studio file) | docs guides/chats.md § Subagents |
+| D3 Workflow | `d3-workflow.mjs`, real time | docs guides/workflows.md |
+| D4 Synthesis | `d4-synthesis.mjs`, Rate limiter, Accepted in 1 iteration | docs guides/synthesis.md |
+| F Remote | `f-remote.mjs`, owner's installed app (allowed), sidebar collapsed, avatar blurred, Qwen2.5-14B on fedora | docs guides/remote.md |
+| Promo 40 s | cut from the takes, dissolves, Eleven Music ducked under the voice | landing `#demo` (`/media/promo-v1*.mp4`), docs home |
+| Overview | all demos + title cards, music under the demos | `out/docs/Overview-*` (not published) |
 
-**Remote blocker, fixed:**
-- Chats on fedora failed with "libllama-common.so.0: cannot open shared object file".
-- Cause: updates copied the CUDA runtime with `fs.cpSync`, which wrote absolute links into release 0.1.0; pruning 0.1.0 broke them.
-- Code fix with tests: c4c7021.
-- On the server the links of 0.1.4, 0.1.3 and 0.1.2 were made relative and the service was restarted; it now reports `Inference: cuda`.
-- **Release 0.1.5 is needed** so that the next update does not break it again. Publish only after the owner says "можно релизить".
+**Exports** (`scripts/export/video.mjs <id>`):
+- a 4K60 master;
+- a 1440p60 web copy;
+- a 720p30 phone copy, because phones could not play the level 5.1 file;
+- a poster.
 
-**Lessons:**
-- The recorder must stop screencapture on any failure. A failed take once recorded the desktop; `killRecorderSync` fixes that.
-- Character-by-character key events did not reach the packaged app (Russian layout), so the request is pasted instead.
-- The packaged app's chats are not counted in the server's `Work` line.
-- The owner's chats were never deleted. Only the chats the takes created were removed, with the owner's OK.
+Pages choose the copy with `<source media="(max-width: 900px)">`.
+
+**Shipped alongside the videos:**
+- release 0.1.5 (f1054cc): the server's CUDA link repair, and streaming answers in project, Code and subagent chats;
+- the Approve wording fix (31bbf52).
 
 ## Tools
 
@@ -134,13 +133,6 @@ Before recording, the development build must match HEAD. Run `npm run build` in 
 
 ## Next step
 
-1. The owner watches `out/docs/D3Workflow-1440p60.mp4` (with sound).
-2. Once it is OK, place it in the docs:
-   - copy the 1440p60 file to `docs-site/public/videos/workflow-run.mp4` with its poster;
-   - add `<video controls playsinline preload="none" poster="/videos/workflow-run.jpg" src="/videos/workflow-run.mp4"></video>` to `guides/workflows.md`, under the editor section;
-   - build `docs-site`.
-   Pushing publishes the docs, so ask first.
-3. Next shots:
-   - D7 MCP import and D8 shortcuts, which need no model.
-   - D1 model download (network) and D2 first chat.
-   - Then D4, D5 and D6, after the decisions above.
+1. Optional: publish the overview (about 3 min 20 s) where the owner wants it.
+2. When the UI changes, re-record a demo with its script, then re-export it. The demos are real takes, so they need re-recording, not editing.
+3. Streaming phase B: cloud providers (OpenAI, Anthropic, Gemini, LM Studio, Ollama) do not stream yet.

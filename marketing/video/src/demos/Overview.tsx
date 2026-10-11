@@ -2,7 +2,7 @@ import { Audio } from "@remotion/media";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import type React from "react";
-import { staticFile, useVideoConfig } from "remotion";
+import { interpolate, staticFile, useVideoConfig } from "remotion";
 import { Backdrop } from "../components/Backdrop";
 import { TitleCard } from "../components/TitleCard";
 import { StyleEnd } from "../scenes/StyleBoard";
@@ -21,10 +21,27 @@ const Section: React.FC<{ readonly eyebrow: string; readonly headline: string }>
   </Backdrop>
 );
 
+// The scene lengths below (keep them in step), each overlapping the next by a 12-frame dissolve. The
+// music is quiet under the demos, which carry their own voice-over, and rises on the title cards.
+const SCENES: ReadonlyArray<readonly [number, "voice" | "card"]> = [[264, "voice"], [132, "card"], [1596, "voice"], [132, "card"], [1857, "voice"], [132, "card"],
+  [2484, "voice"], [132, "card"], [1158, "voice"], [132, "card"], [2030, "voice"], [132, "card"], [1632, "voice"], [390, "voice"]];
+const CARDS = SCENES.reduce<{ start: number; cards: Array<readonly [number, number]> }>((acc, [length, kind], index) => {
+  const start = acc.start - (index ? 12 : 0);
+  return { start: start + length, cards: kind === "card" ? [...acc.cards, [start, start + length] as const] : acc.cards };
+}, { start: 0, cards: [] }).cards;
+const TOTAL = SCENES.reduce((sum, [length]) => sum + length, 0) - 12 * (SCENES.length - 1);
+const musicVolume = (frame: number) => {
+  const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
+  const card = Math.max(...CARDS.map(([start, end]) => interpolate(frame, [start - 18, start + 6, end - 6, end + 18], [0, 1, 1, 0], clamp)));
+  return (0.07 + 0.13 * card) * interpolate(frame, [0, 30, TOTAL - 120, TOTAL], [0, 1, 1, 0], clamp);
+};
+
 export const Overview: React.FC = () => {
   const { fps } = useVideoConfig();
   const crossfade = <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: 12 })} />;
   return (
+    <>
+    <Audio name="Music" src={staticFile("audio/music/overview.mp3")} volume={musicVolume} />
     <TransitionSeries name="Overview">
       <TransitionSeries.Sequence name="Opening" durationInFrames={264} premountFor={fps}>
         <Backdrop>
@@ -86,5 +103,6 @@ export const Overview: React.FC = () => {
         <Audio name="Voice: end" src={staticFile("audio/Overview/02-end.mp3")} from={0.4 * fps} premountFor={fps} />
       </TransitionSeries.Sequence>
     </TransitionSeries>
+    </>
   );
 };
