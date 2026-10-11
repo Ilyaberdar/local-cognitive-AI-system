@@ -436,7 +436,7 @@ summary::-webkit-details-marker { display: none; }
 /* Content controls borrow the original navigation glass material. Scope every
    state to .main so the sidebar retains its own styling.
    A static highlight keeps idle controls free of continuous repainting. */
-html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.synthesis-workspace button, .mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button, .composer-effort-trigger)) {
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.synthesis-workspace button, .mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button, .composer-effort-trigger, .voice-options)) {
   background: radial-gradient(ellipse at 20% 0%, var(--glass-shine), transparent 68%), var(--glass-fill);
   color: var(--text); border: 1px solid var(--glass-rim); border-radius: 999px;
   box-shadow: var(--glass-shadow);
@@ -444,11 +444,11 @@ html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.
 html[data-theme="light"] .main :is(.chat-type-button, .orchestration-tab, .right-panel-tab):not(.active):not(:hover):not(:active) {
   background: transparent; color: var(--muted); border-color: transparent; box-shadow: none;
 }
-html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.synthesis-workspace button, .mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button, .composer-effort-trigger)):is(:hover, :active):not(:disabled) {
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.synthesis-workspace button, .mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button, .composer-effort-trigger, .voice-options)):is(:hover, :active):not(:disabled) {
   background: radial-gradient(ellipse at 20% 0%, var(--glass-shine), transparent 68%), var(--glass-fill);
   color: var(--text); border-color: var(--glass-rim); opacity: 1;
 }
-html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.synthesis-workspace button, .mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button, .composer-effort-trigger)):focus-visible { box-shadow: none; }
+html[data-theme="light"] .main :is(button, .fsm-add-menu > summary):not(:where(.synthesis-workspace button, .mm-settings-toggle, .mm-settings button, .fsm-inspector button, .workflow-settings-toggle, .chat-settings button, .workflow-console button, .fsm-run-settings button, .fsm-model-picker__trigger, .react-flow__controls-button, .fsm-run-button, .fsm-stop-button, .composer-effort-trigger, .voice-options)):focus-visible { box-shadow: none; }
 html[data-theme="light"] .main button:disabled:not(.workflow-log-row__source) { opacity: .45; }
 html[data-theme="light"] .main :is(.danger-button, .task-delete-button, .fsm-inspector button.danger):hover { color: var(--danger); }
 .ghost-button:hover, .action-button:hover, .chip-button:hover { background: var(--surface-hover); border-color: var(--line-strong); color: var(--text); transform: translateY(-1px); }

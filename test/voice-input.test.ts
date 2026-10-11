@@ -326,3 +326,11 @@ test("opening Settings stops capture and finishes dictation into the original dr
   h.result.resolve({ id: h.request().id, sessionId: "a", text: "Completed dictation." }); await tick();
   assert.equal(h.drafts.a, "Existing draft. Completed dictation.");
 });
+
+test("the voice options arrow stays a bare arrow in every theme: the light theme's glass pill skips it", async () => {
+  const glass = await fs.readFile("public/assets/liquid-glass.css", "utf8");
+  const pills = glass.split("\n").filter(line => line.startsWith('html[data-theme="light"] .main :is(button'));
+  assert.equal(pills.length, 3, "the resting, pressed and focused pill");
+  for (const rule of pills) assert.match(rule, /:not\(:where\([^)]*\.voice-options[^)]*\)\)/, rule.slice(0, 120));
+  assert.match(await fs.readFile("public/assets/voice-input.css", "utf8"), /\.composer \.voice-options:is\(:hover, :active, :focus, :focus-visible\) \{ border: 0; outline: 0; box-shadow: none; background: transparent; \}/);
+});
