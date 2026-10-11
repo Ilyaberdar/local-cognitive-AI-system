@@ -88,23 +88,27 @@ function bwrapBase(): string[] {
 }
 
 /** bubblewrap 0.8 and later also keep the code under test from making user namespaces of its own
- * (and so capabilities over mounts and networks of its own), now that the server's unit allows them. */
+ * (and so capabilities over mounts and networks of its own), now that the server's unit allows them.
+ * What this bubblewrap knows decides it, never a failed attempt: one that knows the option and fails
+ * with it is no sandbox. Unknown until a check passes, and then nothing runs without the answer. */
 const NO_NESTED_USERNS = ["--unshare-user", "--disable-userns"];
-let nestedUsernsBlocked = false;
+let nestedUsernsBlocked: boolean | undefined;
 /** A server installed by install.sh sets bubblewrap and its service up with its own command. */
 const fix = (otherwise: string) => fs.existsSync("/usr/local/bin/local-cognitive-server") ? "on this server, run sudo local-cognitive-server sandbox" : otherwise;
 
 async function probeBwrap(): Promise<string | undefined> {
   const bwrap = onPath("bwrap");
   if (!bwrap) return `Contract tests need bubblewrap (bwrap) to sandbox the code: ${fix("install the bubblewrap package")}.`;
-  const attempt = (extra: string[]) => new Promise<string | undefined>(resolve =>
-    execFile(bwrap, [...bwrapBase(), ...extra, "--", "/usr/bin/true"], { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } }, (error, _stdout, stderr) =>
-      resolve(error ? String(stderr).trim().split("\n")[0] || error.message : undefined)));
-  if (await attempt(NO_NESTED_USERNS) === undefined) { nestedUsernsBlocked = true; return undefined; }
-  // An older bubblewrap (0.6 on Ubuntu 22.04) runs without that option.
-  const detail = await attempt([]);
-  if (detail === undefined) { nestedUsernsBlocked = false; return undefined; }
-  return `bubblewrap cannot create a sandbox here (${detail}): ${fix("allow unprivileged user namespaces (on Ubuntu 24.04 and later, with the AppArmor profile bwrap-userns-restrict from apparmor-profiles)")}.`;
+  const run = (args: string[]) => new Promise<{ stdout: string; error?: string }>(resolve =>
+    execFile(bwrap, args, { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } }, (error, stdout, stderr) =>
+      resolve({ stdout: String(stdout), error: error ? String(stderr).trim().split("\n")[0] || error.message : undefined })));
+  const help = await run(["--help"]);
+  if (help.error) return `bubblewrap does not answer (${help.error}): ${fix("reinstall the bubblewrap package")}.`;
+  // An older bubblewrap (0.6 on Ubuntu 22.04) does not know the option, and runs without it.
+  const blocks = help.stdout.includes("--disable-userns");
+  const { error } = await run([...bwrapBase(), ...(blocks ? NO_NESTED_USERNS : []), "--", "/usr/bin/true"]);
+  if (!error) { nestedUsernsBlocked = blocks; return undefined; }
+  return `bubblewrap cannot create a sandbox here (${error}): ${fix("allow unprivileged user namespaces (on Ubuntu 24.04 and later, with the AppArmor profile bwrap-userns-restrict from apparmor-profiles)")}.`;
 }
 let bwrapProbe: Promise<string | undefined> | undefined;
 const linux: SandboxProvider = {
@@ -115,9 +119,10 @@ const linux: SandboxProvider = {
     if (reason) bwrapProbe = undefined;
     return reason;
   },
-  wrap: (executable, args, workDir, readable) => ({
-    executable: onPath("bwrap") ?? "bwrap", args: bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked), env: sandboxEnv(executable, real(workDir))
-  })
+  wrap: (executable, args, workDir, readable) => {
+    if (nestedUsernsBlocked === undefined) throw new Error("bubblewrap has not been checked on this machine yet.");
+    return { executable: onPath("bwrap") ?? "bwrap", args: bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked), env: sandboxEnv(executable, real(workDir)) };
+  }
 };
 
 /** The bubblewrap command line: the system folders, the tools' folders read-only, the work folder writable. */

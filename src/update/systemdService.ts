@@ -25,16 +25,29 @@ export const releaseRunner = (user?: { uid: number; gid: number }): ReleaseRunne
   })
 });
 
+/** A release's file that root may act on: inside the release, and neither it nor a folder above it
+ * there can be changed by anyone but the updater's own user (root on a server). */
+const trustedReleaseFile = (release: string, relative: string): string => {
+  const root = fs.realpathSync(release), file = fs.realpathSync(path.join(release, relative)), owner = process.getuid?.() ?? 0;
+  if (!file.startsWith(`${root}${path.sep}`)) throw new Error(`${relative} leaves the release`);
+  for (let item = file; ; item = path.dirname(item)) {
+    const stat = fs.lstatSync(item);
+    if (stat.uid !== owner || (stat.mode & 0o022) !== 0) throw new Error(`${item} can be changed by another user`);
+    if (item === root) return file;
+  }
+};
+
 /** The unit a release ships, for this host's data folder: what install.sh writes. */
 export const releaseUnit = (release: string, dataDir: string) =>
-  fs.readFileSync(path.join(release, "deploy", "server", "local-cognitive.service"), "utf8").split("/srv/local-cognitive").join(dataDir);
+  fs.readFileSync(trustedReleaseFile(release, "deploy/server/local-cognitive.service"), "utf8").split("/srv/local-cognitive").join(dataDir);
 
 /** Puts a release's unit in place of the installed one when they differ. Only a unit a release
- * installed (it runs <prefix>/current/…) is replaced; drop-ins (systemctl edit, nvidia.conf) stay. */
+ * installed (it runs <prefix>/current/…) is replaced; drop-ins (systemctl edit, nvidia.conf) stay.
+ * An update never runs the server as root: a unit without a user of its own is not taken. */
 export const replaceUnit = (file: string, release: string, options: { prefix: string; dataDir: string }): boolean => {
   let installed: string, wanted: string;
   try { installed = fs.readFileSync(file, "utf8"); wanted = releaseUnit(release, options.dataDir); } catch { return false; }
-  if (wanted === installed || !installed.includes(`${options.prefix}/current/`)) return false;
+  if (wanted === installed || !installed.includes(`${options.prefix}/current/`) || !/^User=(?!root$|0$)\S+$/m.test(wanted)) return false;
   fs.writeFileSync(`${file}.new`, wanted, { mode: 0o644 });
   fs.renameSync(`${file}.new`, file);
   return true;

@@ -65,4 +65,24 @@ test("a release's unit replaces the installed one: with this host's data folder,
   assert.equal(replaceUnit(file, path.join(base, "releases", "0.1.0"), options), false, "a release without a unit changes nothing");
   assert.equal(fs.readFileSync(file, "utf8"), unit);
   assert.deepEqual(fs.readdirSync(base).sort(), ["local-cognitive.service", "releases"], "no temporary file is left");
+
+  // Root takes only what nobody else can change, and never makes the server root.
+  const shipped = path.join(release, "deploy", "server", "local-cognitive.service"), old = unit.replace("RestrictNamespaces=user mnt pid ipc net uts cgroup", "RestrictNamespaces=true");
+  fs.writeFileSync(file, old);
+  fs.chmodSync(shipped, 0o666);
+  assert.equal(replaceUnit(file, release, options), false, "a unit other users may change");
+  fs.chmodSync(path.join(release, "deploy"), 0o777);
+  fs.chmodSync(shipped, 0o644);
+  assert.equal(replaceUnit(file, release, options), false, "a unit in a folder other users may change");
+  fs.chmodSync(path.join(release, "deploy"), 0o755);
+  fs.rmSync(shipped);
+  fs.writeFileSync(path.join(base, "elsewhere.service"), unit);
+  fs.symlinkSync(path.join(base, "elsewhere.service"), shipped);
+  assert.equal(replaceUnit(file, release, options), false, "a link out of the release");
+  fs.rmSync(shipped);
+  fs.writeFileSync(shipped, unit.replace(/^User=.*$/m, "User=root"));
+  assert.equal(replaceUnit(file, release, options), false, "a unit that runs the server as root");
+  fs.writeFileSync(shipped, unit.replace(/^User=.*\n/m, ""));
+  assert.equal(replaceUnit(file, release, options), false, "a unit without a user of its own");
+  assert.equal(fs.readFileSync(file, "utf8"), old, "the installed unit stays as it was");
 });
