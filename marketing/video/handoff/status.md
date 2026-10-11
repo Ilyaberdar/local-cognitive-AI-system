@@ -58,12 +58,31 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 
 **Owner:** don't touch the mouse or keyboard during a take. If "Ghostty is requesting to bypass the system private window picker" appears, press Allow.
 
-## Stage 2: recordings
+## Stage 2: recordings (2026-10-12)
 
-| Shot | State | Files |
-|---|---|---|
-| D3 Workflow | ✅ recorded, edited and voiced. v2 after owner feedback: 4K60 master, 1440p60 web copy, Matilda voice-over. Waiting for the owner's OK before it goes into the docs. | `public/captures/D3-workflow.mov` and `.json`, `public/audio/D3Workflow/`, `out/docs/D3Workflow-1440p60.mp4` (5.3 MB), `-master-4k60.mp4`, `-poster.jpg` |
-| D1, D2, D4–D8, P2–P6 | not started | |
+| Shot | Take | Edit / export | Docs |
+|---|---|---|---|
+| A Models | `scripts/capture/a-models.mjs`, real time | `AModels` → out/docs/AModels-1440p60.mp4 | guides/models.md (built locally, not pushed) |
+| B Chat | `b-chat.mjs`, Qwen3.8-27B Q4; the answer lists the three notes (same at every Effort in rehearsal) | `BChat`, wait 6× with badge | guides/chats.md (not pushed) |
+| C Subagent | `c-subagent.mjs`, Qwen3.5-9B Q8 from LM Studio's folder (27B too slow; 1-bit Bonsai's subagent repeated its instructions) | `CSubagent`, 3 min 36 s at 40× with badge | guides/chats.md § Subagents (not pushed) |
+| D3 Workflow | `d3-workflow.mjs`, real time | `D3Workflow` | guides/workflows.md (published a084238) |
+| D4 Synthesis | `d4-synthesis.mjs`, Rate limiter on Qwen3.8-27B, Accepted in 1 iteration | `D4Synthesis`, 61 s at 10× with badge | guides/synthesis.md (not pushed) |
+| F Remote | `f-remote.mjs`, installed app (owner allowed); records only right of the sidebar; paste via ⌘V; stops if another app is in front | pending | guides/remote.md later |
+| Overview | all demos + title cards | `Overview` (F placeholder) | — |
+| Promo 40 s | cut from the takes, voice-over `voice/Promo.json` | `Promo` → out/docs/Promo-1440p60.mp4 (F placeholder) | landing later |
+
+**Remote blocker, fixed:**
+- Chats on fedora failed with "libllama-common.so.0: cannot open shared object file".
+- Cause: updates copied the CUDA runtime with `fs.cpSync`, which wrote absolute links into release 0.1.0; pruning 0.1.0 broke them.
+- Code fix with tests: c4c7021.
+- On the server the links of 0.1.4, 0.1.3 and 0.1.2 were made relative and the service was restarted; it now reports `Inference: cuda`.
+- **Release 0.1.5 is needed** so that the next update does not break it again. Publish only after the owner says "можно релизить".
+
+**Lessons:**
+- The recorder must stop screencapture on any failure. A failed take once recorded the desktop; `killRecorderSync` fixes that.
+- Character-by-character key events did not reach the packaged app (Russian layout), so the request is pasted instead.
+- The packaged app's chats are not counted in the server's `Work` line.
+- The owner's chats were never deleted. Only the chats the takes created were removed, with the owner's OK.
 
 ## Tools
 
