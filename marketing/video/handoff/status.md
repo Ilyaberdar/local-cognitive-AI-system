@@ -10,7 +10,7 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 2. A 40-second promo with an English voice-over and subtitles.
 3. Both placed in the docs and on the landing page.
 
-## Stage 1: foundation (done, except the recording-permission check)
+## Stage 1: foundation (done)
 
 - [x] Read the repos: the app README, the docs-site pages and config, and the landing (`index.html`, `site.css`, `_headers`, `server.mjs`, `functions/`). The findings are in `brief.md`.
 - [x] Checked the tools (table below).
@@ -33,7 +33,15 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 - [x] Scripted control of the app works:
   - `scripts/capture/app.mjs` and `still.mjs` start the development build through Playwright's `_electron`.
   - Each run gets its own data folder, a 1600×1000 window (Retina ×2, so 3200×2000 frames), the light theme and 115% text.
-- [ ] **macOS screen recording (`screencapture -v`): blocked until the terminal is restarted.** macOS asked for the Screen Recording permission. It takes effect only after the terminal app restarts.
+- [x] macOS screen recording works after the terminal restart (Ghostty).
+  - `screencapture -v -k -R` of the window gives H.264 at 3200×2000, about 55 fps. The real traffic lights are included.
+  - Two catches turned up:
+    1. macOS shows a "Ghostty is requesting to bypass the system private window picker…" dialog over the screen. The owner must press **Allow**, and macOS may ask again from time to time. Check the first frame of each take.
+    2. The cursor in the recording is the **physical** mouse pointer. Playwright's clicks are synthetic events inside the page, so they move no visible pointer.
+- [x] ElevenLabs key works (`scripts/voice/check-key.mjs`).
+  - Plan: Starter (includes the commercial licence), 40,000 characters a month.
+  - The key is in `.env`, which git ignores and which has mode 600. **Never put the key in `.env.example`, which git tracks.**
+  - Voice samples are in `public/audio/samples/{eric,matilda,river,alice}.mp3` (`scripts/voice/samples.mjs`).
 
 ## Tools
 
@@ -43,17 +51,23 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 | FFmpeg | ✅ works | Remotion bundles n7.1: `npx remotion ffmpeg` and `npx remotion ffprobe`. It has libx264, h264/hevc_videotoolbox, VP9, AV1, ProRes, AAC and Opus. There is no system ffmpeg, and none is needed. |
 | Playwright → app | ✅ works | Only the development build. The packaged app refuses `--remote-debugging-*` (`electron/launch-guard.cjs`) and its fuses turn off `--inspect`. |
 | Chromium screencast (CDP) | ✅ works | Frames come only when the page changes. There is no system cursor in them. |
-| macOS screen recording | ⏳ after terminal restart | `screencapture -v -k -R x,y,w,h` records the real cursor and shows clicks. Run `node scripts/capture/screen-test.mjs` to check it. |
+| macOS screen recording | ✅ works | `screencapture -v -k -R x,y,w,h`: 3200×2000 H.264, about 55 fps. It records the physical pointer only, and the bypass dialog needs **Allow**. Check with `node scripts/capture/screen-test.mjs`. |
 | Recordly | ❌ not installed | It is not in /Applications or ~/Applications and not on PATH. Not needed if `screencapture` works. |
 | Claude in Chrome | ❌ not connected | No `mcp__claude-in-chrome__*` tools in this session. Enable it with `/chrome` in Claude Code if it is ever needed. It is not needed for the app. |
 | Computer Use | ❌ not available | Only exists in the Claude desktop app. |
 | Playwright MCP | ❌ not connected | `playwright-core` is used directly instead. |
-| ElevenLabs | ❌ needs the owner | There is no key and no MCP. Needed: `ELEVENLABS_API_KEY` in `marketing/video/.env` (git ignores it) and a choice of voice (`ELEVENLABS_VOICE_ID`). |
+| ElevenLabs | ✅ key works | Starter plan, 40k characters a month, `eleven_multilingual_v2`. The owner still has to choose a voice (`ELEVENLABS_VOICE_ID`). |
+| Real mouse events (CGEvent) | ⏳ needs Accessibility | `swift` is available. Ghostty is not yet trusted under Privacy & Security → Accessibility. This is needed to move and click the real pointer. |
 
 ## Blockers and owner decisions
 
-1. **Restart the terminal** so screen recording is allowed. Then continue the session with `claude --continue` in the app repo.
-2. **ElevenLabs key and voice.** The voice-over is generated per scene. The character timestamps from `/v1/text-to-speech/{voice}/with-timestamps` give exact subtitles without transcribing.
+1. **Cursor in recordings.** Recommended: drive the real pointer with macOS events.
+   - A small Swift helper posts CGEvent moves and clicks at the positions of elements that Playwright finds.
+   - `screencapture -k` then records the real cursor and its clicks.
+   - This needs Ghostty under Accessibility.
+   - The owner must not touch the mouse during a take (about 1 minute).
+   - The alternative is a cursor drawn in the edit from the action log, which needs no permission but is an overlay.
+2. **Voice:** the owner picks one of the samples. The voice-over is generated per scene. The character timestamps from `/v1/text-to-speech/{voice}/with-timestamps` give exact subtitles without transcribing.
 3. **Remote shot (D5/P6):**
    - The owner signs in to the account in the development profile; I never type the password.
    - The owner allows pairing this computer with fedora (`sudo local-cognitive-server pair` on the server over SSH).
@@ -82,7 +96,11 @@ Before recording, the development build must match HEAD. Run `npm run build` in 
 
 ## Next step
 
-1. After the restart, run `node scripts/capture/screen-test.mjs` and look at `out/screen-test.mov`.
-2. Choose the capture method. Prefer `screencapture` (real cursor); CDP frames are the fallback. Then write `scripts/capture/record.mjs`: the scripted actions of one shot plus recording, with an action log of timestamps per step written to `public/captures/<shot>.json`.
+1. Once the owner decides on the cursor: write `scripts/capture/pointer.swift`, which moves the pointer along an eased path and clicks.
+2. Write `scripts/capture/record.mjs`. It runs one shot's scripted actions:
+   - Playwright finds each element and waits for states;
+   - the real pointer moves and clicks;
+   - `screencapture` records.
+   It also writes an action log with timestamps per step to `public/captures/<shot>.json`.
 3. First shot: **D3 Workflow console demo**. It needs no model and no network, so it tests the whole pipeline: recording → `public/captures` → `DocDemo` composition → render → size check.
 4. After that: D1 (download a model), then D2, D7 and D8, then the shots that depend on decisions (D4, D5, D6).
