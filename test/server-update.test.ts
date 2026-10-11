@@ -69,7 +69,7 @@ async function fixture(t: TestContext) {
   };
   const fetchImpl = (async (url: string) => files.has(url) ? new Response(new Uint8Array(files.get(url)!)) : new Response("missing", { status: 404 })) as typeof fetch;
   // The service: starting a release "migrates" the data to its version; a broken one exits.
-  const service = { running: true, version: "0.1.0", busy: 0, stops: 0 };
+  const service = { running: true, version: "0.1.0", busy: 0, stops: 0, units: [] as string[] };
   const control: ServiceControl = {
     stop: async () => { service.running = false; service.stops++; },
     start: async () => {
@@ -80,7 +80,9 @@ async function fixture(t: TestContext) {
       service.running = true; service.version = version;
     },
     activeWork: async () => service.busy,
-    healthy: async version => service.running && service.version === version ? { ok: true } : { ok: false, reason: "it exited" }
+    healthy: async version => service.running && service.version === version ? { ok: true } : { ok: false, reason: "it exited" },
+    // The unit of the release the service starts next, while it is stopped.
+    useUnitOf: async release => { assert.equal(service.running, false); service.units.push(path.basename(release)); return false; }
   };
   const options = (currentVersion: string, extra: Record<string, unknown> = {}) => ({ prefix, dataDir, manifestUrl: "https://releases.example/server-manifest.json", keys,
     currentVersion, service: control, runner, fetchImpl, healthTimeoutMs: 1000, ...extra });
@@ -101,6 +103,7 @@ test("an update installs the newer release beside the old one, backs the data up
   assert.equal(fs.readFileSync(path.join(backup, "app", "settings.json"), "utf8"), '{"schema":"0.1.0"}', "the backup holds the data from before");
   assert.equal(fs.existsSync(path.join(backup, "models")), false);
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.prefix, "update.json"), "utf8")).state, "done");
+  assert.deepEqual(f.service.units, ["0.2.0"], "the new release starts with its own unit");
 });
 
 test("a release that does not start is rolled back: the old code and the data from before the update", { skip: !posix }, async t => {
@@ -113,6 +116,7 @@ test("a release that does not start is rolled back: the old code and the data fr
   const journal = JSON.parse(fs.readFileSync(path.join(f.prefix, "update.json"), "utf8"));
   assert.equal(journal.state, "rolled_back");
   assert.ok(fs.readdirSync(path.join(f.dataDir, "backups")).some(name => name.endsWith("-replaced")), "the failed state is kept aside");
+  assert.deepEqual(f.service.units, ["0.2.0", "0.1.0"], "the old release starts with its own unit again");
 });
 
 test("when the failed release cannot even restore the data, the previous release restores it", { skip: !posix }, async t => {

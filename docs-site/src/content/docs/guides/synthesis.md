@@ -24,7 +24,7 @@ Synthesis is built to keep small local models on the architecture you designed. 
 
 Each failure goes back to the model as an exact item, for example a failed test with its expected and actual values and its file and line, until every gate passes.
 
-Tests run in TypeScript or JavaScript (Node.js 22.18+), Python 3 and C++20. The sandbox is built into macOS; on Linux it needs [bubblewrap](https://github.com/containers/bubblewrap). Windows has no sandbox yet, so tests don't run there.
+Tests run in TypeScript or JavaScript (Node.js 22.18+), Python 3 and C++20. The sandbox is built into macOS; on Linux it needs [bubblewrap](https://github.com/containers/bubblewrap), which the server installer sets up from 0.1.3 (on a server installed earlier, run `sudo local-cognitive-server sandbox` once after updating). Windows has no sandbox yet, so tests don't run there.
 
 To start, choose **New module → Rate limiter (TypeScript, with tests)**. For C++, the [ability system example](https://github.com/Ilyaberdar/local-cognitive-AI-system/tree/main/examples/synthesis-ability-system) builds an engine-agnostic core in the spirit of Unreal's Gameplay Ability System against a frozen header.
 

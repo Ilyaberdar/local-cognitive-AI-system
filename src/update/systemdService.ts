@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "child_process";
+import fs from "fs";
 import path from "path";
 import { linkedRelease, releasesDir, type ReleaseRunner, type ServiceControl } from "./serverUpdate";
 
@@ -24,11 +25,26 @@ export const releaseRunner = (user?: { uid: number; gid: number }): ReleaseRunne
   })
 });
 
+/** The unit a release ships, for this host's data folder: what install.sh writes. */
+export const releaseUnit = (release: string, dataDir: string) =>
+  fs.readFileSync(path.join(release, "deploy", "server", "local-cognitive.service"), "utf8").split("/srv/local-cognitive").join(dataDir);
+
+/** Puts a release's unit in place of the installed one when they differ. Only a unit a release
+ * installed (it runs <prefix>/current/…) is replaced; drop-ins (systemctl edit, nvidia.conf) stay. */
+export const replaceUnit = (file: string, release: string, options: { prefix: string; dataDir: string }): boolean => {
+  let installed: string, wanted: string;
+  try { installed = fs.readFileSync(file, "utf8"); wanted = releaseUnit(release, options.dataDir); } catch { return false; }
+  if (wanted === installed || !installed.includes(`${options.prefix}/current/`)) return false;
+  fs.writeFileSync(`${file}.new`, wanted, { mode: 0o644 });
+  fs.renameSync(`${file}.new`, file);
+  return true;
+};
+
 const systemctl = (args: string[]) => execFileSync("systemctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const property = (unit: string, name: string) => { try { return systemctl(["show", "-p", name, "--value", unit]); } catch { return ""; } };
 
 /** The server as a systemd unit; its state read through the running release's `status`. */
-export const systemdService = (options: { unit: string; prefix: string; dataDir: string; runner: ReleaseRunner }): ServiceControl => {
+export const systemdService = (options: { unit: string; prefix: string; dataDir: string; runner: ReleaseRunner; unitDir?: string }): ServiceControl => {
   const status = async () => {
     const current = linkedRelease(options.prefix, "current");
     if (!current) return undefined;
@@ -40,6 +56,14 @@ export const systemdService = (options: { unit: string; prefix: string; dataDir:
     // SIGTERM drains accepted work (TimeoutStopSec in the unit bounds it).
     stop: async () => { systemctl(["stop", options.unit]); },
     start: async () => { systemctl(["start", options.unit]); },
+    useUnitOf: async release => {
+      // Never fails an update halfway: the release then starts with the unit that was there.
+      try {
+        const changed = replaceUnit(path.join(options.unitDir ?? "/etc/systemd/system", `${options.unit}.service`), release, options);
+        if (changed) systemctl(["daemon-reload"]);
+        return changed;
+      } catch { return false; }
+    },
     activeWork: async () => (await status())?.activeWork?.total,
     healthy: async (version, timeoutMs) => {
       const restartsBefore = Number(property(options.unit, "NRestarts") || 0);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -498,6 +499,29 @@ test("cannot connect to 127.0.0.1", async () => {
   }
 });
 
+test("on Linux the code under test cannot make user namespaces of its own (bubblewrap 0.8 and later)", { skip: process.platform !== "linux" }, async t => {
+  const why = await sandbox.unavailable();
+  if (why) return t.skip(why);
+  const help = await new Promise<string>(resolve => execFile("bwrap", ["--help"], (_error, stdout) => resolve(String(stdout))));
+  if (!help.includes("--disable-userns")) return t.skip("bubblewrap is older than 0.8");
+  const suite = `import ctypes
+import unittest
+
+
+class Namespaces(unittest.TestCase):
+    def test_cannot_make_a_user_namespace(self):
+        self.assertEqual(ctypes.CDLL(None, use_errno=True).unshare(0x10000000), -1)
+`;
+  const files = { suite: { "tests/test_namespaces.py": suite } }, tests = ["tests/test_namespaces.py"];
+  const result = await check(t, sandbox, files, tests);
+  if (!result) return;
+  assert.equal(result.status, "Pass", JSON.stringify(result));
+  // The control: outside the sandbox the same call succeeds wherever user namespaces are allowed.
+  const control = await check(t, unsandboxed, files, tests);
+  if (control?.status === "Pass") t.diagnostic("user namespaces are off on this machine outside the sandbox too");
+  else assert.equal(control?.status, "Fail");
+});
+
 test("the macOS profile denies before it allows, with resolved paths", async () => {
   const home = await fs.realpath(os.homedir());
   const nvm = path.join(home, ".nvm", "versions", "node", "v22.18.0", "bin");
@@ -528,6 +552,11 @@ test("the bubblewrap command shares only system folders, the tools' folders and 
     assert.ok(args.includes(realTool), "the tool's folder is bound read-only");
     for (const hidden of [os.homedir(), "/", "/home", "/root", "/etc/local-cognitive", "/var/lib"]) assert.ok(!args.includes(hidden), hidden);
     assert.equal(args.filter(arg => arg === "/usr/bin").length, 0, "folders under /usr are visible already");
+    // bubblewrap 0.8+: no user namespaces of the code's own; an older one runs without the option.
+    const blocked = bwrapArgs("/usr/bin/python3", ["-I", "x.py"], work, [tool], true), at = blocked.indexOf("--disable-userns");
+    assert.ok(at > 0 && blocked[at - 1] === "--unshare-user", blocked.join(" "));
+    assert.deepEqual(blocked.slice(-9), args.slice(-9));
+    assert.ok(!args.includes("--disable-userns"));
   } finally { await fs.rm(work, { recursive: true, force: true }); await fs.rm(tool, { recursive: true, force: true }); }
 });
 

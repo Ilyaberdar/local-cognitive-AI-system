@@ -41,6 +41,7 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | Command | What it does |
 | --- | --- |
 | `sudo local-cognitive-server cuda` | Install the CUDA runtime later (NVIDIA driver 570+) |
+| `sudo local-cognitive-server sandbox` | Set up bubblewrap for Synthesis contract tests on a server installed before 0.1.3 (0.1.3 or later) |
 | `sudo local-cognitive-server error-reports on` | Send the server's error reports to the developers; `off` stops it |
 | `sudo local-cognitive-server uninstall` | Remove the server; its data and secrets key stay |
 

@@ -24,8 +24,9 @@ The installer:
 2. Installs it into `/opt/local-cognitive/releases/<version>` with its own Node runtime, and points `/opt/local-cognitive/current` at it.
 3. Creates the service user `local-cognitive`, the data folder `/srv/local-cognitive` and the key that encrypts the server's secrets.
 4. If it finds an NVIDIA GPU with driver 570+, it shows NVIDIA's license and installs the CUDA runtime (see [NVIDIA GPUs](/server/gpus/)).
-5. Starts the `local-cognitive` systemd service.
-6. Prints a one-time key to [connect your computer](/server/connect/).
+5. Installs [bubblewrap](https://github.com/containers/bubblewrap), the sandbox [Synthesis](/guides/synthesis/) runs contract tests in (0.1.3 or later).
+6. Starts the `local-cognitive` systemd service.
+7. Prints a one-time key to [connect your computer](/server/connect/).
 
 ### Options
 

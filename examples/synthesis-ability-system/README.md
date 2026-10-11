@@ -25,6 +25,6 @@ Each failed gate goes back to the model as short, exact items, for example `beha
 1. Copy `ability-system/` and `Synthesis/` into a project folder.
 2. Open the project in Local Cognitive → Synthesis, select `AbilitySystem` and press Run.
 
-It needs a C++ compiler (Xcode Command Line Tools on a Mac; `clang++` or `g++` on Linux) and a sandbox: built into macOS; [bubblewrap](https://github.com/containers/bubblewrap) on Linux. A model of 7B or more for code works best; the flow prefers one with "coder" in its name.
+It needs a C++ compiler (Xcode Command Line Tools on a Mac; `clang++` or `g++` on Linux, for example `sudo dnf install gcc-c++` or `sudo apt install g++` on a server) and a sandbox: built into macOS; [bubblewrap](https://github.com/containers/bubblewrap) on Linux, which a Local Cognitive server sets up. A model of 7B or more for code works best; the flow prefers one with "coder" in its name.
 
 `reference/AbilitySystem.cpp` is a hand-written implementation that passes every gate: the baseline to compare the models' output with. It is not part of a run.

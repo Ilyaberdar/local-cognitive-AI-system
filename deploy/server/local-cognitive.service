@@ -31,20 +31,21 @@ LimitCORE=0
 # Hardening. Not used: PrivateDevices/DevicePolicy (GPU access), MemoryDenyWriteExecute
 # (V8 and CUDA JIT), SystemCallFilter. NoNewPrivileges blocks setuid nvidia-modprobe, so load
 # nvidia-uvm at boot on GPU hosts.
+# Synthesis runs contract tests in bubblewrap, which needs these namespaces and a /proc of its own.
+# The kernel refuses that /proc while anything covers part of the server's, so ProtectKernelTunables,
+# ProtectKernelLogs and ProtectHostname are not used either: the server is not root and holds no
+# capabilities, so /proc/sys, the kernel log and the hostname stay closed to it all the same.
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/srv/local-cognitive
 ProtectHome=read-only
 PrivateTmp=true
-ProtectKernelTunables=true
 ProtectKernelModules=true
-ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
-ProtectHostname=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
-RestrictNamespaces=true
+RestrictNamespaces=user mnt pid ipc net uts cgroup
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=

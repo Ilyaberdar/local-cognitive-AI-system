@@ -4,9 +4,10 @@
 #   curl -fsSL https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/install.sh | sudo bash
 #
 # Downloads the newest release, checks its signature and checksum before running anything from it,
-# installs it as a systemd service (with the CUDA runtime when an NVIDIA GPU is present) and prints
-# the key that connects your computer. No sign-in is needed on the server: the first account that
-# connects with the key owns it. Run again on an installed server, it only says how to update.
+# installs it as a systemd service (with the CUDA runtime when an NVIDIA GPU is present, and
+# bubblewrap for Synthesis contract tests) and prints the key that connects your computer. No
+# sign-in is needed on the server: the first account that connects with the key owns it. Run again
+# on an installed server, it only says how to update.
 #
 # Options (curl … | sudo bash -s -- <options>):
 #   --data-dir <dir>   where the server keeps its data (default /srv/local-cognitive)
@@ -110,6 +111,19 @@ install_package() { # apt-name dnf-name
   else return 1; fi
 }
 
+setup_sandbox() { # bubblewrap, which Synthesis runs contract tests in
+  command -v bwrap >/dev/null 2>&1 || install_package bubblewrap bubblewrap || return 1
+  # Ubuntu 24.04 and later let a program make user namespaces only under an AppArmor profile that
+  # allows it: the distribution's own one for bubblewrap (in apparmor-profiles on 24.04).
+  [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] || return 0
+  local profile=/etc/apparmor.d/bwrap-userns-restrict extra=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+  if [ ! -e "$profile" ]; then
+    [ -e "$extra" ] || install_package apparmor-profiles apparmor-profiles || return 1
+    install -m 644 "$extra" "$profile" || return 1
+  fi
+  apparmor_parser -r "$profile" >/dev/null 2>&1
+}
+
 as_service_user() { (cd / && runuser -u "$SERVICE_USER" -- env LOCAL_COGNITIVE_DATA_DIR="$DATA_DIR" LOCAL_COGNITIVE_VAULT_KEY_FILE="$VAULT_KEY_FILE" "$@"); }
 
 main() {
@@ -202,6 +216,7 @@ main() {
       say "  It needs glibc 2.34+ and libstdc++ from GCC 12+ (Ubuntu 22.04+, Debian 12+, Fedora 36+, Amazon Linux 2023)."
     fi
   fi
+  setup_sandbox || say "Warning: bubblewrap could not be set up, so Synthesis contract tests do not run here. Later: sudo local-cognitive-server sandbox"
 
   local cuda="linux-$arch-cuda12" driver
   if ! $cpu && nvidia_gpu_present && ! command -v nvidia-smi >/dev/null 2>&1; then

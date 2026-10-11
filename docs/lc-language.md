@@ -325,9 +325,9 @@ Tests that a model proposes (`propose_tests`) are never run: only the engineer's
 
 ### The sandbox
 
-Every test run is sandboxed: no network, writes only inside its own temporary folder, and nothing read from the user's home folder, other temporary folders or the app's data (not even whether a file there exists). On macOS this is the built-in `sandbox-exec`; on Linux, [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, which needs user namespaces). Windows has no sandbox yet, so `Tests` gates there are Unknown and the run ends as needs review.
+Every test run is sandboxed: no network, writes only inside its own temporary folder, and nothing read from the user's home folder, other temporary folders or the app's data (not even whether a file there exists). On macOS this is the built-in `sandbox-exec`; on Linux, [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, which needs user namespaces). The server installer sets bubblewrap up from 0.1.3; on a server installed earlier, run `sudo local-cognitive-server sandbox` once after updating. Windows has no sandbox yet, so `Tests` gates there are Unknown and the run ends as needs review.
 
-Inside the sandbox there are no system services, Apple Events or signals to other processes on macOS, and no capabilities on Linux, so the code under test cannot ask another program to act for it.
+Inside the sandbox there are no system services, Apple Events or signals to other processes on macOS, and on Linux no capabilities and, with bubblewrap 0.8 or later, no user namespaces of its own, so the code under test cannot ask another program to act for it.
 
 Before anything runs, the runtime also checks the module's files:
 
@@ -670,7 +670,7 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `SPEC_UNSUPPORTED_SECTION` / `SPEC_UNSUPPORTED_TARGET` | The requested domain semantics need a trusted adapter; adding prose or a new section name does not implement it. Express architecture with `Exports`, `Imports`, `Forbid` and the engineer's `Tests`. |
 | `SPEC_TEST_MISSING` | Put the test file next to the `.lcspec`, at the path the contract names. |
 | `SPEC_PATH_CONFLICT` | A path appears twice across artifacts, frozen files and test files; they share one folder when tests run. |
-| A `Tests` gate is Unknown | The message names what is missing: a sandbox (Windows has none yet; on Linux install bubblewrap), Node.js 22.18+ for TypeScript, Python 3, or a C++ compiler. |
+| A `Tests` gate is Unknown | The message names what is missing: a sandbox (Windows has none yet; on Linux install bubblewrap, and on a Local Cognitive server run `sudo local-cognitive-server sandbox`, 0.1.3 or later), Node.js 22.18+ for TypeScript, Python 3, or a C++ compiler. |
 | No installed model matches | Import an eligible GGUF or change selection. `prefer` does not download a model. |
 | Unknown evaluator result | The group/ID is not registered. Use a supported evaluator or implement a trusted adapter in the application. |
 | Stale evidence | Re-run `evaluate` and `verify` after the last candidate revision. |

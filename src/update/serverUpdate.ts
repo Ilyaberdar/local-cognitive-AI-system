@@ -13,6 +13,9 @@ export interface ServiceControl {
   activeWork(): Promise<number | undefined>;
   /** Waits until the server runs the given version and is up, or says why not. */
   healthy(version: string, timeoutMs: number): Promise<{ ok: boolean; reason?: string }>;
+  /** Runs the service with the settings the given release ships (they change between releases);
+   * true when they changed. */
+  useUnitOf?(releaseDir: string): Promise<boolean>;
 }
 
 /** Commands of a release's own CLI run as the server's user (backup, restore, version). */
@@ -223,6 +226,7 @@ export const updateServer = async (options: UpdateOptions): Promise<{ updated: f
   writeJournal(options.prefix, { state: "switching", from, to: manifest.version, backup: path.basename(backupDir) });
   pointLink(options.prefix, "previous", from);
   pointLink(options.prefix, "current", manifest.version);
+  if (await options.service.useUnitOf?.(target)) log(`${manifest.version} comes with new service settings: systemd has them.`);
   log(`Starting ${manifest.version}…`);
   await options.service.start();
   const health = await options.service.healthy(manifest.version, options.healthTimeoutMs ?? 90_000);
@@ -243,6 +247,7 @@ export const rollback = async (options: Pick<UpdateOptions, "prefix" | "dataDir"
   writeJournal(options.prefix, { state: "rolling_back", ...step });
   await options.service.stop();
   pointLink(options.prefix, "current", step.from);
+  await options.service.useUnitOf?.(path.join(releasesDir(options.prefix), step.from));
   // The release that made the backup restores it; when even its own CLI fails, the previous one does.
   const restore = (version: string) => options.runner.run(path.join(releasesDir(options.prefix), version), ["restore", step.backup, "--data-dir", options.dataDir]);
   let restored = await restore(step.to);

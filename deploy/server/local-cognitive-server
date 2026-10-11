@@ -11,6 +11,7 @@
 #   sudo local-cognitive-server update        install the newest release (backed up, rolled back if it fails)
 #   sudo local-cognitive-server logs | restart | stop | start
 #   sudo local-cognitive-server cuda          install the CUDA runtime (NVIDIA GPU, driver 570+)
+#   sudo local-cognitive-server sandbox       set up bubblewrap for Synthesis contract tests (installers from 0.1.3 do)
 #   sudo local-cognitive-server uninstall     remove the server (keeps its data)
 set -euo pipefail
 
@@ -34,6 +35,29 @@ has_option() {
   local argument
   for argument in "$@"; do case "$argument" in "$name" | "$name="*) return 0 ;; esac; done
   return 1
+}
+
+# The same as install.sh's: a server installed before 0.1.3 sets bubblewrap up with `sandbox`.
+install_package() { # apt-name dnf-name
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$1" >/dev/null 2>&1 \
+      || { apt-get update -q >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$1" >/dev/null 2>&1; }
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q "$2" >/dev/null 2>&1
+  elif command -v zypper >/dev/null 2>&1; then zypper -n -q install "$1" >/dev/null 2>&1
+  else return 1; fi
+}
+
+setup_sandbox() { # bubblewrap, which Synthesis runs contract tests in
+  command -v bwrap >/dev/null 2>&1 || install_package bubblewrap bubblewrap || return 1
+  # Ubuntu 24.04 and later let a program make user namespaces only under an AppArmor profile that
+  # allows it: the distribution's own one for bubblewrap (in apparmor-profiles on 24.04).
+  [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] || return 0
+  local profile=/etc/apparmor.d/bwrap-userns-restrict extra=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+  if [ ! -e "$profile" ]; then
+    [ -e "$extra" ] || install_package apparmor-profiles apparmor-profiles || return 1
+    install -m 644 "$extra" "$profile" || return 1
+  fi
+  apparmor_parser -r "$profile" >/dev/null 2>&1
 }
 
 uninstall() {
@@ -94,6 +118,25 @@ case "$command" in
     (cd / && TMPDIR=/var/tmp "$NODE" "$release/scripts/prepare-llama-runtime.mjs" --variant "$variant" --destination "$release/resources/llama/$variant")
     chown -R root:root "$release/resources" && chmod -R go-w "$release/resources"
     exec systemctl restart "$UNIT" ;;
+  sandbox)
+    # Servers installed before 0.1.3 have neither bubblewrap nor a unit that lets it make its
+    # namespaces: both come from the running release. The restart lets accepted work finish first.
+    need_root "$@"
+    setup_sandbox || { echo "bubblewrap could not be set up: install the bubblewrap package, then run this again." >&2; exit 1; }
+    unit="/etc/systemd/system/$UNIT.service"
+    if ! grep -qs "$PREFIX/current/" "$unit"; then
+      echo "$unit was not installed from a release: allow it RestrictNamespaces=user mnt pid ipc net uts cgroup, and see $PREFIX/current/deploy/server/local-cognitive.service." >&2
+      exit 1
+    fi
+    sed -e "s|/srv/local-cognitive|$DATA_DIR|g" "$PREFIX/current/deploy/server/local-cognitive.service" > "$unit.new"
+    if cmp -s "$unit.new" "$unit"; then
+      rm -f "$unit.new"
+    else
+      chmod 644 "$unit.new" && mv "$unit.new" "$unit" && systemctl daemon-reload
+      echo "The service's settings changed for the sandbox: restarting it…"
+      systemctl restart "$UNIT"
+    fi
+    echo "Synthesis contract tests run in bubblewrap on this server." ;;
   gpu-devices)
     # Run as root before the service starts (its unit's nvidia.conf): an NVIDIA device file for every
     # GPU. The service cannot create them itself (NoNewPrivileges stops CUDA's setuid nvidia-modprobe),

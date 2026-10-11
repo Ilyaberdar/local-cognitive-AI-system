@@ -87,14 +87,25 @@ function bwrapBase(): string[] {
   return args;
 }
 
-const probeBwrap = () => new Promise<string | undefined>(resolve => {
+/** bubblewrap 0.8 and later also keep the code under test from making user namespaces of its own
+ * (and so capabilities over mounts and networks of its own), now that the server's unit allows them. */
+const NO_NESTED_USERNS = ["--unshare-user", "--disable-userns"];
+let nestedUsernsBlocked = false;
+/** A server installed by install.sh sets bubblewrap and its service up with its own command. */
+const fix = (otherwise: string) => fs.existsSync("/usr/local/bin/local-cognitive-server") ? "on this server, run sudo local-cognitive-server sandbox" : otherwise;
+
+async function probeBwrap(): Promise<string | undefined> {
   const bwrap = onPath("bwrap");
-  if (!bwrap) return resolve("Contract tests need bubblewrap (bwrap) to sandbox the code: install the bubblewrap package.");
-  execFile(bwrap, [...bwrapBase(), "--", "/usr/bin/true"], { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } }, (error, _stdout, stderr) => {
-    const detail = String(stderr).trim().split("\n")[0] || error?.message;
-    resolve(error ? `bubblewrap cannot create a sandbox here (${detail}): install bubblewrap from the distribution, or allow unprivileged user namespaces (on Ubuntu 24.04: sysctl kernel.apparmor_restrict_unprivileged_userns=0).` : undefined);
-  });
-});
+  if (!bwrap) return `Contract tests need bubblewrap (bwrap) to sandbox the code: ${fix("install the bubblewrap package")}.`;
+  const attempt = (extra: string[]) => new Promise<string | undefined>(resolve =>
+    execFile(bwrap, [...bwrapBase(), ...extra, "--", "/usr/bin/true"], { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } }, (error, _stdout, stderr) =>
+      resolve(error ? String(stderr).trim().split("\n")[0] || error.message : undefined)));
+  if (await attempt(NO_NESTED_USERNS) === undefined) { nestedUsernsBlocked = true; return undefined; }
+  // An older bubblewrap (0.6 on Ubuntu 22.04) runs without that option.
+  const detail = await attempt([]);
+  if (detail === undefined) { nestedUsernsBlocked = false; return undefined; }
+  return `bubblewrap cannot create a sandbox here (${detail}): ${fix("allow unprivileged user namespaces (on Ubuntu 24.04 and later, with the AppArmor profile bwrap-userns-restrict from apparmor-profiles)")}.`;
+}
 let bwrapProbe: Promise<string | undefined> | undefined;
 const linux: SandboxProvider = {
   name: "bubblewrap",
@@ -105,17 +116,17 @@ const linux: SandboxProvider = {
     return reason;
   },
   wrap: (executable, args, workDir, readable) => ({
-    executable: onPath("bwrap") ?? "bwrap", args: bwrapArgs(executable, args, workDir, readable), env: sandboxEnv(executable, real(workDir))
+    executable: onPath("bwrap") ?? "bwrap", args: bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked), env: sandboxEnv(executable, real(workDir))
   })
 };
 
 /** The bubblewrap command line: the system folders, the tools' folders read-only, the work folder writable. */
-export function bwrapArgs(executable: string, args: string[], workDir: string, readable: string[]): string[] {
+export function bwrapArgs(executable: string, args: string[], workDir: string, readable: string[], noNestedUserns = false): string[] {
   const work = real(workDir);
   // Toolchains under /usr are already visible; any other tool folder is bound read-only at its own path.
   const binds = [...new Set(readable.flatMap(dir => [path.resolve(dir), real(dir)]))]
     .filter(dir => !inside(dir, "/usr") && openable(dir) && fs.existsSync(dir)).flatMap(dir => ["--ro-bind", dir, dir]);
-  return [...bwrapBase(), ...binds, "--bind", work, work, "--chdir", work, "--", executable, ...args];
+  return [...bwrapBase(), ...(noNestedUserns ? NO_NESTED_USERNS : []), ...binds, "--bind", work, work, "--chdir", work, "--", executable, ...args];
 }
 
 const unsupported: SandboxProvider = {
