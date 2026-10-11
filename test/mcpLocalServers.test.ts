@@ -103,7 +103,9 @@ test("a long call that reports progress runs past the timeout; a silent one does
   let progress = 0;
   const long = await manager.callTool({ bindingId: "editor", toolName: "progress_op", arguments: { steps: 6, intervalMs: 200 } }, { onProgress: () => { progress++; } });
   assert.equal(long.outcome, "success", "1.2 s of work with progress every 0.2 s");
-  assert.equal(progress, 6);
+  // The last notification leaves the server just before the result, and the SDK handles notifications
+  // a tick after responses: arriving together, the call may end first and that one is dropped.
+  assert.ok(progress === 5 || progress === 6, `${progress} progress notifications`);
   await assert.rejects(manager.callTool({ bindingId: "editor", toolName: "quiet_op", arguments: { delayMs: 1_200 } }),
     (error: unknown) => error instanceof McpClientError && error.code === "timeout");
 });
