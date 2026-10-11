@@ -4,7 +4,7 @@ Eight steps: Entry → Read webpage → Bonsai research → Save findings → Bo
 
 Open the saved **Bonsai Research → Code → Report** workflow in the app. Select an installed model on both Agent steps (the example is configured for the Bonsai model on this Mac). Open **Run settings**, choose a project, an existing folder, or **New folder for this run**, then press **Run**. No Task is created, and unsaved graph changes are included in the run snapshot.
 
-The default access setting asks before reading the website and running the verification command. Use **Run controls → Approve & continue** when prompted. **Stop** cancels the run. Use **Back to editor** to change the graph; the execution snapshot remains unchanged. Save stores the graph and run defaults. Previous executions are available in **Workflows & trace → Run history**.
+The default access setting asks before reading the website and running the verification command. Use **Approve** on the card above the waiting step when prompted. **Stop** cancels the run. Use **Back to editor** to change the graph; the execution snapshot remains unchanged. Save stores the graph and run defaults. Previous executions are available in **Workflows & trace → Run history**.
 
 The webpage step reads public HTML; it does not run JavaScript. The first agent receives that text through **Input context**. Save findings writes the full response to `research/findings.md`. The second agent is instructed to read that file through its tools and generate `sort_domains.py`. The command executes the generated code and checks its actual results.
 

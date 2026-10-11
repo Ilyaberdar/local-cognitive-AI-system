@@ -249,7 +249,7 @@ Steps exchange structured output: reference an earlier step as `{{nodes.<node-id
 - **Save File** and **Run Command**: an executable plus an argument array, no shell. Both need full access to run unattended.
 - **Decision**: emits `decision.true` or `decision.false`.
 
-A run keeps a snapshot of its workflow, so later edits don't change it. A waiting run shows **Approve & continue** and **Reject** in its trace.
+A run keeps a snapshot of its workflow, so later edits don't change it. A waiting step shows a card with **Approve** and **Reject** above it on the canvas.
 
 ### Plugins and connected accounts
 

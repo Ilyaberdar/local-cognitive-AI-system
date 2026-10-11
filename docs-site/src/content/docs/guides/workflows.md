@@ -29,7 +29,7 @@ A task without a project gets its own folder, kept across runs.
 | **Command** | Runs a program with its arguments, without a shell. |
 | **MCP tool** | Calls one tool of an MCP server with arguments, without a model. |
 | **Decision** | Checks an earlier step's output and takes one path or the other. |
-| **Review** | Waits for a person: **Approve & continue** or **Reject**. |
+| **Review** | Waits for a person: **Approve** or **Reject** on the card above the step. |
 | **Terminal** | Ends the run as succeeded or failed. |
 
 Transitions fire on a step's status (ok, failed, blocked), on an event, or on a value in its output. A step can use an earlier step's output as `{{nodes.<step-id>.data.<key>}}`.

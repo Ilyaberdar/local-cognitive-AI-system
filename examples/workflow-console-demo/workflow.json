@@ -57,7 +57,7 @@
       "label": "Review the console",
       "position": { "x": 300, "y": 240 },
       "config": {
-        "prompt": "Check the live stdout/stderr in Console and demo-output.txt in this demo project. Select Approve & continue to finish."
+        "prompt": "Check the live stdout/stderr in Console and demo-output.txt in this demo project. Select Approve to finish."
       }
     },
     {
