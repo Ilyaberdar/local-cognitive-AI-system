@@ -1,0 +1,8 @@
+{
+  "lines": [
+    { "id": "01-switch", "text": "Switch where the chat runs: from this computer to your own GPU server." },
+    { "id": "02-ask", "text": "The same request now goes to the server." },
+    { "id": "03-stream", "text": "A model on the server's NVIDIA GPU writes the answer, and it streams back end-to-end encrypted." },
+    { "id": "04-done", "text": "Your prompts stay on your own machines." }
+  ]
+}

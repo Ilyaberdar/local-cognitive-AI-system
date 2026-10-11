@@ -6,11 +6,10 @@ import { startShot } from "./recorder.mjs";
 import { openProfile, preloadModel, setEffortLow, useModelInChat } from "./chat-setup.mjs";
 
 const shotId = "B-chat";
+// The owner"s launch notes, as a request that asks for real work (owners, dates, risks): the first
+// wording ("three action items") only made the model repeat the three notes.
 const lines = [
-  "Summarize these launch notes into three action items:",
-  "Maya prepares screenshots by Friday.",
-  "Alex verifies the workflow demo.",
-  "Sam updates the documentation.",
+  "Turn these launch notes into a release checklist. For each item give the owner, a due date, one risk and how to reduce it: Maya prepares screenshots by Friday. Alex verifies the workflow demo. Sam updates the documentation.",
 ];
 
 const { app, page } = await openProfile(shotId);
@@ -25,7 +24,7 @@ try {
   await shot.pause(1500);
   await shot.click(page.locator("#chat-form textarea[name='input']"), "composer");
   for (const [index, line] of lines.entries()) {
-    await shot.type(line, `type line ${index + 1}`, 42);
+    await shot.type(line, `type line ${index + 1}`, 30);
     if (index < lines.length - 1) await page.keyboard.press("Shift+Enter");
   }
   await shot.pause(900);

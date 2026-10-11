@@ -7,8 +7,7 @@
 // Was blocked on 2026-10-12: the server's CUDA runtime could not load its libraries (links into the
 // pruned 0.1.0 release). Fixed in c4c7021 and repaired on the server the same night.
 //
-// Privacy: only the window to the right of the sidebar is recorded (the sidebar holds the owner's
-// chats and avatar). Off camera before the take: an empty chat on This computer and an empty chat on
+// Privacy: the sidebar is collapsed to its icons for the take (it holds the owner's chats and projects). Off camera before the take: an empty chat on This computer and an empty chat on
 // fedora (so the switch opens that one, not an old test chat). Nothing is paired, removed or typed
 // into Remote or Settings.
 //
@@ -20,29 +19,45 @@ import { project } from "./app.mjs";
 import { killRecorderSync, startPointer } from "./recorder.mjs";
 
 const shotId = "F-remote";
-// Screen points, measured on 2026-10-12 with the window at 0,33 1728×1084 (see handoff/shot-list.md).
-const region = { x: 260, y: 33, width: 1468, height: 1084 };
-const at = {
-  switchLocal: { x: 1647, y: 49 },
-  switchServer: { x: 1664, y: 49 },
-  optionLocal: { x: 1477, y: 116 },
-  optionServer: { x: 1457, y: 153 },
-  composer: { x: 575, y: 992 },
-  rest: { x: 900, y: 420 },
+// Positions measured on 2026-10-12, as offsets from the window edge each element is anchored to (the
+// target switch and its menu to the top right, the composer to the bottom left), so any window size
+// works. The whole window is recorded with the sidebar collapsed to its icons (the owner's chats and
+// projects stay out of the frame; the avatar left in its corner is blurred in the edit).
+const placeIn = w => {
+  const right = w.x + w.width, bottom = w.y + w.height;
+  return {
+    region: { x: w.x, y: w.y, width: w.width, height: w.height },
+    at: {
+      sidebarToggle: { x: w.x + 102, y: w.y + 16 },
+      switchLocal: { x: right - 81, y: w.y + 16 },
+      switchServer: { x: right - 64, y: w.y + 16 },
+      optionLocal: { x: right - 251, y: w.y + 83 },
+      optionServer: { x: right - 271, y: w.y + 120 },
+      composer: { x: w.x + 380, y: bottom - 125 },
+      rest: { x: w.x + w.width * 0.45, y: w.y + w.height * 0.35 },
+    },
+  };
 };
 // One line: Shift+Enter sent as a key event did not add a line in the first try, it sent the message.
-const request = "Summarize these launch notes into three action items: Maya prepares screenshots by Friday. Alex verifies the workflow demo. Sam updates the documentation.";
+const request = "Turn these launch notes into a release checklist. For each item give the owner, a due date, one risk and how to reduce it: Maya prepares screenshots by Friday. Alex verifies the workflow demo. Sam updates the documentation.";
 
 const serverWork = () => {
   const out = execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "dex-node", "sudo -n local-cognitive-server status"]).toString();
   return (out.match(/Work:\s*(.+)/)?.[1] ?? "").trim();
 };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// The server's own loopback API, over SSH (the same calls its UI makes). Used off camera only.
+const serverApi = (method, route, body) => execFileSync("ssh", ["-o", "BatchMode=yes", "dex-node",
+  `curl -s -X ${method} http://127.0.0.1:3900${route} -H "Host: 127.0.0.1:3900" -H "Content-Type: application/json" -H "X-Local-Cognitive: 1"${body ? ` --data '${JSON.stringify(body)}'` : ""}`]).toString();
+const serverSessions = () => { const d = JSON.parse(serverApi("GET", "/sessions") || "[]"); return Array.isArray(d) ? d : d.sessions ?? d.items ?? []; };
+// The server model for the demo chat: Qwen2.5-14B (a new chat on this server defaults to its 0.5B).
+const serverModel = "gguf-4f4be285ad4e3493957ef839";
 
 execFileSync("open", ["-a", "Local Cognitive"]);
 await sleep(1500);
 const window = JSON.parse(execFileSync(path.join(project, ".bin", "pointer"), { input: '{"op":"window","owner":"Local Cognitive"}\n' }).toString());
-if (window.x !== 0 || window.y !== 33 || window.width !== 1728 || window.height !== 1084) throw new Error(`the app window moved: ${JSON.stringify(window)}`);
+if (window.error || window.width < 1200 || window.height < 800) throw new Error(`the app window is missing or too small: ${JSON.stringify(window)}`);
+const { region, at } = placeIn(window);
 if (serverWork() !== "idle") throw new Error("the server is busy");
 
 const captures = path.join(project, "public", "captures");
@@ -56,8 +71,12 @@ const prepare = async (point, ms = 450) => {
   if ((await pointer.front()) !== "Local Cognitive") throw new Error("Local Cognitive is not in front");
   await pointer.move(point.x, point.y, ms); await sleep(250); await pointer.click(point.x, point.y);
 };
+await prepare(at.sidebarToggle); await sleep(900);
 await prepare(at.switchLocal); await sleep(900); await prepare(at.optionServer); await sleep(2500);
-await pointer.key(45, ["cmd"]); await sleep(1800);
+await pointer.key(45, ["cmd"]); await sleep(2200);
+const demoChat = serverSessions().sort((a, b) => String(b.updatedAt ?? b.createdAt).localeCompare(String(a.updatedAt ?? a.createdAt)))[0];
+if (!demoChat) throw new Error("no chat was created on the server");
+serverApi("PUT", `/sessions/${demoChat.id}/settings`, { defaultTarget: { providerId: "llamacpp", model: serverModel } });
 await prepare(at.switchServer); await sleep(900); await prepare(at.optionLocal); await sleep(400);
 await pointer.key(45, ["cmd"]); await sleep(2000);
 const steps = [];
@@ -128,6 +147,12 @@ try {
   finished = true;
   recorder.kill("SIGINT");
   await exited;
+  // Off camera: the owner's app as it was, on This computer with the sidebar open.
+  try {
+    await sleep(800);
+    await prepare(at.switchServer); await sleep(900); await prepare(at.optionLocal); await sleep(1200);
+    await prepare(at.sidebarToggle); await sleep(600);
+  } catch (error) { console.error(`restore: ${error.message}`); }
   pointer.close();
   const videoMs = Math.round(Number(execFileSync("npx", ["remotion", "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video], { cwd: project }).toString().trim()) * 1000);
   const record = { shotId, recorded: new Date(started).toISOString(), region, wallMs, videoMs, videoOffsetMs: Math.max(0, wallMs - videoMs), steps };

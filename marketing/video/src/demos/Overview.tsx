@@ -3,9 +3,7 @@ import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import type React from "react";
 import { staticFile, useVideoConfig } from "remotion";
-import { AppWindow } from "../components/AppWindow";
 import { Backdrop } from "../components/Backdrop";
-import { Subtitle } from "../components/Subtitle";
 import { TitleCard } from "../components/TitleCard";
 import { StyleEnd } from "../scenes/StyleBoard";
 import { AModels } from "./AModels";
@@ -13,10 +11,10 @@ import { BChat } from "./BChat";
 import { CSubagent } from "./CSubagent";
 import { D3Workflow } from "./D3Workflow";
 import { D4Synthesis } from "./D4Synthesis";
+import { FRemote } from "./FRemote";
 
 // Every docs demo in one video: an opening, a title card per feature (the landing's headings), each
 // demo as published in the docs (its own voice-over, captions and speed badges), and the end card.
-// Remote waits for its recording; until then its window shows "Capture pending".
 const Section: React.FC<{ readonly eyebrow: string; readonly headline: string }> = ({ eyebrow, headline }) => (
   <Backdrop>
     <TitleCard name="Section" eyebrow={eyebrow} headline={headline} showLogo={false} />
@@ -47,7 +45,7 @@ export const Overview: React.FC = () => {
         <Section eyebrow="Chat" headline="Your prompts stay on your machine." />
       </TransitionSeries.Sequence>
       {crossfade}
-      <TransitionSeries.Sequence name="B Chat" durationInFrames={1224} premountFor={fps}>
+      <TransitionSeries.Sequence name="B Chat" durationInFrames={1857} premountFor={fps}>
         <BChat />
       </TransitionSeries.Sequence>
       {crossfade}
@@ -76,14 +74,11 @@ export const Overview: React.FC = () => {
       </TransitionSeries.Sequence>
       {crossfade}
       <TransitionSeries.Sequence name="Card: Remote" durationInFrames={132} premountFor={fps}>
-        <Section eyebrow="Your GPU server" headline="One command on the server. One key in the app." />
+        <Section eyebrow="Your GPU server" headline="Run it on your own GPU server." />
       </TransitionSeries.Sequence>
       {crossfade}
-      <TransitionSeries.Sequence name="F Remote (pending)" durationInFrames={360} premountFor={fps}>
-        <Backdrop>
-          <AppWindow name="F" src="" kind="video" shotId="F · This computer → your GPU server" zoom={1} focusX={0.5} focusY={0.5} />
-          <Subtitle name="Caption: pending">Recording pending.</Subtitle>
-        </Backdrop>
+      <TransitionSeries.Sequence name="F Remote" durationInFrames={1632} premountFor={fps}>
+        <FRemote />
       </TransitionSeries.Sequence>
       {crossfade}
       <TransitionSeries.Sequence name="End" durationInFrames={390} premountFor={fps}>

@@ -1,11 +1,32 @@
 {
   "lines": [
-    { "id": "01-open", "text": "This is Local Cognitive: private AI on your own machines." },
-    { "id": "02-chat", "text": "Chat with models that run on your own computer. Prompts and answers stay there." },
-    { "id": "03-models", "text": "Pick a model from Hugging Face. Memory is checked before the download." },
-    { "id": "04-workflow", "text": "Chain agents, files and commands, and watch every step run." },
-    { "id": "05-synthesis", "text": "Synthesis writes code against a contract, and real tests decide when it is done." },
-    { "id": "06-remote", "text": "Connect your own GPU server with one key, end-to-end encrypted." },
-    { "id": "07-end", "text": "Get it at local-cognitive.com." }
+    {
+      "id": "01-open",
+      "text": "This is Local Cognitive: private AI on your own machines."
+    },
+    {
+      "id": "02-chat",
+      "text": "Chat with models that run on your own computer. Prompts and answers stay there."
+    },
+    {
+      "id": "03-models",
+      "text": "Pick a model from Hugging Face. Memory is checked before the download."
+    },
+    {
+      "id": "04-workflow",
+      "text": "Chain agents, files and commands, and watch every step run."
+    },
+    {
+      "id": "05-synthesis",
+      "text": "Synthesis writes code against a contract, and real tests decide when it is done."
+    },
+    {
+      "id": "06-remote",
+      "text": "Or run it on your own GPU server, end-to-end encrypted."
+    },
+    {
+      "id": "07-end",
+      "text": "Get it at local-cognitive.com."
+    }
   ]
 }

@@ -1,7 +1,20 @@
 {
   "lines": [
-    { "id": "01-ask", "text": "Pick a local model, and ask anything." },
-    { "id": "02-local", "text": "The model runs on this Mac. Your prompt never leaves it." },
-    { "id": "03-answer", "text": "Here is the answer: three action items." }
+    {
+      "id": "01-ask",
+      "text": "Pick a local model, and ask anything."
+    },
+    {
+      "id": "02-local",
+      "text": "The model runs on this Mac. Your prompt never leaves it."
+    },
+    {
+      "id": "03-stream",
+      "text": "The answer streams in as the model writes it: owners, dates and risks."
+    },
+    {
+      "id": "04-apply",
+      "text": "When it finishes, the formatted answer takes its place."
+    }
   ]
 }

@@ -10,7 +10,7 @@ import { StyleEnd } from "../scenes/StyleBoard";
 
 // The 40-second promo, cut from the same real takes as the docs demos (public/captures/*.mov and their
 // action logs). Every shortened wait carries the speed badge; the voice-over (voice/Promo.json, the
-// chosen voice) says only what the footage shows. Remote waits for its recording.
+// chosen voice) says only what the footage shows.
 const ease = { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(0.45, 0, 0.2, 1) } as const;
 
 const Line: React.FC<{ readonly id: string; readonly at: number; readonly seconds: number; readonly children: string }> = ({ id, at, seconds, children }) => {
@@ -25,19 +25,20 @@ const Line: React.FC<{ readonly id: string; readonly at: number; readonly second
   );
 };
 
-// Chat (B): the last lines typed, the wait at 10×, the answer arriving.
+// Chat (B): the last of the typing, the wait and the stream shortened under one badge, the answer.
 const ChatScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const zoom = interpolate(frame, [0, 0.6 * fps, 2.3 * fps, 2.6 * fps, 4.4 * fps, 5.2 * fps], [1.25, 1.4, 1.4, 1, 1, 1.35], ease);
-  const focusX = interpolate(frame, [2.5 * fps, 4.4 * fps], [0.4, 0.3], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const focusY = interpolate(frame, [2.5 * fps, 4.4 * fps], [0.88, 0.42], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const zoom = interpolate(frame, [0, 0.6 * fps, 1.8 * fps, 2.1 * fps, 3.0 * fps, 3.8 * fps], [1.25, 1.4, 1.4, 1, 1, 1.3], ease);
+  const focusX = interpolate(frame, [2.0 * fps, 3.0 * fps], [0.4, 0.35], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const focusY = interpolate(frame, [2.0 * fps, 3.0 * fps], [0.88, 0.45], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   return (
     <Backdrop>
-      <AppWindow name="Typing" src="captures/B-chat.mov" kind="video" shotId="B" startAt={9.0} durationInFrames={Math.round(2.5 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
-      <AppWindow name="Wait 10×" src="captures/B-chat.mov" kind="video" shotId="B" startAt={12.7} speed={10} from={Math.round(2.5 * fps)} durationInFrames={Math.round(1.93 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
-      <AppWindow name="Answer" src="captures/B-chat.mov" kind="video" shotId="B" startAt={32.0} from={Math.round(4.43 * fps)} durationInFrames={Math.round(3.07 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
-      <SpeedBadge name="Badge" label="Sped up 10× · 19 s → 2 s" from={Math.round(2.5 * fps)} durationInFrames={Math.round(1.93 * fps)} premountFor={fps} />
+      <AppWindow name="Typing" src="captures/B-chat.mov" kind="video" shotId="B" startAt={10.0} durationInFrames={Math.round(2.0 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="Wait 21×" src="captures/B-chat.mov" kind="video" shotId="B" startAt={12.0} speed={21} from={Math.round(2.0 * fps)} durationInFrames={Math.round(1.0 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="Stream 7×" src="captures/B-chat.mov" kind="video" shotId="B" startAt={33.0} speed={7} from={Math.round(3.0 * fps)} durationInFrames={Math.round(4.03 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <AppWindow name="Answer" src="captures/B-chat.mov" kind="video" shotId="B" startAt={61.2} from={Math.round(7.03 * fps)} durationInFrames={Math.round(0.47 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} />
+      <SpeedBadge name="Badge" label="Sped up · 49 s → 5 s" from={Math.round(2.0 * fps)} durationInFrames={Math.round(5.03 * fps)} premountFor={fps} />
       <Line id="02-chat" at={0.3} seconds={4.8}>Chat with models that run on your own computer. Prompts and answers stay there.</Line>
     </Backdrop>
   );
@@ -91,6 +92,25 @@ const SynthesisScene: React.FC = () => {
   );
 };
 
+// Remote (F): the switch to the server, its answer streaming at 10×, the finished answer.
+const avatar = [{ x: 0.004, y: 0.925, width: 0.04, height: 0.07 }];
+const RemoteScene: React.FC = () => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const zoom = interpolate(frame, [0, 0.5 * fps, 2.4 * fps, 2.9 * fps], [1.3, 1.6, 1.6, 1.2], ease);
+  const focusX = frame < 2.6 * fps ? 0.92 : 0.3;
+  const focusY = frame < 2.6 * fps ? 0.04 : 0.3;
+  return (
+    <Backdrop>
+      <AppWindow name="Switch" src="captures/F-remote.mov" kind="video" shotId="F" startAt={4.4} durationInFrames={Math.round(2.6 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
+      <AppWindow name="Stream 10×" src="captures/F-remote.mov" kind="video" shotId="F" startAt={16.6} speed={10} from={Math.round(2.6 * fps)} durationInFrames={Math.round(2.0 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
+      <AppWindow name="Answer" src="captures/F-remote.mov" kind="video" shotId="F" startAt={46.4} from={Math.round(4.6 * fps)} durationInFrames={Math.round(0.4 * fps)} premountFor={fps} zoom={zoom} focusX={focusX} focusY={focusY} redact={avatar} />
+      <SpeedBadge name="Badge" label="Sped up 10× · 20 s → 2 s" from={Math.round(2.6 * fps)} durationInFrames={Math.round(2.0 * fps)} premountFor={fps} />
+      <Line id="06-remote" at={0.3} seconds={4.5}>Or run it on your own GPU server, end-to-end encrypted.</Line>
+    </Backdrop>
+  );
+};
+
 export const Promo: React.FC = () => {
   const { fps } = useVideoConfig();
   return (
@@ -113,11 +133,8 @@ export const Promo: React.FC = () => {
       <Series.Sequence name="P5 Synthesis" durationInFrames={420} premountFor={fps}>
         <SynthesisScene />
       </Series.Sequence>
-      <Series.Sequence name="P6 Remote (pending)" durationInFrames={300} premountFor={fps}>
-        <Backdrop>
-          <AppWindow name="F" src="" kind="video" shotId="F · This computer → your GPU server" zoom={1} focusX={0.5} focusY={0.5} />
-          <Line id="06-remote" at={0.3} seconds={4.4}>Connect your own GPU server with one key, end-to-end encrypted.</Line>
-        </Backdrop>
+      <Series.Sequence name="P6 Remote" durationInFrames={300} premountFor={fps}>
+        <RemoteScene />
       </Series.Sequence>
       <Series.Sequence name="P7 End" durationInFrames={186} premountFor={fps}>
         <StyleEnd />
