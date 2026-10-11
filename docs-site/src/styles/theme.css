@@ -10,3 +10,13 @@
 	--sl-color-accent: #466896;
 	--sl-color-accent-high: #233a5c;
 }
+
+/* Feature demos: real recordings of the app, 16:9, with a voice-over. */
+.sl-markdown-content video {
+	display: block;
+	width: 100%;
+	height: auto;
+	aspect-ratio: 16 / 9;
+	border-radius: 0.5rem;
+	background: var(--sl-color-gray-6);
+}
