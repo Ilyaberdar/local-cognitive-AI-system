@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.3 — 2026-10-11
+
+Synthesis tests on your own GPU server, and Local Cognitive's license.
+
+### Synthesis
+
+- **Contract tests run on a Linux server.** The server installer sets up bubblewrap, and the service may now create the namespaces its sandbox needs. Inside the sandbox, the code under test can no longer create user namespaces of its own (bubblewrap 0.8 or later).
+- **A server installed before 0.1.3:** after updating, run `sudo local-cognitive-server sandbox` once. It installs bubblewrap and the service's new settings, then restarts the server; accepted work finishes first. On Ubuntu 24.04 and later it also turns on the distribution's AppArmor profile for bubblewrap.
+- C++ tests on a server need a compiler: `sudo dnf install gcc-c++` or `sudo apt install g++`.
+
+### Server
+
+- `update` and `rollback` now run each release with its own service settings, so later changes arrive with updates. Settings you add with `systemctl edit` are kept.
+
+### Desktop
+
+- Light theme: the arrow next to the microphone no longer sits in an oval.
+
+### License
+
+- Local Cognitive is source available under the Elastic License 2.0. You may use, copy, change and share it; you may not offer it as a hosted or managed service or get around its license-key features. See [License](https://docs.local-cognitive.com/reference/license/).
+
+### Known limits
+
+- Tests don't run on Windows yet, which has no sandbox. The architecture gates work everywhere.
+
 ## 0.1.2 — 2026-10-11
 
 Synthesis for real modules: a contract keeps a small local model on the architecture the engineer designed.
