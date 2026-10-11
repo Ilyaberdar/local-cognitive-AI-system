@@ -1,0 +1,48 @@
+---
+title: Local Cognitive
+description: A private AI workspace for chats, agents and workflows, with models on your own computer or your own GPU server.
+template: splash
+hero:
+  tagline: A private AI workspace for chats, agents and workflows. Models run on your own computer, or on your own GPU server that you connect with one command.
+  image:
+    file: ../../assets/logo.png
+  actions:
+    - text: Download
+      link: https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest
+      icon: external
+      variant: primary
+    - text: Set up a GPU server
+      link: /server/install/
+      icon: right-arrow
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import chat from '../../assets/screens/chat.png';
+import { Image } from 'astro:assets';
+
+<Image src={chat} alt="The chat workspace with the session setup panel" />
+
+<CardGrid>
+	<Card title="Your models, your machines" icon="laptop">
+		Local GGUF models run through a built-in llama.cpp, accelerated by Metal, Vulkan or CUDA. Cloud models (OpenAI, Anthropic, Gemini) are there when you choose them.
+	</Card>
+	<Card title="A GPU server in one command" icon="rocket">
+		Install the server on a Linux machine with NVIDIA GPUs, paste the key it prints into the app, and use it from anywhere. The connection is encrypted end to end.
+	</Card>
+	<Card title="Agents and workflows" icon="puzzle">
+		Subagents, debates, a code mode with approvals, a visual workflow builder, tasks and schedules, MCP servers and plugins.
+	</Card>
+	<Card title="Synthesis" icon="pencil">
+		Describe a module's contract, drive agents with a small flow language, and get code checked against that contract.
+	</Card>
+</CardGrid>
+
+## Start here
+
+<CardGrid>
+	<LinkCard title="Install on macOS" description="Apple silicon, signed and notarized." href="/start/macos/" />
+	<LinkCard title="Install on Windows" description="x64, Vulkan on any GPU, CUDA on NVIDIA." href="/start/windows/" />
+	<LinkCard title="First steps" description="Download a model and start a chat." href="/start/first-steps/" />
+	<LinkCard title="Install the server" description="Linux x64 with systemd; NVIDIA optional." href="/server/install/" />
+</CardGrid>

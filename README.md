@@ -2,7 +2,7 @@
 
 A private AI workspace for chats, agents and workflows. Models run on your own computer, or on your own GPU server that you connect with one command. What you write stays on your machines unless you choose a cloud model.
 
-**[Download the latest release](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest)**: macOS (Apple silicon), Windows (x64), Linux server (x64).
+**[Download the latest release](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest)**: macOS (Apple silicon), Windows (x64), Linux server (x64). **[Documentation](https://docs.local-cognitive.com)**.
 
 ![Chat workspace with session setup](images/chat.png)
 
@@ -268,8 +268,5 @@ Settings → Plugins lists Notion, GitHub, Slack, Google Drive, Linear, Jira, Ou
 
 - **Components.** The desktop app runs its backend inside Electron's main process and draws the UI in an isolated window. The server is the same backend under systemd. The Cloud API (`apps/cloud`, Node 24 and Postgres 17) handles accounts, devices and the relay.
 - **Remote** works over a catalog of operations (`src/runtime/operationCatalog.ts`), each request checked against its schema. Commands are written to the host's SQLite database before they are acknowledged.
-- **Specifications:**
-  - [Remote connection](architecture/remote-connection-implementation.md) (in Russian);
-  - [llama.cpp integration](architecture/llama-cpp-integration-plan.md);
-  - [Synthesis language](docs/lc-language.md).
+- **Synthesis language:** [docs/lc-language.md](docs/lc-language.md).
 - **Release notes:** [CHANGELOG.md](CHANGELOG.md).

@@ -1,0 +1,9 @@
+// Cloudflare Workers: the built site as static assets (docs.local-cognitive.com).
+{
+  "name": "local-cognitive-docs",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page"
+  }
+}

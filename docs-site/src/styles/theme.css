@@ -1,0 +1,12 @@
+/* The app's steel blue (public/assets/liquid-glass.css). Starlight's tokens are dark first. */
+:root {
+	--sl-color-accent-low: #1f2734;
+	--sl-color-accent: #7d9fd0;
+	--sl-color-accent-high: #cddcf3;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #dfe7f3;
+	--sl-color-accent: #466896;
+	--sl-color-accent-high: #233a5c;
+}

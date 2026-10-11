@@ -40,6 +40,8 @@ docs/
 !/docs/
 /docs/*
 !/docs/lc-language.md
+# The documentation site's pages (the rule above hides every folder named docs).
+!/docs-site/src/content/docs/
 logo/
 screenshots/
 .tmp/
