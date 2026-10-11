@@ -15,7 +15,9 @@ const runEntry = (id: string, status = "interrupted") => ({
   createdAt: "2026-09-28T12:00:00.000Z", updatedAt: "2026-09-28T12:00:00.000Z",
   events: [{ sequence: 1, at: "2026-09-28T12:00:00.000Z", step: "developer", message: `${id} activity`, iteration: 1, status: "ok" }]
 });
-async function until(check: () => boolean, label: string, timeout = 1800) {
+// The wait ends as soon as the condition holds; a CI machine busy with other test files (the contract
+// tests build C++ beside these) may need more than a couple of seconds.
+async function until(check: () => boolean, label: string, timeout = 10_000) {
   const start = Date.now();
   while (!check()) {
     if (Date.now() - start > timeout) throw new Error(`Timed out: ${label}`);

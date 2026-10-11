@@ -6,10 +6,12 @@ import { buildSync } from "esbuild";
 const { JSDOM } = require("jsdom");
 const shellBundle = buildSync({ entryPoints: ["public/assets/settings-shell.js"], bundle: true, write: false, format: "iife", globalName: "SettingsShell" }).outputFiles[0].text;
 
+// The wait ends as soon as the condition holds; a CI machine busy with other test files (the contract
+// tests build C++ beside these) may need more than a couple of seconds.
 async function until(check: () => boolean, label = "condition") {
   const start = Date.now();
   while (!check()) {
-    if (Date.now() - start > 2000) throw new Error(`Timed out: ${label}`);
+    if (Date.now() - start > 10_000) throw new Error(`Timed out: ${label}`);
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
