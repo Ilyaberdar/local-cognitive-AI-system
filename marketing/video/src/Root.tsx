@@ -1,7 +1,7 @@
 import { Composition, Folder, Still } from "remotion";
 import { AppWindow } from "./components/AppWindow";
 import { TitleCard } from "./components/TitleCard";
-import { D3Workflow } from "./docs/D3Workflow";
+import { D3Workflow } from "./demos/D3Workflow";
 import { Promo } from "./promo/Promo";
 import { PromoShot } from "./promo/PromoShot";
 import { StyleEnd, StyleShot, StyleTitle } from "./scenes/StyleBoard";
