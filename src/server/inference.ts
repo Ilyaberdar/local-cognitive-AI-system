@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { readInstalledRuntime } from "../local/RuntimeInstall";
+import { danglingRuntimeLinks } from "../update/runtimeLinks";
 import type { InferencePreference } from "./args";
 import { CliError, ExitCode } from "./exitCodes";
 
@@ -25,6 +26,8 @@ const cudaProblem = (directory: string, build: string | undefined): { text: stri
   const installed = readInstalledRuntime(directory);
   if (installed?.backend !== "cuda") return { text: `${directory} has no CUDA runtime.json.`, installed: true };
   if (build && installed.build !== build) return { text: `the CUDA runtime is llama.cpp ${installed.build ?? "of an unknown build"}, but this release uses ${build}. Prepare it again.`, installed: true };
+  const dangling = danglingRuntimeLinks(directory);
+  if (dangling.length) return { text: `the CUDA runtime's library links ${dangling.join(", ")} point nowhere. Restart the service (sudo local-cognitive-server restart) to repair them, or run sudo local-cognitive-server cuda.`, installed: true };
   return undefined;
 };
 

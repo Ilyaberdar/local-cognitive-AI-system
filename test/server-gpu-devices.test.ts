@@ -25,7 +25,8 @@ test("a GPU host gets a device file for every GPU before the service starts, set
       fs.writeFileSync(path.join(gpus, bus, "information"), `Model: \t\t NVIDIA GeForce RTX 3090\nIRQ:   \t\t 120\nGPU UUID: \t GPU-${minor}\nDevice Minor: \t ${minor}\nBus Location: \t ${bus}\n`);
     }
     fs.writeFileSync(modprobe, `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
-    const script = "set -euo pipefail\nneed_root() { :; }\n" + body.replaceAll("/proc/driver/nvidia/gpus", gpus).replaceAll("/usr/bin/nvidia-modprobe", modprobe);
+    assert.ok(body.includes("repair_runtimes || true"), "it also repairs the CUDA runtime's links, without ever failing the start");
+    const script = "set -euo pipefail\nneed_root() { :; }\nrepair_runtimes() { :; }\n" + body.replaceAll("/proc/driver/nvidia/gpus", gpus).replaceAll("/usr/bin/nvidia-modprobe", modprobe);
     execFileSync("bash", ["-c", script]);
     assert.deepEqual(fs.readFileSync(calls, "utf8").trim().split("\n"), ["-u -c=0", "-c=1", "-c=5"]);
 

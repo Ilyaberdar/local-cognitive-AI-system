@@ -3,6 +3,7 @@ import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { artifactFor, isUpgrade, ManifestError, verifyManifest, type ReleaseKey, type ServerManifest } from "./manifest";
+import { repairRuntimeLinks } from "./runtimeLinks";
 import { isVersion } from "./version";
 
 /** How the server runs, for the updater: systemd on a real host, a child process in tests. */
@@ -174,13 +175,26 @@ export const stageRelease = async (manifest: ServerManifest, options: UpdateOpti
     fs.rmSync(partial, { recursive: true, force: true });
     throw new UpdateError(`The new release did not start its own check (${self.stderr.trim().slice(0, 300) || self.stdout.trim().slice(0, 100)}).`, "self_check_failed");
   }
-  // Runtimes prepared on this host (the CUDA build) come along when the new release has none.
+  // Runtimes prepared on this host (the CUDA build) come along when the new release has none. Their
+  // library links are copied as they are (without verbatimSymlinks, cpSync wrote each one as an
+  // absolute path into the old release, and pruning that release broke llama-server), and links that
+  // earlier updates broke are pointed back at the files beside them. A runtime that still cannot
+  // load is left behind: the server then runs on the CPU and says why, instead of failing every chat.
   const current = linkedRelease(options.prefix, "current");
   const runtimes = current && path.join(releasesDir(options.prefix), current, "resources", "llama");
   if (runtimes && fs.existsSync(runtimes)) {
     for (const id of fs.readdirSync(runtimes)) {
       const into = path.join(partial, "resources", "llama", id);
-      if (!fs.existsSync(into)) { fs.mkdirSync(path.dirname(into), { recursive: true }); fs.cpSync(path.join(runtimes, id), into, { recursive: true, preserveTimestamps: true }); }
+      if (fs.existsSync(into)) continue;
+      fs.mkdirSync(path.dirname(into), { recursive: true });
+      fs.cpSync(path.join(runtimes, id), into, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+      if (!fs.statSync(into).isDirectory()) continue;
+      const { relinked, broken } = repairRuntimeLinks(into);
+      if (relinked.length) log(`Repaired ${relinked.length} library link${relinked.length === 1 ? "" : "s"} of the ${id} runtime.`);
+      if (broken.length) {
+        fs.rmSync(into, { recursive: true, force: true });
+        log(`The ${id} runtime was not carried over: ${broken.join(", ")} point nowhere. Run sudo local-cognitive-server cuda to prepare it again.`);
+      }
     }
   }
   fs.renameSync(partial, target);

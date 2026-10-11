@@ -103,6 +103,14 @@ test("the CUDA build is used only when it is prepared for this release", t => {
   fs.writeFileSync(path.join(llama, "linux-x64-cuda12", "runtime.json"), JSON.stringify({ id: "linux-x64-cuda12", backend: "cuda", build: "b10809" }));
   assert.deepEqual({ ...select("auto") }, { preference: "auto", backend: "cuda", runtimeDir: path.join(llama, "linux-x64-cuda12"), runtimeId: "linux-x64-cuda12" });
   assert.equal(select("cpu").runtimeId, "linux-x64", "cpu never uses the CUDA build");
+  if (posix) {
+    // Library links that an older update left pointing into a pruned release: the CPU build, with the reason.
+    fs.symlinkSync("/opt/local-cognitive/releases/0.1.0/resources/llama/linux-x64-cuda12/libllama.so.0.4.0", path.join(llama, "linux-x64-cuda12", "libllama.so.0"));
+    const fallback = select("auto");
+    assert.equal(fallback.runtimeId, "linux-x64");
+    assert.match(fallback.fallbackReason ?? "", /libllama.so.0 point nowhere.*restart/);
+    fs.rmSync(path.join(llama, "linux-x64-cuda12", "libllama.so.0"));
+  }
 
   const custom = path.join(release, "custom");
   fs.mkdirSync(custom);

@@ -27,6 +27,25 @@ CLI="$PREFIX/current/dist/src/server/cli.js"
 if [ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then set -- console; fi
 command="${1:-help}"
 
+# Library links of runtimes prepared on this host (the CUDA build): updates up to 0.1.4 copied them
+# as absolute paths into the release they came from, so pruning that release left llama-server
+# unable to load. A link that names a file by a path, or points nowhere, is pointed back at the
+# regular file of that name beside it; nothing outside the runtime folder is followed or changed.
+repair_runtimes() {
+  local dir link target name
+  for dir in "$PREFIX"/current/resources/llama/*/; do
+    [ -d "$dir" ] || continue
+    for link in "$dir"*; do
+      [ -L "$link" ] || continue
+      target=$(readlink "$link")
+      case "$target" in */*) ;; *) [ -e "$link" ] && continue ;; esac
+      name=${target##*/}
+      if [ "$name" != "${link##*/}" ] && [ -f "$dir$name" ] && [ ! -L "$dir$name" ]; then
+        ln -s "$name" "$link.relink.$$" && mv -f "$link.relink.$$" "$link" && echo "Repaired the library link ${link#"$dir"} ($target)"
+      fi
+    done
+  done
+}
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then echo "Run: sudo local-cognitive-server $*" >&2; exit 78; fi
 }
@@ -137,11 +156,17 @@ case "$command" in
       systemctl restart "$UNIT"
     fi
     echo "Synthesis contract tests run in bubblewrap on this server." ;;
+  repair-runtimes)
+    # Run as root before the service starts (its unit's ExecStartPre): see repair_runtimes.
+    need_root "$@"
+    repair_runtimes ;;
   gpu-devices)
     # Run as root before the service starts (its unit's nvidia.conf): an NVIDIA device file for every
     # GPU. The service cannot create them itself (NoNewPrivileges stops CUDA's setuid nvidia-modprobe),
     # and CUDA does not see a GPU whose file is missing; the driver creates only what is asked for.
+    # It also repairs the CUDA runtime's library links, for units that predate repair-runtimes.
     need_root "$@"
+    repair_runtimes || true
     /usr/bin/nvidia-modprobe -u -c=0 || exit 0
     for info in /proc/driver/nvidia/gpus/*/information; do
       [ -r "$info" ] || continue

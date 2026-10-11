@@ -233,3 +233,49 @@ test("a slow download takes as long as it needs; one that stops sending is given
   await assert.rejects(fetchBytes(silent, "https://releases.example/silent", 1024, 400), stopped);
   await assert.rejects(fetchBytes(serve(10, 1), "https://releases.example/large", 3, 400), /larger than expected/);
 });
+
+// A CUDA runtime prepared on this host lives only in the release it was prepared for: updates carry it.
+const cudaRuntime = (release: string, links: Record<string, string>) => {
+  const runtime = path.join(release, "resources", "llama", "linux-x64-cuda12");
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.writeFileSync(path.join(runtime, "libllama-common.so.0.4.0"), "common");
+  fs.writeFileSync(path.join(runtime, "libggml.so.0.23.0"), "ggml");
+  fs.writeFileSync(path.join(runtime, "llama-server"), "#!/bin/sh\n", { mode: 0o755 });
+  for (const [name, target] of Object.entries(links)) fs.symlinkSync(target, path.join(runtime, name));
+  return runtime;
+};
+
+test("an update carries the CUDA runtime with its relative library links, so pruning the old release keeps it loading", { skip: !posix }, async t => {
+  const f = await fixture(t);
+  cudaRuntime(path.join(releasesDir(f.prefix), "0.1.0"), { "libllama-common.so.0": "libllama-common.so.0.4.0", "libllama-common.so": "libllama-common.so.0", "libggml.so.0": "libggml.so.0.23.0" });
+  f.publish("0.2.0");
+  assert.equal((await updateServer(f.options("0.1.0"))).updated, true);
+  const carried = path.join(releasesDir(f.prefix), "0.2.0", "resources", "llama", "linux-x64-cuda12");
+  assert.equal(fs.readlinkSync(path.join(carried, "libllama-common.so.0")), "libllama-common.so.0.4.0");
+  assert.equal(fs.readlinkSync(path.join(carried, "libllama-common.so")), "libllama-common.so.0");
+  fs.rmSync(path.join(releasesDir(f.prefix), "0.1.0"), { recursive: true });
+  assert.equal(fs.readFileSync(path.join(carried, "libllama-common.so"), "utf8"), "common", "the old release is gone and the libraries still load");
+});
+
+test("an update repairs library links an older update wrote as absolute paths into a release that is gone", { skip: !posix }, async t => {
+  const f = await fixture(t);
+  const gone = path.join(releasesDir(f.prefix), "0.0.9", "resources", "llama", "linux-x64-cuda12");
+  cudaRuntime(path.join(releasesDir(f.prefix), "0.1.0"), { "libllama-common.so.0": path.join(gone, "libllama-common.so.0.4.0"), "libggml.so.0": path.join(gone, "libggml.so.0.23.0") });
+  const lines: string[] = [];
+  f.publish("0.2.0");
+  assert.equal((await updateServer(f.options("0.1.0", { log: (line: string) => lines.push(line) }))).updated, true);
+  const carried = path.join(releasesDir(f.prefix), "0.2.0", "resources", "llama", "linux-x64-cuda12");
+  assert.equal(fs.readlinkSync(path.join(carried, "libllama-common.so.0")), "libllama-common.so.0.4.0");
+  assert.equal(fs.readFileSync(path.join(carried, "libggml.so.0"), "utf8"), "ggml");
+  assert.ok(lines.some(line => line.includes("Repaired 2 library links of the linux-x64-cuda12 runtime")), lines.join("\n"));
+});
+
+test("a runtime whose links cannot be repaired is left behind with a reason, instead of failing every chat", { skip: !posix }, async t => {
+  const f = await fixture(t);
+  cudaRuntime(path.join(releasesDir(f.prefix), "0.1.0"), { "libmtmd.so.0": "/opt/elsewhere/libmtmd.so.0.4.0" });
+  const lines: string[] = [];
+  f.publish("0.2.0");
+  assert.equal((await updateServer(f.options("0.1.0", { log: (line: string) => lines.push(line) }))).updated, true);
+  assert.equal(fs.existsSync(path.join(releasesDir(f.prefix), "0.2.0", "resources", "llama", "linux-x64-cuda12")), false);
+  assert.ok(lines.some(line => line.includes("libmtmd.so.0 point nowhere") && line.includes("local-cognitive-server cuda")), lines.join("\n"));
+});

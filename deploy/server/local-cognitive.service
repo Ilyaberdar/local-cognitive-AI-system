@@ -17,6 +17,9 @@ Group=local-cognitive
 EnvironmentFile=-/etc/local-cognitive/server.env
 Environment=NODE_ENV=production
 Environment=LOCAL_COGNITIVE_VAULT_KEY_FILE=/etc/local-cognitive/vault.key
+# Library links of a runtime prepared on this host (the CUDA build) that older updates broke are
+# repaired as root before every start; a failure never blocks the start.
+ExecStartPre=-+/usr/local/bin/local-cognitive-server repair-runtimes
 ExecStart=/opt/local-cognitive/current/node/bin/node /opt/local-cognitive/current/dist/src/server/cli.js start --data-dir /srv/local-cognitive --inference auto
 # SIGTERM drains accepted work. mixed: only the main process gets it, so model processes keep
 # running until the server stops them.
