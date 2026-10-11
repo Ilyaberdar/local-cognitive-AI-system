@@ -1,0 +1,8 @@
+{
+  "lines": [
+    { "id": "01-catalog", "text": "Models opens a catalog of models from Hugging Face. Open one to see what it needs." },
+    { "id": "02-estimate", "text": "Its size and memory estimate show before anything downloads." },
+    { "id": "03-device", "text": "Installed models live on device, checked against this Mac's memory." },
+    { "id": "04-chat", "text": "Open a chat, and the model is ready to use." }
+  ]
+}

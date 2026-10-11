@@ -9,20 +9,21 @@ type SubtitleProps = {
 };
 
 // One line of the voice-over, in the band under the app window so it never covers the interface.
+// Up to two lines fit the band (956–1080 px) without touching the window.
 const SubtitleInner: React.FC<SubtitleProps> = ({ children, style }) => {
   return (
     <Interactive.Div
       name="Subtitle"
       style={{
         position: "absolute",
-        left: 160,
-        right: 160,
-        bottom: 34,
+        left: 120,
+        right: 120,
+        bottom: 18,
         textAlign: "center",
         fontFamily: fonts.sans,
-        fontSize: 40,
+        fontSize: 37,
         fontWeight: 500,
-        lineHeight: 1.25,
+        lineHeight: 1.18,
         letterSpacing: "-0.01em",
         color: landing.ink,
         ...style,

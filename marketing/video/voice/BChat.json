@@ -1,0 +1,7 @@
+{
+  "lines": [
+    { "id": "01-ask", "text": "Pick a local model, and ask anything." },
+    { "id": "02-local", "text": "The model runs on this Mac. Your prompt never leaves it." },
+    { "id": "03-answer", "text": "Here is the answer: three action items." }
+  ]
+}

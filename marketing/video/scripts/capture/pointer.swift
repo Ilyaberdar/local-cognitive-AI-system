@@ -6,6 +6,7 @@
 //   {"op":"type","text":"Hello","ms":45}     types text as real key events, ms between characters
 //   {"op":"key","code":36,"flags":["cmd"]}   one key (virtual key code) with modifiers
 //   {"op":"window","owner":"Local Cognitive"} the app's frontmost normal window: id and bounds
+//   {"op":"front"}                            the app that owns the frontmost normal window
 // Coordinates are global screen points (origin at the top-left of the main display), the same
 // space as Electron's BrowserWindow.getContentBounds(). Needs Accessibility permission for the
 // terminal that starts it. Build: swiftc -O scripts/capture/pointer.swift -o .bin/pointer
@@ -79,6 +80,14 @@ func window(owner: String) -> [String: Any]? {
   return nil
 }
 
+func frontOwner() -> String {
+  let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+  for info in list where (info[kCGWindowLayer as String] as? Int) == 0 {
+    if let bounds = info[kCGWindowBounds as String] as? [String: Double], (bounds["Height"] ?? 0) > 200 { return info[kCGWindowOwnerName as String] as? String ?? "" }
+  }
+  return ""
+}
+
 func reply(_ object: [String: Any]) {
   let data = try! JSONSerialization.data(withJSONObject: object)
   FileHandle.standardOutput.write(data)
@@ -110,6 +119,8 @@ while let line = readLine() {
   case "key":
     pressKey(command["code"] as? Int ?? 36, command["flags"] as? [String] ?? [])
     reply(["ok": true])
+  case "front":
+    reply(["owner": frontOwner()])
   case "window":
     if let found = window(owner: command["owner"] as? String ?? "") { reply(found) } else { reply(["error": "no window"]) }
   default:

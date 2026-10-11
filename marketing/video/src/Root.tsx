@@ -1,8 +1,12 @@
 import { Composition, Folder, Still } from "remotion";
 import { AppWindow } from "./components/AppWindow";
 import { TitleCard } from "./components/TitleCard";
+import { AModels } from "./demos/AModels";
+import { BChat } from "./demos/BChat";
+import { CSubagent } from "./demos/CSubagent";
 import { D3Workflow } from "./demos/D3Workflow";
 import { D4Synthesis } from "./demos/D4Synthesis";
+import { Overview } from "./demos/Overview";
 import { Promo } from "./promo/Promo";
 import { PromoShot } from "./promo/PromoShot";
 import { StyleEnd, StyleShot, StyleTitle } from "./scenes/StyleBoard";
@@ -47,10 +51,14 @@ export const RemotionRoot: React.FC = () => {
         />
       </Folder>
       <Folder name="Docs">
+        <Composition id="AModels" component={AModels} durationInFrames={1596} fps={60} width={1920} height={1080} />
+        <Composition id="BChat" component={BChat} durationInFrames={1224} fps={60} width={1920} height={1080} />
+        <Composition id="CSubagent" component={CSubagent} durationInFrames={2484} fps={60} width={1920} height={1080} />
         <Composition id="D3Workflow" component={D3Workflow} durationInFrames={1158} fps={60} width={1920} height={1080} />
         <Composition id="D4Synthesis" component={D4Synthesis} durationInFrames={2030} fps={60} width={1920} height={1080} />
       </Folder>
-      <Composition id="Promo" component={Promo} durationInFrames={1200} fps={30} width={1920} height={1080} />
+      <Composition id="Promo" component={Promo} durationInFrames={2400} fps={60} width={1920} height={1080} />
+      <Composition id="Overview" component={Overview} durationInFrames={10142} fps={60} width={1920} height={1080} />
     </>
   );
 };

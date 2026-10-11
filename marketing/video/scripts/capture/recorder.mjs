@@ -30,8 +30,23 @@ export function startPointer() {
     move: (x, y, ms = 650) => send({ op: "move", x, y, ms }),
     click: (x, y) => send({ op: "click", x, y }),
     position: () => send({ op: "pos" }),
+    // Real key events, for apps Playwright cannot drive (the packaged app).
+    type: (text, ms = 40) => send({ op: "type", text, ms }),
+    key: (code, flags = []) => send({ op: "key", code, flags }),
+    front: async () => (await send({ op: "front" })).owner,
     close: () => { child.stdin.end(); },
   };
+}
+
+// Stops a screencapture child for sure, synchronously (it also runs from an exit handler, where
+// nothing asynchronous happens any more): SIGINT, wait up to 3 s, then SIGKILL, then delete the file.
+// Twice a failed script left screencapture recording the desktop; this is the fix.
+export function killRecorderSync(child, file) {
+  const alive = () => { try { process.kill(child.pid, 0); return true; } catch { return false; } };
+  try { child.kill("SIGINT"); } catch { /* gone */ }
+  for (let i = 0; i < 30 && alive(); i++) execFileSync("sleep", ["0.1"]);
+  if (alive()) { try { child.kill("SIGKILL"); } catch { /* gone */ } }
+  fs.rmSync(file, { force: true });
 }
 
 // Brings the app window to the front, so real clicks land on it and nothing covers the recording.
@@ -86,9 +101,8 @@ export async function startShot({ app, page, shotId }) {
   const abort = () => {
     if (finished) return;
     finished = true;
-    try { recorder.kill("SIGINT"); } catch { /* already gone */ }
     pointer.close();
-    setTimeout(() => fs.rmSync(video, { force: true }), 3000).unref?.();
+    killRecorderSync(recorder, video);
   };
   process.once("exit", abort);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { abort(); process.exit(130); });

@@ -1,0 +1,8 @@
+{
+  "lines": [
+    { "id": "01-add", "text": "Add a subagent in Session Setup, and give it a name." },
+    { "id": "02-mention", "text": "Call it with an at-mention in your message." },
+    { "id": "03-turns", "text": "The main model drafts, then hands the work to the reviewer. One model runs them in turn." },
+    { "id": "04-card", "text": "The reviewer's findings arrive in their own card, next to the final answer." }
+  ]
+}

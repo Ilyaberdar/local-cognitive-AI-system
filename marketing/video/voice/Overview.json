@@ -1,0 +1,6 @@
+{
+  "lines": [
+    { "id": "01-intro", "text": "This is Local Cognitive: private AI on your own machines." },
+    { "id": "02-end", "text": "Local Cognitive. For macOS, Windows, and your own Linux GPU server." }
+  ]
+}
