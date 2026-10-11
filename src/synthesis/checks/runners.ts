@@ -236,7 +236,8 @@ function judge(run: Run, report: Report, request: TestRunRequest, runner: Runner
 
 /** The first compiler or linker errors, without the generic "linker command failed" line. */
 function buildErrors(output: string, clean: (text: string) => string): string[] {
-  const lines = output.split("\n").map(line => clean(line).trim()).filter(Boolean);
+  // In a UTF-8 locale g++ quotes with ‘ ’; the model reads the same ' ' clang uses.
+  const lines = output.split("\n").map(line => clean(line).replace(/[‘’]/g, "'").trim()).filter(Boolean);
   const found: Array<{ text: string; from: string }> = [];
   let pending: { text: string; from: string } | undefined;
   lines.forEach((line, i) => {

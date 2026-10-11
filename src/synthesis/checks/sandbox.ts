@@ -36,9 +36,9 @@ const ancestors = (file: string) => {
 export function darwinProfile(workDir: string, readable: string[]): string {
   const work = real(workDir), home = real(os.homedir());
   const reads = [...new Set([work, ...readable.map(real).filter(openable)])];
-  const hidden = [home, "/Users", "/private/var/folders", "/Volumes"];
+  const hidden = [home, "/Users", "/private/var/folders", "/private/tmp", "/private/var/tmp", "/Volumes"];
   // A folder inside a hidden one stays usable only if its parents can be stat'ed (node's realpath does);
-  // listing or reading them stays denied.
+  // listing or reading them stays denied. access() is file-test-existence, not a read: denied with them.
   const parents = [...new Set(reads.flatMap(ancestors))].filter(dir => hidden.some(root => inside(dir, root)));
   return [
     "(version 1)",
@@ -51,10 +51,11 @@ export function darwinProfile(workDir: string, readable: string[]): string {
     "(deny signal (target others))",
     "(deny file-write*)",
     `(allow file-write* (subpath ${quote(work)}) (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))`,
-    // Nothing of the user's: the home folder, every user's temporary and cache folders, other disks.
-    `(deny file-read* ${hidden.map(dir => `(subpath ${quote(dir)})`).join(" ")})`,
-    `(allow file-read* ${reads.map(dir => `(subpath ${quote(dir)})`).join(" ")})`,
-    ...(parents.length ? [`(allow file-read-metadata ${parents.map(dir => `(literal ${quote(dir)})`).join(" ")})`] : [])
+    // Nothing of the user's, not even whether a file exists: the home folder, every user's temporary and
+    // cache folders, /tmp, other disks.
+    `(deny file-read* file-test-existence ${hidden.map(dir => `(subpath ${quote(dir)})`).join(" ")})`,
+    `(allow file-read* file-test-existence ${reads.map(dir => `(subpath ${quote(dir)})`).join(" ")})`,
+    ...(parents.length ? [`(allow file-read-metadata file-test-existence ${parents.map(dir => `(literal ${quote(dir)})`).join(" ")})`] : [])
   ].join("\n");
 }
 

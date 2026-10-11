@@ -325,7 +325,7 @@ Tests that a model proposes (`propose_tests`) are never run: only the engineer's
 
 ### The sandbox
 
-Every test run is sandboxed: no network, writes only inside its own temporary folder, and nothing read from the user's home folder or the app's data. On macOS this is the built-in `sandbox-exec`; on Linux, [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, which needs user namespaces). Windows has no sandbox yet, so `Tests` gates there are Unknown and the run ends as needs review.
+Every test run is sandboxed: no network, writes only inside its own temporary folder, and nothing read from the user's home folder, other temporary folders or the app's data (not even whether a file there exists). On macOS this is the built-in `sandbox-exec`; on Linux, [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, which needs user namespaces). Windows has no sandbox yet, so `Tests` gates there are Unknown and the run ends as needs review.
 
 Inside the sandbox there are no system services, Apple Events or signals to other processes on macOS, and no capabilities on Linux, so the code under test cannot ask another program to act for it.
 

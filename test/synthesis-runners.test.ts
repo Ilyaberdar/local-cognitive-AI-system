@@ -441,18 +441,22 @@ class Numbers(unittest.TestCase):
   assert.deepEqual(result.cases?.map(item => [item.name, item.status, item.line]), [["Numbers › test_even › (value=3)", "fail", 6]]);
 });
 
-test("the macOS sandbox denies writes outside the work folder, the home folder and the network", { skip: process.platform !== "darwin" }, async t => {
+test("the sandbox keeps the code inside its work folder, away from the home folder and the network", { skip: !["darwin", "linux"].includes(process.platform) }, async t => {
   const why = await sandbox.unavailable();
   if (why) return t.skip(why);
   const probe = await fs.mkdtemp(path.join(os.homedir(), ".lc-sandbox-probe-"));
   const outside = path.join(os.tmpdir(), `lc-sandbox-escape-${process.pid}-${Date.now()}.txt`);
+  const beside = `${outside}.host`;
   let connections = 0;
   const server = net.createServer(socket => { connections++; socket.destroy(); });
   try {
     const secret = path.join(probe, "secret.txt");
     await fs.writeFile(secret, "secret");
+    await fs.writeFile(beside, "the host's");
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as net.AddressInfo).port;
+    // macOS refuses with EPERM. bubblewrap shows nothing it does not bind (ENOENT), gives the run a /tmp of
+    // its own and a network of its own: a write outside may succeed there, so the host checks it never arrived.
     const suite = `import assert from "node:assert/strict";
 import fs from "node:fs";
 import net from "node:net";
@@ -462,20 +466,23 @@ test("writes inside the work folder", () => {
   fs.writeFileSync("inside.txt", "ok");
   assert.equal(fs.readFileSync("inside.txt", "utf8"), "ok");
 });
-test("cannot write outside the work folder", () => {
-  assert.throws(() => fs.writeFileSync(${JSON.stringify(outside)}, "escaped"), { code: "EPERM" });
-  assert.throws(() => fs.writeFileSync(path.join(process.cwd(), "..", "escaped.txt"), "escaped"), { code: "EPERM" });
+test("cannot see or write outside the work folder", () => {
+  assert.equal(fs.existsSync(${JSON.stringify(beside)}), false);
+  for (const file of [${JSON.stringify(outside)}, path.join(process.cwd(), "..", "escaped.txt")]) {
+    try { fs.writeFileSync(file, "escaped"); } catch (error) { assert.ok(["EPERM", "EACCES", "EROFS"].includes(error.code), error.code); }
+  }
 });
 test("cannot read the home folder", () => {
-  assert.throws(() => fs.readFileSync(${JSON.stringify(secret)}, "utf8"), { code: "EPERM" });
-  assert.throws(() => fs.readdirSync(${JSON.stringify(os.homedir())}), { code: "EPERM" });
+  assert.throws(() => fs.readFileSync(${JSON.stringify(secret)}, "utf8"));
+  assert.throws(() => fs.readdirSync(${JSON.stringify(os.homedir())}));
 });
 test("cannot connect to 127.0.0.1", async () => {
   const error = await new Promise(resolve => net.connect(${port}, "127.0.0.1").once("connect", () => resolve(undefined)).once("error", resolve));
-  assert.equal(error?.code, "EPERM");
+  assert.ok(error, "connected");
 });
 `;
     const files = { suite: { "tests/sandbox.test.mjs": suite } }, tests = ["tests/sandbox.test.mjs"];
+    // check() also proves the work root holds nothing afterwards: ../escaped.txt never reached it.
     const result = await check(t, sandbox, files, tests);
     assert.equal(result?.status, "Pass", JSON.stringify(result));
     assert.equal(connections, 0);
@@ -487,6 +494,7 @@ test("cannot connect to 127.0.0.1", async () => {
     server.close();
     await fs.rm(probe, { recursive: true, force: true });
     await fs.rm(outside, { force: true });
+    await fs.rm(beside, { force: true });
   }
 });
 
@@ -498,8 +506,9 @@ test("the macOS profile denies before it allows, with resolved paths", async () 
   assert.deepEqual(lines.slice(0, 3), ["(version 1)", "(allow default)", "(deny network*)"]);
   // No way out through other processes: system services, Apple Events, signals.
   for (const rule of ["(deny mach-lookup)", "(deny appleevent-send)", "(deny signal (target others))", "(deny file-write*)"]) assert.ok(lines.includes(rule), rule);
-  const denied = lines.find(line => line.startsWith("(deny file-read*"))!;
-  for (const dir of ["/Users", "/private/var/folders", "/Volumes"]) assert.ok(denied.includes(`(subpath ${JSON.stringify(dir)})`), dir);
+  // Whether a file exists there is hidden too: access() is file-test-existence, not a read.
+  const denied = lines.find(line => line.startsWith("(deny file-read* file-test-existence "))!;
+  for (const dir of ["/Users", "/private/var/folders", "/private/tmp", "/private/var/tmp", "/Volumes"]) assert.ok(denied.includes(`(subpath ${JSON.stringify(dir)})`), dir);
   assert.ok(lines.findIndex(line => line.startsWith("(deny file-read*")) < lines.findIndex(line => line.startsWith("(allow file-read*")));
   if (process.platform === "darwin") assert.match(profile, /\(subpath "\/private\/var\/folders"\)/);
   // A tool folder under home opens that folder (and stat on its parents), never home itself or a parent of it.
