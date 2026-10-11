@@ -58,6 +58,13 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 
 **Owner:** don't touch the mouse or keyboard during a take. If "Ghostty is requesting to bypass the system private window picker" appears, press Allow.
 
+## Stage 2: recordings
+
+| Shot | State | Files |
+|---|---|---|
+| D3 Workflow | ✅ recorded and edited. Waiting for the owner's OK before it goes into the docs. | `public/captures/D3-workflow.mov` and `.json`, `out/docs/D3Workflow.mp4` (4.1 MB) with `-poster.jpg` |
+| D1, D2, D4–D8, P2–P6 | not started | |
+
 ## Tools
 
 | Tool | State | Notes |
@@ -106,11 +113,13 @@ Before recording, the development build must match HEAD. Run `npm run build` in 
 
 ## Next step
 
-1. Once the owner decides on the cursor: write `scripts/capture/pointer.swift`, which moves the pointer along an eased path and clicks.
-2. Write `scripts/capture/record.mjs`. It runs one shot's scripted actions:
-   - Playwright finds each element and waits for states;
-   - the real pointer moves and clicks;
-   - `screencapture` records.
-   It also writes an action log with timestamps per step to `public/captures/<shot>.json`.
-3. First shot: **D3 Workflow console demo**. It needs no model and no network, so it tests the whole pipeline: recording → `public/captures` → `DocDemo` composition → render → size check.
-4. After that: D1 (download a model), then D2, D7 and D8, then the shots that depend on decisions (D4, D5, D6).
+1. The owner watches `out/docs/D3Workflow.mp4`.
+2. Once it is OK, place it in the docs:
+   - copy it to `docs-site/public/videos/workflow-run.mp4` with its poster;
+   - add `<video controls muted playsinline preload="none" poster="/videos/workflow-run.jpg" src="/videos/workflow-run.mp4"></video>` to `guides/workflows.md`, under the editor section;
+   - build `docs-site`.
+   Pushing publishes the docs, so ask first.
+3. Next shots:
+   - D7 MCP import and D8 shortcuts, which need no model.
+   - D1 model download (network) and D2 first chat.
+   - Then D4, D5 and D6, after the decisions above.

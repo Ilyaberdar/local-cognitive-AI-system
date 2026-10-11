@@ -1,6 +1,7 @@
 import { Composition, Folder, Still } from "remotion";
 import { AppWindow } from "./components/AppWindow";
 import { TitleCard } from "./components/TitleCard";
+import { D3Workflow } from "./docs/D3Workflow";
 import { Promo } from "./promo/Promo";
 import { PromoShot } from "./promo/PromoShot";
 import { StyleEnd, StyleShot, StyleTitle } from "./scenes/StyleBoard";
@@ -43,6 +44,9 @@ export const RemotionRoot: React.FC = () => {
           height={1080}
           defaultProps={{ shotId: "P3 · Pick and download a model", src: "", subtitle: "Pick any model from Hugging Face." }}
         />
+      </Folder>
+      <Folder name="Docs">
+        <Composition id="D3Workflow" component={D3Workflow} durationInFrames={579} fps={30} width={1920} height={1080} />
       </Folder>
       <Composition id="Promo" component={Promo} durationInFrames={1200} fps={30} width={1920} height={1080} />
     </>

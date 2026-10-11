@@ -46,7 +46,18 @@
       "use": "the dark-theme alternative for the owner to compare"
     }
   ],
-  "captures": [],
+  "captures": [
+    {
+      "path": "public/captures/D3-workflow.mov",
+      "log": "public/captures/D3-workflow.json",
+      "kind": "real screen recording (screencapture -v, real pointer and clicks)",
+      "how": "node scripts/capture/d3-workflow.mjs",
+      "app": "development build at 4f390c2 plus the example prompt fix 31bbf52; fresh profile .profiles/D3-workflow; light theme, 115% text",
+      "setup": "project /Users/Shared/Demo/workflow-console-demo, workflow and task from examples/workflow-console-demo created through the app API",
+      "length": "22.6 s, 3200×2000 H.264 about 55 fps; run from Run to done 9.7 s; real time, no cuts",
+      "result": "demo-output.txt written with WORKFLOW-CONSOLE-DEMO-OK; all six steps completed"
+    }
+  ],
   "audio": [],
   "notUsedAsFootage": [
     {
@@ -56,6 +67,15 @@
     {
       "path": "images/*.png (app repo)",
       "why": "real screenshots, but chat.png shows the owner's name and avatar; recordings use isolated profiles instead"
+    }
+  ],
+  "renders": [
+    {
+      "path": "out/docs/D3Workflow.mp4",
+      "composition": "D3Workflow",
+      "spec": "1920×1080, 30 fps, H.264 CRF 20, 19.3 s, 4.1 MB",
+      "poster": "out/docs/D3Workflow-poster.jpg (frame 520)",
+      "destination": "docs-site/public/videos/workflow-run.mp4 in guides/workflows.md, after the owner approves"
     }
   ]
 }

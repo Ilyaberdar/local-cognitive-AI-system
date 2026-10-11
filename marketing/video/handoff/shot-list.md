@@ -55,24 +55,33 @@ The recording ends with a model on disk. D2 reuses this profile.
 4. **End on the finished answer and the model label in the composer.**
    - Label: "Runs on this Mac".
 
-### D3: Workflow with live console and approval (first shot to make)
+### D3: Workflow with live console and approval (recorded 2026-10-11)
 
-**Setup (disclosed):** seed `examples/workflow-console-demo` into the profile through the app API: `POST /projects`, `POST /workflows`, then `POST /tasks`, as in the example README. The project folder is a copy under the profile, `~/…/.profiles/D3/demo-project`, so `demo-output.txt` is written there.
+**Script:** `scripts/capture/d3-workflow.mjs`. **Edit:** composition `D3Workflow`.
 
-1. **Workflow → Tasks → "Workflow Console Demo".**
-   - The task card is visible.
-   - Label: "A task runs a workflow".
-2. **Open the workflow → ▶ Run.**
-   - The nodes light up one by one.
-   - Zoom 1.5× on the Console as stdout lines arrive every 2 s, including the stderr line.
-3. **The run stops at the Review step**, which shows "Approve & continue".
-   - Label: "Waits for you".
-4. **Click Approve & continue.**
-   - The run reaches the terminal node: Done.
-5. **End on the finished graph and the last console lines.**
-   - Optionally show `demo-output.txt` with `WORKFLOW-CONSOLE-DEMO-OK` in the Review panel, if the app can open it there.
+**Setup (disclosed):**
+- A fresh profile.
+- Project folder `/Users/Shared/Demo/workflow-console-demo`: no user name in the path, because the console prints the saved file's absolute path.
+- The workflow and task from `examples/workflow-console-demo`, created through the app API with `POST /projects`, `/workflows` and `/tasks` from inside the page.
 
-**Real duration** is about 20 s plus the approval, so no cuts are needed.
+**Steps:**
+1. **Sidebar Workflow → Tasks board.** The pointer rests on the "Workflow Console Demo" card.
+2. **Run on the card.**
+   - Use `button[data-action="run-task"]`, not the editor's ▶ Run.
+   - Run on the card uses the project folder with the task's Full access, so no permission cards appear.
+   - The view switches to the Workflow tab with the live run.
+3. **The console fills live.**
+   - `[1/3]`, then the file's three lines with `WORKFLOW-CONSOLE-DEMO-OK`.
+   - `[2/3]` and the stderr line, then `[3/3]`.
+   - About 6.5 s in all.
+4. **The review card appears above "Review the console"**, with **Reject** and **Approve**. (The UI no longer says "Approve & continue"; docs and examples were fixed in 31bbf52.)
+5. **Approve.** The run status becomes Done, "6 steps completed", and every node shows ✓ Completed.
+
+**Edit:**
+- One take in real time, trimmed 3.2 s at the start; 19.3 s in all.
+- Zooms: the card at 1.4×, the console at 1.5×, the review card at 1.5×, then the full view.
+- Four captions under the window.
+- No speed badge, because nothing was cut.
 
 ### D4: Synthesis until the checks pass
 
