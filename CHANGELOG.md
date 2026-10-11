@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4 — 2026-10-11
+
+Keys that do what Settings says, and Settings pages that look like one app.
+
+### Desktop
+
+- **Enter sends a message**, as Settings → Keyboard Shortcuts always said; Shift+Enter adds a new line. To keep Enter for new lines, choose **Send messages with → ⌘Enter** (Ctrl+Enter on Windows). Nothing is sent while an input method is composing a word, and Enter still picks an @mention.
+- **Your own shortcuts.** Settings → Keyboard Shortcuts lets you change the keys for a new chat (⌘N), stopping a reply (Esc), dictation, Settings (⌘,), the sidebar (⌘\\), and Chat, Workflow, Synthesis, Models and Remote (⌘1–⌘5). Shortcuts work with any keyboard layout. Keys that menus, text editing or the system use are refused with the reason, and keys that belong to another action are moved only if you agree. Shortcuts are kept on each device.
+- **Settings look the same everywhere.** An MCP server's Secrets is a card with the usual fields, and the Import box, the Voice page and plugin permissions match the other pages. Disabled controls look disabled.
+
 ## 0.1.3 — 2026-10-11
 
 Synthesis tests on your own GPU server, and Local Cognitive's license.
