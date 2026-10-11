@@ -98,7 +98,8 @@
 .plugin-message.is-error { color: var(--danger, #e79393); }
 .plugin-toolbar, .plugin-actions, .plugin-links { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .plugin-toolbar { justify-content: space-between; margin: 32px 0 24px; gap: 16px; }
-.plugin-page input, .plugin-page select { width: 100%; background: var(--control-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; font: inherit; min-width: 0; }
+.plugin-page input, .plugin-page select { width: 100%; min-height: 34px; background: var(--control-bg); color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; font: inherit; min-width: 0; }
+.plugin-page select:hover { border-color: var(--line-strong); }
 .plugin-page input:focus-visible, .plugin-page select:focus-visible, .plugin-page summary:focus-visible { outline: none; box-shadow: none; }
 .settings-plugin-directory { background: var(--bg); color: var(--text); padding: 64px clamp(24px, 6vw, 110px) 60px; }
 .settings-plugin-directory .settings-content-inner { max-width: 860px; }

@@ -40,11 +40,13 @@
 .voice-input-test meter::-webkit-meter-optimum-value { background: var(--success, #6abf95); }
 .voice-input-test p { margin: 8px 0 0; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; }
 .voice-panel label + .voice-panel__actions { margin-top: 10px; }
-.voice-settings-card { border: 1px solid var(--line); border-radius: 18px; padding: 20px; background: var(--surface-2); }
+/* Settings → Voice: cards, fields and labels as on the other Settings pages (in light, --surface-2 is the page itself). */
+.voice-settings-card { border: 1px solid var(--line); border-radius: 16px; padding: 20px; background: var(--surface); }
 .voice-settings-card + .voice-settings-card { margin-top: 24px; }
-.voice-settings-card h2 { margin: 0 0 16px; font-size: calc(15px * var(--font-scale, 1)); font-weight: 600; }
-.voice-settings label { margin-top: 16px; font-size: calc(13px * var(--font-scale, 1)); gap: 8px; }
-.voice-settings select { min-height: 38px; font-size: calc(13px * var(--font-scale, 1)); }
+.voice-settings-card h2 { margin: 0 0 4px; font-size: calc(14px * var(--font-scale, 1)); font-weight: 550; line-height: 1.5; }
+.voice-settings label { margin-top: 14px; font-size: calc(13px * var(--font-scale, 1)); font-weight: 450; color: var(--text); gap: 8px; }
+.voice-settings select { min-height: 34px; padding-block: 7px; padding-inline-start: 10px; border-radius: 9px; font-size: inherit; }
+.voice-settings select:hover { border-color: var(--line-strong); }
 .voice-settings .voice-panel__actions { margin-top: 16px; }
 .voice-settings .voice-panel__actions button { font-size: calc(12px * var(--font-scale, 1)); padding: 9px 14px; }
 .voice-settings .voice-panel__model, .voice-settings .voice-input-test p, .voice-settings .voice-panel__error { font-size: calc(12px * var(--font-scale, 1)); }
