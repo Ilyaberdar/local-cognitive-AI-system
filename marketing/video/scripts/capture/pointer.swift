@@ -3,9 +3,14 @@
 //   {"op":"move","x":800,"y":500,"ms":700}   eased path from where the pointer is now
 //   {"op":"click","x":800,"y":500}           press and release the left button there
 //   {"op":"pos"}                              where the pointer is
+//   {"op":"type","text":"Hello","ms":45}     types text as real key events, ms between characters
+//   {"op":"key","code":36,"flags":["cmd"]}   one key (virtual key code) with modifiers
+//   {"op":"window","owner":"Local Cognitive"} the app's frontmost normal window: id and bounds
 // Coordinates are global screen points (origin at the top-left of the main display), the same
 // space as Electron's BrowserWindow.getContentBounds(). Needs Accessibility permission for the
 // terminal that starts it. Build: swiftc -O scripts/capture/pointer.swift -o .bin/pointer
+// The keyboard and window ops drive apps that Playwright cannot reach (the packaged app refuses
+// debugging switches): they send the same events a person's keyboard would.
 import CoreGraphics
 import Foundation
 
@@ -33,6 +38,47 @@ func move(to target: CGPoint, ms: Double) {
   post(.mouseMoved, target)
 }
 
+func typeText(_ text: String, ms: Double) {
+  for character in text {
+    let units = Array(String(character).utf16)
+    for down in [true, false] {
+      guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
+      event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+      event.post(tap: .cghidEventTap)
+      usleep(8_000)
+    }
+    usleep(useconds_t(ms * 1000))
+  }
+}
+
+func pressKey(_ code: Int, _ flags: [String]) {
+  var mask: CGEventFlags = []
+  for flag in flags {
+    switch flag {
+    case "cmd": mask.insert(.maskCommand)
+    case "shift": mask.insert(.maskShift)
+    case "alt": mask.insert(.maskAlternate)
+    case "ctrl": mask.insert(.maskControl)
+    default: break
+    }
+  }
+  for down in [true, false] {
+    guard let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: down) else { continue }
+    event.flags = mask
+    event.post(tap: .cghidEventTap)
+    usleep(30_000)
+  }
+}
+
+func window(owner: String) -> [String: Any]? {
+  let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+  for info in list where (info[kCGWindowOwnerName as String] as? String) == owner && (info[kCGWindowLayer as String] as? Int) == 0 {
+    guard let bounds = info[kCGWindowBounds as String] as? [String: Double], (bounds["Height"] ?? 0) > 200 else { continue }
+    return ["id": info[kCGWindowNumber as String] as? Int ?? 0, "x": bounds["X"] ?? 0, "y": bounds["Y"] ?? 0, "width": bounds["Width"] ?? 0, "height": bounds["Height"] ?? 0]
+  }
+  return nil
+}
+
 func reply(_ object: [String: Any]) {
   let data = try! JSONSerialization.data(withJSONObject: object)
   FileHandle.standardOutput.write(data)
@@ -58,6 +104,14 @@ while let line = readLine() {
   case "pos":
     let p = current()
     reply(["x": p.x, "y": p.y])
+  case "type":
+    typeText(command["text"] as? String ?? "", ms: command["ms"] as? Double ?? 45)
+    reply(["ok": true])
+  case "key":
+    pressKey(command["code"] as? Int ?? 36, command["flags"] as? [String] ?? [])
+    reply(["ok": true])
+  case "window":
+    if let found = window(owner: command["owner"] as? String ?? "") { reply(found) } else { reply(["error": "no window"]) }
   default:
     reply(["error": "unknown op \(op)"])
   }

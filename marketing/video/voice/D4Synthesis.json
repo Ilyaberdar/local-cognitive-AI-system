@@ -1,0 +1,8 @@
+{
+  "lines": [
+    { "id": "01-contract", "text": "A module is a contract: the file to write, and the checks it has to pass." },
+    { "id": "02-run", "text": "Run synthesis. A model on this Mac writes the code." },
+    { "id": "03-checks", "text": "The checks run for real, in a sandbox. All six tests pass, and the run is accepted." },
+    { "id": "04-apply", "text": "Apply the verified patch, and the code lands in your project." }
+  ]
+}

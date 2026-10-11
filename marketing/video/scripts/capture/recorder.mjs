@@ -79,6 +79,23 @@ export async function startShot({ app, page, shotId }) {
   const started = Date.now();
   const recorder = spawn("screencapture", ["-v", "-k", "-x", "-R", `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`, video], { stdio: "ignore" });
   const exited = new Promise(resolve => recorder.on("exit", resolve));
+  // screencapture records a screen rectangle, not the app: if this script fails and the app closes,
+  // it would go on recording whatever is behind (the owner's other windows). So any failure, exit or
+  // interrupt stops it and deletes the unfinished file, and so does the app window going away.
+  let finished = false;
+  const abort = () => {
+    if (finished) return;
+    finished = true;
+    try { recorder.kill("SIGINT"); } catch { /* already gone */ }
+    pointer.close();
+    setTimeout(() => fs.rmSync(video, { force: true }), 3000).unref?.();
+  };
+  process.once("exit", abort);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { abort(); process.exit(130); });
+  process.once("uncaughtException", error => { abort(); console.error(error); process.exit(1); });
+  process.once("unhandledRejection", error => { abort(); console.error(error); process.exit(1); });
+  app.once("close", abort);
+  page.once("close", abort);
   const log = (step, extra = {}) => { steps.push({ step, ms: Date.now() - started, ...extra }); };
 
   const screenPoint = box => ({ x: bounds.x + box.x + box.width / 2, y: bounds.y + box.y + box.height / 2 });
@@ -114,8 +131,11 @@ export async function startShot({ app, page, shotId }) {
       log(step, { text });
       await page.keyboard.type(text, { delay });
     },
+    // Ends the take if the script fails: stops the recording and deletes the unfinished file.
+    abort,
     async stop() {
       const wallMs = Date.now() - started;
+      finished = true;
       recorder.kill("SIGINT");
       await exited;
       pointer.close();

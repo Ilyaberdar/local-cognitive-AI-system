@@ -14,13 +14,17 @@ type AppWindowProps = {
   readonly zoom: number;
   readonly focusX: number;
   readonly focusY: number;
+  // Where this piece starts in the recording (seconds) and how fast it plays. A shortened wait is a
+  // piece with speed > 1, and the edit must show <SpeedBadge> over it.
+  readonly startAt?: number;
+  readonly speed?: number;
   readonly style?: React.CSSProperties;
 };
 
 // A real recording of the app inside the landing's window frame (16px radius, soft shadow). The macOS
 // traffic lights are not drawn: recordings start at the app's own top bar. 1440×900 at 16:10 leaves
 // a band above for the speed badge and one below for subtitles.
-const AppWindowInner: React.FC<AppWindowProps> = ({ src, kind, shotId, zoom, focusX, focusY, style }) => {
+const AppWindowInner: React.FC<AppWindowProps> = ({ src, kind, shotId, zoom, focusX, focusY, startAt = 0, speed = 1, style }) => {
   const { fps } = useVideoConfig();
   return (
     <Interactive.Div
@@ -50,7 +54,7 @@ const AppWindowInner: React.FC<AppWindowProps> = ({ src, kind, shotId, zoom, foc
         {src === "" ? (
           <PendingCapture shotId={shotId} />
         ) : kind === "video" ? (
-          <Video src={staticFile(src)} premountFor={fps} muted objectFit="cover" style={{ width: "100%", height: "100%" }} />
+          <Video src={staticFile(src)} premountFor={fps} muted trimBefore={Math.round(startAt * fps)} playbackRate={speed} objectFit="cover" style={{ width: "100%", height: "100%" }} />
         ) : (
           <Img src={staticFile(src)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         )}
