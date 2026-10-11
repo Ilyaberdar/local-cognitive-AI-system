@@ -1,0 +1,7 @@
+{
+  "voice": "Matilda",
+  "voiceId": "XrExE9yKIg1WjnnlVkGX",
+  "modelId": "eleven_multilingual_v2",
+  "voiceSettings": { "stability": 0.5, "similarity_boost": 0.75, "style": 0.2 },
+  "chosen": "2026-10-11, owner asked for any female voice; Matilda (American, professional alto) over Alice (British)"
+}

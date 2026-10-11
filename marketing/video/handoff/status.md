@@ -43,6 +43,21 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
   - The key is in `.env`, which git ignores and which has mode 600. **Never put the key in `.env.example`, which git tracks.**
   - Voice samples are in `public/audio/samples/{eric,matilda,river,alice}.mp3` (`scripts/voice/samples.mjs`).
 
+## Recording pipeline (works, tested with `scripts/capture/pointer-test.mjs`)
+
+**Launch.** `app.mjs` starts the development build with `.profiles/<shot>` as its data folder and a 1600×1000 content area. Theme and text size go through `PUT /app/settings` `{ui:{theme,fontScale}}`, as Settings → Appearance does. localStorage alone is overridden at startup.
+
+**`recorder.mjs` `startShot()`:**
+- A backdrop window of one colour (`#dde4ec`) goes behind the app, because macOS translucency otherwise shows other windows through the sidebar. The app is then brought to the front.
+- It starts `screencapture -v -k -x -R <content bounds>` → `public/captures/<shot>.mov`, stopped with SIGINT.
+- `shot.click(locator, step)` moves the **real** pointer along an eased arc to the element's centre, waits about 0.45 s, then clicks with a real CGEvent.
+- `shot.type()` types through Playwright's keyboard (35–60 ms per key).
+- Each step is logged with its ms since the recording started. `videoOffsetMs` is screencapture's start delay, about 140 ms.
+
+**Output.** 3200×2000 H.264, about 55 fps. The real traffic lights are coloured because the window is focused, the cursor is real and clicks show as rings.
+
+**Owner:** don't touch the mouse or keyboard during a take. If "Ghostty is requesting to bypass the system private window picker" appears, press Allow.
+
 ## Tools
 
 | Tool | State | Notes |
@@ -56,18 +71,13 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 | Claude in Chrome | ❌ not connected | No `mcp__claude-in-chrome__*` tools in this session. Enable it with `/chrome` in Claude Code if it is ever needed. It is not needed for the app. |
 | Computer Use | ❌ not available | Only exists in the Claude desktop app. |
 | Playwright MCP | ❌ not connected | `playwright-core` is used directly instead. |
-| ElevenLabs | ✅ key works | Starter plan, 40k characters a month, `eleven_multilingual_v2`. The owner still has to choose a voice (`ELEVENLABS_VOICE_ID`). |
-| Real mouse events (CGEvent) | ⏳ needs Accessibility | `swift` is available. Ghostty is not yet trusted under Privacy & Security → Accessibility. This is needed to move and click the real pointer. |
+| ElevenLabs | ✅ key works | Starter plan, 40k characters a month, `eleven_multilingual_v2`. Voice: Matilda (`voice.json`). |
+| Real mouse events (CGEvent) | ✅ works | `scripts/capture/pointer.swift` is compiled to `.bin/pointer` (git ignores it) on first use. Ghostty is trusted under Accessibility. |
 
 ## Blockers and owner decisions
 
-1. **Cursor in recordings.** Recommended: drive the real pointer with macOS events.
-   - A small Swift helper posts CGEvent moves and clicks at the positions of elements that Playwright finds.
-   - `screencapture -k` then records the real cursor and its clicks.
-   - This needs Ghostty under Accessibility.
-   - The owner must not touch the mouse during a take (about 1 minute).
-   - The alternative is a cursor drawn in the edit from the action log, which needs no permission but is an overlay.
-2. **Voice:** the owner picks one of the samples. The voice-over is generated per scene. The character timestamps from `/v1/text-to-speech/{voice}/with-timestamps` give exact subtitles without transcribing.
+1. ~~Cursor~~ decided 2026-10-11: the real pointer. Ghostty is trusted under Accessibility.
+2. ~~Voice~~ decided 2026-10-11: **Matilda** (`voice.json`; the owner asked for "any female voice").
 3. **Remote shot (D5/P6):**
    - The owner signs in to the account in the development profile; I never type the password.
    - The owner allows pairing this computer with fedora (`sudo local-cognitive-server pair` on the server over SSH).

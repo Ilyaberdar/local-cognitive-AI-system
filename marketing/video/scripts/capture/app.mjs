@@ -21,9 +21,17 @@ export async function launchApp({ profile, width = 1600, height = 1000, theme = 
   });
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
-  await page.evaluate(({ theme, fontScale }) => {
+  // Theme and text size are saved the way Settings → Appearance saves them: in the app's settings
+  // (they win over localStorage at startup), plus localStorage for the first paint.
+  await page.evaluate(async ({ theme, fontScale }) => {
     localStorage.setItem("lcai.theme", theme);
     localStorage.setItem("lcai.fontScale", String(fontScale));
+    const response = await fetch("/app/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Local-Cognitive": "1" },
+      body: JSON.stringify({ ui: { theme, fontScale } }),
+    });
+    if (!response.ok) throw new Error(`settings: HTTP ${response.status} ${await response.text()}`);
   }, { theme, fontScale });
   await page.reload();
   await page.waitForLoadState("domcontentloaded");

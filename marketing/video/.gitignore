@@ -29,3 +29,6 @@ dist
 
 # Isolated app data folders used while recording.
 /.profiles/
+
+# Compiled capture helpers (scripts/capture/pointer.swift).
+/.bin/
