@@ -29,9 +29,10 @@ page('CHANGELOG.md', 'reference/release-notes.md', {
 	description: 'What each release of Local Cognitive brings.',
 });
 
-// The README's screenshots, for the pages that show them.
+// The README's screenshots, for the pages that show them, by lower-case name (a Mac's disk may show
+// a file as Chat.png that git calls chat.png).
 const screens = path.join(site, 'src', 'assets', 'screens');
 fs.mkdirSync(screens, { recursive: true });
-for (const file of fs.readdirSync(path.join(repo, 'images')).filter((name) => name.endsWith('.png'))) {
-	fs.copyFileSync(path.join(repo, 'images', file), path.join(screens, file));
+for (const file of fs.readdirSync(path.join(repo, 'images')).filter((name) => /\.png$/i.test(name))) {
+	fs.copyFileSync(path.join(repo, 'images', file), path.join(screens, file.toLowerCase()));
 }

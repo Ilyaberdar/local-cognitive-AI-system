@@ -21,9 +21,7 @@ The installer prints the first key itself.
 
 ## 2. Paste it in the app
 
-Open **Remote → Connect a server**, paste the key and choose **Connect**.
-
-![Remote with a connected server](../../../assets/screens/remote.png)
+Open **Remote → Connect a server**, paste the key and choose **Connect**. The server then appears under **Your servers** with its state, backend (CUDA or CPU), loaded models and work.
 
 ## 3. Use the server
 

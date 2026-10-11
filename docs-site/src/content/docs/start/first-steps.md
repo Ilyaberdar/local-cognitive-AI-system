@@ -15,7 +15,7 @@ Open a model and choose a quantization. Before the download starts, the app esti
 
 On **On device**, choose **Use in chat** for the current chat or **Set default** for new chats. The model loads on first use; **Load model** loads it ahead of time and **Unload** frees the memory while keeping the files.
 
-![Models on this computer](../../../assets/screens/local-models.png)
+![Models on this computer](../../../assets/screens/models.png)
 
 Type in the chat and send. The panel on the right (**Session Setup**) holds the chat's mode, model and subagents.
 

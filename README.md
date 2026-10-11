@@ -28,19 +28,15 @@ A private AI workspace for chats, agents and workflows. Models run on your own c
 <table>
   <tr>
     <td width="50%"><img src="images/store.png" alt="Models: the Hugging Face catalog"><br><b>Catalog.</b> Search Hugging Face GGUF models; memory and disk are checked before a download.</td>
-    <td width="50%"><img src="images/local-models.png" alt="Models: the library on this computer"><br><b>On device.</b> Your library: load, use in chat, set the default, add a vision adapter.</td>
+    <td width="50%"><img src="images/models.png" alt="Models: the library on this computer"><br><b>On device.</b> Your library: load, use in chat, set the default, add a vision adapter.</td>
   </tr>
   <tr>
-    <td><img src="images/remote.png" alt="Remote: a connected GPU server"><br><b>Remote.</b> A paired GPU server: its version, CUDA, loaded models and current work.</td>
     <td><img src="images/workflow.png" alt="Workflow editor with a running workflow"><br><b>Workflows.</b> Agents, files and commands as steps, with a live console and agent activity.</td>
-  </tr>
-  <tr>
     <td><img src="images/tasks.png" alt="Task board"><br><b>Tasks.</b> A board of tasks, each run by a workflow, with traces and schedules.</td>
-    <td><img src="images/synthesis.png" alt="Synthesis workspace"><br><b>Synthesis.</b> A contract, a flow that drives the agents, and every check they pass.</td>
   </tr>
   <tr>
+    <td><img src="images/synthesis.png" alt="Synthesis workspace"><br><b>Synthesis.</b> A contract, a flow that drives the agents, and every check they pass.</td>
     <td><img src="images/usage.png" alt="Usage page"><br><b>Usage.</b> Tokens across your computers and servers.</td>
-    <td></td>
   </tr>
 </table>
 
