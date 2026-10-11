@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.2 — 2026-10-11
+
+Synthesis for real modules: a contract keeps a small local model on the architecture the engineer designed.
+
+### Synthesis
+
+- **Your tests decide.** `Tests(...)` runs the engineer's own tests, kept next to the contract, against every candidate in a sandbox: TypeScript and JavaScript (Node.js 22.18 or newer), Python 3, and C++20 built with AddressSanitizer and UndefinedBehaviorSanitizer. Each failure goes back to the model as an exact item: the test, the expected and actual values, and its file and line. `hidden = true` keeps a holdout set sealed.
+- **Frozen interfaces.** `frozen "include/AbilitySystem.h"` marks a file the engineer wrote: the model reads it in every revision and cannot change it.
+- **Architecture gates.** `Exports` checks the public shape, `Imports` what may depend on what (no `<thread>` in a game core, no `node:fs` in a domain layer), and `Forbid` what the code may not use, outside comments and strings.
+- **More languages.** A module may be TypeScript, Python, C or C++, besides HTML, CSS and JavaScript. Replies in a code block labelled `c++` are no longer dropped.
+- **A sandbox for every test run:** no network, writes only to its own folder, nothing read from your folders, and no other program to act for it: `sandbox-exec` on macOS, bubblewrap on Linux. The module's code may not reach into the test harness, and each result line is signed for its run.
+- **To start:** New module → **Rate limiter (TypeScript, with tests)**. For C++, the [ability system example](https://github.com/Ilyaberdar/local-cognitive-AI-system/tree/main/examples/synthesis-ability-system) builds an engine-agnostic core in the spirit of Unreal's Gameplay Ability System against a frozen header.
+- The gates panel lists every test with its result.
+
+### Desktop
+
+- **macOS 13.3 or later**, which the bundled model and speech runtimes need.
+
+### Known limits
+
+- Tests don't run on Windows yet, which has no sandbox, or on a Linux server, whose service may not create the namespaces bubblewrap needs. The architecture gates work everywhere.
+
 ## 0.1.1 — 2026-10-11
 
 The first public release of Local Cognitive: private chats, agents and workflows with models on your own computer, or on your own GPU server through Remote.
