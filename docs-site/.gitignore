@@ -24,3 +24,6 @@ pnpm-debug.log*
 src/content/docs/guides/synthesis-language.md
 src/content/docs/reference/release-notes.md
 src/assets/screens/
+
+# made by scripts/sync-content.mjs from ../icon.png
+public/logo-hero.webp

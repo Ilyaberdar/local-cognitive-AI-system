@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repo = path.resolve(site, '..');
@@ -36,3 +37,7 @@ fs.mkdirSync(screens, { recursive: true });
 for (const file of fs.readdirSync(path.join(repo, 'images')).filter((name) => /\.png$/i.test(name))) {
 	fs.copyFileSync(path.join(repo, 'images', file), path.join(screens, file.toLowerCase()));
 }
+
+// The home page's logo, from the app icon at twice the size it is shown (up to 20rem): Starlight's
+// own hero image is a fixed 400px, which a high-density screen stretches.
+await sharp(path.join(repo, 'icon.png')).resize(800).webp({ quality: 92 }).toFile(path.join(site, 'public', 'logo-hero.webp'));
