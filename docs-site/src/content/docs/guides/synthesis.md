@@ -5,7 +5,7 @@ description: Write a module's contract and an agent flow, and get code that is c
 
 Synthesis turns a description of a module into working code with agents, and checks the result against what you described.
 
-<video controls playsinline preload="none" poster="/videos/synthesis.jpg" aria-label="Synthesis: the Rate limiter contract, Run synthesis, the real tests passing, and the verified patch applied"><source src="/videos/synthesis-720.mp4" type="video/mp4" media="(max-width: 900px)" /><source src="/videos/synthesis.mp4" type="video/mp4" /></video>
+<video controls playsinline preload="none" poster="/videos/synthesis.jpg" aria-label="Synthesis: the Rate limiter contract, Run synthesis, the real tests passing, and the verified patch applied"><source src="/videos/synthesis-720.mp4" type="video/mp4" media="(max-width: 900px), (pointer: coarse)" /><source src="/videos/synthesis.mp4" type="video/mp4" /></video>
 
 *A real run of the Rate limiter module on Qwen3.8 27B, accepted on its first iteration. 61 s of loading and writing are sped up 10×, and the video marks it.*
 

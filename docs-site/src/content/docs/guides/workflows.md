@@ -7,7 +7,7 @@ description: Build workflows visually, run them as tasks, and schedule them.
 
 **Workflow → Tasks** is a board of tasks in **Todo**, **In Progress** and **Done**. Each task has a description, a workflow, a project (or its own folder) and an access mode. **Run** starts it; **Trace** shows every step.
 
-<video controls playsinline preload="none" poster="/videos/workflow-run.jpg" aria-label="A task runs the Workflow Console Demo: the console fills live, the run waits at the review step, and Approve finishes it"><source src="/videos/workflow-run-720.mp4" type="video/mp4" media="(max-width: 900px)" /><source src="/videos/workflow-run.mp4" type="video/mp4" /></video>
+<video controls playsinline preload="none" poster="/videos/workflow-run.jpg" aria-label="A task runs the Workflow Console Demo: the console fills live, the run waits at the review step, and Approve finishes it"><source src="/videos/workflow-run-720.mp4" type="video/mp4" media="(max-width: 900px), (pointer: coarse)" /><source src="/videos/workflow-run.mp4" type="video/mp4" /></video>
 
 *A real run of the Workflow Console Demo from `examples/workflow-console-demo`, in real time.*
 
