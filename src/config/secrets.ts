@@ -4,6 +4,7 @@ import fs from "fs";
  * are never inherited by commands, model runtimes or other child processes. */
 export const SECRET_ENV_KEYS = [
   "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "LMSTUDIO_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY",
+  "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "PERPLEXITY_API_KEY",
   "TELEGRAM_BOT_TOKEN", "BRAVE_SEARCH_API_KEY", "NOTION_API_KEY"
 ] as const;
 

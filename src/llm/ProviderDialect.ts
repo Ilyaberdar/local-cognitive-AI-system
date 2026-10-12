@@ -29,8 +29,8 @@ export interface ProviderDialect {
   /** Chat completions are always streamed: some thinking models answer only when streamed, and the
    * reasoning then shows while it is written. */
   readonly streamChat?: boolean;
-  /** How chat completions ask for reasoning: Qwen's enable_thinking switch. */
-  readonly thinking?: "enable_thinking";
+  /** How chat completions ask for reasoning: Qwen's enable_thinking switch, or OpenRouter's reasoning object. */
+  readonly thinking?: "enable_thinking" | "reasoning";
   /** JSON mode is refused unless the messages say "JSON" (Qwen): the instructions then ask for it. */
   readonly jsonKeyword?: boolean;
   /** Models offered when the service's list cannot be read, and ids in its list that are not chat models. */
@@ -85,7 +85,23 @@ export const CHAT_DIALECT: ProviderDialect = {
   capabilities: { local: false, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: false, reasoning: false, vision: false }
 };
 
-const DIALECTS: Record<string, ProviderDialect> = { qwen: QWEN_DIALECT, chat: CHAT_DIALECT };
+/** DeepSeek: JSON mode, like Qwen's, wants the word in the messages. */
+export const DEEPSEEK_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "deepseek", jsonKeyword: true,
+  models: { fallback: ["deepseek-flash", "deepseek-v4-pro"] } };
+/** Groq: its reasoning models (gpt-oss, Qwen) take the effort as reasoning_effort; one that does not says so. */
+export const GROQ_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "groq", chatEffort: true,
+  capabilities: { ...CHAT_DIALECT.capabilities, reasoning: true },
+  models: { fallback: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"], exclude: /whisper|tts|orpheus|guard|playai|compound/i } };
+/** OpenRouter: hundreds of models behind one key, its reasoning asked for in one shape for all of them. */
+export const OPENROUTER_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "openrouter", thinking: "reasoning",
+  capabilities: { ...CHAT_DIALECT.capabilities, reasoning: true, vision: true } };
+/** Perplexity: answers searched on the web. It lists no models and has no JSON mode (only schemas). */
+export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity",
+  capabilities: { ...CHAT_DIALECT.capabilities, jsonMode: false },
+  models: { fallback: ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"] } };
+
+const DIALECTS: Record<string, ProviderDialect> = { qwen: QWEN_DIALECT, chat: CHAT_DIALECT, deepseek: DEEPSEEK_DIALECT,
+  groq: GROQ_DIALECT, openrouter: OPENROUTER_DIALECT, perplexity: PERPLEXITY_DIALECT };
 export const isProviderDialect = (name: unknown): boolean => typeof name === "string" && Object.hasOwn(DIALECTS, name);
 /** The dialect a provider that is data names; an unknown name is a plain OpenAI-compatible service. */
 export const compatibleDialect = (name: string | undefined): ProviderDialect => (name && DIALECTS[name]) || CHAT_DIALECT;

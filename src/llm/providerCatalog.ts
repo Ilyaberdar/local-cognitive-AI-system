@@ -42,6 +42,42 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [{
   keyUrl: "https://home.qwencloud.com/api-keys",
   env: { apiKey: ["QWEN_API_KEY", "DASHSCOPE_API_KEY"], baseUrl: "QWEN_BASE_URL", model: "QWEN_MODEL", timeoutMs: "QWEN_TIMEOUT_MS" },
   builtIn: true
+}, {
+  id: "deepseek",
+  name: "DeepSeek",
+  dialect: "deepseek",
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-flash",
+  models: ["deepseek-flash", "deepseek-v4-pro"],
+  keyUrl: "https://platform.deepseek.com/api_keys",
+  env: { apiKey: ["DEEPSEEK_API_KEY"], baseUrl: "DEEPSEEK_BASE_URL", model: "DEEPSEEK_MODEL", timeoutMs: "DEEPSEEK_TIMEOUT_MS" }
+}, {
+  id: "openrouter",
+  name: "OpenRouter",
+  dialect: "openrouter",
+  baseUrl: "https://openrouter.ai/api/v1",
+  model: "openai/gpt-oss-120b",
+  models: ["openai/gpt-oss-120b", "qwen/qwen3.8-flash", "deepseek/deepseek-v4.1-flash", "google/gemini-2.5-flash", "openai/gpt-5-mini"],
+  keyUrl: "https://openrouter.ai/settings/keys",
+  env: { apiKey: ["OPENROUTER_API_KEY"], baseUrl: "OPENROUTER_BASE_URL", model: "OPENROUTER_MODEL", timeoutMs: "OPENROUTER_TIMEOUT_MS" }
+}, {
+  id: "groq",
+  name: "Groq",
+  dialect: "groq",
+  baseUrl: "https://api.groq.com/openai/v1",
+  model: "openai/gpt-oss-120b",
+  models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
+  keyUrl: "https://console.groq.com/keys",
+  env: { apiKey: ["GROQ_API_KEY"], baseUrl: "GROQ_BASE_URL", model: "GROQ_MODEL", timeoutMs: "GROQ_TIMEOUT_MS" }
+}, {
+  id: "perplexity",
+  name: "Perplexity",
+  dialect: "perplexity",
+  baseUrl: "https://api.perplexity.ai",
+  model: "sonar",
+  models: ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"],
+  keyUrl: "https://www.perplexity.ai/settings/api",
+  env: { apiKey: ["PERPLEXITY_API_KEY"], baseUrl: "PERPLEXITY_BASE_URL", model: "PERPLEXITY_MODEL", timeoutMs: "PERPLEXITY_TIMEOUT_MS" }
 }];
 
 export const providerPreset = (id: string): ProviderPreset | undefined => PROVIDER_PRESETS.find(preset => preset.id === id);

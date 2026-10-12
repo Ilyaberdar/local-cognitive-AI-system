@@ -213,3 +213,37 @@ test("Settings names Qwen, shows its regions and links to its key page", t => {
   assert.equal(page().querySelector(`a[href="${preset.keyUrl}"]`)?.getAttribute("target"), "_blank");
   assert.match(page().querySelector('[data-setting="providers.qwen.baseUrl"]').textContent, /US \(Virginia\): https:\/\/dashscope-us/);
 });
+
+test("each preset's dialect asks in its service's own way: DeepSeek's JSON word, Groq's reasoning_effort, OpenRouter's reasoning, Perplexity without JSON mode", async () => {
+  const chat = () => Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] });
+  const provider = (id: string, fetchImpl: typeof fetch) => {
+    const preset = providerPreset(id)!;
+    return new OpenAICompatibleProvider({ id, name: preset.name, baseUrl: preset.baseUrl, model: preset.model, timeoutMs: 1000, apiKey: "sk-test-1234", dialect: compatibleDialect(preset.dialect) }, new Logger(), fetchImpl);
+  };
+  const deepseek = service(chat);
+  await provider("deepseek", deepseek.fetchImpl).generateText({ prompt: "Classify", responseFormat: { type: "json_object" } });
+  assert.equal(deepseek.calls[0].url, "https://api.deepseek.com/chat/completions");
+  assert.equal(deepseek.calls[0].body.messages[0].content, "Reply with a JSON object.");
+
+  const groq = service(chat);
+  await provider("groq", groq.fetchImpl).generateText({ prompt: "Think", reasoningEffort: "max" });
+  assert.equal(groq.calls[0].url, "https://api.groq.com/openai/v1/chat/completions");
+  assert.equal(groq.calls[0].body.reasoning_effort, "high");
+
+  const openrouter = service(chat);
+  await provider("openrouter", openrouter.fetchImpl).generateText({ prompt: "Think", reasoningEffort: "low" });
+  await provider("openrouter", openrouter.fetchImpl).generateText({ prompt: "Quick" });
+  assert.deepEqual(openrouter.calls[0].body.reasoning, { effort: "low" });
+  assert.equal(openrouter.calls[1].body.reasoning, undefined);
+  assert.equal(openrouter.calls[0].body.reasoning_effort, undefined);
+
+  const perplexity = service(() => new Response("not found", { status: 404 }));
+  const sonar = provider("perplexity", perplexity.fetchImpl);
+  assert.equal(sonar.getDescriptor().capabilities?.jsonMode, false);
+  assert.deepEqual((await sonar.listModels()).map(model => model.id), ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"]);
+  for (const preset of PROVIDER_PRESETS) {
+    assert.ok(preset.models.includes(preset.model), preset.id);
+    assert.match(preset.baseUrl, /^https:\/\//);
+    assert.equal(compatibleDialect(preset.dialect).id, preset.dialect, preset.id);
+  }
+});

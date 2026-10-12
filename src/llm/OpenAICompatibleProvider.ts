@@ -150,6 +150,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           // LM Studio's reasoning models (gpt-oss) take the effort on chat completions too.
           ...(dialect.chatEffort && effort ? { reasoning_effort: effort } : {}),
           ...(thinking === undefined ? {} : { enable_thinking: thinking }),
+          ...(dialect.thinking === "reasoning" && effort ? { reasoning: { effort } } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"

@@ -24,6 +24,7 @@
     "server": "node dist/src/server/cli.js",
     "test:mcp-model": "npm run build:server && node scripts/test-mcp-local-model.cjs",
     "test:server-install": "npm run build:server && node scripts/test-server-install.mjs",
+    "test:providers": "npm run build:server && node scripts/test-providers.mjs",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "postinstall": "node scripts/dev-electron-name.mjs",
     "electron": "npm run build && electron .",
