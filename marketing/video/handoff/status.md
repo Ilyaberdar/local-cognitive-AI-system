@@ -69,7 +69,7 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 | D4 Synthesis | `d4-synthesis.mjs`, Rate limiter, Accepted in 1 iteration | docs guides/synthesis.md |
 | F Remote | `f-remote.mjs`, owner's installed app (allowed), sidebar collapsed, avatar blurred, Qwen2.5-14B on fedora | docs guides/remote.md |
 | Promo 40 s | cut from the takes, dissolves, Eleven Music ducked under the voice | landing `#demo` (`/media/promo-v1*.mp4`) |
-| Overview (3 min 21 s) | all demos + title cards, music under the demos | docs home (`overview.mp4` 1440p30 CRF 20 = 24.3 MB, under the 25 MiB asset limit; `overview-720.mp4`) |
+| Overview (3 min 21 s) | all demos + title cards, music under the demos | docs home (`overview-v1.mp4` 1440p30 CRF 20 = 24.3 MB, under the 25 MiB file limit; `overview-720-v1.mp4`) |
 
 **Exports** (`scripts/export/video.mjs <id>`):
 - a 4K60 master;
@@ -79,7 +79,11 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 
 Pages choose the copy with `<source media="(max-width: 900px), (pointer: coarse)">`.
 
-**The docs host needs `docs-site/worker.js`.** Workers static assets answer a byte range with the whole file, so videos could not be seeked. The Worker answers ranges for `/videos/*`.
+**Where docs videos live:** all docs videos and posters are served from the landing: `local-cognitive-landing/public/media/docs/<name>-v1.mp4|jpg`.
+- Cloudflare Pages answers byte ranges, which seeking and iPhones need.
+- The docs site (Workers static assets) does not.
+- A Worker that sliced ranges hit the free-plan CPU limit and cut videos off after about 5 s, so it was removed.
+- A new cut gets a new name (-v2), because `/media/*` is cached for a year.
 
 **Size limit:** 25 MiB per file on both sites. A long video gets a 30 fps web copy.
 
