@@ -5,6 +5,8 @@ description: Everything local-cognitive-server can do, from the console to updat
 
 All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on its own opens the **console**: the server's status, a live view of its work, and these commands in a menu.
 
+![The console of a server with a GTX 1070 Ti: its commands, and status with a model loaded on the GPU](../../../assets/screens/server-console.png)
+
 ## Everyday
 
 | Command | What it does |
