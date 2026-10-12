@@ -1,0 +1,5 @@
+# Renders, audio and backups stay out of git; the script and the .blend are the source.
+renders/
+audio/
+*.blend1
+screens/

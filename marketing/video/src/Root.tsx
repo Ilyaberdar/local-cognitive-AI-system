@@ -12,6 +12,7 @@ import { Promo } from "./promo/Promo";
 import { PromoShot } from "./promo/PromoShot";
 import { StyleEnd, StyleShot, StyleTitle } from "./scenes/StyleBoard";
 import { StyleMotion } from "./scenes/StyleMotion";
+import { SCREENS, Screen } from "./screens/Screen";
 
 export const RemotionRoot: React.FC = () => {
   return (
@@ -61,6 +62,11 @@ export const RemotionRoot: React.FC = () => {
       </Folder>
       <Composition id="Promo" component={Promo} durationInFrames={2400} fps={60} width={1920} height={1080} />
       <Composition id="Overview" component={Overview} durationInFrames={12047} fps={60} width={1920} height={1080} />
+      <Folder name="BlenderScreens">
+        {Object.entries(SCREENS).map(([id, props]) => (
+          <Composition key={id} id={`Screen-${id}`} component={Screen} defaultProps={props} durationInFrames={120} fps={30} width={1600} height={1000} />
+        ))}
+      </Folder>
     </>
   );
 };
