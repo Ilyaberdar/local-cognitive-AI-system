@@ -24,7 +24,7 @@ const processInputSchema = {
   sessionId: optionalString().describe("Stable session id. Defaults to the configured MCP session."),
   sessionTitle: optionalString().describe("Optional title used when creating or touching the session."),
   userId: optionalString().describe("Optional caller/user id for memory attribution."),
-  providerId: optionalString().describe("Provider id override, for example llamacpp (built-in local GGUF), lmstudio, openai, anthropic, gemini, ollama."),
+  providerId: optionalString().describe("Provider id override, for example llamacpp (built-in local GGUF), lmstudio, openai, anthropic, gemini, ollama, qwen."),
   model: optionalString().describe("Model id override for the selected provider."),
   metadata: metadataSchema.describe("Optional structured metadata passed to the runtime.")
 };

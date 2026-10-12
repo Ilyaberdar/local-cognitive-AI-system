@@ -124,6 +124,11 @@ export interface ProviderRuntimeSettings {
   version?: string;
   maxTokens?: number;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** An OpenAI-compatible service that is data rather than code (Qwen, and services added later). */
+  kind?: "openai-compatible";
+  /** The dialect its requests are shaped by, and its name in Settings. */
+  dialect?: string;
+  name?: string;
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -685,6 +690,12 @@ export interface ProviderDescriptor {
     structuredOutputs?: boolean;
     reasoning: boolean;
     vision?: boolean;
+  };
+  /** A known service's regions, suggested models and key page, for Settings. */
+  catalog?: {
+    keyUrl: string;
+    models: string[];
+    regions?: Array<{ id: string; label: string; baseUrl: string }>;
   };
 }
 

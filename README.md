@@ -8,7 +8,7 @@ A private AI workspace for chats, agents and workflows. Models run on your own c
 
 ## What you get
 
-- **Chats.** Use local GGUF models (built-in llama.cpp) or cloud models (OpenAI, Anthropic, Gemini), chosen per chat. You also get:
+- **Chats.** Use local GGUF models (built-in llama.cpp) or cloud models (OpenAI, Anthropic, Gemini, Qwen), chosen per chat. You also get:
   - subagents you call with `@Name`;
   - debates with support, attack and judge roles;
   - a code mode with file tools and approvals.

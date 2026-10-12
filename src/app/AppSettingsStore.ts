@@ -277,7 +277,18 @@ export class AppSettingsStore {
           apiKey: this.baseConfig.providers.gemini.apiKey,
           model: this.baseConfig.providers.gemini.model,
           timeoutMs: this.baseConfig.providers.gemini.timeoutMs
-        }
+        },
+        // OpenAI-compatible services every installation has (Qwen): data, shaped by their dialect.
+        ...Object.fromEntries(Object.entries(this.baseConfig.compatibleProviders ?? {}).map(([id, provider]) => [id, {
+          kind: "openai-compatible" as const,
+          dialect: provider.dialect,
+          name: provider.name,
+          enabled: provider.enabled !== false,
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          model: provider.model,
+          timeoutMs: provider.timeoutMs
+        }]))
       },
       plugins: {}
     };
@@ -349,6 +360,11 @@ export class AppSettingsStore {
         ...(settings.providers[providerId] ?? this.defaultProvider(providerId)),
         ...provider
       };
+    }
+
+    // A service every installation has stays that service: its kind and dialect come from here.
+    for (const [providerId, provider] of Object.entries(defaults.providers)) {
+      if (provider.kind) settings.providers[providerId] = { ...settings.providers[providerId], kind: provider.kind, dialect: provider.dialect };
     }
 
     // The internal server chooses its own address and token on every launch.

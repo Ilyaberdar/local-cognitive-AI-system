@@ -5452,7 +5452,8 @@ function getProviderSuggestedModels(providerId) {
     case "llamacpp":
       return discoveredModels;
     default:
-      return [];
+      // An OpenAI-compatible service: what it lists, and its catalog's suggestions.
+      suggestedModels = providerDescriptor(providerId)?.catalog?.models ?? [];
   }
 
   // The API catalog is scoped to the user's key and includes fine-tuned and
@@ -5530,7 +5531,7 @@ function providerBaseUrlPlaceholder(providerId) {
     case "ollama":
       return "http://127.0.0.1:11434";
     default:
-      return "";
+      return providerDescriptor(providerId)?.catalog?.regions?.[0]?.baseUrl ?? "";
   }
 }
 
@@ -5565,7 +5566,7 @@ function providerModelPlaceholder(providerId) {
     case "gemini":
       return "gemini-2.5-flash";
     default:
-      return "Model id";
+      return providerDescriptor(providerId)?.defaultModel || "Model id";
   }
 }
 
@@ -5777,7 +5778,7 @@ function renderProviderSettingsModelControl(providerId, value) {
   const options = getProviderSettingsModelOptions(providerId, value || getProviderConfiguredModel(providerId));
   const selectedValue = providerId === "llamacpp" ? resolveInstalledLocalModel(value) : value || getProviderConfiguredModel(providerId) || "";
 
-  if (["openai", "anthropic", "gemini"].includes(providerId)) {
+  if (isCloudProvider(providerId)) {
     const unavailable = selectedValue && !options.includes(selectedValue);
     return `
       <select name="provider.${escapeAttr(providerId)}.model">
@@ -6365,7 +6366,7 @@ function renderSessionModelControl(name, providerId, value, options, datalistId)
     `;
   }
 
-  if (["openai", "anthropic", "gemini"].includes(providerId)) {
+  if (isCloudProvider(providerId)) {
     const unavailable = resolvedValue && !options.includes(resolvedValue);
     return `
       <select name="${escapeAttr(name)}" aria-label="${escapeAttr(sessionModelLabel(name))}">
@@ -6656,8 +6657,13 @@ function bindSessionSetupFieldSync() {
   });
 }
 
+function providerDescriptor(providerId) {
+  return (state.bootstrap?.providers ?? []).find((provider) => provider.id === providerId);
+}
+
 function isCloudProvider(providerId) {
-  return ["openai", "anthropic", "gemini"].includes(providerId);
+  const descriptor = providerDescriptor(providerId);
+  return descriptor ? descriptor.capabilities?.local === false : ["openai", "anthropic", "gemini"].includes(providerId);
 }
 
 function isLocalProvider(providerId) {

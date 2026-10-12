@@ -18,7 +18,9 @@ const groups = [
 // MCP are each machine's own and are not offered for a server yet. Every other page is this device's.
 const HOST_PAGES = new Set(['general', 'providers', 'runtime', 'agents', 'memory', 'data']);
 const DEFER_PAGES = new Set(['plugins', 'connections', 'mcp']);
-const providerNames = { llamacpp: 'Local models', ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
+const providerNames = { llamacpp: 'Local models', ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini', qwen: 'Qwen (Alibaba Cloud)' };
+/** A provider's name: the built-ins by id, an OpenAI-compatible service by the name it was saved with. */
+const providerLabel = (id, provider) => providerNames[id] || provider?.name || id;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const get = (object, key) => key.split('.').reduce((value, part) => value?.[part], object);
 const field = (name, label, type = 'text', extra = {}) => ({ name, label, type, ...extra });
@@ -79,6 +81,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   const drafts = new Map(), statuses = new Map(), results = new Map();
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, disposeUpdates, disposeGpu, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
   const context = () => getContext() || {};
+  const providerCatalog = id => (context().providers || []).find(provider => provider.id === id)?.catalog;
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
   const serverFor = route => {
@@ -123,13 +126,15 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       bool('ui.animations', 'Animations', 'Shows the one-pass sweep when Chat, Workflow, Synthesis or Models is clicked. Motion is reduced automatically when your system requests it.')
     ];
     if (name === 'providers' && id && Object.hasOwn(settingsOf(route).providers || {}, id)) {
+      const regions = providerCatalog(id)?.regions;
       return [bool(`providers.${id}.enabled`, 'Enabled'), ...(id === 'llamacpp' ? [] : [
-        field(`providers.${id}.baseUrl`, 'Base URL', 'url'), ...(id === 'ollama' ? [] : [field(`providers.${id}.apiKey`, 'API key', 'secret')])
+        field(`providers.${id}.baseUrl`, 'Base URL', 'url', regions ? { description: `A key works only in the region it was created in. ${regions.map(region => `${region.label}: ${region.baseUrl}`).join(' · ')}` } : {}),
+        ...(id === 'ollama' ? [] : [field(`providers.${id}.apiKey`, 'API key', 'secret')])
       ]), field(`providers.${id}.model`, 'Default model', 'model', { provider: id }),
       ...(id === 'llamacpp' ? [] : [number(`providers.${id}.timeoutMs`, 'Timeout (ms)', 1000, 3600000)]),
       ...(id === 'anthropic' ? [field(`providers.${id}.version`, 'Anthropic version'), number(`providers.${id}.maxTokens`, 'Max tokens', 1, 1000000)] : [])];
     }
-    if (name === 'providers') return [select('llm.defaultProvider', 'Default provider', Object.keys(settingsOf(route).providers || {}).map(id => [id, providerNames[id] || id]), 'Used when a chat or workflow has no explicit provider override.')];
+    if (name === 'providers') return [select('llm.defaultProvider', 'Default provider', Object.entries(settingsOf(route).providers || {}).map(([id, provider]) => [id, providerLabel(id, provider)]), 'Used when a chat or workflow has no explicit provider override.')];
     if (name === 'runtime') return [
       field('localModels.modelsDir', 'Model storage folder', 'directory', { description: 'Changing storage copies and verifies models before switching. Previous files remain as a backup. Pause downloads first.' }),
       number('localModels.contextSize', 'Context size (tokens)', 512, 131072), field('localModels.gpuLayers', 'GPU layers', 'text', { description: 'auto places each model on the GPU first by free memory. A number fixes the offloaded layers; 0 runs on the CPU.' }),
@@ -157,7 +162,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   };
   function titleFor(route) {
     const [name, id] = route.split('/');
-    if (id) return name === 'providers' ? providerNames[id] || id : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : id === 'import' ? 'Import MCP servers' : externalMcpServers()[id]?.name || id : id;
+    if (id) return name === 'providers' ? providerLabel(id, settingsOf(route).providers?.[id]) : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : id === 'import' ? 'Import MCP servers' : externalMcpServers()[id]?.name || id : id;
     return groups.flatMap(([, items]) => items).find(([key]) => key === name)?.[1] || 'Page not found';
   }
   const dirty = key => { if (!drafts.has(key)) drafts.set(key, {}); return drafts.get(key); };
@@ -614,8 +619,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'data' && server) return serverErrorReportsRow(server) + form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
-    if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerNames[key] || key, provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
-    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button></div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
+    if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerLabel(key, provider), provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
+    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button></div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
     if (name === 'runtime') {
       const generation = specs.find(spec => spec.type === 'local-generation');
       const runtimeSpecs = specs.filter(spec => spec !== generation);

@@ -41,7 +41,7 @@ Local chats with local models work without an account and without the Cloud.
 
 ## Cloud models
 
-When you choose a cloud provider (OpenAI, Anthropic or Gemini), that chat's messages go to that provider under its terms, directly from your computer or server.
+When you choose a cloud provider (OpenAI, Anthropic, Gemini or Qwen), that chat's messages go to that provider under its terms, directly from your computer or server. Qwen runs on Alibaba Cloud in the region your key belongs to: Singapore by default, which serves from outside mainland China; the China (Beijing) region serves from mainland China.
 
 ## Error reports
 

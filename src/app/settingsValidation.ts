@@ -1,4 +1,11 @@
 import { AppSettingsPatch, UiPreferences } from "../types";
+import { isProviderDialect } from "../llm/ProviderDialect";
+import { BUILT_IN_PROVIDER_IDS, providerPreset } from "../llm/providerCatalog";
+
+const isWebAddress = (value: string): boolean => {
+  try { const url = new URL(value); return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password; }
+  catch { return false; }
+};
 
 export const defaultUiPreferences: UiPreferences = {
   version: 1, theme: "dark", animations: true, fontScale: 100, codeFontSize: 12, language: "auto", outputStyle: "balanced", mode: "auto", sendKey: "enter"
@@ -135,10 +142,18 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
   });
   if (patch.llm !== undefined) check(object(patch.llm, "llm"), "llm", { defaultProvider: "string" });
   if (patch.providers !== undefined) for (const [id, provider] of Object.entries(object(patch.providers, "providers"))) {
-    check(object(provider, `providers.${id}`), `providers.${id}`, {
+    const value = object(provider, `providers.${id}`);
+    check(value, `providers.${id}`, {
       enabled: "boolean", baseUrl: "string", apiKey: "string", model: "string", timeoutMs: [1000, 3600000],
-      version: "string", maxTokens: [1, 1000000]
+      version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string"
     });
+    // An OpenAI-compatible service is data: a safe id, a known dialect, a short name and a web address.
+    const compatible = value.kind !== undefined || value.dialect !== undefined || value.name !== undefined;
+    if (compatible && BUILT_IN_PROVIDER_IDS.includes(id)) throw new SettingsValidationError(`providers.${id} is built in.`);
+    if (compatible && !/^[a-z][a-z0-9-]{1,63}$/.test(id)) throw new SettingsValidationError("Invalid provider id.");
+    if (value.dialect !== undefined && !isProviderDialect(value.dialect)) throw new SettingsValidationError(`Invalid providers.${id}.dialect.`);
+    if (typeof value.name === "string" && (!value.name.trim() || value.name.length > 80 || /[\u0000-\u001f\u007f]/.test(value.name))) throw new SettingsValidationError(`Invalid providers.${id}.name.`);
+    if ((compatible || providerPreset(id)) && typeof value.baseUrl === "string" && value.baseUrl !== "" && !isWebAddress(value.baseUrl)) throw new SettingsValidationError(`Invalid providers.${id}.baseUrl.`);
   }
   if (patch.plugins !== undefined) for (const [id, plugin] of Object.entries(object(patch.plugins, "plugins"))) {
     if (["file", "notion", "vscode"].includes(id)) throw new SettingsValidationError("Legacy plugins were retired. Use Integrations or built-in filesystem settings.");

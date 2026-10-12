@@ -117,6 +117,7 @@ test("all session model providers keep native selects, with plain green loaded s
     { id: "studio", providerId: "lmstudio", loaded: true },
     { id: "ollama-model", providerId: "ollama", loaded: true }
   ] } }, isLocalProvider: (id: string) => ["llamacpp", "lmstudio", "ollama"].includes(id),
+    isCloudProvider: (id: string) => ["openai", "anthropic", "gemini"].includes(id),
     getProviderConfiguredModel: () => "", sessionModelLabel: () => "Model", escapeHtml: String, escapeAttr: String,
     option: (id: string, selected: string, label: string) => `<option value="${id}" ${id === selected ? "selected" : ""}>${label}</option>` };
   vm.runInNewContext(modelLabelHelpers + fragment("function renderSessionModelControl", "function renderCodeAgentCard"), context);
@@ -359,6 +360,8 @@ test("cloud model selectors include the models discovered with the user's provid
       { providerId: "anthropic", id: "claude-unrelated" }
     ], allManagedModels: [], appSettings: { providers: { openai: { model: "gpt-4.1-mini" } } } } },
     isLocalProvider: () => false,
+    isCloudProvider: () => true,
+    providerDescriptor: () => undefined,
     escapeAttr: (value: unknown) => String(value),
     escapeHtml: (value: unknown) => String(value),
     option: (model: string, selected: string, label: string) => `<option value="${model}"${model === selected ? " selected" : ""}>${label}</option>`

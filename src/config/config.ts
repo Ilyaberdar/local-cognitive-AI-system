@@ -7,6 +7,7 @@ import { parseMcpConfiguration } from "../mcp/client/configuration";
 import { AgentLimits, readAgentLimits } from "../agents/runtime/AgentLimits";
 import { defaultLocalGenerationSettings } from "../local/GenerationSettings";
 import { hasSecretName, isSharedEnvFile } from "./secrets";
+import { PROVIDER_PRESETS } from "../llm/providerCatalog";
 
 /** The desktop app is configured through Settings in its user data directory. A
  * repository .env is for development and headless runs and must not leak into it. */
@@ -38,6 +39,12 @@ export interface ProviderHttpConfig {
   timeoutMs: number;
   apiKey?: string;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+/** An OpenAI-compatible service that is data: its name and the dialect its requests are shaped by. */
+export interface CompatibleProviderConfig extends ProviderHttpConfig {
+  name: string;
+  dialect: string;
 }
 
 export interface AppConfig {
@@ -74,6 +81,8 @@ export interface AppConfig {
     };
     gemini: ProviderHttpConfig;
   };
+  /** OpenAI-compatible services that are data (Qwen built in, others added in Settings), by id. */
+  compatibleProviders?: Record<string, CompatibleProviderConfig>;
   memory: {
     adapter: MemoryAdapterName;
     baseDir: string;
@@ -308,6 +317,14 @@ export const config: AppConfig = {
       apiKey: toOptional(process.env.GEMINI_API_KEY)
     }
   },
+  compatibleProviders: Object.fromEntries(PROVIDER_PRESETS.filter(preset => preset.builtIn).map(preset => [preset.id, {
+    name: preset.name,
+    dialect: preset.dialect,
+    baseUrl: process.env[preset.env.baseUrl] ?? preset.baseUrl,
+    model: process.env[preset.env.model] ?? preset.model,
+    timeoutMs: Number(process.env[preset.env.timeoutMs] ?? defaultTimeoutMs),
+    apiKey: preset.env.apiKey.map(name => toOptional(process.env[name])).find(Boolean)
+  }])),
   memory: {
     adapter: (process.env.MEMORY_ADAPTER as MemoryAdapterName) ?? "world-partition",
     baseDir: resolveDir(process.env.MEMORY_DIR ?? "./data/memory", "./data/memory"),

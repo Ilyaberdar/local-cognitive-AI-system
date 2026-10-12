@@ -34,7 +34,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly dialect: ProviderDialect;
 
   constructor(
-    private readonly options: HttpProviderOptions & { dialect?: ProviderDialect },
+    private readonly options: HttpProviderOptions & { dialect?: ProviderDialect; catalog?: ProviderDescriptor["catalog"] },
     private readonly logger: Logger,
     private readonly fetchImpl?: typeof fetch
   ) {
@@ -49,7 +49,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   getDescriptor(): ProviderDescriptor {
-    return createDescriptor(this.options, this.isConfigured(), this.dialect.capabilities);
+    const descriptor = createDescriptor(this.options, this.isConfigured(), this.dialect.capabilities);
+    return this.options.catalog ? { ...descriptor, catalog: this.options.catalog } : descriptor;
   }
 
   async listModels(): Promise<ProviderModel[]> {
@@ -66,7 +67,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       signal: AbortSignal.timeout(Math.min(this.options.timeoutMs, 5000))
     });
 
+    const known = this.dialect.models;
     if (!response.ok) {
+      // A service that lists no models (or not on this path) still offers its known chat models.
+      if (known) return known.fallback.map(id => ({ id, providerId: this.id, providerName: this.name }));
       throw new Error(`${this.id} models request failed with status ${response.status}`);
     }
 
@@ -74,16 +78,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
       data?: Array<{ id?: string }>;
     };
 
-    return (
-      payload.data
-        ?.map((model) => model.id)
-        .filter((modelId): modelId is string => Boolean(modelId))
-        .map((modelId) => ({
-          id: modelId,
-          providerId: this.id,
-          providerName: this.name
-        })) ?? []
-    );
+    const listed = payload.data
+      ?.map((model) => model.id)
+      .filter((modelId): modelId is string => Boolean(modelId))
+      .filter((modelId) => !known?.exclude?.test(modelId)) ?? [];
+    return (listed.length || !known ? listed : known.fallback).map((modelId) => ({
+      id: modelId,
+      providerId: this.id,
+      providerName: this.name
+    }));
   }
 
   async generateText(request: LLMRequest): Promise<LLMResponse> {
@@ -100,9 +103,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const effort = (dialect.effort !== "full" || this.effortCap.has(model)) && (requested === "xhigh" || requested === "max") ? "high" : requested;
       const localSampling = dialect.local ? request.sampling : undefined;
       const localTemperature = request.temperature ?? localSampling?.temperature;
-      const stream = Boolean(dialect.local) && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
+      const stream = Boolean(dialect.streamChat) || Boolean(dialect.local) && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
       if (localBudget !== undefined && (!Number.isInteger(localBudget) || localBudget < 0 || localBudget > 32768)) throw new Error("Local thinking budget must be 0–32768 tokens.");
-      const useChat = stream || (images.length > 0 && !dialect.allOnResponses) || localBudget !== undefined ||
+      const useChat = Boolean(dialect.chatOnly) || stream || (images.length > 0 && !dialect.allOnResponses) || localBudget !== undefined ||
         Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
         (!dialect.allOnResponses && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
       const nativeTools = dialect.nativeTools === "responses" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
@@ -110,6 +113,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
       // A cloud service is retried on overload and rate limits as its SDK does; a local server is not.
       const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
       const send = (init: RequestInit) => dialect.retries ? fetchWithRetries(fetchImpl, url, init) : fetchImpl(url, init);
+      // Thinking on from a medium effort up, as the service's own thinking models default to; off for
+      // low, and when no effort is asked (a helper call).
+      const thinking = dialect.thinking === "enable_thinking" ? Boolean(effort && effort !== "low") : undefined;
+      const wantsJson = request.responseFormat?.type === "json_object" || request.responseFormat?.type === "json_schema";
+      const systemPrompt = dialect.jsonKeyword && wantsJson && !/json/i.test(`${request.systemPrompt ?? ""} ${request.prompt}`)
+        ? [request.systemPrompt, "Reply with a JSON object."].filter(Boolean).join("\n\n") : request.systemPrompt;
       const response = await send({
         method: "POST",
         headers: {
@@ -124,13 +133,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
           model,
           ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
           messages: [
-            ...(request.systemPrompt ? [{ role: "system", content: request.systemPrompt }] : []),
+            ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
             { role: "user", content: images.length ? [
               { type: "text", text: request.prompt },
               ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
             ] : request.prompt }
           ],
-          ...(typeof request.maxTokens === "number" ? { max_tokens: request.maxTokens } : {}),
+          // With thinking on, Qwen takes at most 32768 here.
+          ...(typeof request.maxTokens === "number" ? { max_tokens: thinking ? Math.min(request.maxTokens, 32_768) : request.maxTokens } : {}),
           ...(typeof localTemperature === "number" ? { temperature: localTemperature } : {}),
           ...(localSampling?.topP !== undefined ? { top_p: localSampling.topP } : {}),
           ...(localSampling?.topK !== undefined ? { top_k: localSampling.topK } : {}),
@@ -139,6 +149,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(localSampling?.seed !== undefined ? { seed: localSampling.seed } : {}),
           // LM Studio's reasoning models (gpt-oss) take the effort on chat completions too.
           ...(dialect.chatEffort && effort ? { reasoning_effort: effort } : {}),
+          ...(thinking === undefined ? {} : { enable_thinking: thinking }),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"

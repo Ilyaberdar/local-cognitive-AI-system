@@ -36,6 +36,8 @@ import { OllamaModelManager } from "../llm/OllamaModelManager";
 import { OllamaProvider } from "../llm/OllamaProvider";
 import { OutputSanitizer } from "../llm/OutputSanitizer";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
+import { compatibleDialect } from "../llm/ProviderDialect";
+import { providerPreset } from "../llm/providerCatalog";
 import { LocalJsonMemoryAdapter } from "../memory/LocalJsonMemoryAdapter";
 import { MemoryAdapter } from "../memory/MemoryAdapter";
 import { MemoryService } from "../memory/MemoryService";
@@ -557,6 +559,13 @@ export const buildRuntime = async (
   );
   providerRegistry.register(new AnthropicProvider(config.providers.anthropic, logger));
   providerRegistry.register(new GeminiProvider(config.providers.gemini, logger));
+  // OpenAI-compatible services that are data: one client, shaped by each service's dialect.
+  for (const [id, provider] of Object.entries(config.compatibleProviders ?? {})) {
+    const preset = providerPreset(id);
+    providerRegistry.register(new OpenAICompatibleProvider({ ...provider, id, dialect: compatibleDialect(provider.dialect),
+      ...(preset ? { catalog: { keyUrl: preset.keyUrl, models: preset.models, ...(preset.regions ? { regions: preset.regions } : {}) } } : {}) }, logger));
+  }
+  const providerModels = defaultModels(config);
 
   const llmService = new LLMService(
     providerRegistry,
@@ -590,14 +599,7 @@ export const buildRuntime = async (
   const sessionSettingsStore = new SessionSettingsStore(config.sessions, {
     providerId: config.llm.defaultProvider,
     model: resolveDefaultModel(config, config.llm.defaultProvider)
-  }, {
-    llamacpp: config.providers.llamacpp?.model,
-    ollama: config.providers.ollama.model,
-    lmstudio: config.providers.lmstudio.model,
-    openai: config.providers.openai.model,
-    anthropic: config.providers.anthropic.model,
-    gemini: config.providers.gemini.model
-  }, id => localModelService.resolveModelId(id));
+  }, providerModels, id => localModelService.resolveModelId(id));
   const modeDetector = new ModeDetector();
   const judge = new Judge(llmService, languageEnforcer);
   const supportAgent = new SupportAgent(llmService, languageEnforcer);
@@ -733,14 +735,7 @@ export const buildRuntime = async (
     new FsmEngine(),
     new NodeExecutorRegistry([
       new EntryNodeExecutor(),
-      new AgentNodeExecutor(engine, {
-        llamacpp: config.providers.llamacpp?.model,
-        ollama: config.providers.ollama.model,
-        lmstudio: config.providers.lmstudio.model,
-        openai: config.providers.openai.model,
-        anthropic: config.providers.anthropic.model,
-        gemini: config.providers.gemini.model
-      }),
+      new AgentNodeExecutor(engine, providerModels),
       new FileSearchNodeExecutor({
         accessMode: config.filesystem.accessMode,
         allowedDirectories: config.filesystem.allowedDirectories,
@@ -821,9 +816,20 @@ const resolveDefaultModel = (config: AppConfig, providerId: string): string | un
     case "gemini":
       return config.providers.gemini.model;
     default:
-      return undefined;
+      return config.compatibleProviders?.[providerId]?.model;
   }
 };
+
+/** Each provider's default model, built-in and OpenAI-compatible alike. */
+const defaultModels = (config: AppConfig): Record<string, string | undefined> => ({
+  llamacpp: config.providers.llamacpp?.model,
+  ollama: config.providers.ollama.model,
+  lmstudio: config.providers.lmstudio.model,
+  openai: config.providers.openai.model,
+  anthropic: config.providers.anthropic.model,
+  gemini: config.providers.gemini.model,
+  ...Object.fromEntries(Object.entries(config.compatibleProviders ?? {}).map(([id, provider]) => [id, provider.model]))
+});
 
 const createMemoryAdapter = async (
   config: AppConfig,

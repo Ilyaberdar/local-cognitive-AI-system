@@ -7,6 +7,7 @@ import { AppConfig, localModelOptions } from "../config/config";
 import { Logger } from "../utils/Logger";
 import { AppSettings, AppSettingsPatch } from "../types";
 import { AppSettingsStore } from "./AppSettingsStore";
+import { BUILT_IN_PROVIDER_IDS } from "../llm/providerCatalog";
 import { PluginManager } from "../plugins/PluginManager";
 import { DirectIntegrationAdapter } from "../plugins/DirectIntegrationAdapter";
 import { OAuthClientRegistrations } from "../plugins/OAuthConnections";
@@ -263,6 +264,21 @@ export class RuntimeManager {
           apiKey: settings.providers.gemini?.apiKey ?? this.baseConfig.providers.gemini.apiKey
         }
       },
+      // Every OpenAI-compatible service in the settings; a key from the environment fills a blank one.
+      compatibleProviders: Object.fromEntries(Object.entries(settings.providers)
+        .filter(([id, provider]) => provider.kind === "openai-compatible" && !BUILT_IN_PROVIDER_IDS.includes(id))
+        .map(([id, provider]) => {
+          const base = this.baseConfig.compatibleProviders?.[id];
+          return [id, {
+            enabled: provider.enabled,
+            baseUrl: provider.baseUrl || base?.baseUrl || "",
+            model: provider.model || base?.model || "",
+            timeoutMs: provider.timeoutMs ?? base?.timeoutMs ?? 300000,
+            apiKey: provider.apiKey || base?.apiKey,
+            name: provider.name || base?.name || id,
+            dialect: provider.dialect || base?.dialect || "chat"
+          }];
+        })),
       outputDir: settings.filesystem?.outputDir ?? this.baseConfig.outputDir
     };
   }
