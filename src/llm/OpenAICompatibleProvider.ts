@@ -19,6 +19,7 @@ import {
   countedFetch
 } from "./provider-utils";
 import { unsupportedFeature } from "./provider-utils";
+import { dialectFor, type ProviderDialect } from "./ProviderDialect";
 
 export class OpenAICompatibleProvider implements LLMProvider {
   /** Models that refused a reasoning effort (not reasoning models): asked without one from then on. */
@@ -30,23 +31,25 @@ export class OpenAICompatibleProvider implements LLMProvider {
   readonly id: string;
   readonly name: string;
   readonly defaultModel: string;
+  private readonly dialect: ProviderDialect;
 
   constructor(
-    private readonly options: HttpProviderOptions,
+    private readonly options: HttpProviderOptions & { dialect?: ProviderDialect },
     private readonly logger: Logger,
     private readonly fetchImpl?: typeof fetch
   ) {
     this.id = options.id;
     this.name = options.name;
     this.defaultModel = options.model;
+    this.dialect = options.dialect ?? dialectFor(options.id);
   }
 
   isConfigured(): boolean {
-    return this.options.enabled !== false && Boolean(this.options.baseUrl && this.options.model && (this.id !== "openai" || this.options.apiKey));
+    return this.options.enabled !== false && Boolean(this.options.baseUrl && this.options.model && (!this.dialect.requiresKey || this.options.apiKey));
   }
 
   getDescriptor(): ProviderDescriptor {
-    return createDescriptor(this.options, this.isConfigured());
+    return createDescriptor(this.options, this.isConfigured(), this.dialect.capabilities);
   }
 
   async listModels(): Promise<ProviderModel[]> {
@@ -89,23 +92,24 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     try {
       const images = validateImages(request.images);
-      const localBudget = this.id === "llamacpp" ? request.localReasoningBudget : undefined;
+      const dialect = this.dialect;
+      const localBudget = dialect.local ? request.localReasoningBudget : undefined;
       // OpenAI's reasoning models take levels up to max (one that does not says so, and is asked for
       // high from then on); LM Studio's take low, medium or high.
-      const requested = this.id === "llamacpp" || this.withoutEffort.has(model) ? undefined : request.reasoningEffort ?? this.options.reasoningEffort;
-      const effort = (this.id !== "openai" || this.effortCap.has(model)) && (requested === "xhigh" || requested === "max") ? "high" : requested;
-      const localSampling = this.id === "llamacpp" ? request.sampling : undefined;
+      const requested = dialect.effort === "ignored" || this.withoutEffort.has(model) ? undefined : request.reasoningEffort ?? this.options.reasoningEffort;
+      const effort = (dialect.effort !== "full" || this.effortCap.has(model)) && (requested === "xhigh" || requested === "max") ? "high" : requested;
+      const localSampling = dialect.local ? request.sampling : undefined;
       const localTemperature = request.temperature ?? localSampling?.temperature;
-      const stream = this.id === "llamacpp" && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
+      const stream = Boolean(dialect.local) && Boolean(request.onProgress || request.onTextDelta && !request.responseFormat && request.outputPurpose !== "agent-action");
       if (localBudget !== undefined && (!Number.isInteger(localBudget) || localBudget < 0 || localBudget > 32768)) throw new Error("Local thinking budget must be 0–32768 tokens.");
-      const useChat = stream || (images.length > 0 && this.id !== "openai") || localBudget !== undefined ||
+      const useChat = stream || (images.length > 0 && !dialect.allOnResponses) || localBudget !== undefined ||
         Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
-        (this.id !== "openai" && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
-      const nativeTools = this.id === "openai" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
+        (!dialect.allOnResponses && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
+      const nativeTools = dialect.nativeTools === "responses" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
       const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
-      // OpenAI is retried on overload and rate limits as its SDK does; a local server is not.
+      // A cloud service is retried on overload and rate limits as its SDK does; a local server is not.
       const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
-      const send = (init: RequestInit) => this.id === "openai" ? fetchWithRetries(fetchImpl, url, init) : fetchImpl(url, init);
+      const send = (init: RequestInit) => dialect.retries ? fetchWithRetries(fetchImpl, url, init) : fetchImpl(url, init);
       const response = await send({
         method: "POST",
         headers: {
@@ -134,7 +138,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(localSampling?.repeatPenalty !== undefined ? { repeat_penalty: localSampling.repeatPenalty } : {}),
           ...(localSampling?.seed !== undefined ? { seed: localSampling.seed } : {}),
           // LM Studio's reasoning models (gpt-oss) take the effort on chat completions too.
-          ...(this.id === "lmstudio" && effort ? { reasoning_effort: effort } : {}),
+          ...(dialect.chatEffort && effort ? { reasoning_effort: effort } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
@@ -153,7 +157,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             ? {
                 // A reasoning model's limit counts its reasoning too: a small cap (a judge's 1200)
                 // would leave no answer. It is a cap; only what is generated is billed.
-                max_output_tokens: this.id === "openai" ? Math.max(request.maxTokens, 16_000) : request.maxTokens
+                max_output_tokens: dialect.responsesOutputFloor ? Math.max(request.maxTokens, dialect.responsesOutputFloor) : request.maxTokens
               }
             : {}),
           ...(nativeTools ? {
@@ -216,7 +220,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         ? "The provider returned multiple final messages for one JSON response; they were not concatenated." : undefined;
       // A bounded prose answer is usable; truncated JSON/tool actions must still fail closed.
       const choices = payload.choices as Array<Record<string, unknown>> | undefined;
-      const boundedProse = this.id === "llamacpp" && text && !request.responseFormat && request.outputPurpose !== "agent-action" && choices?.[0]?.finish_reason === "length";
+      const boundedProse = dialect.local && text && !request.responseFormat && request.outputPurpose !== "agent-action" && choices?.[0]?.finish_reason === "length";
       const errorPayload = boundedProse ? { ...payload, choices: [{ ...choices![0], finish_reason: "stop" }] } : payload;
       const error = readResponseError(errorPayload) || (!text && !action ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
 

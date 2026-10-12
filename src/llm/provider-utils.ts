@@ -1,5 +1,6 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderRateLimit, TokenUsage } from "../types";
 import { messageText, responseMessages, responseRefusal } from "./ResponseItems";
+import { builtInCapabilities, type ProviderCapabilities } from "./ProviderDialect";
 
 export interface HttpProviderOptions {
   enabled?: boolean;
@@ -14,24 +15,14 @@ export interface HttpProviderOptions {
 
 export const createDescriptor = (
   options: HttpProviderOptions,
-  configured: boolean
+  configured: boolean,
+  capabilities: ProviderCapabilities = builtInCapabilities(options.id)
 ): ProviderDescriptor => ({
   id: options.id,
   name: options.name,
   configured,
   defaultModel: options.model,
-  capabilities: {
-    local: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
-    managed: ["llamacpp", "lmstudio", "ollama"].includes(options.id),
-    jsonMode: ["openai", "llamacpp", "lmstudio", "ollama", "gemini"].includes(options.id),
-    nativeTools: ["openai", "anthropic", "gemini"].includes(options.id),
-    // Anthropic agents use native tools. If a compatibility endpoint rejects
-    // tools, fall back directly to JSON rather than sending an unsupported
-    // output_config schema payload as a second failed request.
-    structuredOutputs: ["openai", "llamacpp", "lmstudio", "ollama", "gemini"].includes(options.id),
-    reasoning: options.id === "openai",
-    vision: ["openai", "anthropic", "gemini", "llamacpp", "lmstudio", "ollama"].includes(options.id)
-  }
+  capabilities
 });
 
 export const buildComposedPrompt = (request: LLMRequest): string =>
