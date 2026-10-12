@@ -1,0 +1,1692 @@
+{
+ "openai · prose": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · prose with system, cap, temperature and effort": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi",
+     "instructions": "Be brief.",
+     "reasoning": {
+      "effort": "medium"
+     },
+     "max_output_tokens": 16000
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · prose with xhigh effort": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi",
+     "reasoning": {
+      "effort": "xhigh"
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · json object": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Answer in JSON",
+     "text": {
+      "format": {
+       "type": "json_object"
+      }
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · json schema": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Answer in JSON",
+     "text": {
+      "format": {
+       "type": "json_schema",
+       "name": "answer",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "answer": {
+          "type": "string",
+          "maxLength": 50
+         }
+        },
+        "required": [
+         "answer"
+        ],
+        "additionalProperties": false
+       },
+       "strict": true
+      }
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · agent action with tools": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "input_text",
+         "text": "Read a.txt"
+        }
+       ]
+      }
+     ],
+     "instructions": "You are an agent.",
+     "max_output_tokens": 16000,
+     "tools": [
+      {
+       "type": "function",
+       "name": "read_file",
+       "description": "Read a file",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "path": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "path"
+        ],
+        "additionalProperties": false
+       },
+       "strict": true
+      }
+     ],
+     "parallel_tool_calls": false,
+     "store": false,
+     "include": [
+      "reasoning.encrypted_content"
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "",
+   "agentAction": {
+    "type": "tool_call",
+    "tool": "read",
+    "arguments": {
+     "path": "a.txt"
+    }
+   },
+   "toolCallId": "c1",
+   "outputItems": [
+    {
+     "type": "reasoning",
+     "id": "rs_1",
+     "encrypted_content": "enc"
+    },
+    {
+     "type": "function_call",
+     "call_id": "c1",
+     "name": "read_file",
+     "arguments": "{\"path\":\"a.txt\"}"
+    }
+   ],
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · agent action with continuation": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "input_text",
+         "text": "Continue"
+        }
+       ]
+      },
+      {
+       "type": "function_call_output",
+       "call_id": "c1",
+       "output": "contents"
+      }
+     ],
+     "previous_response_id": "resp_0",
+     "tools": [
+      {
+       "type": "function",
+       "name": "read_file",
+       "description": "Read a file",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "path": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "path"
+        ],
+        "additionalProperties": false
+       },
+       "strict": true
+      }
+     ],
+     "parallel_tool_calls": false,
+     "store": false,
+     "include": [
+      "reasoning.encrypted_content"
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "",
+   "agentAction": {
+    "type": "tool_call",
+    "tool": "read",
+    "arguments": {
+     "path": "a.txt"
+    }
+   },
+   "toolCallId": "c1",
+   "outputItems": [
+    {
+     "type": "reasoning",
+     "id": "rs_1",
+     "encrypted_content": "enc"
+    },
+    {
+     "type": "function_call",
+     "call_id": "c1",
+     "name": "read_file",
+     "arguments": "{\"path\":\"a.txt\"}"
+    }
+   ],
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · image": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "input_text",
+         "text": "What is this?"
+        },
+        {
+         "type": "input_image",
+         "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+         "detail": "auto"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · sampling": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · thinking budget 0": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · thinking budget 256": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi",
+     "reasoning": {
+      "effort": "high"
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · streamed prose": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "openai-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "openai",
+   "model": "openai-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "openai · models": {
+  "calls": [
+   {
+    "url": "https://openai.example/v1//models",
+    "method": "GET",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    }
+   }
+  ],
+  "models": [
+   {
+    "id": "model-a",
+    "providerId": "openai",
+    "providerName": "openai"
+   },
+   {
+    "id": "model-b",
+    "providerId": "openai",
+    "providerName": "openai"
+   }
+  ],
+  "calls_after": 1
+ },
+ "openai · configured": {
+  "withKey": true,
+  "withoutKey": true
+ },
+ "openai · descriptor": {
+  "id": "openai",
+  "name": "openai",
+  "configured": true,
+  "defaultModel": "openai-model",
+  "capabilities": {
+   "local": false,
+   "managed": false,
+   "jsonMode": true,
+   "nativeTools": true,
+   "structuredOutputs": true,
+   "reasoning": true,
+   "vision": true
+  }
+ },
+ "openai · overload": {
+  "requests": 2,
+  "text": "Hello from Responses",
+  "error": null
+ },
+ "openai · refused effort": {
+  "calls": [
+   {
+    "model": "openai-model",
+    "input": "Say hi",
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   {
+    "model": "openai-model",
+    "input": "Say hi"
+   },
+   {
+    "model": "openai-model",
+    "input": "Say hi again"
+   }
+  ]
+ },
+ "openai · auth error": {
+  "provider": "openai",
+  "model": "openai-model",
+  "text": "",
+  "error": "openai request failed (HTTP 401): Invalid API key"
+ },
+ "lmstudio · prose": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · prose with system, cap, temperature and effort": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi",
+     "instructions": "Be brief.",
+     "reasoning": {
+      "effort": "medium"
+     },
+     "max_output_tokens": 1200
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · prose with xhigh effort": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi",
+     "reasoning": {
+      "effort": "high"
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · json object": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Answer in JSON"
+      }
+     ],
+     "response_format": {
+      "type": "json_object"
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "lmstudio · json schema": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Answer in JSON"
+      }
+     ],
+     "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+       "name": "answer",
+       "strict": true,
+       "schema": {
+        "type": "object",
+        "properties": {
+         "answer": {
+          "type": "string",
+          "maxLength": 50
+         }
+        },
+        "required": [
+         "answer"
+        ],
+        "additionalProperties": false
+       }
+      }
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "lmstudio · agent action with tools": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "messages": [
+      {
+       "role": "system",
+       "content": "You are an agent."
+      },
+      {
+       "role": "user",
+       "content": "Read a.txt"
+      }
+     ],
+     "max_tokens": 4000
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "lmstudio · agent action with continuation": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Continue"
+      }
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "lmstudio · image": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What is this?"
+        },
+        {
+         "type": "image_url",
+         "image_url": {
+          "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "lmstudio · sampling": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · thinking budget 0": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · thinking budget 256": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi",
+     "reasoning": {
+      "effort": "high"
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · streamed prose": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "lmstudio-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "lmstudio",
+   "model": "lmstudio-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "lmstudio · models": {
+  "calls": [
+   {
+    "url": "https://lmstudio.example/v1//models",
+    "method": "GET",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    }
+   }
+  ],
+  "models": [
+   {
+    "id": "model-a",
+    "providerId": "lmstudio",
+    "providerName": "lmstudio"
+   },
+   {
+    "id": "model-b",
+    "providerId": "lmstudio",
+    "providerName": "lmstudio"
+   }
+  ],
+  "calls_after": 1
+ },
+ "lmstudio · configured": {
+  "withKey": true,
+  "withoutKey": true
+ },
+ "lmstudio · descriptor": {
+  "id": "lmstudio",
+  "name": "lmstudio",
+  "configured": true,
+  "defaultModel": "lmstudio-model",
+  "capabilities": {
+   "local": true,
+   "managed": true,
+   "jsonMode": true,
+   "nativeTools": false,
+   "structuredOutputs": true,
+   "reasoning": false,
+   "vision": true
+  }
+ },
+ "lmstudio · overload": {
+  "requests": 1,
+  "text": "",
+  "error": "lmstudio request failed (HTTP 503): busy"
+ },
+ "lmstudio · refused effort": {
+  "calls": [
+   {
+    "model": "lmstudio-model",
+    "input": "Say hi",
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   {
+    "model": "lmstudio-model",
+    "input": "Say hi"
+   },
+   {
+    "model": "lmstudio-model",
+    "input": "Say hi again"
+   }
+  ]
+ },
+ "lmstudio · auth error": {
+  "provider": "lmstudio",
+  "model": "lmstudio-model",
+  "text": "",
+  "error": "lmstudio request failed (HTTP 401): Invalid API key"
+ },
+ "llamacpp · prose": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "llamacpp · prose with system, cap, temperature and effort": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "input": "Say hi",
+     "instructions": "Be brief.",
+     "max_output_tokens": 1200
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "llamacpp · prose with xhigh effort": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/responses",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "input": "Say hi"
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "Hello from Responses",
+   "responseId": "resp_1",
+   "usage": {
+    "inputTokens": 12,
+    "outputTokens": 5,
+    "totalTokens": 17,
+    "cachedInputTokens": 2,
+    "reasoningTokens": 1
+   },
+   "rateLimit": {
+    "remainingRequests": "99"
+   }
+  }
+ },
+ "llamacpp · json object": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Answer in JSON"
+      }
+     ],
+     "response_format": {
+      "type": "json_object"
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · json schema": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Answer in JSON"
+      }
+     ],
+     "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+       "name": "answer",
+       "strict": true,
+       "schema": {
+        "type": "object",
+        "properties": {
+         "answer": {
+          "type": "string",
+          "maxLength": 50
+         }
+        },
+        "required": [
+         "answer"
+        ],
+        "additionalProperties": false
+       }
+      }
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · agent action with tools": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "system",
+       "content": "You are an agent."
+      },
+      {
+       "role": "user",
+       "content": "Read a.txt"
+      }
+     ],
+     "max_tokens": 4000
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · agent action with continuation": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Continue"
+      }
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · image": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "type": "text",
+         "text": "What is this?"
+        },
+        {
+         "type": "image_url",
+         "image_url": {
+          "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · sampling": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Say hi"
+      }
+     ],
+     "temperature": 0.6,
+     "top_p": 0.9,
+     "top_k": 20,
+     "min_p": 0.05,
+     "repeat_penalty": 1.1,
+     "seed": 7
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · thinking budget 0": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Say hi"
+      }
+     ],
+     "reasoning_budget_tokens": 0,
+     "reasoning_effort": "none",
+     "chat_template_kwargs": {
+      "enable_thinking": false
+     }
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · thinking budget 256": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "messages": [
+      {
+       "role": "user",
+       "content": "Say hi"
+      }
+     ],
+     "reasoning_budget_tokens": 256
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · streamed prose": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    },
+    "body": {
+     "model": "llamacpp-model",
+     "stream": true,
+     "stream_options": {
+      "include_usage": true
+     },
+     "messages": [
+      {
+       "role": "user",
+       "content": "Say hi"
+      }
+     ]
+    }
+   }
+  ],
+  "response": {
+   "provider": "llamacpp",
+   "model": "llamacpp-model",
+   "text": "{\"answer\":\"Hello from chat\"}",
+   "responseId": "chat_1",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 4,
+    "totalTokens": 14
+   }
+  }
+ },
+ "llamacpp · models": {
+  "calls": [
+   {
+    "url": "https://llamacpp.example/v1//models",
+    "method": "GET",
+    "headers": {
+     "Authorization": "Bearer test-key",
+     "Content-Type": "application/json"
+    }
+   }
+  ],
+  "models": [
+   {
+    "id": "model-a",
+    "providerId": "llamacpp",
+    "providerName": "llamacpp"
+   },
+   {
+    "id": "model-b",
+    "providerId": "llamacpp",
+    "providerName": "llamacpp"
+   }
+  ],
+  "calls_after": 1
+ },
+ "llamacpp · configured": {
+  "withKey": true,
+  "withoutKey": true
+ },
+ "llamacpp · descriptor": {
+  "id": "llamacpp",
+  "name": "llamacpp",
+  "configured": true,
+  "defaultModel": "llamacpp-model",
+  "capabilities": {
+   "local": true,
+   "managed": true,
+   "jsonMode": true,
+   "nativeTools": false,
+   "structuredOutputs": true,
+   "reasoning": false,
+   "vision": true
+  }
+ },
+ "llamacpp · overload": {
+  "requests": 1,
+  "text": "",
+  "error": "llamacpp request failed (HTTP 503): busy"
+ },
+ "llamacpp · refused effort": {
+  "calls": [
+   {
+    "model": "llamacpp-model",
+    "input": "Say hi"
+   },
+   {
+    "model": "llamacpp-model",
+    "input": "Say hi again"
+   }
+  ]
+ },
+ "llamacpp · auth error": {
+  "provider": "llamacpp",
+  "model": "llamacpp-model",
+  "text": "",
+  "error": "llamacpp request failed (HTTP 401): Invalid API key"
+ },
+ "anthropic · descriptor": {
+  "id": "anthropic",
+  "name": "Anthropic",
+  "configured": true,
+  "defaultModel": "claude-x",
+  "capabilities": {
+   "local": false,
+   "managed": false,
+   "jsonMode": false,
+   "nativeTools": true,
+   "structuredOutputs": false,
+   "reasoning": false,
+   "vision": true
+  }
+ },
+ "gemini · descriptor": {
+  "id": "gemini",
+  "name": "Gemini",
+  "configured": true,
+  "defaultModel": "gemini-x",
+  "capabilities": {
+   "local": false,
+   "managed": false,
+   "jsonMode": true,
+   "nativeTools": true,
+   "structuredOutputs": true,
+   "reasoning": false,
+   "vision": true
+  }
+ },
+ "ollama · descriptor": {
+  "id": "ollama",
+  "name": "Ollama",
+  "configured": true,
+  "defaultModel": "llama",
+  "capabilities": {
+   "local": true,
+   "managed": true,
+   "jsonMode": true,
+   "nativeTools": false,
+   "structuredOutputs": true,
+   "reasoning": false,
+   "vision": true
+  }
+ }
+}
