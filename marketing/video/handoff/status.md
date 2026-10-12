@@ -68,8 +68,8 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 | D3 Workflow | `d3-workflow.mjs`, real time | docs guides/workflows.md |
 | D4 Synthesis | `d4-synthesis.mjs`, Rate limiter, Accepted in 1 iteration | docs guides/synthesis.md |
 | F Remote | `f-remote.mjs`, owner's installed app (allowed), sidebar collapsed, avatar blurred, Qwen2.5-14B on fedora | docs guides/remote.md |
-| Promo 40 s | cut from the takes, dissolves, Eleven Music ducked under the voice | landing `#demo` (`/media/promo-v1*.mp4`), docs home |
-| Overview | all demos + title cards, music under the demos | `out/docs/Overview-*` (not published) |
+| Promo 40 s | cut from the takes, dissolves, Eleven Music ducked under the voice | landing `#demo` (`/media/promo-v1*.mp4`) |
+| Overview (3 min 21 s) | all demos + title cards, music under the demos | docs home (`overview.mp4` 1440p30 CRF 20 = 24.3 MB, under the 25 MiB asset limit; `overview-720.mp4`) |
 
 **Exports** (`scripts/export/video.mjs <id>`):
 - a 4K60 master;
@@ -77,7 +77,11 @@ Last updated: 2026-10-11, at app commit 4f390c2 (v0.1.4).
 - a 720p30 phone copy, because phones could not play the level 5.1 file;
 - a poster.
 
-Pages choose the copy with `<source media="(max-width: 900px)">`.
+Pages choose the copy with `<source media="(max-width: 900px), (pointer: coarse)">`.
+
+**The docs host needs `docs-site/worker.js`.** Workers static assets answer a byte range with the whole file, so videos could not be seeked. The Worker answers ranges for `/videos/*`.
+
+**Size limit:** 25 MiB per file on both sites. A long video gets a 30 fps web copy.
 
 **Shipped alongside the videos:**
 - release 0.1.5 (f1054cc): the server's CUDA link repair, and streaming answers in project, Code and subagent chats;
@@ -133,6 +137,5 @@ Before recording, the development build must match HEAD. Run `npm run build` in 
 
 ## Next step
 
-1. Optional: publish the overview (about 3 min 20 s) where the owner wants it.
 2. When the UI changes, re-record a demo with its script, then re-export it. The demos are real takes, so they need re-recording, not editing.
 3. Streaming phase B: cloud providers (OpenAI, Anthropic, Gemini, LM Studio, Ollama) do not stream yet.
