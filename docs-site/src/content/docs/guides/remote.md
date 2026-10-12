@@ -5,7 +5,7 @@ description: How the app talks to your server, what stays private, and what a co
 
 Remote lets the app on your Mac or PC use your own server: its chats, models, tasks and workflows run there, and you see them in the app as if they were local. Set it up with [Install the server](/server/install/) and [Connect a computer](/server/connect/).
 
-<video controls playsinline preload="none" poster="/videos/remote.jpg" aria-label="The chat switches from This computer to a GPU server, and the server's model writes the answer, streaming back to the Mac"><source src="/videos/remote-720.mp4" type="video/mp4" media="(max-width: 900px), (pointer: coarse)" /><source src="/videos/remote.mp4" type="video/mp4" /></video>
+<video controls playsinline preload="none" poster="https://local-cognitive.com/media/docs/remote-v1.jpg" aria-label="The chat switches from This computer to a GPU server, and the server's model writes the answer, streaming back to the Mac"><source src="https://local-cognitive.com/media/docs/remote-720-v1.mp4" type="video/mp4" media="(max-width: 900px), (pointer: coarse)" /><source src="https://local-cognitive.com/media/docs/remote-v1.mp4" type="video/mp4" /></video>
 
 *A real chat on a Linux server with a GTX 1070 Ti, answered by Qwen2.5 14B in 29.6 s. The streaming is sped up 3×, and the video marks it.*
 

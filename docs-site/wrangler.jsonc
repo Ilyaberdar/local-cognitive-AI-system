@@ -1,13 +1,11 @@
-// Cloudflare Workers: the built site as static assets (docs.local-cognitive.com). worker.js runs
-// first only for /videos/*, to answer the byte ranges a video player needs for seeking.
+// Cloudflare Workers: the built site as static assets (docs.local-cognitive.com). Videos are served
+// from local-cognitive.com/media/docs/ (Cloudflare Pages answers byte ranges, which seeking and
+// iPhones need; static assets here do not, and slicing them in a Worker hit its CPU limit).
 {
   "name": "local-cognitive-docs",
   "compatibility_date": "2026-10-01",
-  "main": "./worker.js",
   "assets": {
     "directory": "./dist",
-    "binding": "ASSETS",
-    "not_found_handling": "404-page",
-    "run_worker_first": ["/videos/*"]
+    "not_found_handling": "404-page"
   }
 }
