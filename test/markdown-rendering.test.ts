@@ -111,13 +111,27 @@ test("Review selection across highlighted spans preserves original CRLF offsets,
 test("chat metadata parsing leaves Provider and Model lines inside code untouched; read cards decode their content", t => {
   const f = fixture(t); const source = fs.readFileSync("public/assets/app.js", "utf8");
   const slice = (start: string, end: string) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-  f.window.eval('const {renderMarkdown,renderCodeBlock}=MarkdownRenderer; const formatLocalModelReferences=x=>x; const escapeHtml=x=>String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");' +
+  f.window.eval('const {renderMarkdown,renderCodeBlock}=MarkdownRenderer; const formatLocalModelReferences=x=>x; const providerDescriptor=id=>id==="openai"?{name:"OpenAI"}:undefined; const escapeHtml=x=>String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");' +
     slice("function renderPlainMessageText", "function renderInlineMessageText") + slice("function renderRuntimeMetaLine", "function renderMessageTools") +
     slice("function renderToolOutput", "function compactPath") + '; window.chatRender=renderPlainMessageText; window.readRender=renderToolOutput;');
   f.root.innerHTML = f.window.chatRender('Response\n\nProvider: openai\nModel: model\n\n```text\nProvider: keep\nModel: exact\n```');
   assert.equal(f.root.querySelector("pre code").textContent, "Provider: keep\nModel: exact\n");
   assert.equal(f.root.querySelectorAll(".message-runtime-line").length, 2);
+  assert.equal(f.root.querySelector(".message-runtime-line strong").textContent, "OpenAI", "a reply names its provider as Settings does");
   f.root.innerHTML = f.window.readRender(JSON.stringify({ content: '1: {\n2:   "n": 1\n3: }\n4: ', version: "hash", startLine: 1, endLine: 4, totalLines: 4, truncated: false }), "result.json");
   assert.equal(f.root.querySelector("pre code").textContent, '{\n  "n": 1\n}\n');
   assert.ok(f.root.querySelector("details").textContent.includes("hash"));
+});
+
+test("code in C++ and the other common languages is highlighted, under their usual fence names", t => {
+  const f = fixture(t);
+  f.root.innerHTML = f.renderMarkdown('```cpp\n#include "CoreMinimal.h"\nclass AGASCharacter : public ACharacter {\n  virtual void BeginPlay() override;\n};\n```');
+  const cpp = f.root.querySelector("pre code");
+  assert.ok(cpp.querySelector(".hljs-keyword"), "keywords");
+  assert.ok(cpp.querySelector(".hljs-meta"), "the include line");
+  assert.equal(cpp.textContent, '#include "CoreMinimal.h"\nclass AGASCharacter : public ACharacter {\n  virtual void BeginPlay() override;\n};\n');
+  for (const [fence, source] of [["c++", "int main() { return 0; }"], ["hpp", "struct A { int b; };"], ["rust", "fn main() { let x = 1; }"], ["cs", "public class A { }"], ["go", "func main() {}"], ["kotlin", "fun main() {}"], ["glsl", "void main() { gl_FragColor = vec4(1.0); }"]]) {
+    f.root.innerHTML = f.renderMarkdown("```" + fence + "\n" + source + "\n```");
+    assert.ok(f.root.querySelector("pre code .hljs-keyword, pre code .hljs-type, pre code .hljs-built_in"), fence);
+  }
 });

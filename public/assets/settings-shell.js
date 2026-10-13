@@ -614,7 +614,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         <div class="settings-row"><div><label for="add-provider-name">Name</label><p>Shown in Settings and where you choose a model.</p></div><div class="settings-control"><input id="add-provider-name" data-add-field="name" maxlength="80" required value="${escape(first?.name ?? '')}" /></div></div>
         <div class="settings-row"><div><label for="add-provider-address">Address</label><p>Its OpenAI-compatible API address.</p></div><div class="settings-control"><input id="add-provider-address" data-add-field="baseUrl" type="url" required placeholder="https://api.example.com/v1" value="${escape(first?.baseUrl ?? '')}" /></div></div>
         <div class="settings-row"><div><label for="add-provider-key">API key</label><p data-add-key-help>${first ? `<a href="${escape(first.keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : 'From the service’s console.'}</p></div><div class="settings-control"><input id="add-provider-key" data-add-field="apiKey" type="password" autocomplete="new-password" required placeholder="Enter API key" /></div></div>
-        <div class="settings-row"><div><label for="add-provider-model">Model</label><p>Its models are listed once it is added; this one is the default.</p></div><div class="settings-control"><input id="add-provider-model" data-add-field="model" list="add-provider-models" required value="${escape(first?.model ?? '')}" /><datalist id="add-provider-models">${(first?.models ?? []).map(model => `<option value="${escape(model)}"></option>`).join('')}</datalist></div></div>
+        <div class="settings-row"><div><label for="add-provider-model">Model</label><p>Chosen from the service’s own list once it is added and tested.</p></div><div class="settings-control"><select id="add-provider-model" disabled><option>After the test</option></select></div></div>
       </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${addProviderStatus?.error ? 'is-error' : ''}" data-add-provider-status>${escape(addProviderStatus?.text ?? 'Nothing is saved until you add it.')}</span><button type="submit" class="primary-button">Add & test</button></div></form>`;
   }
   /** An id for a new provider: the preset's (or the name's) letters, made unique. */
@@ -635,22 +635,27 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       const preset = presets.find(item => item.id === event.target.value);
       field('name').value = preset?.name ?? '';
       field('baseUrl').value = preset?.baseUrl ?? '';
-      field('model').value = preset?.model ?? '';
-      form.querySelector('#add-provider-models').innerHTML = (preset?.models ?? []).map(model => `<option value="${escape(model)}"></option>`).join('');
       form.querySelector('[data-add-key-help]').innerHTML = preset ? `<a href="${escape(preset.keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : 'From the service’s console.';
     });
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!form.reportValidity()) return;
       const preset = presets.find(item => item.id === form.querySelector('[data-add-provider-preset]').value);
-      const name = field('name').value.trim(), model = field('model').value.trim();
+      const name = field('name').value.trim(), baseUrl = field('baseUrl').value.trim(), apiKey = field('apiKey').value.trim();
       const id = newProviderId(preset?.id ?? name);
       const submit = form.querySelector('button[type="submit"]');
       submit.disabled = true;
+      // The service's own list is the first check of the address and key; nothing is saved before it.
+      status('Checking the address and key…');
+      let models;
+      try { models = (await data.discoverModels({ baseUrl, apiKey, ...(preset ? { dialect: preset.dialect } : {}) })).models; }
+      catch (error) { submit.disabled = false; status(error.message || 'The service did not answer.', true); return; }
+      if (!models?.length) { submit.disabled = false; status('The service lists no models at this address.', true); return; }
+      const model = models.includes(preset?.model) ? preset.model : models[0];
       status('Adding…');
       try {
         await data.save({ providers: { [id]: { kind: 'openai-compatible', dialect: preset?.dialect ?? 'chat', ...(preset ? { preset: preset.id } : {}), name,
-          baseUrl: field('baseUrl').value.trim(), apiKey: field('apiKey').value.trim(), model, enabled: true, timeoutMs: 300000 } } });
+          baseUrl, apiKey, model, enabled: true, timeoutMs: 300000 } } });
       } catch (error) {
         submit.disabled = false;
         status(`Not added. ${error.message}`, true);

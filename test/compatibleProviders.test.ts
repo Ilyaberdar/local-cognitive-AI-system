@@ -107,6 +107,7 @@ test("Qwen lists its chat models, and its known models when the list cannot be r
   assert.equal(listing.calls[0].headers.Authorization, "Bearer sk-qwen-test-key");
   const missing = service(() => new Response("not found", { status: 404 }));
   assert.deepEqual((await qwen(missing.fetchImpl).listModels()).map(model => model.id), QWEN_DIALECT.models!.fallback);
+  await assert.rejects(qwen(missing.fetchImpl).listModels({ strict: true }), /status 404/, "adding a provider never mistakes a wrong address for its models");
   const empty = service(() => Response.json({ data: [] }));
   assert.equal((await qwen(empty.fetchImpl).listModels()).length, QWEN_DIALECT.models!.fallback.length);
 });
@@ -257,6 +258,7 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
   assert.equal(perplexity.calls[0].body.input[0].content[1].type, "input_image");
   await sonar.generateText({ prompt: "Hi", model: "anthropic/claude-sonnet-5-5" });
   assert.equal(perplexity.calls[1].body.model, "anthropic/claude-sonnet-5-5");
+  assert.equal(perplexity.calls[1].body.max_output_tokens, 16_000, "its Anthropic models need a cap");
   assert.deepEqual(perplexity.calls[1].body.tools, [{ type: "web_search" }]);
   assert.deepEqual((await sonar.listModels()).map(model => model.id), ["fast", "low", "medium", "high", "xhigh", "openai/gpt-6-luna", "anthropic/claude-sonnet-5-5"]);
   for (const preset of PROVIDER_PRESETS) {
@@ -302,7 +304,7 @@ function settingsPage(t: TestContext, providers: Record<string, unknown>) {
   const dom = new JSDOM('<main><div id="root"></div></main>', { url: "http://localhost/#/chat", runScripts: "outside-only", pretendToBeVisual: true });
   t.after(() => dom.window.close());
   dom.window.eval(`${bundle}\nwindow.SettingsShell = SettingsShell;`);
-  const saves: Array<Record<string, any>> = [], tests: unknown[][] = [];
+  const saves: Array<Record<string, any>> = [], tests: unknown[][] = [], discovered: Array<Record<string, string>> = [];
   const appSettings: Record<string, any> = { memory: { localProfileId: "local-1" }, profile: { displayName: "Mira" }, llm: { defaultProvider: "llamacpp" }, providers };
   const providerPresets = PROVIDER_PRESETS.map(({ env: _env, ...preset }) => preset);
   const descriptors = () => Object.entries(appSettings.providers).map(([id, entry]: [string, any]) => ({ id, name: entry.name ?? id, configured: Boolean(entry.apiKey), defaultModel: entry.model,
@@ -310,12 +312,15 @@ function settingsPage(t: TestContext, providers: Record<string, unknown>) {
   const data = { integrations: [],
     save: async (patch: Record<string, any>) => { saves.push(JSON.parse(JSON.stringify(patch)));
       for (const [id, entry] of Object.entries(patch.providers ?? {})) { if (entry === null) delete appSettings.providers[id]; else appSettings.providers[id] = { ...appSettings.providers[id], ...(entry as object) }; } },
-    testProvider: async (...args: unknown[]) => { tests.push(args); return { ok: true, message: "Provider replied: ok", model: args[1] }; } };
+    testProvider: async (...args: unknown[]) => { tests.push(args); return { ok: true, message: "Provider replied: ok", model: args[1] }; },
+    discoverModels: async (body: Record<string, string>) => { discovered.push(body);
+      if (body.apiKey.includes("wrong")) throw new Error("The service refused this key.");
+      return { models: body.dialect === "perplexity" ? ["fast", "low", "openai/gpt-6-luna"] : ["model-b", "model-a"] }; } };
   dom.window.confirm = () => true;
   const shell = dom.window.SettingsShell.createSettingsShell({ app: dom.window.document.getElementById("root"), getContext: () => ({ appSettings, providers: descriptors(), providerPresets }),
     data, renderModelControl: () => "<select></select>", applyPreferences() {}, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
   const document = dom.window.document;
-  return { dom, document, shell, saves, tests, appSettings, content: () => document.querySelector(".settings-content") };
+  return { dom, document, shell, saves, tests, discovered, appSettings, content: () => document.querySelector(".settings-content") };
 }
 
 test("Add provider: a preset fills its fields, the provider is saved and tested, then its page shows the result", async t => {
@@ -331,7 +336,9 @@ test("Add provider: a preset fills its fields, the provider is saved and tested,
   service.dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
   assert.equal(field("name").value, "Perplexity");
   assert.equal(field("baseUrl").value, "https://api.perplexity.ai/v1");
-  assert.equal(field("model").value, "fast");
+  // The model is chosen from the service's list after the test, never typed here.
+  assert.equal(ui.content().querySelector("#add-provider-model").disabled, true);
+  assert.equal(field("model"), null);
   assert.equal(ui.content().querySelector('[data-add-key-help] a').getAttribute("href"), providerPreset("perplexity")!.keyUrl);
   field("apiKey").value = "pplx-test-key-123456";
   ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
@@ -339,6 +346,7 @@ test("Add provider: a preset fills its fields, the provider is saved and tested,
   assert.deepEqual(ui.saves[0], { providers: { perplexity: { kind: "openai-compatible", dialect: "perplexity", preset: "perplexity", name: "Perplexity",
     baseUrl: "https://api.perplexity.ai/v1", apiKey: "pplx-test-key-123456", model: "fast", enabled: true, timeoutMs: 300000 } } });
   assert.deepEqual(ui.tests[0], ["perplexity", "fast", 300000]);
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.discovered[0])), { baseUrl: "https://api.perplexity.ai/v1", apiKey: "pplx-test-key-123456", dialect: "perplexity" }, "the address and key are checked first");
   ui.shell.route(ui.dom.window.location.hash);
   assert.match(ui.content().textContent, /Test succeeded/);
   assert.ok(ui.content().querySelector('[data-setting="providers.perplexity.name"]'), "an added provider can be renamed");
@@ -351,6 +359,20 @@ test("Add provider: a preset fills its fields, the provider is saved and tested,
   ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
   for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/perplexity-2"); i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(ui.saves[1].providers["perplexity-2"]);
+
+  // Any other service: the first model it lists; a refused key saves nothing and says why.
+  ui.shell.route("#/settings/providers/new");
+  ui.content().querySelector("[data-add-provider-preset]").value = "";
+  ui.content().querySelector("[data-add-provider-preset]").dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
+  field("name").value = "My vLLM"; field("baseUrl").value = "https://llm.example.com/v1"; field("apiKey").value = "wrong-key-123456";
+  ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 50 && !/refused/.test(ui.content().querySelector("[data-add-provider-status]").textContent); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.match(ui.content().querySelector("[data-add-provider-status]").textContent, /refused this key/);
+  assert.equal(ui.saves.length, 2, "nothing saved");
+  field("apiKey").value = "right-key-123456";
+  ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/my-vllm"); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(ui.saves[2], { providers: { "my-vllm": { kind: "openai-compatible", dialect: "chat", name: "My vLLM", baseUrl: "https://llm.example.com/v1", apiKey: "right-key-123456", model: "model-b", enabled: true, timeoutMs: 300000 } } });
 });
 
 test("an added provider can be removed from its page; a built-in one cannot; a region fills Qwen's address", async t => {
@@ -370,4 +392,29 @@ test("an added provider can be removed from its page; a built-in one cannot; a r
   for (let i = 0; i < 50 && ui.dom.window.location.hash !== "#/settings/providers"; i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.deepEqual(ui.saves[0], { providers: { groq: null } });
   assert.equal(ui.dom.window.location.hash, "#/settings/providers");
+});
+
+test("adding a provider first reads the models the service lists for that address and key", async t => {
+  const { createProviderDiscoverController } = await import("../src/api/controller");
+  const { default: http } = await import("node:http");
+  const server = http.createServer((request, response) => {
+    if (request.headers.authorization !== "Bearer good-key-123") { response.statusCode = 401; response.end(JSON.stringify({ error: { message: "Invalid key" } })); return; }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ data: [{ id: "chat-model" }, { id: "text-embedding-3" }] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+  const call = async (body: unknown) => {
+    let status = 0, payload: any;
+    const res = { status(code: number) { status = code; return this; }, json(value: unknown) { payload = value; return this; } };
+    await createProviderDiscoverController()({ body } as never, res as never);
+    return { status, payload };
+  };
+  assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123", dialect: "chat" }), { status: 200, payload: { models: ["chat-model", "text-embedding-3"] } });
+  assert.deepEqual(await call({ baseUrl: base, apiKey: "bad-key-123", dialect: "deepseek" }), { status: 502, payload: { error: "The service refused this key." } }, "never the dialect's known models");
+  assert.equal((await call({ baseUrl: "ftp://x.example", apiKey: "k" })).status, 400);
+  assert.equal((await call({ baseUrl: "https://user:pw@x.example/v1", apiKey: "k" })).status, 400);
+  assert.equal((await call({ baseUrl: base, apiKey: " " })).status, 400);
+  assert.equal((await call({ baseUrl: base, apiKey: "good-key-123", dialect: "anthropic" })).status, 400);
 });

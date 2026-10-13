@@ -53,7 +53,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return this.options.catalog ? { ...descriptor, catalog: this.options.catalog } : descriptor;
   }
 
-  async listModels(): Promise<ProviderModel[]> {
+  /** The service's models. `strict` (adding a provider): a refused key or a wrong address is an
+   * error instead of the models a dialect knows. */
+  async listModels(options: { strict?: boolean } = {}): Promise<ProviderModel[]> {
     const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl}/models`, {
       method: "GET",
       headers: {
@@ -70,7 +72,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const known = this.dialect.models;
     if (!response.ok) {
       // A service that lists no models (or not on this path) still offers its known chat models.
-      if (known) return known.fallback.map(id => ({ id, providerId: this.id, providerName: this.name }));
+      if (known && !options.strict) return known.fallback.map(id => ({ id, providerId: this.id, providerName: this.name }));
       throw new Error(`${this.id} models request failed with status ${response.status}`);
     }
 
@@ -172,7 +174,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
                 // would leave no answer. It is a cap; only what is generated is billed.
                 max_output_tokens: dialect.responsesOutputFloor ? Math.max(request.maxTokens, dialect.responsesOutputFloor) : request.maxTokens
               }
-            : {}),
+            : dialect.defaultOutputTokens ? { max_output_tokens: dialect.defaultOutputTokens } : {}),
           ...(nativeTools ? {
             tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters: strictSchema(parameters), strict: true })),
             parallel_tool_calls: false,

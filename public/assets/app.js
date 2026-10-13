@@ -3373,7 +3373,8 @@ function renderInlineMessageText(value) {
 
 function renderRuntimeMetaLine(label, value) {
   const isFinalResponse = label.trim().toLowerCase() === "final response";
-  const displayValue = label.trim().toLowerCase() === "model" ? formatLocalModelReferences(value) : value;
+  const kind = label.trim().toLowerCase();
+  const displayValue = kind === "model" ? formatLocalModelReferences(value) : kind === "provider" ? providerDescriptor(value.trim())?.name || value : value;
 
   return `
     <div class="message-runtime-line ${isFinalResponse ? "is-final-response" : ""}">
@@ -5451,9 +5452,12 @@ function getProviderSuggestedModels(providerId) {
     case "ollama":
     case "llamacpp":
       return discoveredModels;
-    default:
-      // An OpenAI-compatible service: what it lists, and its catalog's suggestions.
-      suggestedModels = providerDescriptor(providerId)?.catalog?.models ?? [];
+    default: {
+      // An OpenAI-compatible service: its catalog's models in their order (Perplexity's presets
+      // first), then the rest of what it lists.
+      const suggested = providerDescriptor(providerId)?.catalog?.models ?? [];
+      return [...new Set([...suggested, ...discoveredModels.slice().sort()])];
+    }
   }
 
   // The API catalog is scoped to the user's key and includes fine-tuned and

@@ -12,6 +12,7 @@ export function createSettingsData({ request, onSaved }) {
       queue = next.catch(() => {});
       return next;
     },
+    discoverModels: body => request('/providers/discover', { method: 'POST', body: JSON.stringify(body), timeoutMs: 30000 }),
     testProvider: (id, model, timeoutMs) => request(`/providers/${encodeURIComponent(id)}/test`, {
       method: 'POST', body: JSON.stringify({ model }), timeoutMs: id === 'llamacpp' ? 0 : Math.max(60000, timeoutMs || 0) + 30000
     }),

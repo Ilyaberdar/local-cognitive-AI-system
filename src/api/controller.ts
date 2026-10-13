@@ -20,6 +20,9 @@ import { resolveReviewPath, revealWorkspacePath } from "./workspaceReview";
 import { ProjectError } from "../projects/types";
 import { isReasoningEffort } from "../llm/ReasoningEffort";
 import { PROVIDER_PRESETS } from "../llm/providerCatalog";
+import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
+import { compatibleDialect, isProviderDialect } from "../llm/ProviderDialect";
+import { Logger } from "../utils/Logger";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -622,6 +625,30 @@ export const createRuntimeReloadController =
       });
     } catch (error) {
       next(error);
+    }
+  };
+
+/** Settings → Add provider: the models an OpenAI-compatible service lists for an address and key, read
+ * before anything is saved. It is the first check of both; nothing is kept. */
+export const createProviderDiscoverController =
+  () =>
+  async (req: Request, res: Response): Promise<void> => {
+    const { baseUrl, apiKey, dialect } = (req.body ?? {}) as Record<string, unknown>;
+    let address: URL | undefined;
+    try { address = new URL(String(baseUrl)); } catch { /* answered below */ }
+    if (!address || !["https:", "http:"].includes(address.protocol) || address.username || address.password || typeof apiKey !== "string" || !apiKey.trim() || apiKey.length > 4096) {
+      res.status(400).json({ error: "Enter the service's address (https://…) and its API key." });
+      return;
+    }
+    if (dialect !== undefined && !isProviderDialect(dialect)) { res.status(400).json({ error: "Unknown service type." }); return; }
+    const provider = new OpenAICompatibleProvider({ id: "discover", name: "Provider", baseUrl: String(baseUrl).replace(/\/+$/, ""), model: "", apiKey: apiKey.trim(), timeoutMs: 15000,
+      dialect: compatibleDialect(dialect as string | undefined) }, new Logger());
+    try {
+      const models = (await provider.listModels({ strict: true })).map(model => model.id);
+      res.status(200).json({ models });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "The service did not answer.";
+      res.status(502).json({ error: /status 40[13]/.test(detail) ? "The service refused this key." : /status 404/.test(detail) ? "No models at this address. Check it." : `The service did not answer: ${detail.replace(apiKey.trim(), "<key>")}` });
     }
   };
 

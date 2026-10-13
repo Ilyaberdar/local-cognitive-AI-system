@@ -39,6 +39,8 @@ export interface ProviderDialect {
   /** Perplexity: a model id that is one of these is sent as a preset; any other model gets the web
    * search tool, which an explicitly chosen model does not have on its own. */
   readonly presets?: string[];
+  /** An output cap sent when the request has none (Perplexity's Anthropic models require one). */
+  readonly defaultOutputTokens?: number;
   readonly capabilities: ProviderCapabilities;
 }
 
@@ -103,7 +105,7 @@ export const OPENROUTER_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "openr
  * (fast to xhigh) or a model it hosts, answers searched on the web. JSON comes only as a schema, so
  * agents use the JSON protocol in words. */
 const PERPLEXITY_PRESETS = ["fast", "low", "medium", "high", "xhigh"];
-export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity", chatOnly: false, allOnResponses: true, presets: PERPLEXITY_PRESETS,
+export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity", chatOnly: false, allOnResponses: true, presets: PERPLEXITY_PRESETS, defaultOutputTokens: 16_000,
   capabilities: { ...CHAT_DIALECT.capabilities, jsonMode: false, reasoning: true, vision: true },
   models: { fallback: PERPLEXITY_PRESETS, pinned: PERPLEXITY_PRESETS } };
 
