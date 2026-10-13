@@ -1,12 +1,12 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { createHash } from "node:crypto";
 import { OperationExecutor, OperationInput } from "../../tools/OperationExecutor";
 import { parseAgentAction } from "../../tools/AgentTool";
 import { PendingApproval, ToolExecutionResult } from "../../types";
 import { isMissingFile } from "../../utils/fileStore";
 import { matchesGlob } from "../checks/architecture";
-import { MAX_ARTIFACT_BYTES, readText } from "../paths";
+import { containedPath, MAX_ARTIFACT_BYTES, readText } from "../paths";
+import { SynthesisError } from "../types";
 
 /** What an agent may touch, by project-relative patterns. */
 export interface FilePermissions { read: string[]; write: string[]; delete: string[] }
@@ -35,13 +35,41 @@ const hash = (content: string) => createHash("sha256").update(content).digest("h
 const MAX_READ_BYTES = 5 * 1024 * 1024, MAX_RESULT_BYTES = 48_000;
 const SKIPPED = new Set([".git", "node_modules", "dist", "build", "release", "coverage", "vendor", "target", "Binaries", "Intermediate", "DerivedDataCache"]);
 
+/** Whether a path matches a glob ("*" within a folder, "**" across folders), in time proportional to
+ * the pattern's length times the path's: patterns come from the model, so no backtracking regex. */
+export function globMatches(pattern: string, value: string): boolean {
+  const tokens: Array<"*" | "**" | string> = [];
+  for (let index = 0; index < pattern.length; index++) {
+    if (pattern[index] !== "*") { tokens.push(pattern[index]); continue; }
+    let end = index; while (pattern[end + 1] === "*") end++;
+    const double = end > index;
+    // "**/" may also stand for no folder at all: "src/**/a.ts" matches "src/a.ts".
+    if (double && pattern[end + 1] === "/" && (index === 0 || pattern[index - 1] === "/")) { tokens.push("**/"); end++; }
+    else tokens.push(double ? "**" : "*");
+    index = end;
+  }
+  // reachable[j]: the tokens so far can match value[0, j).
+  let reachable = new Array<boolean>(value.length + 1).fill(false); reachable[0] = true;
+  for (const token of tokens) {
+    const next = new Array<boolean>(value.length + 1).fill(false);
+    for (let j = 0; j <= value.length; j++) {
+      if (token === "*" || token === "**") {
+        // Any run of characters (without "/" for "*") after a reachable position.
+        if (reachable[j] || (j > 0 && next[j - 1] && (token === "**" || value[j - 1] !== "/"))) next[j] = true;
+      } else if (token === "**/") {
+        if (reachable[j]) next[j] = true;
+        if (j > 0 && value[j - 1] === "/") for (let k = j - 1; k >= 0; k--) { if (reachable[k]) { next[j] = true; break; } }
+      } else if (j > 0 && reachable[j - 1] && value[j - 1] === token) next[j] = true;
+    }
+    reachable = next;
+  }
+  return reachable[value.length];
+}
 /** Like a filename filter in a search, "*.ts" matches at any depth; a pattern with "/" is anchored to the search root. */
-function searchFilter(pattern: string): RegExp {
+function searchFilter(pattern: string): (value: string) => boolean {
   const rootRelative = pattern.startsWith("./") || pattern.includes("/");
   const normalized = pattern.replace(/^\.\//, "");
-  const expression = normalized.split("**/").map(part => part.split("**").map(piece =>
-    piece.split("*").map(literal => literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?");
-  return new RegExp((rootRelative ? "^" : "^(?:.*/)?") + expression + "$");
+  return value => globMatches(normalized, value) || (!rootRelative && value.split("/").some((_part, index, parts) => index > 0 && globMatches(normalized, parts.slice(index).join("/"))));
 }
 /** The literal folder a pattern starts with: "src/**" → "src", "**" → "". */
 const staticPrefix = (pattern: string) => { const parts: string[] = []; for (const part of pattern.split("/")) { if (part.includes("*")) break; parts.push(part); } return parts.join("/"); };
@@ -86,6 +114,11 @@ export class SynthesisFileTools extends OperationExecutor {
     if (value.length > 240) throw new Error("Paths are at most 240 characters.");
     return value;
   }
+  /** The file or folder in the project, refused when any part of its path is a symbolic link. */
+  private async inside(target: string): Promise<string> {
+    try { return await containedPath(this.candidates.root, target); }
+    catch (error) { if (error instanceof SynthesisError) throw new Error(`${target}: agents do not follow symbolic links.`); throw error; }
+  }
   private mayRead(target: string): boolean {
     return !this.candidates.hidden(target) && this.rights.read.some(pattern => matchesGlob(target, pattern));
   }
@@ -112,9 +145,8 @@ export class SynthesisFileTools extends OperationExecutor {
     const copy = this.candidate(target);
     if (copy) return copy.content;
     try {
-      const file = path.join(this.candidates.root, ...target.split("/"));
-      if ((await fs.lstat(file)).isSymbolicLink()) throw new Error(`${target} is a symbolic link; agents do not follow links.`);
-      return await readText(file, MAX_READ_BYTES);
+      // Every folder on the way is checked too: a link anywhere in the path could lead out of the project.
+      return await readText(await this.inside(target), MAX_READ_BYTES);
     } catch (error) { if (isMissingFile(error)) return null; throw error; }
   }
   private async read(target: string, startLine: number, endLine?: number): Promise<ToolExecutionResult> {
@@ -148,7 +180,7 @@ export class SynthesisFileTools extends OperationExecutor {
     while (queue.length) {
       const current = queue.shift()!;
       let entries: import("node:fs").Dirent[] = [];
-      try { entries = await fs.readdir(path.join(this.candidates.root, ...current.split("/").filter(Boolean)), {withFileTypes: true}); }
+      try { entries = await fs.readdir(current ? await this.inside(current) : this.candidates.root, {withFileTypes: true}); }
       catch (error) { if (isMissingFile(error) || (error as NodeJS.ErrnoException).code === "ENOTDIR") continue; throw error; }
       for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
         if (entry.name.startsWith(".") || SKIPPED.has(entry.name) || entry.isSymbolicLink()) continue;
@@ -188,7 +220,7 @@ export class SynthesisFileTools extends OperationExecutor {
     let scanned = 0;
     for (const file of files) {
       const relative = root ? file.slice(root.length + 1) : file;
-      if (exclude.some(pattern => pattern.test(relative)) || (include?.length && !include.some(pattern => pattern.test(relative)))) continue;
+      if (exclude.some(matches => matches(relative)) || (include?.length && !include.some(matches => matches(relative)))) continue;
       scanned++;
       if (!query) { matches.push({path: file}); if (matches.length >= limit) break; continue; }
       const content = await this.content(file).catch(() => null);

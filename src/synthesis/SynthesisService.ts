@@ -384,6 +384,9 @@ export class SynthesisService {
       return handle;
     };
     const moduleFolder = path.posix.dirname(moduleSources(record.moduleId).specPath);
+    // The contract's own files as project paths: its sources and every test file, next to the .lcspec.
+    const contractPaths = new Set([moduleSources(record.moduleId).specPath, moduleSources(record.moduleId).flowPath,
+      ...Object.keys(record.suite ?? {}).map(file => moduleFolder === "." ? file : `${moduleFolder}/${file}`)]);
     // The candidate as agents see it: the run's copy of what they may change, over the project.
     const store: CandidateStore = {
       root: record.rootPath, files: record.files, baseline: record.baseline,
@@ -398,8 +401,10 @@ export class SynthesisService {
         if (!Object.hasOwn(record.files, relative) && Object.keys(record.files).length >= MAX_CANDIDATE_FILES) return `A candidate holds at most ${MAX_CANDIDATE_FILES} files.`;
         return undefined;
       },
-      // No agent reads a contract or its tests, hidden ones included.
-      hidden: target => target.split("/").includes("Synthesis") || (moduleFolder !== "." && (target === moduleFolder || target.startsWith(`${moduleFolder}/`))),
+      // No agent reads a contract or its tests, hidden ones included: not this module's (wherever it is,
+      // the project root too), and no .lcspec or .lcflow of any other module.
+      hidden: target => target.split("/").includes("Synthesis") || /\.(?:lcspec|lcflow)$/.test(target) || contractPaths.has(target) ||
+        (moduleFolder !== "." && (target === moduleFolder || target.startsWith(`${moduleFolder}/`))),
       changed: () => { lastEvidence = undefined; delete record.evidence; saveSoon(); }
     };
     const resolveModel = async (providerId: string, id: unknown): Promise<ManagedModel> => {

@@ -5,17 +5,23 @@ export type ProjectLines = (path: string) => Promise<number | undefined>;
 export interface Reference { path: string; start?: number; end?: number; line: number }
 
 // A path with a folder ("src/a.ts"), optionally with a line or range (":12", ":12-20"). A bare name
-// ("Node.js", "REPORT.md") is not taken for a reference, and neither is a URL.
-const REFERENCE = /(?<![\w/.:@-])((?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)+[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,10})(?::(\d{1,7})(?:\s*[-–]\s*(\d{1,7}))?)?/g;
+// ("Node.js", "REPORT.md") is not taken for a reference, and neither is a URL. Tokens are found by a
+// pattern without nested choices and checked in code, so a long line a model wrote stays fast.
+const TOKEN = /[A-Za-z0-9_./-]+(?::\d{1,7}(?:[-–]\d{1,7})?)?/g;
+const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
 
 /** Every path:line reference of a text, with the line of the text it is on. */
 export function references(text: string): Reference[] {
   const found: Reference[] = [];
   for (const [index, row] of text.split("\n").entries()) {
-    for (const match of row.matchAll(REFERENCE)) {
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(row.slice(Math.max(0, match.index - 12), match.index + 3))) continue;
-      const start = match[2] ? Number(match[2]) : undefined, end = match[3] ? Number(match[3]) : undefined;
-      found.push({ path: match[1].replace(/[.,;:]+$/, ""), line: index + 1, ...(start !== undefined ? { start } : {}), ...(end !== undefined ? { end } : {}) });
+    for (const match of row.matchAll(TOKEN)) {
+      const before = row.slice(Math.max(0, match.index - 3), match.index);
+      if (before.endsWith("://") || /[\w@:]$/.test(before)) continue;
+      const [token, line] = [match[0].replace(/[.,;:]+$/, "")].map(value => { const at = value.search(/:\d/); return at < 0 ? [value, ""] : [value.slice(0, at), value.slice(at + 1)]; })[0];
+      const parts = token.split("/");
+      if (parts.length < 2 || !parts.every(part => SEGMENT.test(part)) || !/\.[A-Za-z0-9]{1,10}$/.test(parts[parts.length - 1])) continue;
+      const [start, end] = line ? line.split(/[-–]/).map(Number) : [];
+      found.push({ path: token, line: index + 1, ...(start !== undefined ? { start } : {}), ...(end !== undefined ? { end } : {}) });
     }
   }
   return found;

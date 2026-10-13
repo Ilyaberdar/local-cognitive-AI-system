@@ -272,3 +272,56 @@ test("agents need agents-v1, an agent names its model once, and write patterns a
   assert.ok(codes(`a = agent(provider = "deepseek", model = "x"); results = await parallel_map(a, ["t"], on_error = "ignore");`).includes("FLOW_TYPE"));
   assert.ok(codes(`results = await parallel_map(lead, ["t"]);`).includes("FLOW_TYPE"));
 });
+
+test("security: a contract at the project root, its hidden tests and any .lcspec stay unread; a linked folder leads nowhere; model patterns cannot stall a search", async (t) => {
+  const f = await fixture(t, {script: (task, results) => {
+    const steps = [
+      tool("file.read", {path: "Review.lcspec"}), tool("file.read", {path: "tests/hidden.test.ts"}), tool("file.read", {path: "other/Other.lcflow"}),
+      tool("file.read", {path: "src/outside/secret.txt"}), tool("file.list", {path: "src/outside"}),
+      tool("file.search", {path: ".", query: "", include: ["*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b"]}),
+      tool("file.search", {path: ".", query: "export"})
+    ];
+    return results.length < steps.length ? steps[results.length] : final(results.join("\n"));
+  }});
+  // The module at the project root, with a hidden test beside it.
+  await fs.writeFile(path.join(f.root, "Review.lcspec"), spec.replace('hard clean = Forbid("notes/**", "FORBIDDEN");', 'hard clean = Forbid("notes/**", "FORBIDDEN");\n        soft holdout = Tests("tests/hidden.test.ts", hidden = true);'));
+  await fs.mkdir(path.join(f.root, "tests")); await fs.writeFile(path.join(f.root, "tests", "hidden.test.ts"), "// the holdout answers");
+  await fs.mkdir(path.join(f.root, "other")); await fs.writeFile(path.join(f.root, "other", "Other.lcflow"), "implement Other");
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-outside-"));
+  t.after(() => fs.rm(outside, {recursive: true, force: true}));
+  await fs.writeFile(path.join(outside, "secret.txt"), "outside the project");
+  await fs.symlink(outside, path.join(f.root, "src", "outside"));
+  await fs.writeFile(path.join(f.root, "src", `${"a".repeat(60)}.ts`), "export const long = 1;");
+  await fs.writeFile(path.join(f.root, "Review.lcflow"), flow(`agents = [agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("**")], steps = 12)];
+    results = await parallel_map(agents, ["look everywhere"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`).replace("Review.spec", "Review.spec"));
+  const module = await f.service.module(f.project.id, "file:Review");
+  assert.equal(module.valid, true, JSON.stringify(module.diagnostics));
+  const started = Date.now();
+  const result = await f.service.wait((await f.service.start(f.project.id, "file:Review")).id);
+  assert.ok(["accepted", "needs_review"].includes(result.status), result.error);
+  const answer = (await f.service.agent(result.id, 0)).final!;
+  const lines = answer.split("\n");
+  assert.match(lines[0], /may not read Review\.lcspec/);
+  assert.match(lines[1], /may not read tests\/hidden\.test\.ts/);
+  assert.match(lines[2], /may not read other\/Other\.lcflow/);
+  assert.match(lines[3], /do not follow symbolic links/);
+  assert.match(lines[4], /do not follow symbolic links|"entries":\[\]/);
+  assert.doesNotMatch(answer, /outside the project|the holdout answers|implement Other/);
+  assert.match(lines[5], /"matches":\[\]/);
+  assert.match(lines[6], /src\/alpha\.ts/);
+  assert.ok(Date.now() - started < 5000, "the pathological pattern is matched in linear time");
+});
+
+test("globMatches: * stays within a folder, ** crosses them, **/ may stand for none", async () => {
+  const { globMatches } = await import("../src/synthesis/agents/SynthesisFileTools");
+  const cases: Array<[string, string, boolean]> = [
+    ["*.ts", "a.ts", true], ["*.ts", "src/a.ts", false], ["src/*.ts", "src/a.ts", true], ["src/*.ts", "src/x/a.ts", false],
+    ["src/**", "src/x/a.ts", true], ["src/**/a.ts", "src/a.ts", true], ["src/**/a.ts", "src/x/y/a.ts", true], ["**/a.ts", "a.ts", true],
+    ["a*b*c", "aXbYc", true], ["a*b*c", "aXbY", false], ["**", "anything/at/all", true], ["review/notes/*.md", "review/notes/x.md", true]
+  ];
+  for (const [pattern, value, expected] of cases) assert.equal(globMatches(pattern, value), expected, `${pattern} ~ ${value}`);
+  const started = Date.now();
+  assert.equal(globMatches(`${"*a".repeat(40)}*b`, "a".repeat(240)), false);
+  assert.ok(Date.now() - started < 200);
+});
