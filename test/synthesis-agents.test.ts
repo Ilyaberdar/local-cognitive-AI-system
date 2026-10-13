@@ -325,3 +325,48 @@ test("globMatches: * stays within a folder, ** crosses them, **/ may stand for n
   assert.equal(globMatches(`${"*a".repeat(40)}*b`, "a".repeat(240)), false);
   assert.ok(Date.now() - started < 200);
 });
+
+test("security: the contract stays unread and frozen files unwritten in any letter case", async (t) => {
+  const f = await fixture(t, {script: (task, results) => {
+    const steps = [
+      tool("file.read", {path: "SYNTHESIS/Review/Review.lcspec"}), tool("file.read", {path: "synthesis/review/review.LCSPEC"}),
+      tool("file.write", {path: "review/notes/X.md", content: "a", expectedVersion: "missing"}), tool("file.write", {path: "review/notes/x.md", content: "b", expectedVersion: "missing"}),
+      tool("file.write", {path: "review/report.md", content: "c", expectedVersion: "missing"})
+    ];
+    return results.length < steps.length ? steps[results.length] : final(results.join("\n"));
+  }});
+  const result = await f.run(`agents = [agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("**"), files.write("review/**")], steps = 10)];
+    results = await parallel_map(agents, ["try every case"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const lines = (await f.service.agent(result.id, 0)).final!.split("\n");
+  assert.match(lines[0], /may not read SYNTHESIS\/Review\/Review\.lcspec/);
+  assert.match(lines[1], /may not read synthesis\/review\/review\.LCSPEC/);
+  assert.match(lines[2], /Saved review\/notes\/X\.md/);
+  assert.match(lines[3], /differs from notes\/X\.md only in case/);
+  assert.match(lines[4], /differs from REPORT\.md only in case|not a file of the contract/);
+});
+
+test("a provider that answers 429 gets fewer requests at once and each refused request again, without spending a step", async () => {
+  const { gatedLlm } = await import("../src/synthesis/agents/ProviderGate");
+  let inFlight = 0, peak = 0, calls = 0, refused = 0;
+  const llm = {
+    generateObject: async (request: LLMRequest) => {
+      calls++; inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight--;
+      // The first requests over three at once are turned away.
+      if (calls <= 8 && peak > 3) { refused++; return {data: null, response: {provider: "p", model: "m", text: "", error: "perplexity request failed (HTTP 429): Request rate limit exceeded, please try again later."}}; }
+      return {data: {type: "final", text: request.prompt}, response: {provider: "p", model: "m", text: "{}"}};
+    }
+  } as unknown as LLMService;
+  const waits: number[] = [];
+  const gated = gatedLlm(llm, 8, {baseDelayMs: 5, waited: (_provider, ms) => waits.push(ms)});
+  const answers = await Promise.all(Array.from({length: 8}, (_value, index) => gated.generateObject<{text: string}>({prompt: `task ${index}`}, "perplexity")));
+  assert.deepEqual(answers.map(answer => answer.data?.text), Array.from({length: 8}, (_value, index) => `task ${index}`), "every request came through in the end");
+  assert.ok(refused > 0 && waits.length === refused, `${refused} refused, ${waits.length} waits`);
+  const controller = new AbortController();
+  const stuck = gatedLlm({generateObject: async () => ({data: null, response: {provider: "p", model: "m", text: "", error: "HTTP 429"}})} as unknown as LLMService, 2, {baseDelayMs: 50});
+  const pending = stuck.generateObject({prompt: "x", signal: controller.signal}, "perplexity");
+  setTimeout(() => controller.abort(new Error("cancelled")), 20);
+  await assert.rejects(pending, /cancelled/, "a wait ends when the run is cancelled");
+});

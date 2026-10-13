@@ -4,3 +4,4 @@ export { agentToolText, agentTools, SynthesisFileTools } from "./SynthesisFileTo
 export type { CandidateStore, FilePermissions } from "./SynthesisFileTools";
 export { MAX_TASK_CHARS, permission, splitGoal, synthesizeResults } from "./teamwork";
 export type { Permission } from "./teamwork";
+export { gatedLlm, slowDown } from "./ProviderGate";

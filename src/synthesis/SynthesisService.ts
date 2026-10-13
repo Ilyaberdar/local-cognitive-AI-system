@@ -17,7 +17,7 @@ import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSour
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
 import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
 import { matchesGlob } from "./checks/architecture";
-import { AgentSpec, AgentSummary, CandidateStore, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult } from "./agents";
+import { AgentSpec, AgentSummary, CandidateStore, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult } from "./agents";
 import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
 
@@ -385,15 +385,20 @@ export class SynthesisService {
     };
     const moduleFolder = path.posix.dirname(moduleSources(record.moduleId).specPath);
     // The contract's own files as project paths: its sources and every test file, next to the .lcspec.
+    // Compared without case: on a file system that ignores it (macOS, Windows) Tests/A.ts is tests/a.ts.
     const contractPaths = new Set([moduleSources(record.moduleId).specPath, moduleSources(record.moduleId).flowPath,
-      ...Object.keys(record.suite ?? {}).map(file => moduleFolder === "." ? file : `${moduleFolder}/${file}`)]);
+      ...Object.keys(record.suite ?? {}).map(file => moduleFolder === "." ? file : `${moduleFolder}/${file}`)].map(item => item.toLowerCase()));
+    const folderKey = moduleFolder.toLowerCase();
     // The candidate as agents see it: the run's copy of what they may change, over the project.
     const store: CandidateStore = {
       root: record.rootPath, files: record.files, baseline: record.baseline,
       get outputPath() { return record.outputPath; },
       get removed() { return record.removed ??= []; }, set removed(value) { record.removed = value; },
       writable: relative => {
-        if (record.spec.frozen.includes(relative)) return `${relative} is a frozen file: the engineer's, never changed by the run.`;
+        const key = relative.toLowerCase();
+        if (record.spec.frozen.some(file => file.toLowerCase() === key)) return `${relative} is a frozen file: the engineer's, never changed by the run.`;
+        const twin = [...Object.keys(record.files), ...record.spec.artifacts].find(file => file !== relative && file.toLowerCase() === key);
+        if (twin) return `${relative} differs from ${twin} only in case: write ${twin}.`;
         if (!record.spec.artifacts.includes(relative) && !(record.spec.areas ?? []).some(area => matchesGlob(relative, area))) {
           return `${relative} is not a file of the contract: write ${[...record.spec.artifacts, ...(record.spec.areas ?? [])].join(", ")} (under ${record.outputPath}).`;
         }
@@ -403,8 +408,11 @@ export class SynthesisService {
       },
       // No agent reads a contract or its tests, hidden ones included: not this module's (wherever it is,
       // the project root too), and no .lcspec or .lcflow of any other module.
-      hidden: target => target.split("/").includes("Synthesis") || /\.(?:lcspec|lcflow)$/.test(target) || contractPaths.has(target) ||
-        (moduleFolder !== "." && (target === moduleFolder || target.startsWith(`${moduleFolder}/`))),
+      hidden: target => {
+        const key = target.toLowerCase();
+        return key.split("/").includes("synthesis") || /\.(?:lcspec|lcflow)$/.test(key) || contractPaths.has(key) ||
+          (folderKey !== "." && (key === folderKey || key.startsWith(`${folderKey}/`)));
+      },
       changed: () => { lastEvidence = undefined; delete record.evidence; saveSoon(); }
     };
     const resolveModel = async (providerId: string, id: unknown): Promise<ManagedModel> => {
@@ -493,7 +501,13 @@ export class SynthesisService {
           }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
-          const {results, summaries} = await runAgents({llm: this.services.agents.llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
+          // A provider that asks to slow down gets fewer requests at once; the run says so, at most every 30 s.
+          let told = 0;
+          const llm = gatedLlm(this.services.agents.llm, concurrency as number, {waited: (provider, ms) => {
+            if (Date.now() - told < 30_000) return; told = Date.now();
+            void this.event(record, "agents", `${provider} asked to slow down: fewer requests at once, retrying in ${Math.round(ms / 1000)} s`, "running", {line: span.start.line}).catch(() => undefined);
+          }});
+          const {results, summaries} = await runAgents({llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
             module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
             failFast: named.on_error === "fail", signal,
             admit: async spec => { await this.provider(record, spec.model.providerId); },
@@ -545,7 +559,7 @@ export class SynthesisService {
         case "checkout": {
           if (record.outputPath) throw new SynthesisError("Only one checkout is allowed per run.");
           const relative = relativePath(args[0]);
-          if (relative.split("/").includes("Synthesis")) throw new SynthesisError("Candidate cannot overwrite authored DSL.");
+          if (relative.toLowerCase().split("/").includes("synthesis")) throw new SynthesisError("Candidate cannot overwrite authored DSL.");
           record.outputPath = relative;
           for (const file of record.spec.artifacts) {
             const target = await containedPath(record.rootPath, `${relative}/${file}`);
