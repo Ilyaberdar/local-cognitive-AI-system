@@ -451,5 +451,6 @@ test("a report that cites what does not exist is written again with the exact pr
   assert.equal(result.status, "accepted", result.error);
   assert.equal(prompts.length, 2);
   assert.match(prompts[1], /REPORT\.md:2 cites src\/missing\.ts, which does not exist/);
+  assert.match(prompts[1], /The last REPORT\.md, to correct[\s\S]*- src\/missing\.ts:3 swallows an error/, "the repair edits the last version");
   assert.equal((await f.service.diff(result.id)).files.find(file => file.path === "review/REPORT.md")?.after, "# Report\n- src/alpha.ts:1 is fine");
 });

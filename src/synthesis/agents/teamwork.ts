@@ -68,7 +68,7 @@ const findingsOf = (result: TaskResult) => `### Agent ${result.index + 1}${resul
 
 /** The agents' results gathered into one file's text. Results that do not fit the model's prompt are
  * first merged in groups (and the merges again), so a thousand results end in one answer. */
-export async function synthesizeResults(llm: Llm, model: ManagedModel, request: { results: TaskResult[]; file: string; module: string; description: string; instruction?: string; feedback?: string[]; signal: AbortSignal;
+export async function synthesizeResults(llm: Llm, model: ManagedModel, request: { results: TaskResult[]; file: string; module: string; description: string; instruction?: string; feedback?: string[]; current?: string; signal: AbortSignal;
   progress?: (message: string) => Promise<void>; spent(usage?: TokenUsage): void }): Promise<string> {
   const budget = promptBudget(llm, model);
   const generate = async (systemPrompt: string, prompt: string, maxTokens: number) => {
@@ -96,6 +96,8 @@ export async function synthesizeResults(llm: Llm, model: ManagedModel, request: 
     `Module ${request.module}: ${request.description}`.slice(0, 4000),
     request.instruction ? `What ${request.file} must be: ${request.instruction}` : `Write ${request.file} as Markdown: a title, a short summary, then the findings grouped by topic, each with its path:line reference, the most important first. Merge repeated findings; say which tasks failed. Keep it under 2,500 words.`,
     request.feedback?.length ? `The last ${request.file} failed the contract's checks. This one must not:\n${request.feedback.map((item, index) => `${index + 1}. ${item}`).join("\n").slice(0, 6000)}` : "",
+    // A repair edits the last version: rewriting it whole would lose what already held.
+    request.feedback?.length && request.current ? `The last ${request.file}, to correct (change only what the problems above require, keep the rest as it is, and answer with the whole corrected file):\n\n${request.current.slice(0, Math.floor(budget / 3))}` : "",
     `Findings:\n\n${items.join("\n\n")}`
   ].filter(Boolean).join("\n\n"), OUTPUT_TOKENS);
   const fenced = /^```[\w+#.-]*\s*\n([\s\S]*?)\n```$/.exec(text);
