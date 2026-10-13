@@ -556,7 +556,8 @@ export class SynthesisService {
           const model = (receiver as {model: ManagedModel}).model;
           await this.event(record, "agent.generate", `Writing ${file} from ${(args[2] as TaskResult[]).length} results`, "running", {model: model.displayName, file});
           const content = await synthesizeResults(this.services.llm, model, {results: args[2] as TaskResult[], file, module: record.spec.module, description: record.spec.description,
-            instruction: typeof named.instruction === "string" ? named.instruction : undefined, signal,
+            instruction: typeof named.instruction === "string" ? named.instruction : undefined,
+            feedback: Array.isArray(named.feedback) ? named.feedback.flat(2).filter((item): item is string => typeof item === "string") : undefined, signal,
             progress: message => this.event(record, "agent.generate", message, "running", {model: model.displayName, file}),
             spent: usage => this.usage(record, usage)});
           if (!content || Buffer.byteLength(content) > MAX_ARTIFACT_BYTES) throw new SynthesisError(`${file}: the model's text is empty or larger than ${MAX_ARTIFACT_BYTES / 1024} KiB.`);

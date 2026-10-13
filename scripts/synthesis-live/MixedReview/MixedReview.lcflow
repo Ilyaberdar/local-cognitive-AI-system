@@ -1,5 +1,5 @@
 implement MixedReview using "contract-v1" {
-    limit iterations 2, time 60m, steps 20000;
+    limit iterations 4, time 60m, steps 20000;
     policy = "agents-v1";
 
     lead = await model("deepseek-flash", provider = "deepseek");
@@ -27,10 +27,17 @@ implement MixedReview using "contract-v1" {
     results = await parallel_map(models, tasks, concurrency = 20);
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
-    evidence = await evaluate(candidate, spec);
-    verdict = verify(spec, evidence);
-    if (verdict.status == Pass) {
-        return accept(candidate, evidence);
+    // The report is checked, and written again with the exact problems until it holds.
+    while (!accepted(candidate, spec)) {
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md", feedback = verdict.violations);
     }
-    return needs_review(evidence);
+    return unresolved();
 }

@@ -645,7 +645,7 @@ With `policy = "agents-v1"` a flow makes agents and runs them in parallel. An ag
 
 ```lcflow
 implement RepoReview using "contract-v1" {
-    limit iterations 2, time 40m, steps 20000;
+    limit iterations 4, time 40m, steps 20000;
     policy = "agents-v1";
 
     lead = await model("deepseek-flash", provider = "deepseek");
@@ -665,10 +665,15 @@ implement RepoReview using "contract-v1" {
     results = await parallel_map(agents, tasks, concurrency = 20);
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
-    evidence = await evaluate(candidate, spec);
-    verdict = verify(spec, evidence);
-    if (verdict.status == Pass) { return accept(candidate, evidence); }
-    return needs_review(evidence);
+    // The report is checked, and written again with the exact problems until it holds.
+    while (!accepted(candidate, spec)) {
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        if (verdict.status == Pass) { return accept(candidate, evidence); }
+        if (verdict.status == Unknown) { return needs_review(evidence); }
+        candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md", feedback = verdict.violations);
+    }
+    return unresolved();
 }
 ```
 
@@ -690,7 +695,7 @@ evaluate "contract-v1" {
 | `agent(provider = "deepseek", model = "deepseek-flash", tools = [...], instructions = "...", steps = 16)` | An agent: a description, not a process. `agent(role, tools = [...])` uses a loaded role instead (a local model with slots, for example). `steps` (1–60, 16 by default) bounds its turns. |
 | `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. |
 | `await lead.split(goal, n [, context], paths = files.read(...), instruction = "...")` | A model splits a goal into `n` independent tasks; `paths` lists the files the agents can read (up to 400) for it. |
-| `await lead.synthesize(candidate, spec, results, file = "REPORT.md", instruction = "...")` | A model writes one candidate file from the results. Results too many for its prompt are merged in groups first. |
+| `await lead.synthesize(candidate, spec, results, file = "REPORT.md", instruction = "...", feedback = verdict.violations)` | A model writes one candidate file from the results. Results too many for its prompt are merged in groups first. With `feedback`, it writes the file again knowing exactly which checks the last one failed: the repair loop for a report. |
 
 Each result has `.ok`, `.output` (the agent's answer, at most 8,000 characters), `.error`, `.task`, `.files` (what it wrote) and `.index`; the list has `.completed` and `.failed`. With `on_error = "collect"` (the default) a failed agent is a result with `ok == false`; with `"fail"` the first failure stops the others and the run ends Blocked.
 

@@ -135,7 +135,7 @@ export function repositoryReviewTemplate(name = "RepositoryReview"): ModuleFiles
 }
 `,
     flow: `implement ${name} using "contract-v1" {
-    limit iterations 2, time 60m, steps 20000;
+    limit iterations 4, time 60m, steps 20000;
     policy = "agents-v1";
 
     // Four agents on one local model with four slots. For cloud agents, name a provider instead,
@@ -158,12 +158,19 @@ export function repositoryReviewTemplate(name = "RepositoryReview"): ModuleFiles
     results = await parallel_map(agents, tasks, concurrency = 4);
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
-    evidence = await evaluate(candidate, spec);
-    verdict = verify(spec, evidence);
-    if (verdict.status == Pass) {
-        return accept(candidate, evidence);
+    // The report is checked, and written again with the exact problems until it holds.
+    while (!accepted(candidate, spec)) {
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md", feedback = verdict.violations);
     }
-    return needs_review(evidence);
+    return unresolved();
 }
 `
   };

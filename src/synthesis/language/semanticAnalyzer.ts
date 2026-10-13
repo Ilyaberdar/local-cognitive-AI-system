@@ -57,7 +57,7 @@ const METHODS: Record<string, FunctionDefinition> = {
   propose_tests: { returns: "tests", required: 1, max: 2, parameters: [["frozenSpec"], ["candidate"]], async: true },
   reconsider: { returns: "design", required: 2, max: 4, parameters: [["frozenSpec"], ["design"]], async: true },
   split: { returns: "array:string", required: 2, max: 3, parameters: [["string"], ["number"], ["context"]], named: { paths: ["permission"], instruction: ["string"] }, async: true },
-  synthesize: { returns: "candidate", required: 3, max: 3, parameters: [["candidate"], ["frozenSpec"], ["array:taskResult"]], named: { file: ["string"], instruction: ["string"] }, async: true }
+  synthesize: { returns: "candidate", required: 3, max: 3, parameters: [["candidate"], ["frozenSpec"], ["array:taskResult"]], named: { file: ["string"], instruction: ["string"], feedback: ["feedback", "none"] }, async: true }
 };
 const STATUSES = new Set(["Pass", "Fail", "Unknown", "Blocked", "Unresolved", "NeedsReview"]);
 /** What a run may use: local llama.cpp models only, also cloud models by API key, also agents. */

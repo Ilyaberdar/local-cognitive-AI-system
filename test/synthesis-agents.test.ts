@@ -40,7 +40,7 @@ const flow = (body: string, limits = "iterations 2, time 5m, steps 20000") => `i
     return needs_review(evidence);
 }`;
 
-async function fixture(t: TestContext, options: {script: Script; delay?: (task: string) => Promise<void>; window?: number}) {
+async function fixture(t: TestContext, options: {script: Script; delay?: (task: string) => Promise<void>; window?: number; report?: (prompt: string) => string}) {
   const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-synthesis-agents-")));
   const root = path.join(temp, "project"), data = path.join(temp, "app");
   await fs.mkdir(path.join(root, "src"), {recursive: true}); await fs.mkdir(data);
@@ -79,7 +79,7 @@ async function fixture(t: TestContext, options: {script: Script; delay?: (task: 
     },
     generateText: async (request: LLMRequest): Promise<LLMResponse> => {
       advisory.push(request);
-      const text = /^Merge these findings/.test(request.prompt) ? `merged ${request.prompt.split("### Agent").length - 1} results` : `# Report\n\n${request.prompt.slice(-200)}`;
+      const text = /^Merge these findings/.test(request.prompt) ? `merged ${request.prompt.split("### Agent").length - 1} results` : options.report?.(request.prompt) ?? `# Report\n\n${request.prompt.slice(-200)}`;
       return {provider: "deepseek", model: "deepseek-flash", text, usage: {inputTokens: 10, outputTokens: 10}};
     }
   } as unknown as LLMService;
@@ -433,4 +433,23 @@ test("races: a local model keeps more slots than a later load asks for while it 
   const first = gatedLlm(llm, 4, {baseDelayMs: 2}), second = gatedLlm(llm, 4, {baseDelayMs: 2});
   await Promise.all([...Array.from({length: 4}, () => first.generateObject({prompt: "a"}, "p")), ...Array.from({length: 4}, () => second.generateObject({prompt: "b"}, "p"))]);
   assert.ok(peak <= 4, `two runs together sent ${peak} at once to one provider`);
+});
+
+test("a report that cites what does not exist is written again with the exact problems until Grounded holds", async (t) => {
+  const prompts: string[] = [];
+  const f = await fixture(t, {script: writer, report: prompt => { prompts.push(prompt); return /failed the contract's checks/.test(prompt) ? "# Report\n- src/alpha.ts:1 is fine" : "# Report\n- src/missing.ts:3 swallows an error"; }});
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcspec"), spec.replace('hard clean = Forbid("notes/**", "FORBIDDEN");', 'hard grounded = Grounded("REPORT.md");'));
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcflow"), flow(spawn(2, undefined, 2)).replace(/    evidence = await evaluate[\s\S]*$/, `    while (!accepted(candidate, spec)) {
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        if (verdict.status == Pass) { return accept(candidate, evidence); }
+        candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md", feedback = verdict.violations);
+    }
+    return unresolved();
+}`));
+  const result = await f.service.wait((await f.service.start(f.project.id, "Review")).id);
+  assert.equal(result.status, "accepted", result.error);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /REPORT\.md:2 cites src\/missing\.ts, which does not exist/);
+  assert.equal((await f.service.diff(result.id)).files.find(file => file.path === "review/REPORT.md")?.after, "# Report\n- src/alpha.ts:1 is fine");
 });
