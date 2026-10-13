@@ -45,6 +45,8 @@ export interface ProviderHttpConfig {
 export interface CompatibleProviderConfig extends ProviderHttpConfig {
   name: string;
   dialect: string;
+  /** The preset it came from: its regions, models and key page. */
+  preset?: string;
 }
 
 export interface AppConfig {

@@ -142,13 +142,19 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
   });
   if (patch.llm !== undefined) check(object(patch.llm, "llm"), "llm", { defaultProvider: "string" });
   if (patch.providers !== undefined) for (const [id, provider] of Object.entries(object(patch.providers, "providers"))) {
+    // Removed: only a provider the user added; the built-ins and the services every installation has stay.
+    if (provider === null) {
+      if (BUILT_IN_PROVIDER_IDS.includes(id) || providerPreset(id)?.builtIn) throw new SettingsValidationError(`providers.${id} cannot be removed. Turn it off instead.`);
+      continue;
+    }
     const value = object(provider, `providers.${id}`);
     check(value, `providers.${id}`, {
       enabled: "boolean", baseUrl: "string", apiKey: "string", model: "string", timeoutMs: [1000, 3600000],
-      version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string"
+      version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string", preset: "string"
     });
     // An OpenAI-compatible service is data: a safe id, a known dialect, a short name and a web address.
-    const compatible = value.kind !== undefined || value.dialect !== undefined || value.name !== undefined;
+    const compatible = value.kind !== undefined || value.dialect !== undefined || value.name !== undefined || value.preset !== undefined;
+    if (value.preset !== undefined && !providerPreset(String(value.preset))) throw new SettingsValidationError(`Invalid providers.${id}.preset.`);
     if (compatible && BUILT_IN_PROVIDER_IDS.includes(id)) throw new SettingsValidationError(`providers.${id} is built in.`);
     if (compatible && !/^[a-z][a-z0-9-]{1,63}$/.test(id)) throw new SettingsValidationError("Invalid provider id.");
     if (value.dialect !== undefined && !isProviderDialect(value.dialect)) throw new SettingsValidationError(`Invalid providers.${id}.dialect.`);

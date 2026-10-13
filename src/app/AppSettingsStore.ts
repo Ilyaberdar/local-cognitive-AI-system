@@ -6,7 +6,7 @@ import { AppSettings, AppSettingsPatch } from "../types";
 import { isMissingFile, restrictToOwner, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { constants } from "node:fs";
 import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client/configuration";
-import { validateSettingsPatch, defaultUiPreferences, readShortcuts } from "./settingsValidation";
+import { validateSettingsPatch, defaultUiPreferences, readShortcuts, SettingsValidationError } from "./settingsValidation";
 import { normalizeAgentLimits } from "../agents/runtime/AgentLimits";
 import { defaultLocalGenerationSettings, normalizeLocalGenerationSettings } from "../local/GenerationSettings";
 
@@ -169,6 +169,11 @@ export class AppSettingsStore {
     };
 
     for (const [providerId, providerPatch] of Object.entries(patch.providers ?? {})) {
+      if (providerPatch === null) {
+        if (next.llm.defaultProvider === providerId) throw new SettingsValidationError("This is the default provider: choose another default first.");
+        delete next.providers[providerId];
+        continue;
+      }
       next.providers[providerId] = {
         ...(next.providers[providerId] ?? this.defaultProvider(providerId)),
         ...providerPatch

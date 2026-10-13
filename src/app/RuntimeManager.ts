@@ -276,7 +276,8 @@ export class RuntimeManager {
             timeoutMs: provider.timeoutMs ?? base?.timeoutMs ?? 300000,
             apiKey: provider.apiKey || base?.apiKey,
             name: provider.name || base?.name || id,
-            dialect: provider.dialect || base?.dialect || "chat"
+            dialect: provider.dialect || base?.dialect || "chat",
+            ...(provider.preset ? { preset: provider.preset } : {})
           }];
         })),
       outputDir: settings.filesystem?.outputDir ?? this.baseConfig.outputDir

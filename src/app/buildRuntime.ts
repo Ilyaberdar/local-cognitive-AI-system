@@ -561,7 +561,7 @@ export const buildRuntime = async (
   providerRegistry.register(new GeminiProvider(config.providers.gemini, logger));
   // OpenAI-compatible services that are data: one client, shaped by each service's dialect.
   for (const [id, provider] of Object.entries(config.compatibleProviders ?? {})) {
-    const preset = providerPreset(id);
+    const preset = providerPreset(provider.preset ?? id);
     providerRegistry.register(new OpenAICompatibleProvider({ ...provider, id, dialect: compatibleDialect(provider.dialect),
       ...(preset ? { catalog: { keyUrl: preset.keyUrl, models: preset.models, ...(preset.regions ? { regions: preset.regions } : {}) } } : {}) }, logger));
   }

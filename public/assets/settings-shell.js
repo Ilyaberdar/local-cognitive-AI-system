@@ -82,6 +82,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, disposeUpdates, disposeGpu, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
   const context = () => getContext() || {};
   const providerCatalog = id => (context().providers || []).find(provider => provider.id === id)?.catalog;
+  /** A provider the user added (an OpenAI-compatible service that is not one every installation has). */
+  const isAddedProvider = (id, entry) => entry?.kind === 'openai-compatible' && !(context().providerPresets || []).some(preset => preset.id === id && preset.builtIn);
+  let addProviderStatus;
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
   const serverFor = route => {
@@ -125,10 +128,13 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       field('ui.codeFontSize', 'Code text size', 'code-font-size', { description: 'Code blocks in chat, workflow responses and Review. Independent of text size. Default: 12 px.' }),
       bool('ui.animations', 'Animations', 'Shows the one-pass sweep when Chat, Workflow, Synthesis or Models is clicked. Motion is reduced automatically when your system requests it.')
     ];
+    if (name === 'providers' && id === 'new') return [];
     if (name === 'providers' && id && Object.hasOwn(settingsOf(route).providers || {}, id)) {
-      const regions = providerCatalog(id)?.regions;
-      return [bool(`providers.${id}.enabled`, 'Enabled'), ...(id === 'llamacpp' ? [] : [
-        field(`providers.${id}.baseUrl`, 'Base URL', 'url', regions ? { description: `A key works only in the region it was created in. ${regions.map(region => `${region.label}: ${region.baseUrl}`).join(' · ')}` } : {}),
+      const regions = providerCatalog(id)?.regions, entry = settingsOf(route).providers[id];
+      return [bool(`providers.${id}.enabled`, 'Enabled'),
+        ...(isAddedProvider(id, entry) ? [field(`providers.${id}.name`, 'Name', 'text', { description: 'Shown in Settings and where you choose a model.' })] : []),
+        ...(id === 'llamacpp' ? [] : [
+        regions ? field(`providers.${id}.baseUrl`, 'Region', 'region-url', { regions, description: 'A key works only in the region it was created in.' }) : field(`providers.${id}.baseUrl`, 'Base URL', 'url'),
         ...(id === 'ollama' ? [] : [field(`providers.${id}.apiKey`, 'API key', 'secret')])
       ]), field(`providers.${id}.model`, 'Default model', 'model', { provider: id }),
       ...(id === 'llamacpp' ? [] : [number(`providers.${id}.timeoutMs`, 'Timeout (ms)', 1000, 3600000)]),
@@ -162,7 +168,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   };
   function titleFor(route) {
     const [name, id] = route.split('/');
-    if (id) return name === 'providers' ? providerLabel(id, settingsOf(route).providers?.[id]) : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : id === 'import' ? 'Import MCP servers' : externalMcpServers()[id]?.name || id : id;
+    if (id) return name === 'providers' ? id === 'new' ? 'Add provider' : providerLabel(id, settingsOf(route).providers?.[id]) : name === 'plugins' ? data.integrations.find(item => item.id === id)?.name || id : name === 'memory' ? 'Advanced memory' : name === 'mcp' ? id === 'local-cognitive' ? 'Local Cognitive MCP server' : id === 'new' ? 'Add MCP server' : id === 'import' ? 'Import MCP servers' : externalMcpServers()[id]?.name || id : id;
     return groups.flatMap(([, items]) => items).find(([key]) => key === name)?.[1] || 'Page not found';
   }
   const dirty = key => { if (!drafts.has(key)) drafts.set(key, {}); return drafts.get(key); };
@@ -231,6 +237,11 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       // The existing model picker is reused with a unique accessible label.
       control = control.replace(/<(select|input) /, `<$1 id="${id}" `);
     } else if (spec.type === 'textarea') control = `<textarea ${common} rows="3">${escape(value)}</textarea>`;
+    else if (spec.type === 'region-url') {
+      // A choice of the service's regions fills the address, which stays editable (a workspace address).
+      const current = String(value ?? ''), known = spec.regions.some(region => region.baseUrl === current);
+      control = `<div class="settings-region-control"><select data-region-for="${escape(spec.name)}" aria-label="Region">${spec.regions.map(region => `<option value="${escape(region.baseUrl)}" ${region.baseUrl === current ? 'selected' : ''}>${escape(region.label)}</option>`).join('')}<option value="" ${known ? '' : 'selected'}>Other address</option></select><input ${common} type="url" value="${escape(current)}" aria-label="Address" /></div>`;
+    }
     else {
       const numberAttributes = spec.type === 'number' ? `${Number.isFinite(spec.min) ? `min="${spec.min}"` : ''} ${Number.isFinite(spec.max) ? `max="${spec.max}"` : ''} step="1" required` : '';
       const input = `<input ${common} type="${['number', 'url'].includes(spec.type) ? spec.type : 'text'}" value="${escape(value)}" ${numberAttributes} />`;
@@ -592,6 +603,67 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       }
     });
   }
+  /** Settings → Add provider: a preset (or any OpenAI-compatible address), its key and model; saved,
+   * then tested, then its own page opens with the test's result. */
+  function addProviderPage() {
+    const presets = (context().providerPresets || []).filter(preset => !preset.builtIn);
+    const first = presets[0];
+    return `<p class="settings-description">Connect a cloud service that speaks the OpenAI API. Its key stays on this device; chats and workflows can then use its models.</p>
+      <form id="add-provider-form" class="settings-form"><div class="settings-rows">
+        <div class="settings-row"><div><label for="add-provider-preset">Service</label><p>Known services fill in their address and models.</p></div><div class="settings-control"><select id="add-provider-preset" data-add-provider-preset>${presets.map(preset => `<option value="${escape(preset.id)}">${escape(preset.name)}</option>`).join('')}<option value="">Other OpenAI-compatible service</option></select></div></div>
+        <div class="settings-row"><div><label for="add-provider-name">Name</label><p>Shown in Settings and where you choose a model.</p></div><div class="settings-control"><input id="add-provider-name" data-add-field="name" maxlength="80" required value="${escape(first?.name ?? '')}" /></div></div>
+        <div class="settings-row"><div><label for="add-provider-address">Address</label><p>Its OpenAI-compatible API address.</p></div><div class="settings-control"><input id="add-provider-address" data-add-field="baseUrl" type="url" required placeholder="https://api.example.com/v1" value="${escape(first?.baseUrl ?? '')}" /></div></div>
+        <div class="settings-row"><div><label for="add-provider-key">API key</label><p data-add-key-help>${first ? `<a href="${escape(first.keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : 'From the service’s console.'}</p></div><div class="settings-control"><input id="add-provider-key" data-add-field="apiKey" type="password" autocomplete="new-password" required placeholder="Enter API key" /></div></div>
+        <div class="settings-row"><div><label for="add-provider-model">Model</label><p>Its models are listed once it is added; this one is the default.</p></div><div class="settings-control"><input id="add-provider-model" data-add-field="model" list="add-provider-models" required value="${escape(first?.model ?? '')}" /><datalist id="add-provider-models">${(first?.models ?? []).map(model => `<option value="${escape(model)}"></option>`).join('')}</datalist></div></div>
+      </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${addProviderStatus?.error ? 'is-error' : ''}" data-add-provider-status>${escape(addProviderStatus?.text ?? 'Nothing is saved until you add it.')}</span><button type="submit" class="primary-button">Add & test</button></div></form>`;
+  }
+  /** An id for a new provider: the preset's (or the name's) letters, made unique. */
+  function newProviderId(base) {
+    const taken = new Set([...Object.keys(clientSettings().providers || {}), 'llamacpp', 'ollama', 'lmstudio', 'openai', 'anthropic', 'gemini', 'new']);
+    let stem = String(base || 'provider').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 56);
+    if (!/^[a-z][a-z0-9-]+$/.test(stem)) stem = `p-${stem || 'provider'}`;
+    let id = stem, suffix = 2;
+    while (taken.has(id)) id = `${stem}-${suffix++}`;
+    return id;
+  }
+  function bindAddProvider() {
+    const form = root.querySelector('#add-provider-form');
+    if (!form) return;
+    const presets = context().providerPresets || [], field = name => form.querySelector(`[data-add-field="${name}"]`);
+    const status = (text, error = false) => { addProviderStatus = { text, error }; const slot = form.querySelector('[data-add-provider-status]'); if (slot) { slot.textContent = text; slot.classList.toggle('is-error', error); } };
+    form.querySelector('[data-add-provider-preset]').addEventListener('change', event => {
+      const preset = presets.find(item => item.id === event.target.value);
+      field('name').value = preset?.name ?? '';
+      field('baseUrl').value = preset?.baseUrl ?? '';
+      field('model').value = preset?.model ?? '';
+      form.querySelector('#add-provider-models').innerHTML = (preset?.models ?? []).map(model => `<option value="${escape(model)}"></option>`).join('');
+      form.querySelector('[data-add-key-help]').innerHTML = preset ? `<a href="${escape(preset.keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : 'From the service’s console.';
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const preset = presets.find(item => item.id === form.querySelector('[data-add-provider-preset]').value);
+      const name = field('name').value.trim(), model = field('model').value.trim();
+      const id = newProviderId(preset?.id ?? name);
+      const submit = form.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      status('Adding…');
+      try {
+        await data.save({ providers: { [id]: { kind: 'openai-compatible', dialect: preset?.dialect ?? 'chat', ...(preset ? { preset: preset.id } : {}), name,
+          baseUrl: field('baseUrl').value.trim(), apiKey: field('apiKey').value.trim(), model, enabled: true, timeoutMs: 300000 } } });
+      } catch (error) {
+        submit.disabled = false;
+        status(`Not added. ${error.message}`, true);
+        return;
+      }
+      status('Added. Testing…');
+      let result;
+      try { result = await data.testProvider(id, model, 300000); } catch (error) { result = { ok: false, message: error.message }; }
+      results.set(`providers/${id}`, result);
+      addProviderStatus = undefined;
+      location.hash = `#/settings/providers/${id}`;
+    });
+  }
   function blockedPage(blocked) {
     const actions = blocked.actions.map(action => action === 'use-local'
       ? '<button type="button" class="primary-button" data-server-action="use-local">Use This computer</button>'
@@ -619,8 +691,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'data' && server) return serverErrorReportsRow(server) + form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
-    if (name === 'providers' && !id) return form(specs) + `<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerLabel(key, provider), provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
-    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button></div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
+    if (name === 'providers' && id === 'new') return server ? note('Add providers on the server itself', 'Adding a provider sets its address, which only the server owner can do there.') : addProviderPage();
+    if (name === 'providers' && !id) return form(specs) + `<div class="settings-section-actions"><a class="primary-button mcp-add-button" href="#/settings/providers/new">${icon('plus')}<span>Add provider</span></a></div><div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerLabel(key, provider), provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
+    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button>${!server && isAddedProvider(id, settings().providers?.[id]) ? '<button type="button" class="ghost-button danger-button" data-remove-provider>Remove provider</button>' : ''}</div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
     if (name === 'runtime') {
       const generation = specs.find(spec => spec.type === 'local-generation');
       const runtimeSpecs = specs.filter(spec => spec !== generation);
@@ -725,6 +798,20 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'runtime' && request) disposeGpu = mountGpuRuntimePanel(root.querySelector('[data-gpu-runtime-panel]'), { request, getRuntime: () => context().localModels?.runtime });
     if (name === 'report-bug') disposeReport = mountReportBugPage(root.querySelector('[data-report-bug-page]'), { mode: context().server ? 'remote' : 'local' });
     if (name === 'shortcuts') bindShortcutsPage();
+    if (name === 'providers' && id === 'new') bindAddProvider();
+    root.querySelectorAll('[data-region-for]').forEach(select => select.addEventListener('change', () => {
+      const input = root.querySelector(`[name="${select.dataset.regionFor}"]`);
+      if (!input || !select.value) { input?.focus(); return; }
+      input.value = select.value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }));
+    root.querySelector('[data-remove-provider]')?.addEventListener('click', async event => {
+      const button = event.currentTarget, label = titleFor(page);
+      if (!window.confirm(`Remove ${label}? Chats and workflows set to use it will need another provider.`)) return;
+      button.disabled = true;
+      try { await data.save({ providers: { [id]: null } }); location.hash = '#/settings/providers'; }
+      catch (error) { button.disabled = false; setStatus(placeOf(page).key, { text: `Not removed. ${error.message}`, error: true }); }
+    });
     if (name === 'mcp' && id === 'import') bindMcpImport();
     else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));

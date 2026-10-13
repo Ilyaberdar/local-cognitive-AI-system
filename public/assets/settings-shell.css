@@ -554,3 +554,8 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .settings-keys.is-empty { color: var(--faint); }
 .settings-keys.is-recording { min-width: 140px; justify-content: center; padding: 0 12px; border: 1px solid var(--accent-border); border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--control-bg)); }
 .settings-keys.is-conflict kbd { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); color: var(--danger); }
+
+/* Settings → Models & Providers: the add button, and a region chosen beside an address that stays editable. */
+.settings-section-actions { display: flex; justify-content: flex-end; margin: 4px 0 12px; }
+.settings-region-control { display: grid; gap: 8px; width: 100%; min-width: 0; }
+.settings-region-control > * { width: 100%; min-width: 0; }

@@ -19,6 +19,7 @@ import { systemMetricsSnapshot } from "../local/systemMetrics";
 import { resolveReviewPath, revealWorkspacePath } from "./workspaceReview";
 import { ProjectError } from "../projects/types";
 import { isReasoningEffort } from "../llm/ReasoningEffort";
+import { PROVIDER_PRESETS } from "../llm/providerCatalog";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -194,6 +195,8 @@ export const createDashboardBootstrapController =
 
       res.status(200).json({
         providers: runtime.providerDescriptors,
+        // The services Settings → Add provider offers; where their keys come from on a server is not needed here.
+        providerPresets: PROVIDER_PRESETS.map(({ env: _env, ...preset }) => preset),
         tools: runtime.tools,
         plugins: runtime.plugins,
         pluginStatuses: [],

@@ -211,7 +211,9 @@ test("Settings names Qwen, shows its regions and links to its key page", t => {
   shell.route("#/settings/providers/qwen");
   assert.equal(dom.window.document.querySelector("h1").textContent, "Qwen (Alibaba Cloud)");
   assert.equal(page().querySelector(`a[href="${preset.keyUrl}"]`)?.getAttribute("target"), "_blank");
-  assert.match(page().querySelector('[data-setting="providers.qwen.baseUrl"]').textContent, /US \(Virginia\): https:\/\/dashscope-us/);
+  const regions = [...page().querySelector('[data-region-for="providers.qwen.baseUrl"]').options].map((option: any) => [option.textContent, option.value]);
+  assert.deepEqual(regions.slice(0, 2), [["Singapore (international)", SINGAPORE], ["US (Virginia)", "https://dashscope-us.aliyuncs.com/compatible-mode/v1"]]);
+  assert.deepEqual(regions.at(-1), ["Other address", ""]);
 });
 
 test("each preset's dialect asks in its service's own way: DeepSeek's JSON word, Groq's reasoning_effort, OpenRouter's reasoning, Perplexity without JSON mode", async () => {
@@ -262,4 +264,110 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
     assert.match(preset.baseUrl, /^https:\/\//);
     assert.equal(compatibleDialect(preset.dialect).id, preset.dialect, preset.id);
   }
+});
+
+test("an added provider is saved, registered with its preset's catalog, and removed; the built-ins and the default stay", async t => {
+  const { RuntimeManager } = await import("../src/app/RuntimeManager");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "added-provider-"));
+  const providers = Object.fromEntries(Object.entries(config.providers).map(([id, options]) => [id, { ...options, enabled: false, apiKey: "" }])) as typeof config.providers;
+  const options = { ...config, providers, appDataDir: path.join(root, "app"), llm: { defaultProvider: "llamacpp" }, sessions: { baseDir: path.join(root, "sessions") },
+    memory: { ...config.memory, adapter: "local-json" as const, baseDir: path.join(root, "memory") }, outputDir: path.join(root, "output"),
+    plugins: { dir: path.join(root, "plugins"), overrides: {} }, telegram: { ...config.telegram, enabled: false, botToken: "" },
+    localModels: { ...config.localModels!, runtimeDir: path.join(root, "runtime"), executablePath: undefined, modelsDir: path.join(root, "models"), contextSize: 4096 } };
+  const manager = new RuntimeManager(options, new AppSettingsStore(options.appDataDir, options), new Logger());
+  await manager.init();
+  t.after(async () => { await manager.dispose(); await fs.rm(root, { recursive: true, force: true }); });
+
+  const added = { kind: "openai-compatible" as const, dialect: "deepseek", preset: "deepseek", name: "DeepSeek (work)", baseUrl: "https://api.deepseek.com",
+    apiKey: "sk-added-provider-key", model: "deepseek-flash", enabled: true, timeoutMs: 300000 };
+  const { runtime } = await manager.updateSettings({ providers: { "deepseek-2": added } });
+  const descriptor = runtime.providerDescriptors.find(item => item.id === "deepseek-2");
+  assert.equal(descriptor?.name, "DeepSeek (work)");
+  assert.equal(descriptor?.configured, true);
+  assert.deepEqual(descriptor?.catalog?.models, providerPreset("deepseek")!.models, "the preset's models follow a renamed copy");
+  assert.equal(runtime.providerDescriptors.find(item => item.id === "qwen")?.configured, false, "Qwen without a key is listed, not configured");
+
+  await assert.rejects(manager.updateSettings({ llm: { defaultProvider: "deepseek-2" }, providers: { "deepseek-2": null } }), /default provider/);
+  await assert.rejects(manager.updateSettings({ providers: { qwen: null } }), /cannot be removed/);
+  await assert.rejects(manager.updateSettings({ providers: { openai: null } }), /cannot be removed/);
+  await assert.rejects(manager.updateSettings({ providers: { other: { ...added, preset: "nonsense" } } }), /preset/);
+  const removed = await manager.updateSettings({ providers: { "deepseek-2": null } });
+  assert.equal(removed.settings.providers["deepseek-2"], undefined);
+  assert.equal(removed.runtime.providerDescriptors.some(item => item.id === "deepseek-2"), false);
+  assert.ok(removed.settings.providers.qwen);
+});
+
+function settingsPage(t: TestContext, providers: Record<string, unknown>) {
+  const bundle = buildSync({ entryPoints: ["public/assets/settings-shell.js"], bundle: true, write: false, format: "iife", globalName: "SettingsShell" }).outputFiles[0].text;
+  const dom = new JSDOM('<main><div id="root"></div></main>', { url: "http://localhost/#/chat", runScripts: "outside-only", pretendToBeVisual: true });
+  t.after(() => dom.window.close());
+  dom.window.eval(`${bundle}\nwindow.SettingsShell = SettingsShell;`);
+  const saves: Array<Record<string, any>> = [], tests: unknown[][] = [];
+  const appSettings: Record<string, any> = { memory: { localProfileId: "local-1" }, profile: { displayName: "Mira" }, llm: { defaultProvider: "llamacpp" }, providers };
+  const providerPresets = PROVIDER_PRESETS.map(({ env: _env, ...preset }) => preset);
+  const descriptors = () => Object.entries(appSettings.providers).map(([id, entry]: [string, any]) => ({ id, name: entry.name ?? id, configured: Boolean(entry.apiKey), defaultModel: entry.model,
+    ...(providerPreset(entry.preset ?? id) ? { catalog: { keyUrl: providerPreset(entry.preset ?? id)!.keyUrl, models: providerPreset(entry.preset ?? id)!.models, regions: providerPreset(entry.preset ?? id)!.regions } } : {}) }));
+  const data = { integrations: [],
+    save: async (patch: Record<string, any>) => { saves.push(JSON.parse(JSON.stringify(patch)));
+      for (const [id, entry] of Object.entries(patch.providers ?? {})) { if (entry === null) delete appSettings.providers[id]; else appSettings.providers[id] = { ...appSettings.providers[id], ...(entry as object) }; } },
+    testProvider: async (...args: unknown[]) => { tests.push(args); return { ok: true, message: "Provider replied: ok", model: args[1] }; } };
+  dom.window.confirm = () => true;
+  const shell = dom.window.SettingsShell.createSettingsShell({ app: dom.window.document.getElementById("root"), getContext: () => ({ appSettings, providers: descriptors(), providerPresets }),
+    data, renderModelControl: () => "<select></select>", applyPreferences() {}, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
+  const document = dom.window.document;
+  return { dom, document, shell, saves, tests, appSettings, content: () => document.querySelector(".settings-content") };
+}
+
+test("Add provider: a preset fills its fields, the provider is saved and tested, then its page shows the result", async t => {
+  const ui = settingsPage(t, { qwen: { kind: "openai-compatible", dialect: "qwen", name: "Qwen (Alibaba Cloud)", enabled: true, baseUrl: SINGAPORE, model: "qwen3.7-plus", timeoutMs: 300000 } });
+  ui.shell.route("#/settings/providers");
+  assert.equal(ui.content().querySelector('a[href="#/settings/providers/new"]')?.textContent?.trim(), "Add provider");
+  ui.shell.route("#/settings/providers/new");
+  assert.equal(ui.document.querySelector("h1").textContent, "Add provider");
+  const service = ui.content().querySelector("[data-add-provider-preset]");
+  assert.deepEqual([...service.options].map((option: any) => option.textContent), ["DeepSeek", "OpenRouter", "Groq", "Perplexity", "Other OpenAI-compatible service"], "Qwen is already there");
+  const field = (name: string) => ui.content().querySelector(`[data-add-field="${name}"]`);
+  service.value = "perplexity";
+  service.dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
+  assert.equal(field("name").value, "Perplexity");
+  assert.equal(field("baseUrl").value, "https://api.perplexity.ai/v1");
+  assert.equal(field("model").value, "fast");
+  assert.equal(ui.content().querySelector('[data-add-key-help] a').getAttribute("href"), providerPreset("perplexity")!.keyUrl);
+  field("apiKey").value = "pplx-test-key-123456";
+  ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/perplexity"); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(ui.saves[0], { providers: { perplexity: { kind: "openai-compatible", dialect: "perplexity", preset: "perplexity", name: "Perplexity",
+    baseUrl: "https://api.perplexity.ai/v1", apiKey: "pplx-test-key-123456", model: "fast", enabled: true, timeoutMs: 300000 } } });
+  assert.deepEqual(ui.tests[0], ["perplexity", "fast", 300000]);
+  ui.shell.route(ui.dom.window.location.hash);
+  assert.match(ui.content().textContent, /Test succeeded/);
+  assert.ok(ui.content().querySelector('[data-setting="providers.perplexity.name"]'), "an added provider can be renamed");
+
+  // A second copy of a preset, or any other service, gets an id of its own.
+  ui.shell.route("#/settings/providers/new");
+  ui.content().querySelector("[data-add-provider-preset]").value = "perplexity";
+  ui.content().querySelector("[data-add-provider-preset]").dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
+  field("apiKey").value = "pplx-second-key-123456";
+  ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/perplexity-2"); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(ui.saves[1].providers["perplexity-2"]);
+});
+
+test("an added provider can be removed from its page; a built-in one cannot; a region fills Qwen's address", async t => {
+  const ui = settingsPage(t, {
+    qwen: { kind: "openai-compatible", dialect: "qwen", name: "Qwen (Alibaba Cloud)", enabled: true, baseUrl: SINGAPORE, model: "qwen3.7-plus", timeoutMs: 300000 },
+    groq: { kind: "openai-compatible", dialect: "groq", preset: "groq", name: "Groq", enabled: true, baseUrl: "https://api.groq.com/openai/v1", apiKey: "gsk-x", model: "openai/gpt-oss-120b", timeoutMs: 300000 }
+  });
+  ui.shell.route("#/settings/providers/qwen");
+  assert.equal(ui.content().querySelector("[data-remove-provider]"), null);
+  const region = ui.content().querySelector('[data-region-for="providers.qwen.baseUrl"]');
+  assert.equal(region.value, SINGAPORE);
+  region.value = "https://dashscope-us.aliyuncs.com/compatible-mode/v1";
+  region.dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
+  assert.equal(ui.content().querySelector('[name="providers.qwen.baseUrl"]').value, "https://dashscope-us.aliyuncs.com/compatible-mode/v1");
+  ui.shell.route("#/settings/providers/groq");
+  ui.content().querySelector("[data-remove-provider]").click();
+  for (let i = 0; i < 50 && ui.dom.window.location.hash !== "#/settings/providers"; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(ui.saves[0], { providers: { groq: null } });
+  assert.equal(ui.dom.window.location.hash, "#/settings/providers");
 });

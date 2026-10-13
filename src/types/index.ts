@@ -126,9 +126,10 @@ export interface ProviderRuntimeSettings {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** An OpenAI-compatible service that is data rather than code (Qwen, and services added later). */
   kind?: "openai-compatible";
-  /** The dialect its requests are shaped by, and its name in Settings. */
+  /** The dialect its requests are shaped by, its name in Settings, and the preset it was added from. */
   dialect?: string;
   name?: string;
+  preset?: string;
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -289,7 +290,8 @@ export interface AppSettingsPatch {
       dbPath?: string;
     };
   };
-  providers?: Record<string, Partial<ProviderRuntimeSettings>>;
+  /** null removes a provider the user added. */
+  providers?: Record<string, Partial<ProviderRuntimeSettings> | null>;
   plugins?: Record<
     string,
     {
