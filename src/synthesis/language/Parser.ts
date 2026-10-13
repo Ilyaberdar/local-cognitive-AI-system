@@ -221,6 +221,8 @@ class Parser {
         case "expression": case "await": push(node.expression); break;
         case "if": push(node.condition, ...node.then, ...node.else); break;
         case "while": push(node.condition, ...node.body); break;
+        case "for": push(node.iterable, ...node.body); break;
+        case "index": push(node.object, node.index); break;
         case "return": push(node.value); break;
         case "array": push(...node.items); break;
         case "member": push(node.object); break;
@@ -269,6 +271,11 @@ class Parser {
       const body = this.block();
       return { kind: "while", condition, body, span: joinSpans(start.span, this.previous.span) };
     }
+    if (this.consume("for")) {
+      this.expect("("); const variable = this.identifier().text; this.expect("in"); const iterable = this.expression(); this.expect(")");
+      const body = this.block();
+      return { kind: "for", variable, iterable, body, span: joinSpans(start.span, this.previous.span) };
+    }
     if (this.consume("continue")) {
       this.expect(";"); return { kind: "continue", span: joinSpans(start.span, this.previous.span) };
     }
@@ -292,6 +299,9 @@ class Parser {
         } else if (name.text === "time") {
           if (!["ms", "s", "m", "h"].includes(quantity.unit ?? "")) this.diagnostic("FLOW_LIMIT_UNIT", "Time requires ms, s, m, or h units.", quantity.span);
           values.timeMs = Number(quantity.value);
+        } else if (name.text === "steps") {
+          if (quantity.unit) this.diagnostic("FLOW_LIMIT_UNIT", "Steps must be a dimensionless integer.", quantity.span);
+          values.steps = Number(quantity.value);
         } else if (name.text === "cost") {
           if (quantity.unit !== "usd") this.diagnostic("FLOW_LIMIT_UNIT", "Cost requires usd units.", quantity.span);
           values.costUsd = Number(quantity.value);
@@ -365,6 +375,9 @@ class Parser {
           args.push({ name, value: this.expression() });
         } while (this.consume(",") && !this.at(")"));
         this.expect(")"); result = { kind: "call", callee: result, args, span: joinSpans(result.span, this.previous.span) };
+      } else if (this.consume("[")) {
+        const index = this.expression(); this.expect("]");
+        result = { kind: "index", object: result, index, span: joinSpans(result.span, this.previous.span) };
       } else break;
     }
     return result;

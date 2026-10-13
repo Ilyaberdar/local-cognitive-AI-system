@@ -170,7 +170,15 @@ label = "Calculator" + " UI";
 
 Units attach directly to numbers: `15m`, not `15 m`. `GB`, `MB`, `min`, and `USD` are not recognized units. Duration and size values are normalized internally to milliseconds and bytes. The compiler distinguishes numbers, durations, byte sizes, and costs; it is not a general dimensional-analysis system.
 
-Arrays can be passed to actions and expose `.length`. V1 has no array indexing, array mutation methods, object literals, or destructuring. Runtime records expose only documented fields.
+Arrays (lists) can be passed to actions and expose `.length`. `list[0]` is the first element; an index is a whole number, and one outside the list is a runtime error. A list's elements share one type: `["a", "b"]` is a list of strings, and `[]` is an empty list whose element type the first `append` decides. Lists are values, never changed in place: `append(list, item)` returns a new list with `item` at its end, and `range(n)` the numbers `0` to `n - 1` (at most 10,000). There are no object literals or destructuring. Runtime records expose only documented fields.
+
+```lcflow
+names = [];
+for (i in range(3)) {
+    names = append(names, "agent");
+}
+first = names[0];
+```
 
 ### Expressions and precedence
 
@@ -385,7 +393,7 @@ policy = "local-files-v1";
 - `iterations` must be a positive integer, at most 32 in the application. It counts **all entries into all `while` bodies across the run**, including nested loops. It does not count model calls.
 - `time` must be a positive duration, at most `120m`. It covers the whole executing flow, including model loading.
 - `cost` must be a nonnegative USD quantity. It is recorded, not yet enforced: a run counts the tokens of every call (shown with the run), but no price table stops a cloud run. Do not rely on it as a spending limit.
-- There is also a runtime ceiling of 10,000 interpreter steps; it is not configurable in DSL.
+- `steps` is optional: the interpreter steps (statements and expressions evaluated) the run may take, 10,000 by default and at most 1,000,000. A long `for` loop needs more: `limit iterations 4, time 30m, steps 50000;`.
 
 Exhausting a budget ends the run as Unresolved. It does not jump to code after the loop. To return earlier, use a condition or `return unresolved();` inside the body.
 
@@ -422,7 +430,9 @@ while (counter < 3) {
 
 Variables must be assigned before use on every control-flow path. Initialize values such as `feedback = none;` before a loop when needed. Do not depend on a variable created only inside a loop being available after it. Reassignments normally retain the variable's inferred type; `none` can be used as an initial placeholder.
 
-`continue;` skips the remainder of the innermost loop iteration. There is no `break`, `for`, `switch`, `try/catch`, user-defined function, import, or recursion.
+`for (item in list) { ... }` runs its body once for each element of a list, in order. `item` is a new name that exists only inside the loop. Because a list is finite, a `for` loop always ends: it does not count toward `iterations` (each element still costs interpreter steps).
+
+`continue;` skips the remainder of the innermost loop iteration (`while` or `for`). There is no `break`, `switch`, `try/catch`, user-defined function, import, or recursion.
 
 ### Calls and `await`
 
@@ -679,6 +689,8 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | Module not discovered | Save `Name.lcspec` and `Name.lcflow` together in a discoverable project folder, match the declared module name, select the right workspace, and Refresh. Check Hidden modules if you previously removed it from view. |
 | `FLOW_MODULE` / `FLOW_EVALUATOR` | Match the spec module and acceptance-group names in the flow header. |
 | `FLOW_AWAIT_REQUIRED` | Add `await` before the asynchronous action. |
+| `FLOW_FOR_VARIABLE` | Give the loop variable a new name; it exists only inside the loop. |
+| `FLOW_INDEX` | Index a list with a whole number: `list[0]`. |
 | `FLOW_UNDEFINED_NAME` | Assign the variable before use on every path; initialize loop feedback before the loop. |
 | `FLOW_ASSIGNMENT_TYPE` | Do not reuse a variable for an unrelated value type. |
 | `LEX_UNIT` | Use `GiB`, `MiB`, `m`, or `usd`, with exact spelling and no separating space. |
@@ -707,7 +719,7 @@ The research syntax is broader than this implementation. The following are **not
 - Formal `implies`, `Eventually(...)`, lifecycle, latency, or throughput requirements.
 - Unreal Engine builds (UnrealBuildTool), engine automation tests, or multiplayer evaluators. C++ modules build and test as plain C++20 with the standard library: write an engine-agnostic core against a frozen header, then integrate it in the engine.
 - Evaluation environment/workload selection and numeric optimization objectives such as `soft minimize Mean(...)`.
-- User-defined functions, custom runtime actions declared in DSL, general object manipulation, or parallel agent orchestration.
+- User-defined functions, custom runtime actions declared in DSL, or general object manipulation.
 - Executing model-proposed tests (only the engineer's tests run), or registering new trusted evaluators from a DSL file.
 - Model downloads, arbitrary tools, or host shell access.
 

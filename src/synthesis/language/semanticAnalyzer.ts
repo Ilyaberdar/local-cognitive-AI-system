@@ -2,9 +2,14 @@ import {
   CallExpression, CompileOptions, ContractCheck, Diagnostic, Expression, FlowProgram, SourceSpan, SpecProgram, Statement
 } from "./types";
 
+/** "array" holds values of unknown types; `array:T` only values of type T (`array:none`: an empty literal). */
 type ValueType = "string" | "number" | "boolean" | "none" | "duration" | "bytes" | "cost" |
-  "array" | "modelList" | "selectedModel" | "model" | "module" | "specRef" | "frozenSpec" |
+  "array" | `array:${string}` | "modelList" | "selectedModel" | "model" | "module" | "specRef" | "frozenSpec" |
   "candidate" | "evidence" | "verdict" | "status" | "feedback" | "review" | "design" | "tests" | "context" | "result" | "unknown";
+const isArray = (type: ValueType) => type === "array" || type === "modelList" || type.startsWith("array:");
+/** The type of an array's elements: what `list[i]` and `for (item in list)` give. */
+const elementOf = (type: ValueType): ValueType => type === "modelList" ? "selectedModel" : type.startsWith("array:") ? type.slice(6) as ValueType : "unknown";
+const arrayOf = (type: ValueType): ValueType => type === "unknown" ? "array" : `array:${type}`;
 interface FunctionDefinition {
   returns: ValueType;
   required: number;
@@ -29,7 +34,10 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   needs_review: { returns: "result", required: 1, max: 1, parameters: [["evidence"]] },
   unresolved: { returns: "result", required: 0, max: 1, parameters: [["string"]] },
   merge: { returns: "feedback", required: 1, max: 8 },
-  stagnant: { returns: "boolean", required: 1, max: 1, parameters: [["number"]] }
+  stagnant: { returns: "boolean", required: 1, max: 1, parameters: [["number"]] },
+  // Computed by the interpreter itself: no runtime action, no event.
+  range: { returns: "array:number", required: 1, max: 1, parameters: [["number"]] },
+  append: { returns: "array", required: 2, max: 2, parameters: [["array"]] }
 };
 const METHODS: Record<string, FunctionDefinition> = {
   revise: { returns: "candidate", required: 2, max: 4, parameters: [["candidate"], ["frozenSpec"]], named: { file: ["string"], format: ["string"], instruction: ["string"] }, async: true },
@@ -57,6 +65,8 @@ export function namedProviders(flow: FlowProgram): Array<{ provider: string; spa
       case "expression": case "await": pending.push(node.expression); break;
       case "if": pending.push(node.condition, ...node.then, ...node.else); break;
       case "while": pending.push(node.condition, ...node.body); break;
+      case "for": pending.push(node.iterable, ...node.body); break;
+      case "index": pending.push(node.object, node.index); break;
       case "return": if (node.value) pending.push(node.value); break;
       case "array": pending.push(...node.items); break;
       case "member": pending.push(node.object); break;
@@ -172,6 +182,7 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
   if (!Number.isSafeInteger(flow.limits.iterations) || flow.limits.iterations < 1) error("FLOW_ITERATION_LIMIT", "Declare a positive finite integer iteration limit.", flow.span);
   if (!Number.isFinite(flow.limits.timeMs) || flow.limits.timeMs <= 0) error("FLOW_TIME_LIMIT", "Declare a positive finite time limit.", flow.span);
   if (flow.limits.costUsd !== undefined && (!Number.isFinite(flow.limits.costUsd) || flow.limits.costUsd < 0)) error("FLOW_COST_LIMIT", "Cost must be finite and non-negative.", flow.span);
+  if (flow.limits.steps !== undefined && (!Number.isSafeInteger(flow.limits.steps) || flow.limits.steps < 1)) error("FLOW_STEP_LIMIT", "Steps must be a positive whole number.", flow.span);
   if (flow.body.filter((statement) => statement.kind === "limit").length > 1) error("FLOW_DUPLICATE_LIMIT", "Declare budgets once at the top level.", flow.span);
   const policies = flow.body.filter((statement) => statement.kind === "assign" && statement.name === "policy");
   if (policies.length !== 1) error("FLOW_POLICY", `Declare exactly one top-level policy: ${POLICY_LIST}.`, flow.span);
@@ -179,7 +190,12 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
 
   type Symbols = Map<string, ValueType>;
   const numeric = (type: ValueType) => ["number", "duration", "bytes", "cost"].includes(type);
-  const compatible = (actual: ValueType, wanted: ValueType[]) => actual === "unknown" || wanted.includes(actual);
+  const compatible = (actual: ValueType, wanted: ValueType[]) => actual === "unknown" || wanted.includes(actual) ||
+    // Any array where an array is wanted; an empty or untyped array where a typed one is.
+    (isArray(actual) && wanted.some((type) => type === "array" || (type.startsWith("array:") && ["array", "array:none"].includes(actual))));
+  /** Whether a variable of one type may be assigned the other: the same type, or an array whose element type becomes known. */
+  const assignable = (previous: ValueType, next: ValueType) => previous === next || ["none", "unknown"].includes(previous) || ["none", "unknown"].includes(next) ||
+    (isArray(previous) && isArray(next) && [previous, next].some((type) => type === "array" || type === "array:none"));
   function infer(expression: Expression, symbols: Symbols, passGuard: boolean, awaited = false, terminalReturn = false): ValueType {
     switch (expression.kind) {
       case "literal": {
@@ -198,7 +214,18 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
         if (!known) error("FLOW_UNDEFINED_NAME", `Variable '${expression.name}' has not been assigned on every path.`, expression.span);
         return known ?? "unknown";
       }
-      case "array": expression.items.forEach((item) => infer(item, symbols, passGuard)); return "array";
+      case "array": {
+        const types = new Set(expression.items.map((item) => infer(item, symbols, passGuard)));
+        if (!types.size) return "array:none";
+        return types.size === 1 ? arrayOf([...types][0]) : "array";
+      }
+      case "index": {
+        const object = infer(expression.object, symbols, passGuard);
+        const index = infer(expression.index, symbols, passGuard);
+        if (!compatible(index, ["number"])) error("FLOW_INDEX", "An index is a whole number: list[0].", expression.index.span);
+        if (!isArray(object)) { if (object !== "unknown") error("FLOW_INDEX", `Type '${object}' cannot be indexed; only lists can.`, expression.span); return "unknown"; }
+        return elementOf(object);
+      }
       case "member": {
         const object = infer(expression.object, symbols, passGuard);
         if (FORBIDDEN_MEMBERS.has(expression.property)) error("FLOW_MEMBER", `Member '${expression.property}' is not accessible in LC Flow.`, expression.span);
@@ -208,7 +235,7 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
           selectedModel: { id: "string", displayName: "string", sizeBytes: "bytes", providerId: "string" },
           candidate: { id: "string", path: "string", hash: "string" }, array: { length: "number" }, modelList: { length: "number" }
         };
-        const objectFields = fields[object];
+        const objectFields = fields[object] ?? (isArray(object) ? fields.array : undefined);
         if (objectFields && Object.hasOwn(objectFields, expression.property)) return objectFields[expression.property];
         if (object !== "unknown") error("FLOW_MEMBER", `Type '${object}' has no supported member '${expression.property}'.`, expression.span);
         return "unknown";
@@ -267,6 +294,7 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
     if (signature && (positional.length < signature.required || positional.length > signature.max)) error("FLOW_ARGUMENT_COUNT", `Action '${name}' expects ${signature.required === signature.max ? signature.required : `${signature.required}–${signature.max}`} positional arguments.`, call.span);
     let index = 0;
     let namedSeen = false;
+    const positionalTypes: ValueType[] = [];
     const names = new Set<string>();
     for (const arg of call.args) {
       const type = infer(arg.value, symbols, passGuard);
@@ -280,8 +308,18 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
       } else {
         if (namedSeen) error("FLOW_ARGUMENT_ORDER", "Positional arguments must come before named arguments.", arg.value.span);
         expected = signature?.parameters?.[index++];
+        positionalTypes.push(type);
       }
       if (expected && !compatible(type, expected)) error("FLOW_TYPE", `Action '${name}' expects ${expected.join(" or ")}, received ${type}.`, arg.value.span);
+    }
+    if (name === "append" && positional.length === 2) {
+      // A new list with the item at its end; the list's element type follows the items.
+      const [list, item] = positionalTypes;
+      if (!isArray(list)) return "array";
+      const element = elementOf(list);
+      if (list === "array:none" || list === "array") return list === "array" ? "array" : arrayOf(item);
+      if (element !== item && element !== "unknown" && item !== "unknown") { error("FLOW_TYPE", `append adds a ${item} to a list of ${element}.`, call.span); return list; }
+      return list;
     }
     return signature?.returns ?? "unknown";
   }
@@ -307,8 +345,9 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
           if (STATUSES.has(statement.name) || statement.name === flow.module || Object.hasOwn(FUNCTIONS, statement.name)) error("FLOW_RESERVED_NAME", `Name '${statement.name}' is reserved.`, statement.span);
           const type = infer(statement.value, symbols, passGuard);
           const previous = symbols.get(statement.name);
-          if (previous && previous !== type && previous !== "none" && type !== "none" && previous !== "unknown" && type !== "unknown") error("FLOW_ASSIGNMENT_TYPE", `Variable '${statement.name}' cannot change from ${previous} to ${type}.`, statement.span);
-          symbols.set(statement.name, type);
+          if (previous && !assignable(previous, type)) error("FLOW_ASSIGNMENT_TYPE", `Variable '${statement.name}' cannot change from ${previous} to ${type}.`, statement.span);
+          // An empty list keeps the element type it had; a list's element type, once known, stays.
+          symbols.set(statement.name, previous && isArray(previous) && previous !== "array:none" && (type === "array:none" || type === "array") ? previous : type);
           break;
         }
         case "expression": infer(statement.expression, symbols, passGuard); break;
@@ -317,14 +356,27 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
           else if (infer(statement.value, symbols, passGuard, false, true) !== "result") error("FLOW_RETURN", "A flow must return a synthesis result.", statement.span);
           break;
         case "continue":
-          if (!loopDepth) error("FLOW_CONTINUE", "continue is only valid inside a while loop.", statement.span);
+          if (!loopDepth) error("FLOW_CONTINUE", "continue is only valid inside a while or for loop.", statement.span);
           break;
+        case "for": {
+          const list = infer(statement.iterable, symbols, passGuard);
+          if (!isArray(list) && list !== "unknown") error("FLOW_TYPE", `for goes through a list; '${list}' is not one.`, statement.iterable.span);
+          if (symbols.has(statement.variable) || STATUSES.has(statement.variable) || statement.variable === flow.module || Object.hasOwn(FUNCTIONS, statement.variable) || statement.variable === "policy") {
+            error("FLOW_FOR_VARIABLE", `The loop variable '${statement.variable}' must be a new name; it exists only inside the loop.`, statement.span);
+          }
+          const loopSymbols = new Map(symbols);
+          loopSymbols.set(statement.variable, elementOf(list));
+          walk(statement.body, loopSymbols, loopDepth + 1, blockDepth + 1, passGuard);
+          // A list may be empty: only existing variables remain assigned, and an empty list may learn its element type.
+          for (const [name, type] of symbols) if ((type === "none" || type === "array:none") && loopSymbols.has(name)) symbols.set(name, loopSymbols.get(name)!);
+          break;
+        }
         case "while": {
           if (!compatible(infer(statement.condition, symbols, passGuard), ["boolean"])) error("FLOW_TYPE", "while requires a boolean condition.", statement.condition.span);
           const loopSymbols = new Map(symbols);
           walk(statement.body, loopSymbols, loopDepth + 1, blockDepth + 1, passGuard);
           // A loop may execute zero times. Only existing variables remain definitely assigned.
-          for (const [name, type] of symbols) if (type === "none" && loopSymbols.has(name)) symbols.set(name, loopSymbols.get(name)!);
+          for (const [name, type] of symbols) if ((type === "none" || type === "array:none") && loopSymbols.has(name)) symbols.set(name, loopSymbols.get(name)!);
           break;
         }
         case "if": {

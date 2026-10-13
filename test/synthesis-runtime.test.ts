@@ -615,3 +615,32 @@ test("consent withdrawn after a cloud role was made stops it before its first re
   assert.match(result.error!, /does not allow cloud models/);
   assert.equal(f.requests.length + f.textRequests.length, 0);
 });
+
+test("for runs in order without spending iterations; range, append and indexes are the interpreter's own, and steps bound it all", async () => {
+  const source = (limits: string, body: string) => `implement Calculator using "calculator-v1" {
+    limit ${limits};
+    policy = "local-files-v1";
+    ${body}
+    return unresolved();
+  }`;
+  const run = async (limits: string, body: string) => {
+    const compiled = compileProgram(calculatorTemplate().spec, source(limits, body));
+    assert.deepEqual(compiled.diagnostics, []);
+    const calls: Array<{name: string; args: unknown[]}> = []; const iterations: number[] = [];
+    const result = await new Interpreter({signal: new AbortController().signal, globals: {},
+      call: async (name, args) => { calls.push({name, args}); return name === "unresolved" ? "done" : undefined; },
+      iteration: async (value) => { iterations.push(value); }}, compiled.flow!).run();
+    return {result, calls: calls.filter(call => call.name !== "unresolved"), iterations};
+  };
+  const ordered = await run("iterations 1, time 1m", `names = [];
+    for (i in range(4)) { if (i == 2) { continue; } names = append(names, "n"); checkpoint(i); }
+    checkpoint(names.length, names[2]);`);
+  assert.equal(ordered.result, "done");
+  assert.deepEqual(ordered.iterations, [], "a for loop is not a while loop");
+  assert.deepEqual(ordered.calls, [{name: "checkpoint", args: [0]}, {name: "checkpoint", args: [1]}, {name: "checkpoint", args: [3]}, {name: "checkpoint", args: [3, "n"]}]);
+  const long = await run("iterations 1, time 1m, steps 60000", "total = 0; for (i in range(10000)) { total = total + i; } checkpoint(total);");
+  assert.deepEqual(long.calls, [{name: "checkpoint", args: [49995000]}]);
+  await assert.rejects(run("iterations 1, time 1m", "total = 0; for (i in range(10000)) { total = total + i; }"), BudgetExhausted, "10,000 steps by default");
+  await assert.rejects(run("iterations 1, time 1m", "names = [\"a\"]; checkpoint(names[1]);"), /Index 1 is outside a list of 1/);
+  await assert.rejects(run("iterations 1, time 1m", "names = range(10001);"), /range takes a whole number from 0 to 10000/);
+});

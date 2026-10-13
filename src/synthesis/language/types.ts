@@ -31,17 +31,22 @@ export interface CallExpression { kind: "call"; callee: Expression; args: CallAr
 export interface UnaryExpression { kind: "unary"; operator: "!" | "-" | "+"; operand: Expression; span: SourceSpan }
 export interface BinaryExpression { kind: "binary"; operator: string; left: Expression; right: Expression; span: SourceSpan }
 export interface AwaitExpression { kind: "await"; expression: Expression; span: SourceSpan }
+export interface IndexExpression { kind: "index"; object: Expression; index: Expression; span: SourceSpan }
 export type Expression = LiteralExpression | IdentifierExpression | ArrayExpression | MemberExpression |
-  CallExpression | UnaryExpression | BinaryExpression | AwaitExpression;
+  CallExpression | UnaryExpression | BinaryExpression | AwaitExpression | IndexExpression;
 export interface AssignStatement { kind: "assign"; name: string; value: Expression; span: SourceSpan }
 export interface ExpressionStatement { kind: "expression"; expression: Expression; span: SourceSpan }
 export interface IfStatement { kind: "if"; condition: Expression; then: Statement[]; else: Statement[]; span: SourceSpan }
 export interface WhileStatement { kind: "while"; condition: Expression; body: Statement[]; span: SourceSpan }
+/** `for (item in list) { ... }`: once per element, in order; the list is finite, so the loop ends. */
+export interface ForStatement { kind: "for"; variable: string; iterable: Expression; body: Statement[]; span: SourceSpan }
 export interface ContinueStatement { kind: "continue"; span: SourceSpan }
 export interface ReturnStatement { kind: "return"; value?: Expression; span: SourceSpan }
-export interface FlowLimits { iterations: number; timeMs: number; costUsd?: number }
+export interface FlowLimits { iterations: number; timeMs: number; costUsd?: number;
+  /** Interpreter steps (statements and expressions evaluated); 10,000 when not declared. */
+  steps?: number }
 export interface LimitStatement { kind: "limit"; values: Partial<FlowLimits>; span: SourceSpan }
-export type Statement = AssignStatement | ExpressionStatement | IfStatement | WhileStatement |
+export type Statement = AssignStatement | ExpressionStatement | IfStatement | WhileStatement | ForStatement |
   ContinueStatement | ReturnStatement | LimitStatement;
 /** A built-in check a contract names directly instead of a registered adapter's Pass("id"). */
 export type ContractCheck =

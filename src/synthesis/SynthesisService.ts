@@ -33,6 +33,8 @@ const EVALUATOR_VERSION = `${evaluatorVersion}+${contractChecksVersion}`;
 /** Source in the languages the contract checks know, plus the web files of the calculator. */
 const ARTIFACT_TYPES = /\.(?:js|mjs|cjs|ts|mts|cts|py|c|cc|cpp|cxx|h|hh|hpp|hxx|inl|json|html|css|txt|md)$/;
 const MAX_SUITE_FILES = 24, MAX_SUITE_BYTES = 512 * 1024;
+/** The most interpreter steps a flow may declare with `limit steps`. */
+const MAX_STEPS = 1_000_000;
 /** The contract's test files: its tests section and every file a Tests gate runs. */
 const suiteFiles = (spec: SpecProgram): string[] => [...new Set([...(spec.tests ?? []),
   ...spec.gates.flatMap(gate => gate.check?.kind === "tests" ? gate.check.files : [])])];
@@ -63,6 +65,7 @@ function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPat
   if (compiled.flow.limits.iterations < 1 || compiled.flow.limits.iterations > 32 || compiled.flow.limits.timeMs > 7200000) {
     add("error", "FLOW_LIMIT_RANGE", "V1 supports at most 32 iterations and 120 minutes per run.", flowPath);
   }
+  if ((compiled.flow.limits.steps ?? 0) > MAX_STEPS) add("error", "FLOW_LIMIT_RANGE", `A run takes at most ${MAX_STEPS.toLocaleString("en")} steps.`, flowPath);
   if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare between 1 and 12 artifact files.", specPath);
   if ((compiled.spec.frozen ?? []).length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare at most 12 frozen files.", specPath);
   for (const file of [...compiled.spec.artifacts, ...compiled.spec.frozen ?? []]) {

@@ -321,3 +321,26 @@ test("cloud-files-v1 names cloud providers literally; local-files-v1 stays local
   assert.ok(codes(specSource, cloud.replace('provider = "deepseek"', 'provider = selected.providerId')).includes("FLOW_PROVIDER_LITERAL"));
   assert.ok(codes(specSource, cloud.replace('policy = "cloud-files-v1";', 'policy = "cloud-everything";')).includes("FLOW_POLICY"));
 });
+
+test("for goes through a list; lists are typed by their items, indexed, and grown with append", () => {
+  const ok = (body: string) => assert.deepEqual(codes(specSource, wrap(`${body} return unresolved();`)), [], body);
+  const fails = (body: string, code: string) => assert.ok(codes(specSource, wrap(`${body} return unresolved();`)).includes(code), `${body} → ${code}`);
+  ok(`total = 0; for (i in range(5)) { total = total + i; }`);
+  ok(`names = []; for (i in range(3)) { names = append(names, "agent"); } first = names[0]; size = names.length; label = first + "!";`);
+  ok(`files = ["a.ts", "b.ts"]; for (file in files) { if (file == "a.ts") { continue; } checkpoint(file); }`);
+  ok(`available = await models.list(provider = "llamacpp"); first = available[0]; developer = await models.load(first);`);
+  ok(`grid = [[1, 2], [3]]; row = grid[1]; cell = row[0] + 1;`);
+  fails(`for (i in range(3)) { x = i; } y = x;`, "FLOW_UNDEFINED_NAME");
+  fails(`for (i in range(3)) { checkpoint(i); } z = i;`, "FLOW_UNDEFINED_NAME");
+  fails(`i = 1; for (i in range(3)) { checkpoint(i); }`, "FLOW_FOR_VARIABLE");
+  fails(`for (range in [1]) { checkpoint(range); }`, "FLOW_FOR_VARIABLE");
+  fails(`for (i in 3) { checkpoint(i); }`, "FLOW_TYPE");
+  fails(`names = ["a"]; names = append(names, 2);`, "FLOW_TYPE");
+  fails(`names = ["a"]; first = names["0"];`, "FLOW_INDEX");
+  fails(`count = 3; first = count[0];`, "FLOW_INDEX");
+  fails(`names = ["a"]; names = 3;`, "FLOW_ASSIGNMENT_TYPE");
+  fails(`continue;`, "FLOW_CONTINUE");
+  assert.ok(codes(specSource, wrap("return unresolved();").replace("limit iterations 4, time 1m;", "limit iterations 4, time 1m, steps 0.5;")).includes("FLOW_STEP_LIMIT"));
+  assert.ok(codes(specSource, wrap("return unresolved();").replace("limit iterations 4, time 1m;", "limit iterations 4, time 1m, steps 5s;")).includes("FLOW_LIMIT_UNIT"));
+  assert.equal(compileProgram(specSource, wrap("return unresolved();").replace("limit iterations 4, time 1m;", "limit iterations 4, time 1m, steps 50000;")).flow?.limits.steps, 50000);
+});

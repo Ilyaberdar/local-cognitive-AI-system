@@ -8,6 +8,9 @@ export interface InterpreterHost {
   iteration(value: number, span: SourceSpan): Promise<void>;
 }
 class FlowReturn { constructor(readonly value: unknown) {} }
+/** The longest list range() makes. */
+export const MAX_RANGE = 10_000;
+const DEFAULT_STEPS = 10_000;
 class FlowContinue {}
 export class BudgetExhausted extends Error {}
 
@@ -23,7 +26,7 @@ export class Interpreter {
   }
   private check(): void {
     this.host.signal.throwIfAborted();
-    if (++this.steps > 10000) throw new BudgetExhausted("Interpreter step budget exhausted.");
+    if (++this.steps > (this.flow.limits.steps ?? DEFAULT_STEPS)) throw new BudgetExhausted("Interpreter step budget exhausted.");
   }
   private async block(body: Statement[]): Promise<void> {
     for (const statement of body) {
@@ -42,6 +45,20 @@ export class Interpreter {
             await this.host.iteration(this.iterations, statement.span);
             try { await this.block(statement.body); } catch (error) { if (!(error instanceof FlowContinue)) throw error; }
           }
+          break;
+        case "for": {
+          const list = await this.expression(statement.iterable);
+          if (!Array.isArray(list)) throw new SynthesisError("for goes through a list.");
+          // A for loop does not spend iterations: its list is finite. Each element still costs steps.
+          try {
+            for (const item of [...list]) {
+              this.check();
+              this.variables.set(statement.variable, item);
+              try { await this.block(statement.body); } catch (error) { if (!(error instanceof FlowContinue)) throw error; }
+            }
+          } finally { this.variables.delete(statement.variable); }
+          break;
+        }
       }
     }
   }
@@ -61,6 +78,13 @@ export class Interpreter {
         return values;
       }
       case "await": return this.expression(expression.expression);
+      case "index": {
+        const list = await this.expression(expression.object);
+        const index = await this.expression(expression.index);
+        if (!Array.isArray(list)) throw new SynthesisError("Only lists can be indexed.");
+        if (!Number.isInteger(index) || index < 0 || index >= list.length) throw new SynthesisError(`Index ${String(index)} is outside a list of ${list.length}.`);
+        return list[index];
+      }
       case "member": {
         const object = await this.expression(expression.object);
         if (!object || typeof object !== "object" || !Object.hasOwn(object, expression.property)) throw new SynthesisError(`Unknown field '${expression.property}'.`);
@@ -102,6 +126,16 @@ export class Interpreter {
         for (const arg of expression.args) {
           const value = await this.expression(arg.value);
           if (arg.name) named[arg.name] = value; else args.push(value);
+        }
+        // Lists are made here, not by the host: no runtime action, no event.
+        if (name === "range") {
+          const count = args[0];
+          if (!Number.isInteger(count) || (count as number) < 0 || (count as number) > MAX_RANGE) throw new SynthesisError(`range takes a whole number from 0 to ${MAX_RANGE}.`);
+          return Array.from({length: count as number}, (_value, index) => index);
+        }
+        if (name === "append") {
+          if (!Array.isArray(args[0])) throw new SynthesisError("append adds an item to a list.");
+          return [...args[0], args[1]];
         }
         return this.host.call(name, args, named, expression.span, receiver);
       }
