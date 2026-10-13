@@ -98,3 +98,16 @@ test("a structured call that falls back to another format reports the tokens of 
   assert.deepEqual(data, { a: 1 });
   assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 2, totalTokens: 13 });
 });
+
+test("an agent action keeps the JSON a model wrote before its own tool-call markup, and nothing of that markup", async () => {
+  const registry = new LLMRegistry();
+  registry.register({ id: "markup", name: "Markup", defaultModel: "m", isConfigured: () => true,
+    getDescriptor: () => ({ id: "markup", name: "Markup", defaultModel: "m", configured: true }),
+    generateText: async () => ({ provider: "markup", model: "m",
+      text: '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="read"></｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>' }) });
+  const llm = new LLMService(registry, "markup", new Logger(), new OutputSanitizer());
+  const action = await llm.generateText({ prompt: "next", outputPurpose: "agent-action" });
+  assert.equal(action.text, '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}');
+  const prose = await llm.generateText({ prompt: "next" });
+  assert.match(prose.text, /DSML|tool_call/, "only agent actions are trimmed");
+});

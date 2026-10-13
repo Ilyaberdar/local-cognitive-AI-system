@@ -68,6 +68,8 @@ export class LLMService {
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
     const text = request.outputPurpose === "agent-action"
       ? response.text.trim().replace(/^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "")
+        // DeepSeek sometimes adds its own tool-call markup (<｜DSML｜…>) after the JSON action: never an action itself.
+        .replace(/\s*<｜+DSML｜+[\s\S]*$/u, "")
       : this.sanitizer.sanitize(response.text);
 
     return {
