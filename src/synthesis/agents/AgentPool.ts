@@ -84,6 +84,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
         toolInstructions: agentToolText(spec.rights),
         accessNote: `You are agent ${index + 1} of ${tasks.length}, working at the same time as the others on parts of one goal for the module ${options.module.name}. Your task is your part only. ` +
           `Files: you may ${rights}. Paths are relative to the project folder. ${readOnly ? "" : "What you write goes into the run's copy; the project changes only when the engineer applies the run. "}` +
+          (spec.rights.read.length ? "Read the files of your task with your tools before you answer: a finding about code you have not read is wrong, and every path:line you cite is checked. " : "") +
           "Your final answer is returned to the flow as your result: give your findings with path:line references where they apply, and name the files you wrote.",
         instructions: [`Module ${options.module.name}: ${options.module.description}`.slice(0, 4000), spec.instructions].filter(Boolean).join("\n\n") });
       // Bookkeeping only: a record that cannot be read leaves the step count at 0, not the agent failed.

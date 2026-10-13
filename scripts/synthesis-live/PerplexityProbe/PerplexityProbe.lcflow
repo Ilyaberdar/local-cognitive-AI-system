@@ -1,0 +1,17 @@
+implement PerplexityProbe using "contract-v1" {
+    limit iterations 2, time 20m;
+    policy = "agents-v1";
+    lead = await model("deepseek-flash", provider = "deepseek");
+    spec = freeze(PerplexityProbe.spec);
+    candidate = checkout("review");
+    agents = [
+        agent(provider = "perplexity", model = "anthropic/claude-haiku-4-5", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/ as a Markdown list where each item starts with path:line.", steps = 10),
+        agent(provider = "perplexity", model = "openai/gpt-5-mini", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/ as a Markdown list where each item starts with path:line.", steps = 10)
+    ];
+    results = await parallel_map(agents, ["Review error handling in src/synthesis/paths.ts.", "Review error handling in src/synthesis/preview.ts."]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) { return accept(candidate, evidence); }
+    return needs_review(evidence);
+}

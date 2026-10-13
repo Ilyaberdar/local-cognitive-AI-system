@@ -160,7 +160,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
             ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
             : request.responseFormat } : {})
         } : {
-          ...(dialect.presets?.includes(model) ? { preset: model } : { model, ...(dialect.presets ? { tools: [{ type: "web_search" }] } : {}) }),
+          // An agent's next action is about its own tools and files: web results would only stand in for them.
+          ...(dialect.presets?.includes(model) ? { preset: model } : { model, ...(dialect.presets && request.outputPurpose !== "agent-action" ? { tools: [{ type: "web_search" }] } : {}) }),
           input: images.length || nativeTools || request.inputItems?.length ? [{ role: "user", content: [
             { type: "input_text", text: request.prompt },
             ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" }))

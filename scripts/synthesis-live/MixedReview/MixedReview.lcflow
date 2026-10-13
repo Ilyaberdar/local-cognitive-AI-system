@@ -1,0 +1,36 @@
+implement MixedReview using "contract-v1" {
+    limit iterations 2, time 60m, steps 20000;
+    policy = "agents-v1";
+
+    lead = await model("deepseek-flash", provider = "deepseek");
+    spec = freeze(MixedReview.spec);
+    candidate = checkout("review");
+
+    // Ten models from two providers: DeepSeek directly, and the models Perplexity hosts.
+    models = [
+        agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "deepseek", model = "deepseek-v4-pro", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "fast", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "openai/gpt-5-mini", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "openai/gpt-5.4-nano", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "anthropic/claude-haiku-4-5", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "google/gemini-3.1-flash-lite", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "xai/grok-4.20-non-reasoning", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "perplexity/glm-5.3-flash", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14),
+        agent(provider = "perplexity", model = "perplexity/kimi-k3", tools = [files.read("src/**"), files.write("review/notes/**")], instructions = "Write your findings to one note in review/notes/, named after your part, as a Markdown list where each item starts with path:line.", steps = 14)
+    ];
+
+    tasks = await lead.split("Review error handling in the TypeScript sources under src/synthesis: find places where an error is swallowed, a promise is not awaited, or an error message would mislead the user. Split by files so that every file is reviewed once.", 20,
+        paths = files.read("src/synthesis/**"));
+
+    // Twenty tasks round the ten models: each model reviews two parts.
+    results = await parallel_map(models, tasks, concurrency = 20);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) {
+        return accept(candidate, evidence);
+    }
+    return needs_review(evidence);
+}

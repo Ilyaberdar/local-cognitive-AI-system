@@ -260,6 +260,10 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
   assert.equal(perplexity.calls[1].body.model, "anthropic/claude-sonnet-5-5");
   assert.equal(perplexity.calls[1].body.max_output_tokens, 16_000, "its Anthropic models need a cap");
   assert.deepEqual(perplexity.calls[1].body.tools, [{ type: "web_search" }]);
+  // An agent's next action is about its own tools and files: no web search beside them.
+  await sonar.generateText({ prompt: "Next action", model: "openai/gpt-6-luna", outputPurpose: "agent-action" });
+  assert.equal(perplexity.calls[2].body.model, "openai/gpt-6-luna");
+  assert.equal(perplexity.calls[2].body.tools, undefined);
   assert.deepEqual((await sonar.listModels()).map(model => model.id), ["fast", "low", "medium", "high", "xhigh", "openai/gpt-6-luna", "anthropic/claude-sonnet-5-5"]);
   for (const preset of PROVIDER_PRESETS) {
     assert.ok(preset.models.includes(preset.model), preset.id);

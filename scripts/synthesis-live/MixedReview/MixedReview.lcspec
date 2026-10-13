@@ -1,0 +1,14 @@
+module MixedReview version "1" {
+    target { language = TypeScript; }
+    description = "A review of error handling in the TypeScript sources under src/synthesis, made by agents working in parallel: each agent reviews its part and leaves one note in notes/, and REPORT.md gathers all findings with path:line references.";
+
+    artifacts {
+        file "REPORT.md";
+        files "notes/**";
+    }
+
+    evaluate "contract-v1" {
+        hard report = Tests("tests/report.test.ts", timeout = 30s);
+        hard grounded = Grounded("REPORT.md", min = 5);
+    }
+}
