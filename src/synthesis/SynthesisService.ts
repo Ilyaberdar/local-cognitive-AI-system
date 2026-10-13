@@ -24,7 +24,8 @@ import type { AgentCounts } from "./types";
 interface Services {
   projects: ProjectStore;
   models: Pick<LocalModelManagerRegistry, "listAllModels">;
-  loadModel: (model: ManagedModel, signal: AbortSignal) => Promise<void>;
+  /** `shape`: a local model serving several requests at once (agents), each with its own context. */
+  loadModel: (model: ManagedModel, signal: AbortSignal, shape?: {parallel: number; contextSize?: number}) => Promise<void>;
   llm: Pick<LLMService, "generateObject" | "generateText">;
   /** The models a cloud provider lists, and the providers set up here (cloud-files-v1). */
   catalog?: {listAll(providerId?: string): Promise<ProviderModel[]>};
@@ -377,8 +378,8 @@ export class SynthesisService {
       lastEvidence.candidateHash === filesHash(record.files) && lastEvidence.specHash === record.specHash && lastEvidence.evaluatorVersion === EVALUATOR_VERSION &&
       lastEvidence.suiteHash === record.suiteHash;
     // A loaded model becomes a role: only the app's own llama.cpp runtime loads; others answer on request.
-    const role = async (model: ManagedModel) => {
-      if (model.providerId === "llamacpp") await this.services.loadModel(model, signal);
+    const role = async (model: ManagedModel, shape?: {parallel: number; contextSize?: number}) => {
+      if (model.providerId === "llamacpp") await this.services.loadModel(model, signal, shape);
       const handle = Object.freeze({model}); roles.add(handle);
       if (!record.models.some(item => item.id === model.id && item.providerId === model.providerId)) record.models.push(model);
       return handle;
@@ -408,9 +409,11 @@ export class SynthesisService {
       },
       // No agent reads a contract or its tests, hidden ones included: not this module's (wherever it is,
       // the project root too), and no .lcspec or .lcflow of any other module.
+      // The file tools check the path as the disk spells it, so a folder named Synthesis is hidden
+      // however the agent writes it, and a folder that only resembles it (src/synthesis) is not.
       hidden: target => {
         const key = target.toLowerCase();
-        return key.split("/").includes("synthesis") || /\.(?:lcspec|lcflow)$/.test(key) || contractPaths.has(key) ||
+        return target.split("/").includes("Synthesis") || /\.(?:lcspec|lcflow)$/.test(key) || contractPaths.has(key) ||
           (folderKey !== "." && (key === folderKey || key.startsWith(`${folderKey}/`)));
       },
       changed: () => { lastEvidence = undefined; delete record.evidence; saveSoon(); }
@@ -552,7 +555,11 @@ export class SynthesisService {
         case "models.load": {
           const model = args[0] as ManagedModel;
           if (!model || !listed.has(model)) throw new SynthesisError("models.load expects a selected installed model.");
-          value = await role(model);
+          const slots = named.slots ?? 1, context = named.context;
+          if (!Number.isInteger(slots) || (slots as number) < 1 || (slots as number) > 16) throw new SynthesisError("slots is 1 to 16: the requests a local model serves at once.");
+          if (context !== undefined && (!Number.isInteger(context) || (context as number) < 512 || (context as number) > 131072)) throw new SynthesisError("context is a slot's tokens, 512 to 131,072.");
+          if ((slots !== 1 || context !== undefined) && model.providerId !== "llamacpp") throw new SynthesisError("slots and context apply to the app's own llama.cpp models.");
+          value = await role(model, slots !== 1 || context !== undefined ? {parallel: slots as number, ...(context !== undefined ? {contextSize: context as number} : {})} : undefined);
           break;
         }
         case "freeze": requireSpec(args[0]); value = spec; break;

@@ -341,6 +341,7 @@ test("security: the contract stays unread and frozen files unwritten in any lett
   const lines = (await f.service.agent(result.id, 0)).final!.split("\n");
   assert.match(lines[0], /may not read SYNTHESIS\/Review\/Review\.lcspec/);
   assert.match(lines[1], /may not read synthesis\/review\/review\.LCSPEC/);
+  assert.doesNotMatch(lines.join("\n"), /Synthesis\.?.*module Review|hard clean/, "nothing of the contract is shown");
   assert.match(lines[2], /Saved review\/notes\/X\.md/);
   assert.match(lines[3], /differs from notes\/X\.md only in case/);
   assert.match(lines[4], /differs from REPORT\.md only in case|not a file of the contract/);
@@ -369,4 +370,14 @@ test("a provider that answers 429 gets fewer requests at once and each refused r
   const pending = stuck.generateObject({prompt: "x", signal: controller.signal}, "perplexity");
   setTimeout(() => controller.abort(new Error("cancelled")), 20);
   await assert.rejects(pending, /cancelled/, "a wait ends when the run is cancelled");
+});
+
+test("a project folder that only looks like a contract folder (src/synthesis) stays readable", async (t) => {
+  const f = await fixture(t, {script: (_task, results) => results.length ? final(results.join("\n")) : tool("file.read", {path: "src/synthesis/engine.ts"})});
+  await fs.mkdir(path.join(f.root, "src", "synthesis"));
+  await fs.writeFile(path.join(f.root, "src", "synthesis", "engine.ts"), "export const engine = true;");
+  const result = await f.run(`agents = [agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**")])];
+    results = await parallel_map(agents, ["read the engine"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.match((await f.service.agent(result.id, 0)).final!, /export const engine = true/);
 });

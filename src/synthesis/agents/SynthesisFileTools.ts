@@ -114,10 +114,29 @@ export class SynthesisFileTools extends OperationExecutor {
     if (value.length > 240) throw new Error("Paths are at most 240 characters.");
     return value;
   }
-  /** The file or folder in the project, refused when any part of its path is a symbolic link. */
+  /** The file or folder in the project, refused when any part of its path is a symbolic link, or when
+   * the path as the disk spells it is hidden (a file system that ignores case opens SYNTHESIS as Synthesis). */
   private async inside(target: string): Promise<string> {
-    try { return await containedPath(this.candidates.root, target); }
+    const spelled = await this.spelled(target);
+    if (this.candidates.hidden(spelled)) throw new Error(`This agent may not read ${target}: it belongs to a contract.`);
+    try { return await containedPath(this.candidates.root, spelled); }
     catch (error) { if (error instanceof SynthesisError) throw new Error(`${target}: agents do not follow symbolic links.`); throw error; }
+  }
+  /** The path with each existing part as the disk spells it (the same name, another case, when the file
+   * system ignores case); parts that do not exist stay as given. */
+  private async spelled(target: string): Promise<string> {
+    const parts: string[] = [];
+    let folder = this.candidates.root, exists = true;
+    for (const part of target.split("/").filter(Boolean)) {
+      let name = part;
+      if (exists) {
+        const entries = await fs.readdir(folder).catch(() => undefined);
+        if (!entries) exists = false;
+        else if (!entries.includes(part)) { const twin = entries.find(entry => entry.toLowerCase() === part.toLowerCase()); if (twin) name = twin; else exists = false; }
+      }
+      parts.push(name); folder = `${folder}/${name}`;
+    }
+    return parts.join("/");
   }
   private mayRead(target: string): boolean {
     return !this.candidates.hidden(target) && this.rights.read.some(pattern => matchesGlob(target, pattern));
