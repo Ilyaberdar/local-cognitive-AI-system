@@ -9,6 +9,8 @@
 // --module: a folder with Name.lcspec, Name.lcflow and the contract's tests (copied to Synthesis/Name).
 // --project: folders of this repository copied into the project (default: none), for agents to read.
 // --keep: keep the temporary folder (its path is printed) to look at the run and its agents.
+// --local: a GGUF file imported into a local llama.cpp runtime for the run (provider "llamacpp"), from
+//          this repository's resources/llama (or --runtime <folder>); local models need no keys.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +32,9 @@ const { OutputSanitizer } = require(dist("llm/OutputSanitizer.js"));
 const { ProjectStore } = require(dist("projects/ProjectStore.js"));
 const { SynthesisService } = require(dist("synthesis/SynthesisService.js"));
 const { Logger } = require(dist("utils/Logger.js"));
+const { LocalModelService } = require(dist("local/LocalModelService.js"));
+const { LlamaCppProvider } = require(dist("llm/LlamaCppProvider.js"));
+const { defaultLocalGenerationSettings } = require(dist("local/GenerationSettings.js"));
 
 const args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(`--${name}`); return index >= 0 ? args[index + 1] : undefined; };
@@ -55,14 +60,24 @@ for (const preset of PROVIDER_PRESETS) {
 if (env.OPENAI_API_KEY) registry.register(new OpenAICompatibleProvider({ id: "openai", name: "OpenAI", apiKey: env.OPENAI_API_KEY, baseUrl: "https://api.openai.com/v1", model: "gpt-5-mini", timeoutMs: 240_000 }, logger));
 if (env.ANTHROPIC_API_KEY) registry.register(new AnthropicProvider({ apiKey: env.ANTHROPIC_API_KEY, baseUrl: "https://api.anthropic.com", model: "claude-haiku-4-5", timeoutMs: 240_000, version: "2023-06-01", maxTokens: 8000 }, logger));
 if (env.GEMINI_API_KEY) registry.register(new GeminiProvider({ apiKey: env.GEMINI_API_KEY, baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", timeoutMs: 240_000 }, logger));
+const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lc-synthesis-live-")));
+const data = path.join(temp, "app"), project = path.join(temp, "project");
+fs.mkdirSync(data); fs.mkdirSync(project);
+let local;
+if (option("local")) {
+  local = new LocalModelService({ enabled: true, dataDir: path.join(data, "local-models"), modelsDir: path.join(data, "local-models", "models"),
+    runtimeDir: path.resolve(option("runtime") ?? path.join(root, "resources/llama", `${process.platform}-${process.arch}`)), contextSize: 8192, gpuLayers: "auto", loadTimeoutMs: 300_000,
+    generationTimeoutMs: 600_000, memoryLimitPercent: 75, generation: defaultLocalGenerationSettings() }, logger);
+  await local.init();
+  const imported = await local.importModel([path.resolve(option("local"))]);
+  registry.register(new LlamaCppProvider(local, { model: imported.id }));
+  console.log(`Local model ${imported.displayName ?? imported.id} imported.`);
+}
 const configured = registry.list().map(item => item.id);
 if (!configured.length) { console.error(`No provider keys in ${keysFile}.`); process.exit(2); }
 const firstProvider = configured[0];
 const llm = new LLMService(registry, firstProvider, logger, new OutputSanitizer());
 
-const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lc-synthesis-live-")));
-const data = path.join(temp, "app"), project = path.join(temp, "project");
-fs.mkdirSync(data); fs.mkdirSync(project);
 for (const folder of (option("project") ?? "").split(",").filter(Boolean)) fs.cpSync(path.join(root, folder), path.join(project, folder), { recursive: true });
 const name = path.basename(moduleDir);
 fs.cpSync(moduleDir, path.join(project, "Synthesis", name), { recursive: true });
@@ -72,8 +87,8 @@ const created = await projects.create({ name: "Live check", rootPath: project })
 await projects.update(created.id, { cloudModels: true });
 const services = {
   projects, llm,
-  models: { listAllModels: async () => [] },
-  loadModel: async () => { throw new Error("This live check runs cloud models only."); },
+  models: { listAllModels: async provider => provider === "llamacpp" && local ? local.listAllModels() : [] },
+  loadModel: async (model, signal, shape) => { if (!local) throw new Error("Name a GGUF with --local to run local models."); await local.loadModel(model.id, signal, shape); },
   catalog: new ModelCatalogService(registry),
   providers: () => registry.list()
 };
@@ -112,4 +127,5 @@ const diff = await synthesis.diff(result.id);
 console.log(`\nCandidate files: ${diff.files.map(file => `${file.path} (${Buffer.byteLength(file.after)} B)`).join(", ") || "none"}.`);
 if (args.includes("--keep")) console.log(`Kept ${temp}`); else fs.rmSync(temp, { recursive: true, force: true });
 await synthesis.dispose();
+await local?.dispose();
 process.exit(result.status === "accepted" ? 0 : 1);

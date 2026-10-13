@@ -768,7 +768,7 @@ export const buildRuntime = async (
   const scheduleService = new ScheduleService(scheduleStore, taskService,workspaceResolver);
   const synthesis = sharedSynthesis ?? new SynthesisService(config.appDataDir, {
     projects: projectStore, models: localModelManager, llm: llmService,
-    loadModel: (model, signal) => localModelService.loadModel(model.id, signal),
+    loadModel: (model, signal, shape) => localModelService.loadModel(model.id, signal, shape),
     catalog: modelCatalog, providers: () => providerRegistry.list(), agents: {llm: llmService}
   });
   if (!sharedSynthesis) await synthesis.init();

@@ -221,3 +221,78 @@ server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(model +
   await runtime.load("tiny", modelPath);
   assert.equal((await runtime.generateText({ model: "tiny", prompt: "after cancellation recovery" })).text, "Local final answer");
 });
+
+test("a model with slots serves that many requests at once; loading it waits for them and holds the next ones", async () => {
+  const scheduler = new LocalInferenceScheduler(() => {}, id => id === "wide" ? 3 : 1);
+  let running = 0, peak = 0;
+  const order: string[] = [];
+  const releases: Array<() => void> = [];
+  const request = (model: string, name: string) => scheduler.infer(model, async () => {
+    running++; peak = Math.max(peak, running); order.push(`${name}:start`);
+    await new Promise<void>(resolve => releases.push(resolve));
+    running--; order.push(`${name}:end`);
+  });
+  const first = [request("wide", "a"), request("wide", "b"), request("wide", "c"), request("wide", "d")];
+  await delay(0);
+  assert.equal(running, 3, "three slots, three requests at once");
+  // A load of the same model waits for its requests and keeps the later request waiting behind it.
+  const load = scheduler.run("wide", async () => { order.push("load"); });
+  const later = request("wide", "e");
+  releases.shift()!(); await delay(0);
+  assert.deepEqual(order.slice(-2), ["a:end", "d:start"], "the waiting request takes the free slot before the load");
+  for (let released = 1; released < 4; released++) { while (!releases.length) await delay(0); releases.shift()!(); await delay(0); }
+  await Promise.all(first); await load;
+  assert.ok(order.indexOf("load") > order.indexOf("d:end") && order.indexOf("load") < order.indexOf("e:start"), order.join(" "));
+  while (!releases.length) await delay(0);
+  releases.shift()!(); await later;
+  assert.equal(peak, 3);
+  const single = [request("narrow", "x"), request("narrow", "y")];
+  await delay(0);
+  assert.equal(running, 1, "a model without slots serves one request at a time");
+  while (releases.length || running) { releases.shift()?.(); await delay(0); }
+  await Promise.all(single);
+  await scheduler.dispose();
+});
+
+test("a model loaded with slots starts llama.cpp with them and each slot's context; a cancelled request waits only for its own slot", { skip: process.platform === "win32" }, async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "llama-slots-test-"));
+  const executable = path.join(directory, "fake llama-server");
+  await fs.writeFile(executable, `#!/usr/bin/env node
+const http = require('http'); const fs = require('fs');
+const args = process.argv.slice(2); const arg = name => args[args.indexOf(name)+1];
+let processing = 0;
+const server = http.createServer(async (req,res) => {
+ if(req.url === '/health') { res.end(JSON.stringify({status:'ok'})); return; }
+ if(req.url === '/props') { res.end(JSON.stringify({default_generation_settings:{n_ctx:Number(arg('--ctx-size'))/Number(arg('--parallel'))}})); return; }
+ if(req.url === '/slots') { res.end(JSON.stringify(Array.from({length:Number(arg('--parallel'))},(_v,i)=>({id:i,is_processing:i<processing})))); return; }
+ let body=''; for await (const chunk of req) body += chunk;
+ const payload = JSON.parse(body || '{}');
+ processing++;
+ if(payload.input === 'hold') { res.once('close',()=>{ setTimeout(()=>processing--, 50); }); return; }
+ setTimeout(()=>{ processing--; res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({status:'completed',output_text:'done',id:'x'})); }, payload.input === 'slow' ? 2500 : 10);
+});
+server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(arg('--model') + '.process.json', JSON.stringify({args})));
+`, { mode: 0o755 });
+  const options: LocalModelOptions = { enabled: true, dataDir: directory, modelsDir: directory, runtimeDir: directory, executablePath: executable,
+    contextSize: 2048, gpuLayers: 0, loadTimeoutMs: 5000, generationTimeoutMs: 10000, memoryLimitPercent: 75 };
+  const runtime = new LlamaCppRuntime(options, new Logger());
+  t.after(async () => { await runtime.dispose(); await fs.rm(directory, { recursive: true, force: true }); });
+  await runtime.init();
+  const modelPath = path.join(directory, "wide.gguf");
+  await runtime.load("wide", modelPath, undefined, undefined, undefined, { parallel: 4, contextSize: 4096 });
+  const { args } = JSON.parse(await fs.readFile(`${modelPath}.process.json`, "utf8"));
+  assert.equal(args[args.indexOf("--parallel") + 1], "4");
+  assert.equal(args[args.indexOf("--ctx-size") + 1], "16384", "four slots of 4096");
+  assert.equal(runtime.snapshot().slots, 4);
+  assert.equal(runtime.snapshot().effectiveContextSize, 4096);
+  assert.equal(runtime.isReadyFor("wide", undefined, { parallel: 4, contextSize: 4096 }), true);
+  assert.equal(runtime.isReadyFor("wide", undefined, { parallel: 1, contextSize: 2048 }), false, "another shape means another launch");
+  // Another request keeps its slot busy while one is cancelled: the cancelled one settles, the model stays loaded.
+  const slow = runtime.generateText({ model: "wide", prompt: "slow" });
+  await delay(50);
+  const started = Date.now();
+  await assert.rejects(runtime.generateText({ model: "wide", prompt: "hold", signal: AbortSignal.timeout(80) }), /abort|timeout|cancel/i);
+  assert.ok(Date.now() - started < 8000, "it does not wait for the other slot");
+  assert.equal(runtime.status, "ready", "the model was not unloaded");
+  assert.equal((await slow).text, "done");
+});

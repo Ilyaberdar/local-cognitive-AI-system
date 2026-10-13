@@ -23,7 +23,7 @@ interface FunctionDefinition {
 const FUNCTIONS: Record<string, FunctionDefinition> = {
   "models.list": { returns: "modelList", required: 0, max: 0, named: { provider: ["string"] }, async: true },
   "models.select": { returns: "selectedModel", required: 1, max: 1, parameters: [["modelList"]], named: { max_size: ["bytes"], prefer: ["string"], provider: ["string"], id: ["string"] } },
-  "models.load": { returns: "model", required: 1, max: 1, parameters: [["selectedModel"]], async: true },
+  "models.load": { returns: "model", required: 1, max: 1, parameters: [["selectedModel"]], named: { slots: ["number"], context: ["number"] }, async: true },
   model: { returns: "model", required: 1, max: 1, parameters: [["string"]], named: { provider: ["string"] } },
   freeze: { returns: "frozenSpec", required: 1, max: 1, parameters: [["specRef"]] },
   checkout: { returns: "candidate", required: 1, max: 1, parameters: [["string"]] },

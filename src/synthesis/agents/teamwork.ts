@@ -45,7 +45,7 @@ export async function splitGoal(llm: Llm, model: ManagedModel, request: { goal: 
     `Return JSON only: {"tasks": ["first task", "second task", ...]} with exactly ${count} strings.`
   ].filter(Boolean).join("\n\n");
   // Room for a thinking model's reasoning as well as the list itself.
-  const { data, response } = await llm.generateObject<{ tasks?: unknown }>({ usagePurpose: "synthesis", model: model.id, signal: request.signal, prompt, maxTokens: Math.min(32000, 6000 + count * 200),
+  const { data, response } = await llm.generateObject<{ tasks?: unknown }>({ usagePurpose: "synthesis", model: model.id, signal: request.signal, prompt, maxTokens: OUTPUT_TOKENS,
     systemPrompt: "You plan work for parallel agents. Output only the JSON object.", localReasoningBudget: 0,
     responseFormat: { type: "json_schema", name: "tasks", strict: true, schema: { type: "object", properties: { tasks: { type: "array", items: { type: "string" } } }, required: ["tasks"], additionalProperties: false } } },
     model.providerId);

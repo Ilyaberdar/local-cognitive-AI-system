@@ -1,0 +1,30 @@
+implement LocalReview using "contract-v1" {
+    limit iterations 2, time 60m, steps 20000;
+    policy = "agents-v1";
+
+    // One small local model serving six agents at once: six llama.cpp slots of 16k tokens each.
+    installed = await models.list(provider = "llamacpp");
+    qwen = await models.load(models.select(installed, prefer = "qwen3.5"), slots = 6, context = 16384);
+    lead = qwen;
+
+    spec = freeze(LocalReview.spec);
+    candidate = checkout("review");
+
+    tasks = await lead.split("Review error handling in these TypeScript files, one file per task: src/synthesis/paths.ts, src/synthesis/preview.ts, src/synthesis/modules.ts, src/synthesis/Interpreter.ts, src/synthesis/checks/support.ts, src/synthesis/checks/grounded.ts. Look for swallowed errors, promises that are not awaited and misleading error messages.", 6);
+
+    agents = [];
+    for (i in range(6)) {
+        agents = append(agents, agent(qwen, tools = [files.read("src/**"), files.write("review/notes/**")],
+            instructions = "Read your file with file.read. Then write your findings to one note, review/notes/<the file's name>.md, as a Markdown list where each item starts with path:line. Then answer with the same list.",
+            steps = 12));
+    }
+    results = await parallel_map(agents, tasks, concurrency = 6);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) {
+        return accept(candidate, evidence);
+    }
+    return needs_review(evidence);
+}

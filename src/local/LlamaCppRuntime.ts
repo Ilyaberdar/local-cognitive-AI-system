@@ -33,6 +33,8 @@ export const incompatibleModel = (log: string): string | undefined => {
 
 /** Arguments and environment chosen by placement for one model process. */
 export interface RuntimeLaunch { args: string[]; env: Record<string, string>; placement: LocalPlacementSnapshot }
+/** How a model is served: requests at once (llama.cpp slots) and each one's context. */
+export interface RuntimeShape { parallel: number; contextSize: number }
 
 /** GPU layers when no placement plan is given: the previous platform default for "auto". */
 const legacyGpuLayers = (gpuLayers: number | "auto") => gpuLayers === "auto" ? (process.platform === "darwin" ? 99 : 0) : gpuLayers;
@@ -46,6 +48,10 @@ export class LlamaCppRuntime {
   private modelId?: string;
   private projectorPath?: string;
   private effectiveContextSize?: number;
+  private parallel = 1;
+  private slotContext?: number;
+  /** Requests being answered now: with several slots, a cancelled one waits only for its own slot. */
+  private inFlight = 0;
   private error?: string;
   private logTail = "";
   private stopping?: Promise<void>;
@@ -63,7 +69,7 @@ export class LlamaCppRuntime {
     return { status: this.state, version: this.installed?.build ?? "b10809", backend: this.placement?.backend ?? (process.platform === "darwin" && legacyGpuLayers(this.options.gpuLayers) !== 0 ? "Metal" : "CPU"),
       placement: this.placement,
       platform: process.platform, architecture: process.arch, modelId: this.modelId, error: this.error,
-      queueLength: 0, busy: false, contextSize: this.options.contextSize, effectiveContextSize: this.effectiveContextSize,
+      queueLength: 0, busy: false, contextSize: this.slotContext ?? this.options.contextSize, effectiveContextSize: this.effectiveContextSize, slots: this.parallel,
       memoryLimitPercent: this.options.memoryLimitPercent, modelsDir: this.options.modelsDir };
   }
   async init(): Promise<void> {
@@ -75,16 +81,18 @@ export class LlamaCppRuntime {
     await this.stop(); this.options = options; this.installed = readInstalledRuntime(runtimeDirOf(options)); this.lifetime = new AbortController(); await this.init();
   }
 
-  isReadyFor(modelId: string, projectorPath?: string): boolean {
-    return this.state === "ready" && this.modelId === modelId && this.projectorPath === projectorPath && Boolean(this.child);
+  isReadyFor(modelId: string, projectorPath?: string, shape?: RuntimeShape): boolean {
+    return this.state === "ready" && this.modelId === modelId && this.projectorPath === projectorPath && Boolean(this.child) &&
+      (!shape || (this.parallel === shape.parallel && (this.slotContext ?? this.options.contextSize) === shape.contextSize));
   }
   /** Records a failure that happened before a process started (e.g. no memory for any placement). */
   fail(modelId: string, message: string): void { this.modelId = modelId; this.placement = undefined; this.setState("error", message); }
 
-  async load(modelId: string, modelPath: string, signal?: AbortSignal, projectorPath?: string, launch?: RuntimeLaunch): Promise<void> {
+  /** `shape`: several slots, each with its own context (the server's whole context is their sum). */
+  async load(modelId: string, modelPath: string, signal?: AbortSignal, projectorPath?: string, launch?: RuntimeLaunch, shape?: RuntimeShape): Promise<void> {
     signal?.throwIfAborted();
     if (!this.options.enabled) throw new LocalModelError("Local models are disabled.", 503);
-    if (this.isReadyFor(modelId, projectorPath)) return;
+    if (this.isReadyFor(modelId, projectorPath, shape ?? { parallel: 1, contextSize: this.options.contextSize })) return;
     await this.stop();
     try { await fs.access(this.executable(), fs.constants.X_OK); } catch { await this.init(); throw new LocalModelError(this.error ?? "The llama.cpp runtime is unavailable.", 503); }
     const port = await freePort();
@@ -95,10 +103,12 @@ export class LlamaCppRuntime {
     this.projectorPath = projectorPath;
     this.logTail = "";
     this.placement = launch?.placement;
+    this.parallel = shape?.parallel ?? 1;
+    this.slotContext = shape?.contextSize;
     this.setState("loading");
     const args = ["--model", modelPath, "--alias", modelId, "--host", "127.0.0.1", "--port", String(port),
-      "--ctx-size", String(this.options.contextSize), ...(launch ? [] : ["--n-gpu-layers", String(legacyGpuLayers(this.options.gpuLayers))]),
-      "--parallel", "1", "--slots", "--jinja", "--no-webui", "--no-agent", ...(launch?.args ?? [])];
+      "--ctx-size", String((shape?.contextSize ?? this.options.contextSize) * this.parallel), ...(launch ? [] : ["--n-gpu-layers", String(legacyGpuLayers(this.options.gpuLayers))]),
+      "--parallel", String(this.parallel), "--slots", "--jinja", "--no-webui", "--no-agent", ...(launch?.args ?? [])];
     if (projectorPath) args.push("--mmproj", projectorPath);
     // The runtime directory is the working directory: ggml also loads backends from there.
     const directory = runtimeDirOf(this.options);
@@ -164,6 +174,7 @@ export class LlamaCppRuntime {
     const provider = new OpenAICompatibleProvider({ id: "llamacpp", name: "Local models", model: this.modelId!,
       baseUrl: this.endpoint, apiKey: this.token, timeoutMs: this.options.generationTimeoutMs }, this.logger, transport);
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
+    this.inFlight++;
     try {
       const result = await provider.generateText({ ...request, signal, previousResponseId: undefined });
       signal.throwIfAborted();
@@ -174,7 +185,8 @@ export class LlamaCppRuntime {
       for (const signal of transportSignals) signal.removeEventListener("abort", markCancelled);
       // Closing the HTTP request cancels decoding. Keep the scheduler slot until
       // the native server confirms it is idle, without discarding loaded weights.
-      if (cancelled || signal.aborted) await this.settleCancelledGeneration();
+      try { if (cancelled || signal.aborted) await this.settleCancelledGeneration(); }
+      finally { this.inFlight--; }
     }
   }
 
@@ -195,7 +207,8 @@ export class LlamaCppRuntime {
         if (!response.ok) throw new Error(`Slot check failed (HTTP ${response.status}).`);
         const slots: unknown = await response.json();
         if (!Array.isArray(slots) || !slots.length || slots.some(slot => !slot || typeof slot.is_processing !== "boolean")) throw new Error("Invalid native slot state.");
-        if (slots.every(slot => !slot.is_processing)) return;
+        // The other requests still being answered may keep their slots; this one's must be free.
+        if (slots.filter(slot => slot.is_processing).length <= Math.max(0, this.inFlight - 1)) return;
         await delay(1500, undefined, { signal: deadline });
       }
     } catch (error) {
@@ -243,7 +256,8 @@ export class LlamaCppRuntime {
       const actual = properties.default_generation_settings?.n_ctx ?? properties.n_ctx;
       if (!Number.isSafeInteger(actual) || actual! <= 0) return;
       this.effectiveContextSize = actual;
-      if (actual !== this.options.contextSize) this.logger.warn("Local runtime context differs from configured context", { configured: this.options.contextSize, effective: actual });
+      const configured = this.slotContext ?? this.options.contextSize;
+      if (actual !== configured && actual !== configured * this.parallel) this.logger.warn("Local runtime context differs from configured context", { configured, effective: actual, slots: this.parallel });
     } catch (error) {
       if (signal.aborted) throw error;
       this.logger.warn("Could not verify the native runtime context", { error: error instanceof Error ? error.message : String(error) });

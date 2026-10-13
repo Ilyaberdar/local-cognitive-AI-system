@@ -12,6 +12,7 @@ import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
 import { estimateModelMemory, evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
 import { LocalRuntimePool } from "./LocalRuntimePool";
+import type { RuntimeShape } from "./LlamaCppRuntime";
 import { GpuRuntimeError, GpuRuntimeService } from "./GpuRuntimeService";
 import { inspectModelStorage } from "./ModelStorageInventory";
 import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
@@ -27,6 +28,8 @@ export class LocalModelService implements LocalModelManager {
   private downloads: ModelDownloadService;
   private readonly runtime: LocalRuntimePool;
   private readonly scheduler: LocalInferenceScheduler;
+  /** Models loaded with several slots (agents running at once), and each slot's context. */
+  private readonly shapes = new Map<string, RuntimeShape>();
   private readonly lifetime = new AbortController();
   private sequence = 0;
   private initPromise?: Promise<void>;
@@ -47,7 +50,8 @@ export class LocalModelService implements LocalModelManager {
     this.downloads = new ModelDownloadService(this.store, () => { this.storageCheckedAt = 0; this.emit(); });
     this.gpu = gpu ?? (options.runtimesDir && process.platform === "win32" ? this.createGpuRuntime(options) : undefined);
     this.runtime = new LocalRuntimePool(this.effective(options), logger, () => this.emit());
-    this.scheduler = new LocalInferenceScheduler(() => this.emit());
+    // A model loaded with several slots serves that many requests at once.
+    this.scheduler = new LocalInferenceScheduler(() => this.emit(), id => this.runtime.forModel(id)?.slots ?? this.shapes.get(id)?.parallel ?? 1);
     this.events.setMaxListeners(30);
   }
   get enabled(): boolean { return this.options.enabled; }
@@ -131,7 +135,12 @@ export class LocalModelService implements LocalModelManager {
     });
     return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence, storage: this.storage ? structuredClone(this.storage) : undefined };
   }
-  getContextWindow(modelId?: string): number { return (modelId ? this.runtime.forModel(modelId)?.effectiveContextSize : undefined) ?? this.options.contextSize; }
+  getContextWindow(modelId?: string): number {
+    if (!modelId) return this.options.contextSize;
+    const shape = this.shapes.get(modelId), effective = this.runtime.forModel(modelId)?.effectiveContextSize;
+    // A slot's own context: the server may report all slots' together.
+    return shape ? Math.min(effective ?? shape.contextSize, shape.contextSize) : effective ?? this.options.contextSize;
+  }
   async refreshSnapshot(): Promise<LocalModelSnapshot> {
     await this.init();
     if (!this.initializationError && !this.switchingStorage && Date.now() - this.storageCheckedAt > 5000) await this.inspectStorage();
@@ -162,8 +171,16 @@ export class LocalModelService implements LocalModelManager {
   async resumeDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.resume(id); }
   async cancelDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.cancel(id); }
 
-  async loadModel(modelId: string, callerSignal?: AbortSignal): Promise<void> {
+  /** `shape.parallel`: requests the model serves at once (1–16), each with `shape.contextSize` tokens;
+   * the model keeps that shape until it is loaded with another. */
+  async loadModel(modelId: string, callerSignal?: AbortSignal, shape?: Partial<RuntimeShape>): Promise<void> {
     await this.init(); this.assertLibrary();
+    if (shape) {
+      const parallel = shape.parallel ?? 1, contextSize = shape.contextSize ?? this.options.contextSize;
+      if (!Number.isInteger(parallel) || parallel < 1 || parallel > 16) throw new LocalModelError("A local model serves 1 to 16 requests at once.", 400);
+      if (!Number.isInteger(contextSize) || contextSize < 512 || contextSize * parallel > 262_144) throw new LocalModelError("Each slot's context is at least 512 tokens, and all slots together at most 262,144.", 400);
+      if (parallel === 1 && contextSize === this.options.contextSize) this.shapes.delete(modelId); else this.shapes.set(modelId, { parallel, contextSize });
+    }
     const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
     await this.scheduler.run(modelId, async () => {
       // Loading cancellation is handled by the runtime. A cancelled request for
@@ -214,7 +231,7 @@ export class LocalModelService implements LocalModelManager {
     const model = this.store.getModel(modelId);
     if (request.images?.length && !model.projector) throw new LocalModelError("This local model has no vision adapter. Attach its matching mmproj GGUF in Models, or choose a vision-capable model before sending images.", 400, "vision_unavailable");
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])]);
-    return this.scheduler.run(modelId, async () => {
+    return this.scheduler.infer(modelId, async () => {
       try {
         if (this.runtime.forModel(modelId)?.status !== "ready") request.onProgress?.({ phase: "loading", model: modelId });
         await this.ensureLoaded(modelId, signal);
@@ -353,8 +370,9 @@ export class LocalModelService implements LocalModelManager {
     const compatibility = evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, undefined, true, this.runtime.memoryCapacity(), model.files.map(file => file.path));
     if (!compatibility.canLoad) throw new LocalModelError(compatibility.reasons.join(" "), 409, "model_incompatible");
     const weightsBytes = model.files.reduce((sum, file) => sum + file.sizeBytes, 0);
-    const estimate = estimateModelMemory(weightsBytes, this.options.contextSize, model.metadata, model.projector?.sizeBytes ?? 0);
-    await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model), estimate);
+    const shape = this.shapes.get(id);
+    const estimate = estimateModelMemory(weightsBytes, shape ? shape.contextSize * shape.parallel : this.options.contextSize, model.metadata, model.projector?.sizeBytes ?? 0);
+    await this.runtime.load(id, await this.store.verifiedModelPath(model), signal, await this.store.verifiedProjectorPath(model), estimate, shape);
   }
   private inspectStorage(): Promise<void> {
     this.storageInspection ??= (async () => {

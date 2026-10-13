@@ -4,7 +4,7 @@ import { LLMRequest, LLMResponse } from "../types";
 import { Logger } from "../utils/Logger";
 import { getSystemMemory } from "../utils/systemMemory";
 import { DeviceInventory, createProcessProbe } from "./DeviceInventory";
-import { LlamaCppRuntime, RuntimeLaunch } from "./LlamaCppRuntime";
+import { LlamaCppRuntime, RuntimeLaunch, RuntimeShape } from "./LlamaCppRuntime";
 import { InstalledRuntime, llamaExecutable, readInstalledRuntime, runtimeDirOf, runtimeIsolation } from "./RuntimeInstall";
 import type { ModelMemoryEstimate } from "./ModelCompatibility";
 import { placementPolicyFor, planPlacement, PlacementPlan, ResidentModel } from "./PlacementPlanner";
@@ -71,9 +71,10 @@ export class LocalRuntimePool {
 
   /** With an estimate, the model is placed on GPUs and CPU by free memory; without one, the
    * configured GPU layers are used as before. */
-  async load(id: string, file: string, signal?: AbortSignal, projector?: string, estimate?: ModelMemoryEstimate): Promise<void> {
+  async load(id: string, file: string, signal?: AbortSignal, projector?: string, estimate?: ModelMemoryEstimate, shape?: RuntimeShape): Promise<void> {
+    const served = shape ?? { parallel: 1, contextSize: this.options.contextSize };
     let runtime = this.instances.get(id);
-    if (runtime?.isReadyFor(id, projector)) return;
+    if (runtime?.isReadyFor(id, projector, served)) return;
     if (!runtime) {
       runtime = new LlamaCppRuntime(this.options, this.logger, this.changed);
       this.instances.set(id, runtime);
@@ -81,13 +82,13 @@ export class LocalRuntimePool {
     const target = runtime;
     let placement = "unplanned";
     await this.exclusive(signal, async () => {
-      if (target.isReadyFor(id, projector)) return;
-      if (!estimate) { await target.load(id, file, signal, projector); return; }
+      if (target.isReadyFor(id, projector, served)) return;
+      if (!estimate) { await target.load(id, file, signal, projector, undefined, shape); return; }
       await target.stop();
-      let plan = await this.plan(id, estimate);
+      let plan = await this.plan(id, estimate, {}, served.contextSize * served.parallel);
       placement = plan.kind;
       try {
-        await target.load(id, file, signal, projector, this.launch(plan, false));
+        await target.load(id, file, signal, projector, this.launch(plan, false), shape);
       } catch (error) {
         // One retry with the next layout: estimates can be short for a specific model or driver.
         if (!(error instanceof LocalModelError) || error.code !== "out_of_memory" || plan.manual || plan.kind === "unified" || plan.kind === "cpu" || signal?.aborted) throw error;
@@ -96,10 +97,10 @@ export class LocalRuntimePool {
         await new Promise(resolve => setTimeout(resolve, 500));
         // A row split that ran short first tries the same GPUs split by layers.
         plan = plan.launch.args.includes("row")
-          ? await this.plan(id, estimate, { layerSplit: true, policy: { safetyFactor: 1.2 } })
-          : await this.plan(id, estimate, { after: plan.kind, policy: { safetyFactor: 1.2 } });
+          ? await this.plan(id, estimate, { layerSplit: true, policy: { safetyFactor: 1.2 } }, served.contextSize * served.parallel)
+          : await this.plan(id, estimate, { after: plan.kind, policy: { safetyFactor: 1.2 } }, served.contextSize * served.parallel);
         placement = plan.kind;
-        await target.load(id, file, signal, projector, this.launch(plan, true));
+        await target.load(id, file, signal, projector, this.launch(plan, true), shape);
       }
     }).catch(error => {
       if (!signal?.aborted) diagnostics().record("local_runtime.load_failed", { code: errorCategory(error), placement });
@@ -132,7 +133,7 @@ export class LocalRuntimePool {
     this.instances.clear();
   }
 
-  private async plan(id: string, estimate: ModelMemoryEstimate, retry: { after?: PlacementPlan["kind"]; policy?: { safetyFactor: number }; layerSplit?: boolean } = {}): Promise<PlacementPlan> {
+  private async plan(id: string, estimate: ModelMemoryEstimate, retry: { after?: PlacementPlan["kind"]; policy?: { safetyFactor: number }; layerSplit?: boolean } = {}, contextSize = this.options.contextSize): Promise<PlacementPlan> {
     // GPU layers 0 means CPU only: no device probe, the same launch as before placement.
     const inventory = this.options.gpuLayers === 0 ? { devices: [], warnings: [] } : await this.inventory.probeDevices();
     for (const warning of inventory.warnings) this.logger.warn(warning);
@@ -147,7 +148,7 @@ export class LocalRuntimePool {
       return [{ modelId, hostBytes: placement.hostEstimatedBytes, deviceBytes: Object.fromEntries(placement.devices.map(device => [device.id, device.estimatedBytes])) }];
     });
     const totalBytes = inventory.devices.find(device => device.kind === "unified")?.totalBytes ?? getSystemMemory().total;
-    const result = planPlacement({ modelId: id, estimate, contextSize: this.options.contextSize, devices: inventory.devices, system: { totalBytes }, residents,
+    const result = planPlacement({ modelId: id, estimate, contextSize, devices: inventory.devices, system: { totalBytes }, residents,
       gpuLayers: this.options.gpuLayers, gpuRuntime: this.gpuRuntime(),
       ...(this.options.multiGpu ? { multiGpu: retry.layerSplit ? { ...this.options.multiGpu, mode: "layer" as const } : this.options.multiGpu } : {}),
       ...(retry.after ? { after: retry.after } : {}), policy: { ...placementPolicyFor(this.installed?.backend), ...retry.policy } });

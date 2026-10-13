@@ -182,6 +182,8 @@ export interface LocalRuntimeSnapshot {
   contextSize: number;
   /** Context reported by the running native server; absent while unloaded or unverified. */
   effectiveContextSize?: number;
+  /** Requests the loaded model serves at once (llama.cpp slots); 1 unless loaded with more. */
+  slots?: number;
   memoryLimitPercent: number;
   modelsDir: string;
   /** Where the loaded model runs; absent while unloaded and on runtimes without placement. */
