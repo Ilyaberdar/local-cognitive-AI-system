@@ -473,3 +473,33 @@ test("what Run would refuse is shown on the module before Run, and an unregister
   assert.equal(empty.valid, true, "a starter module stays runnable");
   assert.ok(empty.diagnostics.some(item => item.code === "SPEC_EVALUATOR_UNREGISTERED" && item.severity === "warning"));
 });
+
+test("each models.list call returns the models of that call, not the ones listed before it", async (t) => {
+  let call = 0;
+  const f = await fixture(t, {models: () => ++call === 1 ? [localModel("alpha-coder", 1_000_000_000)] : [localModel("beta-coder", 2_000_000_000)]});
+  await f.writeSources({flow: `implement Calculator using "calculator-v1" {
+    limit iterations 2, time 5m;
+    policy = "local-files-v1";
+    first = await models.list(provider = "llamacpp");
+    second = await models.list(provider = "llamacpp");
+    selected = models.select(second, prefer = "alpha");
+    developer = await models.load(selected);
+    return unresolved();
+}`});
+  const result = await f.run();
+  assert.equal(result.status, "unresolved", result.error);
+  assert.deepEqual(f.loads.map(item => item.id), ["beta-coder"], "the first list's model is not in the second");
+  assert.ok(result.events.some(item => item.step === "models.list" && item.message === "1 installed local models"));
+});
+
+test("saves of a run never land out of order: the record on disk is the latest state", async (t) => {
+  const f = await fixture(t, {generation: async () => { await new Promise(resolve => setTimeout(resolve, 50)); }});
+  const started = await f.service.start(f.project.id, "Calculator");
+  const record = await f.readRecord(started.id);
+  const save = (f.service as unknown as {save(record: RunRecord): Promise<void>}).save.bind(f.service);
+  await f.service.cancel(started.id);
+  const writes: Promise<void>[] = [];
+  for (let index = 0; index <= 40; index++) { record.phase = `phase-${index}`; writes.push(save(record)); }
+  await Promise.all(writes);
+  assert.equal((await f.readRecord(started.id)).phase, "phase-40");
+});

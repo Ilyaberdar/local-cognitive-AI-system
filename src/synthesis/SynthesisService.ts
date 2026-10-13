@@ -103,6 +103,8 @@ export class SynthesisService {
   private readonly pendingStarts = new Set<Promise<SynthesisRun>>();
   private reservations = 0;
   private disposed = false;
+  /** Each run's record is written by one writer at a time: the last write holds the latest state. */
+  private readonly writes = new Map<string, {last: Promise<void>; queued?: {record: RunRecord; done: Promise<void>}}>();
   constructor(appDataDir: string, private readonly services: Services) { this.directory = path.join(appDataDir, "synthesis", "runs"); }
 
   async init(): Promise<void> {
@@ -308,7 +310,8 @@ export class SynthesisService {
     const candidate = Object.freeze({kind: "candidate", id: record.id, runId: record.id,
       get path() { return record.outputPath ?? ""; }, get hash() { return filesHash(record.files); }});
     const spec = Object.freeze({kind: "spec", hash: record.specHash});
-    const models = new Map<string, ManagedModel>();
+    // The models this run listed or loaded: a selection must come from one of its lists.
+    const listed = new WeakSet<ManagedModel>();
     const roles = new Set<object>();
     const evaluationSignatures: string[] = [];
     let lastEvidence: Evidence | undefined;
@@ -326,9 +329,10 @@ export class SynthesisService {
       switch (name) {
         case "models.list": {
           if ((named.provider ?? "llamacpp") !== "llamacpp") throw new SynthesisError("local-files-v1 currently allows the built-in llamacpp provider only; no cloud fallbacks.");
-          const available = await this.services.models.listAllModels("llamacpp");
-          for (const model of available) if (model.providerId === "llamacpp") models.set(model.id, model);
-          value = [...models.values()];
+          const available = (await this.services.models.listAllModels("llamacpp")).filter(model => model.providerId === "llamacpp");
+          for (const model of available) listed.add(model);
+          // This call's list: models listed or loaded earlier in the run are not in it again.
+          value = available;
           break;
         }
         case "models.select": {
@@ -337,7 +341,7 @@ export class SynthesisService {
           if (!(max > 0) || (named.max_size !== undefined && !Number.isFinite(max))) throw new SynthesisError("max_size must be positive and finite.");
           if (named.provider !== undefined && named.provider !== "llamacpp") throw new SynthesisError("Only the built-in local llamacpp provider is allowed.");
           const prefer = String(named.prefer ?? "").toLowerCase();
-          const eligible = args[0].filter((model): model is ManagedModel => !!model && models.get(model.id) === model && (!Number.isFinite(max) || (typeof model.sizeBytes === "number" && model.sizeBytes > 0 && model.sizeBytes <= max)));
+          const eligible = args[0].filter((model): model is ManagedModel => !!model && listed.has(model) && (!Number.isFinite(max) || (typeof model.sizeBytes === "number" && model.sizeBytes > 0 && model.sizeBytes <= max)));
           eligible.sort((a,b) => Number(`${b.id} ${b.displayName}`.toLowerCase().includes(prefer)) - Number(`${a.id} ${a.displayName}`.toLowerCase().includes(prefer)) || (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity) || a.id.localeCompare(b.id));
           if (!eligible[0]) throw new SynthesisError("No installed local model matches the selection. Install a suitable model in Models or adjust max_size.");
           value = eligible[0]; break;
@@ -346,7 +350,7 @@ export class SynthesisService {
           const available = await this.services.models.listAllModels("llamacpp");
           const model = available.find(item => item.id === args[0] || item.displayName === args[0]);
           if (!model) throw new SynthesisError("model() expects an exact installed local model ID or display name.");
-          models.set(model.id, model);
+          listed.add(model);
           await this.services.loadModel(model, signal);
           const role = Object.freeze({model}); roles.add(role); value = role;
           if (!record.models.some(item => item.id === model.id)) record.models.push(model);
@@ -354,7 +358,7 @@ export class SynthesisService {
         }
         case "models.load": {
           const model = args[0] as ManagedModel;
-          if (!model || models.get(model.id) !== model) throw new SynthesisError("models.load expects a selected installed model.");
+          if (!model || !listed.has(model)) throw new SynthesisError("models.load expects a selected installed model.");
           await this.services.loadModel(model, signal);
           const role = Object.freeze({model}); roles.add(role); value = role;
           if (!record.models.some(item => item.id === model.id)) record.models.push(model);
@@ -459,7 +463,7 @@ export class SynthesisService {
         default: throw new SynthesisError(`Runtime operation '${name}' is not supported by local-files-v1.`);
       }
       signal.throwIfAborted();
-      const detail = name === "models.list" ? `${models.size} installed local models` : name === "models.select" ? (value as ManagedModel).displayName : undefined;
+      const detail = name === "models.list" ? `${(value as ManagedModel[]).length} installed local models` : name === "models.select" ? (value as ManagedModel).displayName : undefined;
       await this.event(record, name, detail ?? `${name} completed`, "ok", {line: span.start.line});
       return value;
     };
@@ -633,7 +637,21 @@ export class SynthesisService {
     if (record.events.length > 2000) record.events.splice(0, record.events.length - 2000);
     await this.save(record);
   }
-  private async save(record: RunRecord): Promise<void> { await writeJsonAtomically(path.join(this.directory, `${runId(record.id)}.json`), record); }
+  /** Saves never overlap: a save made while one is being written waits for it, and saves of the
+   * same record made meanwhile share one write, which serializes the record as it is by then. */
+  private save(record: RunRecord): Promise<void> {
+    const file = path.join(this.directory, `${runId(record.id)}.json`);
+    let state = this.writes.get(record.id);
+    if (!state) { state = {last: Promise.resolve()}; this.writes.set(record.id, state); }
+    if (state.queued?.record === record) return state.queued.done;
+    const writer = state;
+    const queued = {record, done: writer.last.catch(() => undefined).then(() => {
+      if (writer.queued === queued) writer.queued = undefined;
+      return writeJsonAtomically(file, record);
+    }).finally(() => { if (writer.last === queued.done && !writer.queued) this.writes.delete(record.id); })};
+    writer.queued = queued; writer.last = queued.done;
+    return queued.done;
+  }
   private async read(id: string): Promise<RunRecord> {
     try { return JSON.parse(await fs.readFile(path.join(this.directory, `${runId(id)}.json`), "utf8")) as RunRecord; }
     catch (error) { if (isMissingFile(error)) throw new SynthesisError("Synthesis run not found.", 404); throw error; }

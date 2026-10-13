@@ -79,3 +79,22 @@ test("a local model's file path is not part of the recorded model name", () => {
   assert.equal(usageModelName("x".repeat(300)).length, 128);
   assert.equal(usageModelName(""), "unknown");
 });
+
+test("a structured call that falls back to another format reports the tokens of every attempt", async () => {
+  const registry = new LLMRegistry();
+  const formats: unknown[] = [];
+  registry.register({ id: "strict", name: "Strict", defaultModel: "s", isConfigured: () => true,
+    getDescriptor: () => ({ id: "strict", name: "Strict", defaultModel: "s", configured: true, capabilities: { local: false, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: true, reasoning: false, vision: false } }),
+    generateText: async request => {
+      formats.push(request.responseFormat?.type ?? null);
+      return request.responseFormat?.type === "json_schema"
+        ? { provider: "strict", model: "s", text: "", error: "json_schema is not supported", unsupportedFeature: "schema", usage: { inputTokens: 5, outputTokens: 0, totalTokens: 5 } }
+        : { provider: "strict", model: "s", text: "{\"a\":1}", usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 } };
+    } });
+  const llm = new LLMService(registry, "strict", new Logger(), new OutputSanitizer());
+  const { data, response } = await llm.generateObject<{ a: number }>({ prompt: "give", responseFormat: { type: "json_schema", name: "x", strict: true,
+    schema: { type: "object", properties: { a: { type: "number" } }, required: ["a"], additionalProperties: false } } });
+  assert.deepEqual(formats, ["json_schema", "json_object"]);
+  assert.deepEqual(data, { a: 1 });
+  assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 2, totalTokens: 13 });
+});

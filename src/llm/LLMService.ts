@@ -1,4 +1,4 @@
-import { LLMRequest, LLMResponse } from "../types";
+import { LLMRequest, LLMResponse, TokenUsage } from "../types";
 import { Logger } from "../utils/Logger";
 import { tryParseJson } from "../utils/Json";
 import { OutputSanitizer } from "./OutputSanitizer";
@@ -13,6 +13,12 @@ import { currentUsageScope } from "../usage/UsageScope";
 
 /** Without a ledger (tests, tools) calls are still counted for the technical log. */
 const NO_LEDGER: UsageRecorder = { record: () => undefined };
+/** Two responses' token counts together; a count neither reported stays absent. */
+export function addUsage(left: TokenUsage | undefined, right: TokenUsage | undefined): TokenUsage | undefined {
+  if (!left || !right) return left ?? right;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)] as Array<keyof TokenUsage>);
+  return Object.fromEntries([...keys].map(key => [key, (left[key] ?? 0) + (right[key] ?? 0)])) as TokenUsage;
+}
 
 export class LLMService {
   constructor(
@@ -103,7 +109,10 @@ export class LLMService {
       for (let attempt = 0; attempt < 2 && response.unsupportedFeature; attempt++) {
         generation = { ...generation, responseFormat: generation.responseFormat?.type === "json_schema" && capabilities?.jsonMode
           ? { type: "json_object" } : null };
+        const spent = response.usage;
         response = await this.generateText(generation, targetProviderId);
+        // The caller hears of every token this call spent, the refused attempts' included.
+        if (spent) response = { ...response, usage: addUsage(spent, response.usage) };
       }
     }
 
