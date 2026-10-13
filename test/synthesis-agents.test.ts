@@ -391,3 +391,46 @@ test("New module → Repository review makes a valid agents module: notes, a rep
   assert.match(created.flowSource!, /slots = 4/);
   assert.match(created.flowSource!, /parallel_map\(agents, tasks, concurrency = 4\)/);
 });
+
+test("races: two agents creating twin names at once leave one file; every agent reads one version of a project file, as Grounded does", async (t) => {
+  let edited = false;
+  const f = await fixture(t, {script: (task, results) => {
+    if (task === "upper" || task === "lower") return results.length ? final(results[0]) : tool("file.write", {path: `review/notes/${task === "upper" ? "A" : "a"}.md`, content: task, expectedVersion: "missing"});
+    return results.length ? final(results[0]) : tool("file.read", {path: "src/alpha.ts"});
+  }, delay: async task => {
+    if (task === "late reader") {
+      await new Promise(resolve => setTimeout(resolve, 40));
+      // The project file changes on disk while the run's agents are reading it.
+      if (!edited) { edited = true; await fs.writeFile(path.join(f.root, "src", "alpha.ts"), "export const alpha = 2; // edited during the run\n"); }
+    }
+  }});
+  const result = await f.run(`writer = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), files.write("review/notes/**")], steps = 4);
+    results = await parallel_map(writer, ["upper", "lower", "early reader", "late reader"], concurrency = 4);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const answers = await Promise.all([0, 1, 2, 3].map(async index => (await f.service.agent(result.id, index)).final!));
+  const saved = answers.slice(0, 2).filter(answer => /Saved/.test(answer)), refused = answers.slice(0, 2).filter(answer => /only in case/.test(answer));
+  assert.equal(saved.length, 1, answers.slice(0, 2).join("\n")); assert.equal(refused.length, 1);
+  const notes = (await f.service.diff(result.id)).files.filter(file => /review\/notes\/a\.md$/i.test(file.path));
+  assert.equal(notes.length, 1, "one candidate file, not two that the disk would merge");
+  assert.ok(edited);
+  assert.match(answers[2], /export const alpha = 1/); assert.match(answers[3], /export const alpha = 1/, "the late reader sees the version the run read first");
+});
+
+test("races: a local model keeps more slots than a later load asks for while it is loaded; a shared provider gate spans runs", async () => {
+  const { servedShape } = await import("../src/local/LocalModelService");
+  const six = {parallel: 6, contextSize: 16384}, two = {parallel: 2, contextSize: 8192};
+  assert.deepEqual(servedShape(six, two, true, 4096), six, "another run's six agents keep their slots");
+  assert.deepEqual(servedShape(two, six, true, 4096), six, "more slots: loaded again, with the model to itself");
+  assert.deepEqual(servedShape(six, two, false, 4096), two, "an unloaded model takes the shape asked for");
+  assert.equal(servedShape(undefined, {parallel: 1, contextSize: 4096}, false, 4096), undefined);
+  const { gatedLlm } = await import("../src/synthesis/agents/ProviderGate");
+  let inFlight = 0, peak = 0, refusals = 2;
+  const llm = {generateObject: async () => {
+    inFlight++; peak = Math.max(peak, inFlight); await new Promise(resolve => setTimeout(resolve, 5)); inFlight--;
+    if (refusals > 0) { refusals--; return {data: null, response: {provider: "p", model: "m", text: "", error: "HTTP 429"}}; }
+    return {data: {}, response: {provider: "p", model: "m", text: "{}"}};
+  }} as unknown as LLMService;
+  const first = gatedLlm(llm, 4, {baseDelayMs: 2}), second = gatedLlm(llm, 4, {baseDelayMs: 2});
+  await Promise.all([...Array.from({length: 4}, () => first.generateObject({prompt: "a"}, "p")), ...Array.from({length: 4}, () => second.generateObject({prompt: "b"}, "p"))]);
+  assert.ok(peak <= 4, `two runs together sent ${peak} at once to one provider`);
+});

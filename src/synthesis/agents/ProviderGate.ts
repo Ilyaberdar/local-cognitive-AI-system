@@ -10,13 +10,16 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, 
   signal?.addEventListener("abort", stop, { once: true });
 });
 
+const providerGates = new WeakMap<object, Map<string, Gate>>();
 /** How many requests a provider takes at once: halved on every "slow down" answer, raised by one after
  * each answer that came through, between 1 and the most the run allows. */
 class Gate {
   private active = 0;
   private waiting: Array<() => void> = [];
   limit: number;
-  constructor(readonly most: number) { this.limit = most; }
+  constructor(public most: number) { this.limit = most; }
+  /** Another run asks for more at once: the gate grows to it, keeping what it learned. */
+  widen(most: number): void { if (most > this.most) { this.limit += most - this.most; this.most = most; this.waiting.shift()?.(); } }
   async acquire(signal?: AbortSignal): Promise<void> {
     while (this.active >= this.limit) {
       await new Promise<void>((resolve, reject) => {
@@ -38,8 +41,11 @@ class Gate {
  * "slow down" answer is waited out and the request sent again (its Retry-After, else 2 s doubling up to
  * 60 s, six times at most) without spending the agent's step. */
 export function gatedLlm(llm: LLMService, most: number, options: { retries?: number; baseDelayMs?: number; waited?: (providerId: string, ms: number) => void } = {}): LLMService {
-  const gates = new Map<string, Gate>();
-  const gate = (providerId: string) => { let found = gates.get(providerId); if (!found) { found = new Gate(most); gates.set(providerId, found); } return found; };
+  // Shared by every run on this model service: two runs together never send a provider more than one would.
+  let gates = providerGates.get(llm);
+  if (!gates) { gates = new Map(); providerGates.set(llm, gates); }
+  const shared = gates;
+  const gate = (providerId: string) => { let found = shared.get(providerId); if (!found) { found = new Gate(most); shared.set(providerId, found); } else found.widen(most); return found; };
   const retries = options.retries ?? 6, base = options.baseDelayMs ?? 2000;
   const send = async <T>(providerId: string | undefined, request: LLMRequest, call: () => Promise<T>, error: (result: T) => string | undefined): Promise<T> => {
     const id = providerId ?? "default";

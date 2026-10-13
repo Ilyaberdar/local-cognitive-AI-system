@@ -29,6 +29,10 @@ export interface CandidateStore {
   hidden(projectRelative: string): boolean;
   /** Called after every change, so the run can record it. */
   changed(): void;
+  /** Project files as the run first read them, by path as the disk spells it. */
+  snapshot?: Map<string, string | null>;
+  /** Keeps a first read (within the run's bound) and returns the version every agent then sees. */
+  keep?(path: string, content: string | null): string | null;
 }
 
 const hash = (content: string) => createHash("sha256").update(content).digest("hex");
@@ -163,10 +167,16 @@ export class SynthesisFileTools extends OperationExecutor {
   private async content(target: string): Promise<string | null> {
     const copy = this.candidate(target);
     if (copy) return copy.content;
-    try {
-      // Every folder on the way is checked too: a link anywhere in the path could lead out of the project.
-      return await readText(await this.inside(target), MAX_READ_BYTES);
-    } catch (error) { if (isMissingFile(error)) return null; throw error; }
+    // Every agent of the run reads one version of a project file, the one read first: an edit made
+    // on disk during the run does not give agents different views (Apply then finds the edit).
+    const file = await this.inside(target);
+    const key = await this.spelled(target);
+    const seen = this.candidates.snapshot?.get(key);
+    if (seen !== undefined) return seen;
+    let content: string | null;
+    // Every folder on the way is checked too (inside): a link anywhere in the path could lead out of the project.
+    try { content = await readText(file, MAX_READ_BYTES); } catch (error) { if (isMissingFile(error)) content = null; else throw error; }
+    return this.candidates.keep?.(key, content) ?? content;
   }
   private async read(target: string, startLine: number, endLine?: number): Promise<ToolExecutionResult> {
     if (!this.mayRead(target)) throw new Error(`This agent may not read ${target || "the project root"}. It may read: ${this.rights.read.join(", ") || "nothing"}.`);
@@ -255,9 +265,13 @@ export class SynthesisFileTools extends OperationExecutor {
       note: "Paths are relative to the project; pass them to file.read as they are."}), {results: matches});
   }
   private async change(tool: string, target: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const relative = this.mayWrite(target, tool === "file.delete" ? "delete" : "write");
-    return SynthesisFileTools.locked(`${this.candidates.root}\0${target}`, async () => {
+    const access = tool === "file.delete" ? "delete" : "write";
+    this.mayWrite(target, access);
+    // One change of a path at a time, whatever case an agent writes it in (the disk may ignore case).
+    return SynthesisFileTools.locked(`${this.candidates.root}\0${target.toLowerCase()}`, async () => {
       const before = await this.content(target);
+      // Checked again with no wait before the change: another agent may have made a twin or the last file meanwhile.
+      const relative = this.mayWrite(target, access);
       const version = before === null ? "missing" : hash(before);
       if (args.expectedVersion !== version) throw new Error(`File version conflict at ${target}: it changed since you read it (another agent may have written it). Read it again before changing it.`);
       if (!Object.hasOwn(this.candidates.baseline, relative)) {

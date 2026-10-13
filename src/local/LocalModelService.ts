@@ -19,6 +19,14 @@ import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProj
 import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact } from "./types";
 import { normalizeLocalGenerationSettings, preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "./GenerationSettings";
 
+/** The shape a model is served with after a load asks for `requested`: a loaded model that already
+ * serves at least as many requests, each with at least as much context, keeps its shape (another run's
+ * agents may be using its slots); otherwise the request's. Undefined: the default single slot. */
+export function servedShape(current: RuntimeShape | undefined, requested: RuntimeShape, loaded: boolean, defaultContext: number): RuntimeShape | undefined {
+  const now = current ?? { parallel: 1, contextSize: defaultContext };
+  const next = loaded && now.parallel >= requested.parallel && now.contextSize >= requested.contextSize ? now : requested;
+  return next.parallel === 1 && next.contextSize === defaultContext ? undefined : next;
+}
 export class LocalModelService implements LocalModelManager {
   readonly providerId = "llamacpp";
   readonly providerName = "Local models";
@@ -175,14 +183,20 @@ export class LocalModelService implements LocalModelManager {
    * the model keeps that shape until it is loaded with another. */
   async loadModel(modelId: string, callerSignal?: AbortSignal, shape?: Partial<RuntimeShape>): Promise<void> {
     await this.init(); this.assertLibrary();
+    let requested: RuntimeShape | undefined;
     if (shape) {
       const parallel = shape.parallel ?? 1, contextSize = shape.contextSize ?? this.options.contextSize;
       if (!Number.isInteger(parallel) || parallel < 1 || parallel > 16) throw new LocalModelError("A local model serves 1 to 16 requests at once.", 400);
       if (!Number.isInteger(contextSize) || contextSize < 512 || contextSize * parallel > 262_144) throw new LocalModelError("Each slot's context is at least 512 tokens, and all slots together at most 262,144.", 400);
-      if (parallel === 1 && contextSize === this.options.contextSize) this.shapes.delete(modelId); else this.shapes.set(modelId, { parallel, contextSize });
+      requested = { parallel, contextSize };
     }
     const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
     await this.scheduler.run(modelId, async () => {
+      // The shape changes here, with the model to itself: no request of another run is answered meanwhile.
+      if (requested) {
+        const next = servedShape(this.shapes.get(modelId), requested, this.runtime.forModel(modelId)?.status === "ready", this.options.contextSize);
+        if (next) this.shapes.set(modelId, next); else this.shapes.delete(modelId);
+      }
       // Loading cancellation is handled by the runtime. A cancelled request for
       // an already resident model must not unload it.
       await this.ensureLoaded(modelId, signal);

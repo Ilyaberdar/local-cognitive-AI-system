@@ -46,6 +46,8 @@ const MAX_STEPS = 1_000_000;
 const MAX_AGENT_TASKS = 1000, MAX_CONCURRENCY = 64;
 /** The most files a candidate holds, declared ones and those agents create. */
 const MAX_CANDIDATE_FILES = 300;
+/** How much of the project a run keeps as its agents first read it. */
+const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 /** Calls that only make a value (rights, an agent's description): no activity events. */
 const QUIET_CALLS = new Set(["files.read", "files.write", "files.delete", "agent"]);
 const counts = (agents: AgentSummary[]): AgentCounts => {
@@ -386,6 +388,9 @@ export class SynthesisService {
       return handle;
     };
     const moduleFolder = path.posix.dirname(moduleSources(record.moduleId).specPath);
+    // Project files as the run's agents first read them: one version for all of them, and for Grounded.
+    const snapshot = new Map<string, string | null>();
+    let snapshotBytes = 0;
     // The contract's own files as project paths: its sources and every test file, next to the .lcspec.
     // Compared without case: on a file system that ignores it (macOS, Windows) Tests/A.ts is tests/a.ts.
     const contractPaths = new Set([moduleSources(record.moduleId).specPath, moduleSources(record.moduleId).flowPath,
@@ -417,7 +422,15 @@ export class SynthesisService {
         return target.split("/").includes("Synthesis") || /\.(?:lcspec|lcflow)$/.test(key) || contractPaths.has(key) ||
           (folderKey !== "." && (key === folderKey || key.startsWith(`${folderKey}/`)));
       },
-      changed: () => { lastEvidence = undefined; delete record.evidence; saveSoon(); }
+      changed: () => { lastEvidence = undefined; delete record.evidence; saveSoon(); },
+      snapshot,
+      keep: (file, content) => {
+        const kept = snapshot.get(file);
+        if (kept !== undefined) return kept;
+        const size = Buffer.byteLength(content ?? "");
+        if (snapshotBytes + size <= MAX_SNAPSHOT_BYTES) { snapshot.set(file, content); snapshotBytes += size; }
+        return content;
+      }
     };
     const resolveModel = async (providerId: string, id: unknown): Promise<ManagedModel> => {
       const provider = await this.provider(record, providerId);
@@ -618,6 +631,9 @@ export class SynthesisService {
               if (relative !== undefined && Object.hasOwn(files, relative)) return files[relative].split("\n").length;
             }
             if (cited.startsWith(`${output}/`) && record.removed?.includes(cited.slice(output.length + 1))) return undefined;
+            // The version the agents read, when they read it.
+            const kept = snapshot.get(cited);
+            if (kept !== undefined) return kept === null ? undefined : kept.split("\n").length;
             try { return (await readText(await containedPath(record.rootPath, cited), 5 * 1024 * 1024)).split("\n").length; } catch { return undefined; }
           };
           const gates: Evidence["gates"] = [];
