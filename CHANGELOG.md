@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.6 — 2026-10-13
+
+More cloud models, added in Settings, and code highlighted in more languages.
+
+### Models & Providers
+
+- **Qwen is built in** (Alibaba Cloud Model Studio, also called QwenCloud): Settings → Models & Providers → Qwen. Enter a key from QwenCloud and choose the region it was created in: Singapore by default, or the US, Hong Kong or China. A key works only in its own region.
+- **Add provider.** DeepSeek, OpenRouter, Groq, Perplexity or any other service that speaks the OpenAI API. Its address and key are checked first by reading the models it offers; then the provider is added and tested, and you choose its model from that list. An added provider can be renamed or removed.
+- **Perplexity** answers with web search through its new Agent API: its presets (fast to xhigh) and the OpenAI, Anthropic and Google models it hosts, all paid from your Perplexity balance.
+- Replies name their provider as Settings does.
+
+### Chat
+
+- Code in C, C++, C#, Java, Kotlin, Swift, Go, Rust, PHP, Ruby, Lua, GLSL, INI and TOML, Dockerfile, PowerShell, CMake and Make is highlighted.
+
+### Server
+
+- Qwen is there too: set `QWEN_API_KEY` in the server's environment file, or set its key from your computer through Remote. Other providers are added on each computer for now.
+
+### Known limits
+
+- Agents on an added provider choose their actions in JSON rather than through the service's own tool calls, and only Qwen's answers appear as they are written.
+
 ## 0.1.5 — 2026-10-12
 
 Answers you can watch being written, and GPU servers that keep their CUDA runtime.
