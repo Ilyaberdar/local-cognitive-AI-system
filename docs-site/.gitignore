@@ -27,3 +27,6 @@ src/assets/screens/
 
 # made by scripts/sync-content.mjs from ../icon.png
 public/logo-hero.webp
+
+# wrangler dev state (local caches and databases)
+.wrangler/
