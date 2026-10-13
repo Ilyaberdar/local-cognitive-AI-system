@@ -161,8 +161,9 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
         const diff = await service().diff(id);
         let budget = MAX_DIFF_BYTES;
         const files = diff.files.map(file => {
-          const size = Buffer.byteLength(file.after) + Buffer.byteLength(file.before ?? "");
-          const sizes = { beforeBytes: file.before === null ? null : Buffer.byteLength(file.before), afterBytes: Buffer.byteLength(file.after) };
+          const size = Buffer.byteLength(file.after ?? "") + Buffer.byteLength(file.before ?? "");
+          // after null: the run deleted the file.
+          const sizes = { beforeBytes: file.before === null ? null : Buffer.byteLength(file.before), afterBytes: file.after === null ? null : Buffer.byteLength(file.after) };
           if (size > budget) return { path: file.path, ...sizes, omitted: true };
           budget -= size;
           return { path: file.path, before: file.before, after: file.after, ...sizes };

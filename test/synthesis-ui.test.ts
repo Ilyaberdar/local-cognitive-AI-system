@@ -463,3 +463,41 @@ test("Cloud models is the host's switch for the selected project: it shows the p
     await until(() => listed > before, "modules checked again for their diagnostics");
   } finally { ui.close(); }
 });
+
+test("Agents lists a run's agents with their model, status and files, and shows one agent's steps; Changes marks deleted files", async () => {
+  const run = { ...runEntry("swarm", "accepted"), agents: { total: 2, queued: 0, running: 0, done: 1, failed: 1, cancelled: 0 } };
+  const items = [
+    { index: 0, call: 1, task: "Review src/a.ts", providerId: "deepseek", model: "deepseek-flash", status: "done", steps: 3, inputTokens: 12000, outputTokens: 900, durationMs: 4200, files: ["review/notes/a.md"] },
+    { index: 1, call: 1, task: "Review src/b.ts", providerId: "perplexity", model: "openai/gpt-5-mini", status: "failed", steps: 16, inputTokens: 300, outputTokens: 20, durationMs: 900, files: [], error: "Agent reached its step limit (16)" }
+  ];
+  const requested: string[] = [];
+  const ui = harness(path => {
+    requested.push(path);
+    if (path.endsWith('/modules')) return { modules: [moduleEntry()] };
+    if (path.endsWith('/modules/Calculator')) return moduleEntry();
+    if (path.endsWith('/runs')) return [run];
+    if (path === '/synthesis/runs/swarm') return run;
+    if (path === '/synthesis/runs/swarm/agents') return { counts: run.agents, items };
+    if (path === '/synthesis/runs/swarm/agents/0') return { ...items[0], protocol: "json", final: "Wrote review/notes/a.md: src/a.ts:12", turns: [
+      { type: "tool", content: '{"tool":"file.read","arguments":{"path":"src/a.ts"}}' }, { type: "result", content: "file.read: succeeded" }] };
+    if (path.endsWith('/diff')) return { canApply: true, files: [{ path: 'review/notes/old.md', before: 'stale', after: null }] };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    await until(() => ui.text().includes('swarm activity'), 'run loaded');
+    ui.click('Agents · 2');
+    await until(() => ui.dom.window.document.querySelectorAll('.synthesis-agents__row').length === 2, 'agents listed');
+    const doc = ui.dom.window.document;
+    assert.match(doc.querySelector('.synthesis-agents__counts').textContent, /2 agents.*1 done.*1 failed/);
+    const [first, second] = [...doc.querySelectorAll('.synthesis-agents__row')] as any[];
+    assert.match(first.textContent, /deepseek-flash.*Done.*12k \/ 900.*4\.2 s.*Review src\/a\.ts.*review\/notes\/a\.md/);
+    assert.match(second.textContent, /openai\/gpt-5-mini.*Failed.*step limit/);
+    first.click();
+    await until(() => Boolean(doc.querySelector('.synthesis-agent-detail')), 'agent steps');
+    assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /Agent 1.*deepseek\/deepseek-flash · Done · json actions.*Action.*file\.read.*Result.*Answer.*src\/a\.ts:12/s);
+    ui.click('Changes');
+    await until(() => Boolean(doc.querySelector('.synthesis-diff')), 'changes loaded');
+    assert.match(doc.querySelector('.synthesis-diff summary').textContent, /review\/notes\/old\.md.*Deleted/);
+    assert.ok(requested.includes('/synthesis/runs/swarm/agents/0'));
+  } finally { ui.close(); }
+});

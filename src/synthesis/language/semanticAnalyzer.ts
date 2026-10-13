@@ -1,11 +1,13 @@
 import {
   CallExpression, CompileOptions, ContractCheck, Diagnostic, Expression, FlowProgram, SourceSpan, SpecProgram, Statement
 } from "./types";
+import { matchesGlob as globMatch } from "../checks/architecture";
 
 /** "array" holds values of unknown types; `array:T` only values of type T (`array:none`: an empty literal). */
 type ValueType = "string" | "number" | "boolean" | "none" | "duration" | "bytes" | "cost" |
   "array" | `array:${string}` | "modelList" | "selectedModel" | "model" | "module" | "specRef" | "frozenSpec" |
-  "candidate" | "evidence" | "verdict" | "status" | "feedback" | "review" | "design" | "tests" | "context" | "result" | "unknown";
+  "candidate" | "evidence" | "verdict" | "status" | "feedback" | "review" | "design" | "tests" | "context" | "result" |
+  "permission" | "agent" | "taskResult" | "unknown";
 const isArray = (type: ValueType) => type === "array" || type === "modelList" || type.startsWith("array:");
 /** The type of an array's elements: what `list[i]` and `for (item in list)` give. */
 const elementOf = (type: ValueType): ValueType => type === "modelList" ? "selectedModel" : type.startsWith("array:") ? type.slice(6) as ValueType : "unknown";
@@ -37,21 +39,32 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   stagnant: { returns: "boolean", required: 1, max: 1, parameters: [["number"]] },
   // Computed by the interpreter itself: no runtime action, no event.
   range: { returns: "array:number", required: 1, max: 1, parameters: [["number"]] },
-  append: { returns: "array", required: 2, max: 2, parameters: [["array"]] }
+  append: { returns: "array", required: 2, max: 2, parameters: [["array"]] },
+  // agents-v1: agents with file rights, run in parallel.
+  "files.read": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
+  "files.write": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
+  "files.delete": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
+  agent: { returns: "agent", required: 0, max: 1, parameters: [["model"]], named: { provider: ["string"], model: ["string"], tools: ["array:permission"], instructions: ["string"], steps: ["number"] } },
+  parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"] }, async: true }
 };
+/** What only agents-v1 may use. */
+const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "agent", "parallel_map"]);
+const AGENT_METHODS = new Set(["split", "synthesize"]);
 const METHODS: Record<string, FunctionDefinition> = {
   revise: { returns: "candidate", required: 2, max: 4, parameters: [["candidate"], ["frozenSpec"]], named: { file: ["string"], format: ["string"], instruction: ["string"] }, async: true },
   propose: { returns: "design", required: 1, max: 2, parameters: [["frozenSpec"], ["context"]], async: true },
   inspect: { returns: "review", required: 2, max: 3, parameters: [["candidate"]], async: true },
   propose_tests: { returns: "tests", required: 1, max: 2, parameters: [["frozenSpec"], ["candidate"]], async: true },
-  reconsider: { returns: "design", required: 2, max: 4, parameters: [["frozenSpec"], ["design"]], async: true }
+  reconsider: { returns: "design", required: 2, max: 4, parameters: [["frozenSpec"], ["design"]], async: true },
+  split: { returns: "array:string", required: 2, max: 3, parameters: [["string"], ["number"], ["context"]], named: { paths: ["permission"], instruction: ["string"] }, async: true },
+  synthesize: { returns: "candidate", required: 3, max: 3, parameters: [["candidate"], ["frozenSpec"], ["array:taskResult"]], named: { file: ["string"], instruction: ["string"] }, async: true }
 };
 const STATUSES = new Set(["Pass", "Fail", "Unknown", "Blocked", "Unresolved", "NeedsReview"]);
 /** What a run may use: local llama.cpp models only, also cloud models by API key, also agents. */
 export const POLICIES = ["local-files-v1", "cloud-files-v1", "agents-v1"] as const;
 const POLICY_LIST = POLICIES.map((policy) => `"${policy}"`).join(", ");
 /** Calls that name a provider: the flow states it literally, so where data goes is known before Run. */
-const PROVIDER_CALLS = new Set(["models.list", "models.select", "model"]);
+const PROVIDER_CALLS = new Set(["models.list", "models.select", "model", "agent"]);
 const FORBIDDEN_MEMBERS = new Set(["__proto__", "prototype", "constructor"]);
 
 /** The providers a flow names (provider = "..."), each with where it is named. */
@@ -118,6 +131,7 @@ export function analyzeSpec(spec: SpecProgram, options: CompileOptions = {}): Di
     else paths.set(file, kind);
   };
   for (const file of spec.artifacts) claim(file, "Artifact", "SPEC_ARTIFACT_PATH");
+  for (const area of spec.areas ?? []) if (!filePattern(area)) error("SPEC_ARTIFACT_PATH", `files '${area}' must be a relative pattern such as "notes/**" or "notes/*.md", without hidden folders or "..".`);
   for (const file of spec.frozen ?? []) claim(file, "Frozen file", "SPEC_ARTIFACT_PATH");
   const suite = new Set(spec.tests ?? []);
   for (const gate of spec.gates) if (gate.check?.kind === "tests") gate.check.files.forEach((file) => suite.add(file));
@@ -155,6 +169,9 @@ export function analyzeSpec(spec: SpecProgram, options: CompileOptions = {}): Di
       case "imports":
         if (!check.pattern || [...check.allow, ...check.deny].some((item) => !item || item.length > 200)) error("SPEC_CHECK_PATTERN", "Imports patterns must be non-empty, at most 200 characters.", span);
         break;
+      case "grounded":
+        if (!spec.artifacts.includes(check.file) && !(spec.areas ?? []).some((area) => globMatch(check.file, area))) error("SPEC_CHECK_FILE", `Grounded names '${check.file}', which is not a file of the candidate (an artifact or in a files area).`, span);
+        break;
       case "forbid":
         if (!check.pattern) error("SPEC_CHECK_PATTERN", "Forbid needs a file pattern.", span);
         if (!check.regex || check.regex.length > 300) error("SPEC_CHECK_PATTERN", "Forbid's pattern must be 1–300 characters.", span);
@@ -165,6 +182,10 @@ export function analyzeSpec(spec: SpecProgram, options: CompileOptions = {}): Di
   }
 }
 
+/** A project-relative path pattern: segments of letters, digits, _ - . and the wildcards * and **. */
+export function filePattern(pattern: string): boolean {
+  return !!pattern && pattern.length <= 240 && pattern.split("/").every((part) => part === "**" || (/^[A-Za-z0-9_*-][A-Za-z0-9_.*-]*$/.test(part) && part !== "node_modules" && !part.includes("**")));
+}
 const TARGET_LANGUAGES = new Set(["JavaScript", "Javascript", "JS", "TypeScript", "Typescript", "TS", "Python", "Cpp", "CPP"]);
 /** Which runner a test file needs, by its extension. */
 export function testRunner(file: string): "node" | "python" | "cpp" | undefined {
@@ -233,7 +254,9 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
           module: { spec: "specRef" }, verdict: { status: "status", violations: "feedback" },
           evidence: { status: "status" }, review: { notes: "feedback", violations: "feedback" },
           selectedModel: { id: "string", displayName: "string", sizeBytes: "bytes", providerId: "string" },
-          candidate: { id: "string", path: "string", hash: "string" }, array: { length: "number" }, modelList: { length: "number" }
+          candidate: { id: "string", path: "string", hash: "string" }, array: { length: "number" }, modelList: { length: "number" },
+          taskResult: { ok: "boolean", output: "string", error: "string", task: "string", files: "array:string", index: "number" },
+          "array:taskResult": { length: "number", completed: "number", failed: "number" }
         };
         const objectFields = fields[object] ?? (isArray(object) ? fields.array : undefined);
         if (objectFields && Object.hasOwn(objectFields, expression.property)) return objectFields[expression.property];
@@ -281,6 +304,19 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
       if (receiver === "model") signature = METHODS[call.callee.property];
     }
     if (!signature) error("FLOW_UNKNOWN_CALL", `Unsupported action '${name ?? "expression"}'. Calls must resolve to registered runtime actions or model role methods.`, call.span);
+    const agentCall = AGENT_CALLS.has(name ?? "") || (!!signature && call.callee.kind === "member" && AGENT_METHODS.has(call.callee.property) && !Object.hasOwn(FUNCTIONS, name ?? ""));
+    if (agentCall && policy !== "agents-v1") error("FLOW_POLICY_CAPABILITY", `'${name}' needs policy = "agents-v1".`, call.span);
+    if (name?.startsWith("files.")) for (const arg of call.args) {
+      if (arg.value.kind === "literal" && typeof arg.value.value === "string" && !filePattern(arg.value.value)) error("FLOW_FILE_PATTERN", `'${arg.value.value}' is not a project-relative pattern: use forms such as "src/**", "docs/*.md" or "review/notes/**", without hidden folders or "..".`, arg.value.span);
+    }
+    if (name === "agent") {
+      const role = call.args.some((arg) => !arg.name), provider = call.args.some((arg) => arg.name === "provider"), model = call.args.some((arg) => arg.name === "model");
+      if (role ? provider || model : !(provider && model)) error("FLOW_AGENT_MODEL", "An agent names its model once: agent(role, tools = [...]) with a loaded role, or agent(provider = \"...\", model = \"...\", tools = [...]).", call.span);
+    }
+    if (name === "parallel_map") {
+      const onError = call.args.find((arg) => arg.name === "on_error")?.value;
+      if (onError && !(onError.kind === "literal" && (onError.value === "collect" || onError.value === "fail"))) error("FLOW_TYPE", "on_error is \"collect\" (every task runs; failures are results) or \"fail\" (the first failure stops the others).", onError.span);
+    }
     if (signature?.async && !awaited) error("FLOW_AWAIT_REQUIRED", `Action '${name}' requires await.`, call.span);
     if (["accept", "needs_review", "unresolved"].includes(name ?? "") && !terminalReturn) error("FLOW_TERMINAL_RETURN", `Terminal action '${name}' must be the direct expression of a return statement.`, call.span);
     if (name === "accept" && !passGuard) error("FLOW_ACCEPT_GUARD", "accept() must be inside a branch guarded by a verified verdict.status == Pass.", call.span);

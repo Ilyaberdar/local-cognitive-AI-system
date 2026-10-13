@@ -20,6 +20,7 @@ export interface SynthesisRun {
   phase: string; iteration: number; createdAt: string; updatedAt: string; error?: string; appliedAt?: string;
   models?: { id: string; providerId: string; providerName?: string; displayName?: string; sizeBytes?: number }[];
   usage?: { inputTokens: number; outputTokens: number; calls: number };
+  agents?: { total: number; queued: number; running: number; done: number; failed: number; cancelled: number };
   events: SynthesisEvent[];
   evidence?: {
     candidateHash: string; specHash: string; status: "Pass" | "Fail" | "Unknown";
@@ -29,7 +30,13 @@ export interface SynthesisRun {
       cases?: { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }[] }[];
   };
 }
-export interface CandidateDiff { files: { path: string; before: string | null; after: string }[]; canApply: boolean }
+/** after null: the run deleted the file. */
+export interface CandidateDiff { files: { path: string; before: string | null; after: string | null }[]; canApply: boolean }
+export interface AgentItem {
+  index: number; call: number; task: string; providerId: string; model: string; status: "queued" | "running" | "done" | "failed" | "cancelled";
+  steps: number; inputTokens: number; outputTokens: number; durationMs: number; files: string[]; error?: string;
+}
+export interface AgentDetail extends AgentItem { final?: string; protocol?: string; turns: { type: "tool" | "result" | "format_error"; content: string }[] }
 export interface RunSources { specSource: string; flowSource: string; specHash: string }
 export interface SynthesisWorkspaceProps {
   projects: SynthesisProject[]; colorMode?: "dark" | "light"; active?: boolean;

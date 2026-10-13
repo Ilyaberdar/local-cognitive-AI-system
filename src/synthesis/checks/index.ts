@@ -4,13 +4,17 @@ import path from "node:path";
 import { ContractCheck } from "../language";
 import { checkExports, checkForbidden, checkHarnessIntegrity, checkImportBoundary, checkImports } from "./architecture";
 import { runContractTests } from "./runners";
+import { checkGrounded, ProjectLines } from "./grounded";
 import { platformSandbox } from "./sandbox";
 import { CheckFiles, CheckResult, SandboxProvider } from "./types";
 
 export * from "./types";
 /** Part of every piece of evidence: a change to what the checks accept makes older evidence stale. */
 export const contractChecksVersion = "contract-v1";
-export interface CheckOptions { sandbox?: SandboxProvider; workRoot?: string; signal?: AbortSignal }
+export interface CheckOptions { sandbox?: SandboxProvider; workRoot?: string; signal?: AbortSignal;
+  /** How many lines a project file has (Grounded); without it, Grounded is Unknown. */
+  projectLines?: ProjectLines }
+export { references } from "./grounded";
 
 /** Runs one of the contract's built-in checks: Exports, Imports and Forbid read the files; Tests
  * runs the engineer's tests against them in a sandbox. */
@@ -19,6 +23,8 @@ export async function runCheck(check: ContractCheck, files: CheckFiles, options:
     case "exports": return checkExports(files, check.file, check.symbols);
     case "imports": return checkImports(files, check.pattern, { allow: check.allow, deny: check.deny });
     case "forbid": return checkForbidden(files, check.pattern, check.regex, check.message);
+    case "grounded": return options.projectLines ? checkGrounded(files, check.file, check.min ?? 1, options.projectLines)
+      : { status: "Unknown", message: "This runtime cannot read the project to check references", feedback: [] };
     case "tests": {
       // Nothing runs that names a file outside the module or reaches into the test harness, sandbox or not.
       for (const guard of [checkImportBoundary(files), checkHarnessIntegrity(files)]) {

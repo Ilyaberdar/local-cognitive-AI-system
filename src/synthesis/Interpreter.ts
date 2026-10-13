@@ -119,8 +119,10 @@ export class Interpreter {
         if (expression.callee.kind === "identifier") name = expression.callee.name;
         else if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
           const owner = expression.callee.object.name;
-          name = owner === "models" ? `models.${expression.callee.property}` : `role.${expression.callee.property}`;
-          if (owner !== "models") receiver = await this.expression(expression.callee.object);
+          // models.* and files.* are the runtime's namespaces; any other owner is a model role.
+          const namespace = owner === "models" || owner === "files";
+          name = namespace ? `${owner}.${expression.callee.property}` : `role.${expression.callee.property}`;
+          if (!namespace) receiver = await this.expression(expression.callee.object);
         } else throw new SynthesisError("Only registered functions and role methods may be called.");
         const args: unknown[] = []; const named: Record<string, unknown> = Object.create(null);
         for (const arg of expression.args) {

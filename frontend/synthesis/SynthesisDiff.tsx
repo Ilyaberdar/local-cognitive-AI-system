@@ -17,16 +17,16 @@ const Code = memo(function Code({ source, path, version }: { source: string; pat
 function FileChange({ file, open }: { file: CandidateDiff["files"][number]; open: boolean }) {
   const columns = useRef<HTMLDivElement>(null);
   const split = usePaneSplit("lcai.synthesis.diffSplit.v1", 50, "x", columns);
-  // null means added; an existing empty file is still a modification.
-  const added = file.before === null;
+  // before null means added, after null deleted; an existing empty file is still a modification.
+  const added = file.before === null, deleted = file.after === null;
   return <details open={open}>
-    <summary>{file.path}<span>{added ? "Added" : "Modified"}</span></summary>
-    {added ? <Code path={file.path} source={file.after} /> :
+    <summary>{file.path}<span>{added ? "Added" : deleted ? "Deleted" : "Modified"}</span></summary>
+    {added ? <Code path={file.path} source={file.after ?? ""} /> : deleted ? <Code path={file.path} source={file.before ?? ""} version="Deleted" /> :
       <div className="synthesis-diff__columns" ref={columns} data-resizing={split.resizing || undefined}
         style={{ gridTemplateColumns: `minmax(0, ${split.value}fr) 8px minmax(0, ${100 - split.value}fr)` }}>
         <Code path={file.path} source={file.before ?? ""} version="Before" />
         <div {...split.handle} className="synthesis-diff__resize" aria-label={`Resize code columns for ${file.path}`} title="Drag to resize · Double-click to reset" />
-        <Code path={file.path} source={file.after} version="After" />
+        <Code path={file.path} source={file.after ?? ""} version="After" />
       </div>}
   </details>;
 }

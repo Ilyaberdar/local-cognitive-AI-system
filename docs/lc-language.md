@@ -23,6 +23,7 @@ The generated source code is a candidate implementation. An agent's statement th
 - [Runtime functions](#runtime-functions)
 - [Model role methods](#model-role-methods)
 - [Multiple roles and a repair loop](#multiple-roles-and-a-repair-loop)
+- [Agents](#agents)
 - [Acceptance and run outcomes](#acceptance-and-run-outcomes)
 - [Files, editor, and application UI](#files-editor-and-application-ui)
 - [Common mistakes](#common-mistakes)
@@ -242,7 +243,9 @@ artifacts {
 }
 ```
 
-The runtime allows 1–12 files the model writes and up to 12 frozen files, with lowercase extensions: `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.py`, `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, `.hxx`, `.inl`, `.json`, `.html`, `.css`, `.txt` and `.md`. Files cannot be added outside this list by a model. Paths must also satisfy the [project path restrictions](#project-path-restrictions). These limits, and the flow's iteration and time limits, are reported as diagnostics when the module is listed or refreshed (`SPEC_ARTIFACT_LIMIT`, `SPEC_ARTIFACT_TYPE`, `SPEC_ARTIFACT_PATH`, `FLOW_LIMIT_RANGE`), so a module that Run would refuse is never shown as valid.
+A `files "notes/**";` line declares an area: a pattern (relative to the checkout folder) where models and agents may create files whose names the contract does not fix, such as one note per agent. Area files are part of the candidate (gates check them, Apply writes them) but none is required. A contract declares at least one `file` or one area.
+
+The runtime allows 1–12 files the model writes (or none with an area), up to 12 areas and up to 12 frozen files, with lowercase extensions: `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.py`, `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, `.hxx`, `.inl`, `.json`, `.html`, `.css`, `.txt` and `.md`. Files cannot be added outside this list by a model. Paths must also satisfy the [project path restrictions](#project-path-restrictions). These limits, and the flow's iteration and time limits, are reported as diagnostics when the module is listed or refreshed (`SPEC_ARTIFACT_LIMIT`, `SPEC_ARTIFACT_TYPE`, `SPEC_ARTIFACT_PATH`, `FLOW_LIMIT_RANGE`), so a module that Run would refuse is never shown as valid.
 
 Every declared file is part of the contract: a candidate missing one, or with an empty one, fails an implicit hard gate named `artifacts` even when every declared gate passes. A run cannot be accepted with part of its files.
 
@@ -258,6 +261,7 @@ hard gate_name = Tests("tests/a.test.ts", timeout = 30s);
 hard gate_name = Exports("src/a.ts", ["Name"]);
 hard gate_name = Imports("src/**", allow = ["src/**"], deny = ["node:*"]);
 hard gate_name = Forbid("src/**", "Date\\.now", message = "take the time from options.now()");
+hard gate_name = Grounded("REPORT.md", min = 5);
 soft gate_name = Tests("tests/holdout.test.ts", hidden = true);
 ```
 
@@ -363,6 +367,12 @@ Relative imports are matched as module paths (`./math` in `src/core/a.ts` is `sr
 `Forbid("pattern", "regular expression" [, message = "..."])` fails where the expression (JavaScript syntax) matches a file the model wrote, outside comments and strings. In a contract string a backslash is written twice: `"Date\\.now"`.
 
 Imports and Forbid check only the files the model wrote: frozen files and tests are the engineer's.
+
+### `Grounded`: references that hold
+
+`Grounded("REPORT.md" [, min = N])` reads a candidate file (an artifact or an area file) and checks every path it cites, such as `src/core/loop.ts` or `src/core/loop.ts:42` or `src/core/loop.ts:40-48`: the file must exist in the project as Apply would leave it (the candidate's own files included), and a cited line or range must be within the file. It passes when every reference holds and at least `min` files (1 by default) are cited. A bare name without a folder (`Node.js`, `README.md`) and a URL are not references. What fails goes back to the model as exact items: `REPORT.md:14 cites src/a.ts:300, but src/a.ts has 120 lines.`
+
+This is what makes a report of parallel agents acceptable evidence: its claims point at real code. It does not check that a claim about the code is true; read the report.
 
 ### Feedback
 
@@ -629,6 +639,71 @@ implement Calculator using "calculator-v1" {
 
 Replace `inspect([])` with specific project files if context is needed. Use a loaded role variable for each model; there is no per-role configuration block or parallel agent execution syntax yet.
 
+## Agents
+
+With `policy = "agents-v1"` a flow makes agents and runs them in parallel. An agent is a model with file rights; it works in its own loop of tool calls (read, search, write) until it returns an answer. Rights are set in the flow by path patterns relative to the project:
+
+```lcflow
+implement RepoReview using "contract-v1" {
+    limit iterations 2, time 40m, steps 20000;
+    policy = "agents-v1";
+
+    lead = await model("deepseek-flash", provider = "deepseek");
+    spec = freeze(RepoReview.spec);
+    candidate = checkout("review");
+
+    tasks = await lead.split("Review error handling in src/: one part per agent.", 20, paths = files.read("src/**"));
+
+    agents = [];
+    for (i in range(20)) {
+        agents = append(agents, agent(provider = "deepseek", model = "deepseek-flash",
+            tools = [files.read("src/**"), files.write("review/notes/**")],
+            instructions = "Write your findings to one note in review/notes/, each item with path:line.",
+            steps = 16));
+    }
+
+    results = await parallel_map(agents, tasks, concurrency = 20);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) { return accept(candidate, evidence); }
+    return needs_review(evidence);
+}
+```
+
+with a contract whose candidate has the report and an area for the notes:
+
+```lcspec
+artifacts {
+    file "REPORT.md";
+    files "notes/**";
+}
+evaluate "contract-v1" {
+    hard grounded = Grounded("REPORT.md", min = 5);
+}
+```
+
+| Call | Meaning |
+| --- | --- |
+| `files.read("src/**", ...)`, `files.write(...)`, `files.delete(...)` | Rights: 1–12 project-relative patterns (`*` within a folder, `**` across folders). Reading gives `file.list`, `file.search` and `file.read`; writing `file.write`, `file.replace` and `file.append`; deleting `file.delete`. |
+| `agent(provider = "deepseek", model = "deepseek-flash", tools = [...], instructions = "...", steps = 16)` | An agent: a description, not a process. `agent(role, tools = [...])` uses a loaded role instead (a local model with slots, for example). `steps` (1–60, 16 by default) bounds its turns. |
+| `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. |
+| `await lead.split(goal, n [, context], paths = files.read(...), instruction = "...")` | A model splits a goal into `n` independent tasks; `paths` lists the files the agents can read (up to 400) for it. |
+| `await lead.synthesize(candidate, spec, results, file = "REPORT.md", instruction = "...")` | A model writes one candidate file from the results. Results too many for its prompt are merged in groups first. |
+
+Each result has `.ok`, `.output` (the agent's answer, at most 8,000 characters), `.error`, `.task`, `.files` (what it wrote) and `.index`; the list has `.completed` and `.failed`. With `on_error = "collect"` (the default) a failed agent is a result with `ok == false`; with `"fail"` the first failure stops the others and the run ends Blocked.
+
+What agents may touch:
+
+- They read only what their rights name, and never a contract or its tests (any `Synthesis` folder and the module's own folder), whatever the patterns say.
+- They write only into the run's candidate: inside the `checkout` folder, and only its declared files and areas. The project changes only on Apply, which writes every file at once (deletions included) after checking that none changed meanwhile.
+- When two agents change one file, the second finds the version changed, reads it again and redoes its change.
+- No agent runs commands, uses plugins or MCP servers, or asks for approval: a refusal is final, and it is told why.
+- A cloud agent sends what it reads to its provider: the project must allow cloud models.
+
+The run shows its agents under **Agents**: how many are queued, running, done and failed, one row per task (model, steps, tokens, time, files, error), and each agent's steps. The run's token counts include every agent's.
+
 ## Acceptance and run outcomes
 
 The normal cycle is:
@@ -689,6 +764,9 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | Module not discovered | Save `Name.lcspec` and `Name.lcflow` together in a discoverable project folder, match the declared module name, select the right workspace, and Refresh. Check Hidden modules if you previously removed it from view. |
 | `FLOW_MODULE` / `FLOW_EVALUATOR` | Match the spec module and acceptance-group names in the flow header. |
 | `FLOW_AWAIT_REQUIRED` | Add `await` before the asynchronous action. |
+| `FLOW_POLICY_CAPABILITY` | Agents (`agent`, `files.*`, `parallel_map`, `split`, `synthesize`) need `policy = "agents-v1"`. |
+| `FLOW_AGENT_MODEL` | Name an agent's model once: a loaded role, or `provider` and `model`. |
+| `FLOW_FILE_PATTERN` | Rights take project-relative patterns such as `"src/**"`, without hidden folders or `..`. |
 | `FLOW_FOR_VARIABLE` | Give the loop variable a new name; it exists only inside the loop. |
 | `FLOW_INDEX` | Index a list with a whole number: `list[0]`. |
 | `FLOW_UNDEFINED_NAME` | Assign the variable before use on every path; initialize loop feedback before the loop. |
@@ -721,6 +799,7 @@ The research syntax is broader than this implementation. The following are **not
 - Evaluation environment/workload selection and numeric optimization objectives such as `soft minimize Mean(...)`.
 - User-defined functions, custom runtime actions declared in DSL, or general object manipulation.
 - Executing model-proposed tests (only the engineer's tests run), or registering new trusted evaluators from a DSL file.
+- Agents running commands (a sandboxed terminal is planned), or writing outside the run's candidate.
 - Model downloads, arbitrary tools, or host shell access.
 
 The parser preserves some research-style sections as source, but the compiler rejects unsupported semantics. **Parseable does not mean executable or verified.** An ability system core works today as plain C++ with a frozen header, tests and architecture gates ([example](../examples/synthesis-ability-system/README.md)); the formal sections and engine adapters do not.

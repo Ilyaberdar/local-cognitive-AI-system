@@ -216,3 +216,31 @@ test("a candidate cannot print its way past the tests: only lines signed with th
   assert.equal(result.status, "Fail", result.message);
   assert.ok(!result.cases?.some(item => item.status === "pass"), "the forged pass is not a case");
 });
+
+test("Grounded: every path and line a report cites exists, as Apply would leave the project", async () => {
+  const project: Record<string, number> = { "src/a.ts": 40, "src/deep/b.py": 3, "review/notes/x.md": 2 };
+  const lines = async (cited: string) => project[cited];
+  const check = (report: string, min?: number) => runCheck({ kind: "grounded", file: "REPORT.md", ...(min ? { min } : {}) },
+    { candidate: { "REPORT.md": report }, frozen: {}, suite: {} }, { projectLines: lines });
+  const ok = await check("# Report\n- src/a.ts:12 swallows an error\n- see src/deep/b.py:1-3 and review/notes/x.md.\nNode.js and REPORT.md are not references; neither is https://example.com/src/a.ts:99.", 3);
+  assert.equal(ok.status, "Pass", ok.message);
+  assert.match(ok.message, /3 references \(3 files\)/);
+  const wrong = await check("# Report\n- src/a.ts:41 is past the end\n- src/missing.ts:1 does not exist\n- src/deep/b.py:2-9 runs past it");
+  assert.equal(wrong.status, "Fail");
+  assert.deepEqual(wrong.feedback, [
+    "REPORT.md:2 cites src/a.ts:41, but src/a.ts has 40 lines.",
+    "REPORT.md:3 cites src/missing.ts, which does not exist in the project.",
+    "REPORT.md:4 cites src/deep/b.py:2-9, but src/deep/b.py has 3 lines."]);
+  const few = await check("# Report\n- src/a.ts:1", 2);
+  assert.equal(few.status, "Fail"); assert.match(few.feedback[0], /cites 1 files .* at least 2/);
+  assert.equal((await check("# Nothing cited")).status, "Fail");
+  assert.equal((await runCheck({ kind: "grounded", file: "REPORT.md" }, { candidate: {}, frozen: {}, suite: {} }, { projectLines: lines })).status, "Fail");
+  assert.equal((await runCheck({ kind: "grounded", file: "REPORT.md" }, { candidate: { "REPORT.md": "src/a.ts" }, frozen: {}, suite: {} })).status, "Unknown");
+  const spec = (gate: string) => compileProgram(`module R version "1" { description = "r"; artifacts { file "REPORT.md"; files "notes/**"; } evaluate "contract-v1" { hard g = ${gate}; } }`,
+    `implement R using "contract-v1" { limit iterations 1, time 1m; policy = "local-files-v1"; return unresolved(); }`).diagnostics.map(item => item.code);
+  assert.deepEqual(spec('Grounded("REPORT.md", min = 5)'), []);
+  assert.deepEqual(spec('Grounded("notes/a.md")'), []);
+  assert.ok(spec('Grounded("OTHER.md")').includes("SPEC_CHECK_FILE"));
+  assert.ok(spec('Grounded("REPORT.md", min = 0)').includes("SPEC_GATE_EXPRESSION"));
+  assert.ok(spec('Grounded("REPORT.md", strict = true)').includes("SPEC_GATE_EXPRESSION"));
+});

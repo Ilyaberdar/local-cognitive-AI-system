@@ -16,6 +16,10 @@ import { calculatorTemplate, emptyModuleTemplate, ModuleFiles, ModuleTemplate, r
 import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSources, sourceId } from "./modules";
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
 import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
+import { matchesGlob } from "./checks/architecture";
+import { AgentSpec, AgentSummary, CandidateStore, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult } from "./agents";
+import { AgentRunStore } from "../agents/runtime/AgentRunStore";
+import type { AgentCounts } from "./types";
 
 interface Services {
   projects: ProjectStore;
@@ -25,6 +29,8 @@ interface Services {
   /** The models a cloud provider lists, and the providers set up here (cloud-files-v1). */
   catalog?: {listAll(providerId?: string): Promise<ProviderModel[]>};
   providers?: () => ProviderDescriptor[];
+  /** The model service agents run on (agents-v1): their loops call it directly. */
+  agents?: {llm: LLMService};
   /** Where Tests gates run (a sandbox and a work folder); tests of this service replace them. */
   checks?: Omit<CheckOptions, "signal">;
 }
@@ -35,6 +41,17 @@ const ARTIFACT_TYPES = /\.(?:js|mjs|cjs|ts|mts|cts|py|c|cc|cpp|cxx|h|hh|hpp|hxx|
 const MAX_SUITE_FILES = 24, MAX_SUITE_BYTES = 512 * 1024;
 /** The most interpreter steps a flow may declare with `limit steps`. */
 const MAX_STEPS = 1_000_000;
+/** The most agent tasks one run may start, and agents at once in one parallel_map. */
+const MAX_AGENT_TASKS = 1000, MAX_CONCURRENCY = 64;
+/** The most files a candidate holds, declared ones and those agents create. */
+const MAX_CANDIDATE_FILES = 300;
+/** Calls that only make a value (rights, an agent's description): no activity events. */
+const QUIET_CALLS = new Set(["files.read", "files.write", "files.delete", "agent"]);
+const counts = (agents: AgentSummary[]): AgentCounts => {
+  const total = {total: agents.length, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0};
+  for (const agent of agents) total[agent.status]++;
+  return total;
+};
 /** The contract's test files: its tests section and every file a Tests gate runs. */
 const suiteFiles = (spec: SpecProgram): string[] => [...new Set([...(spec.tests ?? []),
   ...spec.gates.flatMap(gate => gate.check?.kind === "tests" ? gate.check.files : [])])];
@@ -66,7 +83,7 @@ function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPat
     add("error", "FLOW_LIMIT_RANGE", "V1 supports at most 32 iterations and 120 minutes per run.", flowPath);
   }
   if ((compiled.flow.limits.steps ?? 0) > MAX_STEPS) add("error", "FLOW_LIMIT_RANGE", `A run takes at most ${MAX_STEPS.toLocaleString("en")} steps.`, flowPath);
-  if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare between 1 and 12 artifact files.", specPath);
+  if ((!compiled.spec.artifacts.length && !compiled.spec.areas?.length) || compiled.spec.artifacts.length > 12 || (compiled.spec.areas?.length ?? 0) > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare 1 to 12 artifact files, or a files area, and at most 12 areas.", specPath);
   if ((compiled.spec.frozen ?? []).length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare at most 12 frozen files.", specPath);
   for (const file of [...compiled.spec.artifacts, ...compiled.spec.frozen ?? []]) {
     try { relativePath(file); }
@@ -97,7 +114,7 @@ const runId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new Synth
 // Synthesis turns produce structured source/JSON and should not inherit a creative chat profile.
 const synthesisSampling = resolveLocalGenerationSettings(preciseLocalGenerationSettings()).sampling;
 function publicRun(record: RunRecord): SynthesisRun {
-  const {files, baseline, specSource, flowSource, rootPath, specHash, spec, flow, version, outputPath, frozen, suite, suiteHash, ...run} = record;
+  const {files, baseline, specSource, flowSource, rootPath, specHash, spec, flow, version, outputPath, frozen, suite, suiteHash, removed, agentRuns, ...run} = record;
   return run;
 }
 
@@ -277,7 +294,7 @@ export class SynthesisService {
     const refusal = profileDiagnostics(compiled, "", "").find(item => item.severity === "error");
     if (refusal) throw new SynthesisError(refusal.message);
     if (compiled.flow.limits.iterations > 32 || compiled.flow.limits.timeMs > 7200000) throw new SynthesisError("V1 supports at most 32 iterations and 120 minutes per run.");
-    if (!compiled.spec.artifacts.length || compiled.spec.artifacts.length > 12) throw new SynthesisError("Declare between 1 and 12 artifact files.");
+    if ((!compiled.spec.artifacts.length && !compiled.spec.areas?.length) || compiled.spec.artifacts.length > 12 || (compiled.spec.areas?.length ?? 0) > 12) throw new SynthesisError("Declare 1 to 12 artifact files, or a files area, and at most 12 areas.");
     for (const file of [...compiled.spec.artifacts, ...compiled.spec.frozen]) {
       relativePath(file);
       if (!ARTIFACT_TYPES.test(file)) throw new SynthesisError(`${file}: local-files-v1 does not support this file type.`);
@@ -345,6 +362,11 @@ export class SynthesisService {
     // The models this run listed or loaded: a selection must come from one of its lists.
     const listed = new WeakSet<ManagedModel>();
     const roles = new Set<object>();
+    // What only this run made: rights, agents' descriptions and parallel_map's results.
+    const permissions = new WeakSet<object>(), agentSpecs = new WeakSet<object>(), resultLists = new WeakSet<object>();
+    let mapCalls = 0;
+    let pendingSave: NodeJS.Timeout | undefined;
+    const saveSoon = () => { pendingSave ??= setTimeout(() => { pendingSave = undefined; void this.save(record).catch(() => undefined); }, 1000); pendingSave.unref(); };
     const evaluationSignatures: string[] = [];
     let lastEvidence: Evidence | undefined;
     let generationErrors: string[] = [];
@@ -361,9 +383,39 @@ export class SynthesisService {
       if (!record.models.some(item => item.id === model.id && item.providerId === model.providerId)) record.models.push(model);
       return handle;
     };
+    const moduleFolder = path.posix.dirname(moduleSources(record.moduleId).specPath);
+    // The candidate as agents see it: the run's copy of what they may change, over the project.
+    const store: CandidateStore = {
+      root: record.rootPath, files: record.files, baseline: record.baseline,
+      get outputPath() { return record.outputPath; },
+      get removed() { return record.removed ??= []; }, set removed(value) { record.removed = value; },
+      writable: relative => {
+        if (record.spec.frozen.includes(relative)) return `${relative} is a frozen file: the engineer's, never changed by the run.`;
+        if (!record.spec.artifacts.includes(relative) && !(record.spec.areas ?? []).some(area => matchesGlob(relative, area))) {
+          return `${relative} is not a file of the contract: write ${[...record.spec.artifacts, ...(record.spec.areas ?? [])].join(", ")} (under ${record.outputPath}).`;
+        }
+        if (!ARTIFACT_TYPES.test(relative)) return `${relative}: candidate files are source, json, html, css, txt or md.`;
+        if (!Object.hasOwn(record.files, relative) && Object.keys(record.files).length >= MAX_CANDIDATE_FILES) return `A candidate holds at most ${MAX_CANDIDATE_FILES} files.`;
+        return undefined;
+      },
+      // No agent reads a contract or its tests, hidden ones included.
+      hidden: target => target.split("/").includes("Synthesis") || (moduleFolder !== "." && (target === moduleFolder || target.startsWith(`${moduleFolder}/`))),
+      changed: () => { lastEvidence = undefined; delete record.evidence; saveSoon(); }
+    };
+    const resolveModel = async (providerId: string, id: unknown): Promise<ManagedModel> => {
+      const provider = await this.provider(record, providerId);
+      if (!provider.managed) {
+        if (typeof id !== "string" || !id.trim() || id.length > 200) throw new SynthesisError("Name the provider's model ID.");
+        return cloudModel({id, providerId: provider.id, providerName: provider.name}, provider.name);
+      }
+      const model = (await this.services.models.listAllModels(provider.id)).find(item => item.providerId === provider.id && (item.id === id || item.displayName === id));
+      if (!model) throw new SynthesisError(provider.id === "llamacpp" ? "model() expects an exact installed local model ID or display name." : `${provider.name} has no model ${String(id)}.`);
+      return model;
+    };
     const call = async (name: string, args: unknown[], named: Record<string, unknown>, span: SourceSpan, receiver?: unknown): Promise<unknown> => {
       signal.throwIfAborted();
-      await this.event(record, name, name, "running", {line: span.start.line, file: moduleSources(record.moduleId).flowPath});
+      const quiet = QUIET_CALLS.has(name);
+      if (!quiet) await this.event(record, name, name, "running", {line: span.start.line, file: moduleSources(record.moduleId).flowPath});
       // Keys and the project's consent may change during a run: checked again before a cloud model reads anything.
       const roleModel = name.startsWith("role.") && receiver && typeof receiver === "object" && roles.has(receiver) ? (receiver as {model: ManagedModel}).model : undefined;
       if (roleModel && roleModel.providerId !== "llamacpp") await this.provider(record, roleModel.providerId);
@@ -395,19 +447,88 @@ export class SynthesisService {
           value = eligible[0]; break;
         }
         case "model": {
-          const provider = await this.provider(record, String(named.provider ?? "llamacpp"));
-          let model: ManagedModel | undefined;
-          if (provider.managed) {
-            const available = await this.services.models.listAllModels(provider.id);
-            model = available.find(item => item.providerId === provider.id && (item.id === args[0] || item.displayName === args[0]));
-            if (!model) throw new SynthesisError(provider.id === "llamacpp" ? "model() expects an exact installed local model ID or display name." : `${provider.name} has no model ${String(args[0])}.`);
-          } else {
-            if (typeof args[0] !== "string" || !args[0].trim() || args[0].length > 200) throw new SynthesisError("model() expects the provider's model ID.");
-            model = cloudModel({id: args[0], providerId: provider.id, providerName: provider.name}, provider.name);
-          }
+          const model = await resolveModel(String(named.provider ?? "llamacpp"), args[0]);
           listed.add(model);
           value = await role(model);
           break;
+        }
+        case "files.read": case "files.write": case "files.delete": {
+          value = permission(name.slice(6) as Permission["access"], args); permissions.add(value as object); break;
+        }
+        case "agent": {
+          let model: ManagedModel;
+          if (args.length) {
+            if (!args[0] || typeof args[0] !== "object" || !roles.has(args[0])) throw new SynthesisError("agent() takes a loaded model role, or provider and model.");
+            model = (args[0] as {model: ManagedModel}).model;
+          } else model = (await role(await resolveModel(String(named.provider), named.model))).model;
+          const tools = named.tools ?? [];
+          if (!Array.isArray(tools) || tools.some(item => !item || typeof item !== "object" || !permissions.has(item))) throw new SynthesisError("tools is a list of files.read(...), files.write(...) and files.delete(...).");
+          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[]};
+          for (const item of tools as Permission[]) rights[item.access].push(...item.patterns);
+          const instructions = named.instructions ?? "";
+          if (typeof instructions !== "string" || instructions.length > 6000) throw new SynthesisError("An agent's instructions are at most 6,000 characters.");
+          const steps = named.steps ?? 16;
+          if (!Number.isInteger(steps) || (steps as number) < 1 || (steps as number) > 60) throw new SynthesisError("An agent takes 1 to 60 steps.");
+          const spec: AgentSpec = {kind: "agent", model, rights, instructions, steps: steps as number};
+          value = Object.freeze(spec); agentSpecs.add(value as object); break;
+        }
+        case "parallel_map": {
+          if (record.flow.policy !== "agents-v1") throw new SynthesisError('parallel_map needs policy = "agents-v1".');
+          if (!this.services.agents) throw new SynthesisError("This runtime cannot run agents.");
+          const agents = (Array.isArray(args[0]) ? args[0] : [args[0]]) as AgentSpec[];
+          if (!agents.length || agents.some(item => !item || typeof item !== "object" || !agentSpecs.has(item))) throw new SynthesisError("parallel_map takes an agent or a list of agents made with agent(...).");
+          const tasks = args[1];
+          if (!Array.isArray(tasks) || !tasks.length || tasks.some(task => typeof task !== "string" || !task.trim() || task.length > MAX_TASK_CHARS)) throw new SynthesisError(`parallel_map takes a list of tasks, each a text of at most ${MAX_TASK_CHARS} characters.`);
+          if ((record.agentRuns?.length ?? 0) + tasks.length > MAX_AGENT_TASKS) throw new SynthesisError(`A run starts at most ${MAX_AGENT_TASKS} agent tasks.`);
+          const concurrency = named.concurrency ?? Math.min(16, tasks.length);
+          if (!Number.isInteger(concurrency) || (concurrency as number) < 1 || (concurrency as number) > MAX_CONCURRENCY) throw new SynthesisError(`concurrency is 1 to ${MAX_CONCURRENCY}.`);
+          for (const agent of agents) for (const pattern of [...agent.rights.write, ...agent.rights.delete]) {
+            if (!record.outputPath) throw new SynthesisError("Check out the candidate before giving agents write access: they write into it.");
+            if (!pattern.startsWith(`${record.outputPath}/`)) throw new SynthesisError(`files.write("${pattern}") is outside the candidate folder ${record.outputPath}: agents write only there.`);
+          }
+          const call = ++mapCalls, earlier = record.agentRuns ?? [];
+          await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
+          const {results, summaries} = await runAgents({llm: this.services.agents.llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
+            module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
+            failFast: named.on_error === "fail", signal,
+            admit: async spec => { await this.provider(record, spec.model.providerId); },
+            update: current => { record.agentRuns = [...earlier, ...current]; record.agents = counts(record.agentRuns); saveSoon(); }});
+          for (const summary of summaries) { record.usage.calls += summary.steps; record.usage.inputTokens += summary.inputTokens; record.usage.outputTokens += summary.outputTokens; }
+          const list = Object.assign(results, {completed: results.filter(item => item.ok).length, failed: results.filter(item => !item.ok).length});
+          resultLists.add(list); value = list;
+          await this.event(record, "agents", `${list.completed} of ${results.length} agents finished${list.failed ? `, ${list.failed} failed` : ""}`, list.failed ? "failed" : "ok", {line: span.start.line});
+          break;
+        }
+        case "role.split": {
+          if (!receiver || typeof receiver !== "object" || !roles.has(receiver)) throw new SynthesisError("Expected a loaded model role.");
+          const model = (receiver as {model: ManagedModel}).model;
+          const scope = named.paths;
+          if (scope !== undefined && (!scope || typeof scope !== "object" || !permissions.has(scope) || (scope as Permission).access !== "read")) throw new SynthesisError("paths is a files.read(...) of the files the agents will read.");
+          const paths = scope ? await new SynthesisFileTools(this.directory, store, {read: (scope as Permission).patterns, write: [], delete: []}).readable(400) : undefined;
+          value = await splitGoal(this.services.llm, model, {goal: String(args[0] ?? ""), count: Number(args[1]), module: record.spec.module, description: record.spec.description,
+            context: args[2] === undefined ? undefined : JSON.stringify(args[2]), paths, instruction: typeof named.instruction === "string" ? named.instruction : undefined, signal,
+            spent: usage => this.usage(record, usage)});
+          break;
+        }
+        case "role.synthesize": {
+          if (!receiver || typeof receiver !== "object" || !roles.has(receiver)) throw new SynthesisError("Expected a loaded model role.");
+          requireCandidate(args[0]); requireSpec(args[1]);
+          if (!args[2] || typeof args[2] !== "object" || !resultLists.has(args[2])) throw new SynthesisError("synthesize takes the results of parallel_map.");
+          const file = String(named.file ?? record.spec.artifacts.find(item => item.endsWith(".md")) ?? "");
+          const refusal = file ? store.writable(file) : "Name the file to write: file = \"REPORT.md\".";
+          if (refusal) throw new SynthesisError(refusal);
+          const model = (receiver as {model: ManagedModel}).model;
+          await this.event(record, "agent.generate", `Writing ${file} from ${(args[2] as TaskResult[]).length} results`, "running", {model: model.displayName, file});
+          const content = await synthesizeResults(this.services.llm, model, {results: args[2] as TaskResult[], file, module: record.spec.module, description: record.spec.description,
+            instruction: typeof named.instruction === "string" ? named.instruction : undefined, signal,
+            progress: message => this.event(record, "agent.generate", message, "running", {model: model.displayName, file}),
+            spent: usage => this.usage(record, usage)});
+          if (!content || Buffer.byteLength(content) > MAX_ARTIFACT_BYTES) throw new SynthesisError(`${file}: the model's text is empty or larger than ${MAX_ARTIFACT_BYTES / 1024} KiB.`);
+          if (!Object.hasOwn(record.baseline, file)) record.baseline[file] = await readOptional(await containedPath(record.rootPath, `${record.outputPath}/${file}`));
+          record.files[file] = content; record.removed = (record.removed ?? []).filter(item => item !== file);
+          lastEvidence = undefined; delete record.evidence;
+          await this.event(record, "agent.generate", `${file}: ${Buffer.byteLength(content)} bytes`, "ok", {model: model.displayName, file});
+          value = candidate; break;
         }
         case "models.load": {
           const model = args[0] as ManagedModel;
@@ -462,12 +583,22 @@ export class SynthesisService {
           // Every gate judges one snapshot, and the evidence names that snapshot's hash.
           const files = {...record.files};
           const checkFiles = {candidate: files, frozen: record.frozen ?? {}, suite: record.suite ?? {}};
+          // What a cited path holds as Apply would leave it: the candidate's copy, else the project's file.
+          const projectLines = async (cited: string): Promise<number | undefined> => {
+            try { relativePath(cited); } catch { return undefined; }
+            const output = record.outputPath ?? "";
+            for (const relative of [cited.startsWith(`${output}/`) ? cited.slice(output.length + 1) : undefined, cited]) {
+              if (relative !== undefined && Object.hasOwn(files, relative)) return files[relative].split("\n").length;
+            }
+            if (cited.startsWith(`${output}/`) && record.removed?.includes(cited.slice(output.length + 1))) return undefined;
+            try { return (await readText(await containedPath(record.rootPath, cited), 5 * 1024 * 1024)).split("\n").length; } catch { return undefined; }
+          };
           const gates: Evidence["gates"] = [];
           for (const gate of record.spec.gates) {
             signal.throwIfAborted();
             if (gate.check?.kind === "tests") await this.event(record, `gate.${gate.id}`, `Running ${gate.check.files.join(", ")}`, "running");
             const result: {status: Evidence["status"]; message: string; feedback?: string[]; cases?: EvidenceCase[]} = gate.check
-              ? await runCheck(gate.check, checkFiles, {...this.services.checks, signal})
+              ? await runCheck(gate.check, checkFiles, {...this.services.checks, signal, projectLines})
               : record.spec.evaluator === "calculator-v1" && supportedEvaluators.has(gate.evaluatorId)
                 ? await evaluateCalculator(files, gate.evaluatorId)
                 : {status: "Unknown", message: `No trusted evaluator registered for ${gate.evaluatorId}.`};
@@ -514,6 +645,7 @@ export class SynthesisService {
         default: throw new SynthesisError(`Runtime operation '${name}' is not supported by local-files-v1.`);
       }
       signal.throwIfAborted();
+      if (quiet) return value;
       const listedFrom = name === "models.list" ? String(named.provider ?? "llamacpp") : undefined;
       const detail = listedFrom === "llamacpp" ? `${(value as ManagedModel[]).length} installed local models` : listedFrom ? `${(value as ManagedModel[]).length} models of ${listedFrom}`
         : name === "models.select" ? (value as ManagedModel).displayName : undefined;
@@ -536,7 +668,12 @@ export class SynthesisService {
       record.error = errorText(signal.aborted ? signal.reason : error);
       record.status = item.interruption ? "interrupted" : signal.aborted && !(signal.reason instanceof BudgetExhausted) ? "cancelled" : error instanceof BudgetExhausted || signal.reason instanceof BudgetExhausted ? "unresolved" : "blocked";
     } finally {
-      clearTimeout(timer); clearInterval(watch);
+      clearTimeout(timer); clearInterval(watch); clearTimeout(pendingSave);
+      // A run that stopped mid-way leaves no agent marked as running.
+      if (record.agentRuns?.some(agent => agent.status === "running" || agent.status === "queued")) {
+        for (const agent of record.agentRuns) if (agent.status === "running" || agent.status === "queued") agent.status = "cancelled";
+        record.agents = counts(record.agentRuns);
+      }
       await this.event(record, "finished", record.error ?? record.status, record.status === "accepted" ? "ok" : "failed");
     }
   }
@@ -624,9 +761,26 @@ export class SynthesisService {
     }
     return errors;
   }
-  async diff(id: string): Promise<{files: Array<{path: string; before: string | null; after: string}>; canApply: boolean}> {
+  /** Every task's agent of a run, as the run shows them. */
+  async agents(id: string): Promise<{counts?: AgentCounts; items: AgentSummary[]}> {
     const record = await this.read(id);
-    const files = Object.entries(record.files).filter(([file, content]) => record.baseline[file] !== content).map(([file, after]) => ({path: `${record.outputPath}/${file}`, before: record.baseline[file] ?? null, after}));
+    return {...(record.agents ? {counts: record.agents} : {}), items: record.agentRuns ?? []};
+  }
+  /** One task's agent with its steps: each tool call, its result and the agent's answer, shortened. */
+  async agent(id: string, index: number) {
+    const record = await this.read(id);
+    const summary = record.agentRuns?.[index];
+    if (!Number.isInteger(index) || !summary) throw new SynthesisError("This run has no such agent.", 404);
+    const loop = await new AgentRunStore(path.join(this.directory, "..", "agents", runId(record.id))).get(summary.loopId);
+    return {...summary, final: loop?.final?.slice(0, 20_000), protocol: loop?.protocol,
+      turns: (loop?.turns ?? []).slice(-120).map(turn => ({type: turn.type, content: turn.content.slice(0, 4000)}))};
+  }
+  async diff(id: string): Promise<{files: Array<{path: string; before: string | null; after: string | null}>; canApply: boolean}> {
+    const record = await this.read(id);
+    const files: Array<{path: string; before: string | null; after: string | null}> = Object.entries(record.files).filter(([file, content]) => record.baseline[file] !== content)
+      .map(([file, after]) => ({path: `${record.outputPath}/${file}`, before: record.baseline[file] ?? null, after}));
+    // A file the run deleted: after is null.
+    for (const file of record.removed ?? []) files.push({path: `${record.outputPath}/${file}`, before: record.baseline[file] ?? null, after: null});
     return {files, canApply: !this.active.has(id) && record.status === "accepted" && !record.appliedAt && !!record.outputPath && record.evidence?.candidateHash === filesHash(record.files)};
   }
   async apply(id: string): Promise<void> {
@@ -635,8 +789,9 @@ export class SynthesisService {
     await withFileLock(path.join(first.rootPath, ".synthesis-apply-lock"), async () => {
       const record = await this.read(id); const project = await this.project(record.projectId);
       if (this.active.has(id) || project.rootPath !== record.rootPath || record.status !== "accepted" || record.appliedAt || !record.outputPath || record.evidence?.status !== "Pass" || record.evidence.candidateHash !== filesHash(record.files) || record.evidence.specHash !== record.specHash || record.evidence.evaluatorVersion !== EVALUATOR_VERSION) throw new SynthesisError("Only a fresh accepted, unapplied candidate can be applied.", 409);
-      const targets: Array<{file: string; target: string; after: string}> = [];
-      for (const [file, after] of Object.entries(record.files)) {
+      // after null: a file the run deleted.
+      const targets: Array<{file: string; target: string; after: string | null}> = [];
+      for (const [file, after] of [...Object.entries(record.files), ...(record.removed ?? []).map(file => [file, null] as const)]) {
         const target = await containedPath(record.rootPath, `${record.outputPath}/${file}`);
         if (await readOptional(target) !== record.baseline[file]) throw new SynthesisError(`Apply conflict: ${file} changed since checkout. Nothing was applied.`, 409);
         if (record.baseline[file] !== after) targets.push({file, target, after});
@@ -647,6 +802,7 @@ export class SynthesisService {
           await fs.mkdir(path.dirname(item.target), {recursive: true});
           await containedPath(record.rootPath, `${record.outputPath}/${item.file}`);
           if (await readOptional(item.target) !== record.baseline[item.file]) throw new SynthesisError(`Apply conflict: ${item.file} changed during Apply.`, 409);
+          if (item.after === null) { await fs.unlink(item.target); applied.push(item); continue; }
           const temporary = `${item.target}.${randomUUID()}.tmp`;
           try { await fs.writeFile(temporary, item.after, {flag: "wx"}); await fs.rename(temporary, item.target); }
           finally { await fs.unlink(temporary).catch(() => {}); }
@@ -677,7 +833,7 @@ export class SynthesisService {
       const record = await this.read(id);
       if (record.appliedAt) return "applied";
       let changed = 0, written = 0, untouched = 0;
-      for (const [file, after] of Object.entries(record.files)) {
+      for (const [file, after] of [...Object.entries(record.files), ...(record.removed ?? []).map(file => [file, null] as const)]) {
         if (record.baseline[file] === after) continue;
         changed++;
         const now = await readOptional(await containedPath(record.rootPath, `${record.outputPath}/${file}`));

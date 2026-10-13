@@ -4,7 +4,7 @@ import {
   SpecProgram, SpecSection, Statement, Token
 } from "./types";
 
-const GATE_FORMS = "Pass(\"evaluator-id\"), Tests(\"tests/a.test.ts\"), Exports(\"src/a.ts\", [\"Name\"]), Imports(\"src/**\", allow = [...], deny = [...]) or Forbid(\"src/**\", \"pattern\")";
+const GATE_FORMS = "Pass(\"evaluator-id\"), Tests(\"tests/a.test.ts\"), Exports(\"src/a.ts\", [\"Name\"]), Imports(\"src/**\", allow = [...], deny = [...]), Forbid(\"src/**\", \"pattern\") or Grounded(\"REPORT.md\")";
 const text = (expression: Expression | undefined): string | undefined =>
   expression?.kind === "literal" && typeof expression.value === "string" ? expression.value : undefined;
 const texts = (expression: Expression | undefined): string[] | undefined => {
@@ -17,7 +17,7 @@ function gateCall(call: CallExpression): { evaluatorId: string; check?: Contract
   const name = call.callee.kind === "identifier" ? call.callee.name : "";
   const positional = call.args.filter((arg) => !arg.name).map((arg) => arg.value);
   const named = new Map(call.args.filter((arg) => arg.name).map((arg) => [arg.name!, arg.value]));
-  const unknown = [...named.keys()].find((key) => !({ Tests: ["timeout", "hidden"], Imports: ["allow", "deny"], Forbid: ["message"] } as Record<string, string[]>)[name]?.includes(key));
+  const unknown = [...named.keys()].find((key) => !({ Tests: ["timeout", "hidden"], Imports: ["allow", "deny"], Forbid: ["message"], Grounded: ["min"] } as Record<string, string[]>)[name]?.includes(key));
   if (unknown) return `${name || "This gate"} has no argument '${unknown}'.`;
   switch (name) {
     case "Pass": {
@@ -47,6 +47,12 @@ function gateCall(call: CallExpression): { evaluatorId: string; check?: Contract
       const pattern = text(positional[0]), regex = text(positional[1]), message = named.has("message") ? text(named.get("message")) : undefined;
       if (positional.length !== 2 || pattern === undefined || regex === undefined || (named.has("message") && message === undefined)) return "Forbid takes a file pattern and a regular expression: Forbid(\"src/**\", \"Date\\\\.now\").";
       return { evaluatorId: "contract-forbid-v1", check: { kind: "forbid", pattern, regex, ...(message !== undefined ? { message } : {}) } };
+    }
+    case "Grounded": {
+      const file = text(positional[0]), min = named.get("min");
+      if (positional.length !== 1 || file === undefined) return "Grounded takes the candidate file whose references it checks: Grounded(\"REPORT.md\").";
+      if (min && (min.kind !== "literal" || typeof min.value !== "number" || min.unit || !Number.isInteger(min.value) || min.value < 1)) return "Grounded min is a whole number of cited files, such as min = 5.";
+      return { evaluatorId: "contract-grounded-v1", check: { kind: "grounded", file, ...(min ? { min: Number((min as { value: number }).value) } : {}) } };
     }
     default: return `Gates use ${GATE_FORMS}.`;
   }
@@ -123,7 +129,7 @@ class Parser {
     const version = String(this.string().value);
     this.expect("{");
     const spec: SpecProgram = {
-      kind: "spec", module, version, evaluator: "", description: "", target: {}, artifacts: [], frozen: [], tests: [], gates: [],
+      kind: "spec", module, version, evaluator: "", description: "", target: {}, artifacts: [], frozen: [], areas: [], tests: [], gates: [],
       sections: inheritance ? [inheritance] : [], comments: this.scan.comments, span: start.span
     };
     let hasEvaluate = false;
@@ -151,6 +157,8 @@ class Parser {
         while (!this.at("}") && !this.atEnd()) {
           // `frozen`: a file the engineer wrote (an interface); the model reads it but never writes it.
           if (this.consume("frozen")) spec.frozen.push(String(this.string().value));
+          // `files`: a pattern where agents may create files whose names the contract does not fix.
+          else if (this.consume("files")) spec.areas.push(String(this.string().value));
           else { this.expect("file"); spec.artifacts.push(String(this.string().value)); }
           this.expect(";");
         }

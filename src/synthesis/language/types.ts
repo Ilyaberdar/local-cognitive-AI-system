@@ -53,7 +53,9 @@ export type ContractCheck =
   | { kind: "tests"; files: string[]; timeoutMs?: number; hidden?: boolean }
   | { kind: "exports"; file: string; symbols: string[] }
   | { kind: "imports"; pattern: string; allow: string[]; deny: string[] }
-  | { kind: "forbid"; pattern: string; regex: string; message?: string };
+  | { kind: "forbid"; pattern: string; regex: string; message?: string }
+  /** Every path:line a candidate file cites exists in the project, and it cites at least `min` files. */
+  | { kind: "grounded"; file: string; min?: number };
 export interface SpecGate {
   id: string;
   severity: "hard" | "soft";
@@ -75,6 +77,8 @@ export interface SpecProgram {
   artifacts: string[];
   /** Files the engineer wrote in the checkout folder (interfaces): the model reads them, never changes them. */
   frozen: string[];
+  /** Patterns (relative to the checkout folder) where models and agents may create files of their own choosing. */
+  areas: string[];
   /** Support files of the contract's tests, relative to the .lcspec folder (Tests() names the ones to run). */
   tests: string[];
   gates: SpecGate[];

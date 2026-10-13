@@ -1,0 +1,29 @@
+implement RepoReview using "contract-v1" {
+    limit iterations 2, time 40m, steps 20000;
+    policy = "agents-v1";
+
+    lead = await model("deepseek-flash", provider = "deepseek");
+    spec = freeze(RepoReview.spec);
+    candidate = checkout("review");
+
+    tasks = await lead.split("Review error handling in the TypeScript sources under src/synthesis: find places where an error is swallowed, a promise is not awaited, or an error message would mislead the user. Split by files so that every file is reviewed once.", 20,
+        paths = files.read("src/synthesis/**"));
+
+    agents = [];
+    for (i in range(20)) {
+        agents = append(agents, agent(provider = "deepseek", model = "deepseek-flash",
+            tools = [files.read("src/**"), files.write("review/notes/**")],
+            instructions = "Read the files of your task. Write your findings to one note, review/notes/<a short name for your part>.md, as a Markdown list where each item starts with path:line. If you find nothing, say so in the note.",
+            steps = 16));
+    }
+
+    results = await parallel_map(agents, tasks, concurrency = 20);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) {
+        return accept(candidate, evidence);
+    }
+    return needs_review(evidence);
+}

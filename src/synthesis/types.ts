@@ -1,4 +1,5 @@
 import { ManagedModel } from "../types";
+import type { AgentSummary } from "./agents/AgentPool";
 import { Diagnostic, FlowProgram, SpecProgram } from "./language";
 
 export type RunStatus = "queued" | "running" | "accepted" | "needs_review" | "blocked" | "unresolved" | "interrupted" | "cancelled";
@@ -29,11 +30,18 @@ export interface SynthesisRun {
   startedBy?: "device";
   events: ActivityEvent[]; evidence?: Evidence;
   usage: {inputTokens: number; outputTokens: number; calls: number};
+  /** How the run's agents stand (agents-v1); each agent is read with the run's agents. */
+  agents?: AgentCounts;
 }
+export interface AgentCounts { total: number; queued: number; running: number; done: number; failed: number; cancelled: number }
 export interface RunRecord extends SynthesisRun {
   version: 1; rootPath: string; specSource: string; flowSource: string; specHash: string;
   spec: SpecProgram; flow: FlowProgram; outputPath?: string;
   files: Record<string, string>; baseline: Record<string, string | null>;
+  /** Project files the run deleted (relative to the checkout folder): Apply removes them. */
+  removed?: string[];
+  /** Every task's agent of the run, in the order parallel_map made them. */
+  agentRuns?: AgentSummary[];
   /** The engineer's frozen files, read at checkout; the contract's test files, read at launch. */
   frozen?: Record<string, string>; suite?: Record<string, string>; suiteHash?: string;
 }

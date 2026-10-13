@@ -30,7 +30,6 @@ const { OutputSanitizer } = require(dist("llm/OutputSanitizer.js"));
 const { ProjectStore } = require(dist("projects/ProjectStore.js"));
 const { SynthesisService } = require(dist("synthesis/SynthesisService.js"));
 const { Logger } = require(dist("utils/Logger.js"));
-const agentsModule = fs.existsSync(dist("synthesis/agents/index.js")) ? require(dist("synthesis/agents/index.js")) : undefined;
 
 const args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(`--${name}`); return index >= 0 ? args[index + 1] : undefined; };
@@ -78,7 +77,7 @@ const services = {
   catalog: new ModelCatalogService(registry),
   providers: () => registry.list()
 };
-const synthesis = new SynthesisService(data, agentsModule ? { ...services, agents: agentsModule.agentServices({ llm, baseDir: data }) } : services);
+const synthesis = new SynthesisService(data, { ...services, agents: { llm } });
 await synthesis.init();
 const module = await synthesis.module(created.id, name);
 if (!module.valid) { console.error(module.diagnostics.map(item => `${item.file}:${item.line} ${item.code} ${item.message}`).join("\n")); process.exit(1); }

@@ -39,11 +39,14 @@ export function parseAgentAction(value: unknown): AgentAction {
 }
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.
 export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call", "mcp.search"].includes(tool);
-export interface AgentToolOptions { plugins?: boolean; mcp?: boolean; pluginOnly?: boolean; }
+export interface AgentToolOptions { plugins?: boolean; mcp?: boolean; pluginOnly?: boolean;
+  /** Only these tools (a Synthesis agent's rights); undefined offers every tool the rest allows. */
+  only?: string[]; }
 
 export function agentFunctionTools(readOnly = false, options: AgentToolOptions = {}): LLMFunctionTool[] {
   return Object.entries(agentToolSchemas).filter(([name]) =>
-    (name.startsWith("plugins.") ? options.plugins : name.startsWith("mcp.") ? options.mcp : !options.pluginOnly) && (!readOnly || readTool(name))).map(([action, schema]) => {
+    (name.startsWith("plugins.") ? options.plugins : name.startsWith("mcp.") ? options.mcp : !options.pluginOnly) && (!readOnly || readTool(name)) &&
+    (!options.only || options.only.includes(name))).map(([action, schema]) => {
     const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
     const required = (json.required ?? []) as string[];
     return { name: action.replaceAll(".", "_"), action,
