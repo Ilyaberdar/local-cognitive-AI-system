@@ -1,4 +1,4 @@
-export type ModuleTemplate = "empty" | "calculator" | "rate-limiter";
+export type ModuleTemplate = "empty" | "calculator" | "rate-limiter" | "repository-review";
 export interface ModuleFiles { spec: string; flow: string; tests?: Record<string, string> }
 
 /** A module on rails: a TypeScript contract checked by its shape, its dependencies, a forbidden
@@ -117,6 +117,57 @@ test("rejects invalid settings and requests", () => {
   };
 }
 
+/** Parallel agents on rails: each reviews a part of src/ and leaves a note, a lead gathers the report,
+ * and the report is accepted only when every file and line it cites exists. Local by default. */
+export function repositoryReviewTemplate(name = "RepositoryReview"): ModuleFiles {
+  return {
+    spec: `module ${name} version "1" {
+    description = "A review of the sources under src/ by agents working in parallel: each agent reviews its part and leaves one note in notes/, and REPORT.md gathers their findings, each with its path:line.";
+
+    artifacts {
+        file "REPORT.md";
+        files "notes/**";
+    }
+
+    evaluate "contract-v1" {
+        hard grounded = Grounded("REPORT.md", min = 3);
+    }
+}
+`,
+    flow: `implement ${name} using "contract-v1" {
+    limit iterations 2, time 60m, steps 20000;
+    policy = "agents-v1";
+
+    // Four agents on one local model with four slots. For cloud agents, name a provider instead,
+    // such as lead = await model("deepseek-flash", provider = "deepseek"), and allow cloud models for the project.
+    installed = await models.list(provider = "llamacpp");
+    lead = await models.load(models.select(installed, max_size = 6GiB), slots = 4, context = 16384);
+
+    spec = freeze(${name}.spec);
+    candidate = checkout("review");
+
+    tasks = await lead.split("Review the sources under src/ for swallowed errors, promises that are not awaited and misleading error messages. Split by files so that every file is reviewed once.", 4,
+        paths = files.read("src/**"));
+
+    agents = [];
+    for (i in range(4)) {
+        agents = append(agents, agent(lead, tools = [files.read("src/**"), files.write("review/notes/**")],
+            instructions = "Read the files of your task. Write your findings to one note, review/notes/<a short name for your part>.md, as a Markdown list where each item starts with path:line.",
+            steps = 12));
+    }
+    results = await parallel_map(agents, tasks, concurrency = 4);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) {
+        return accept(candidate, evidence);
+    }
+    return needs_review(evidence);
+}
+`
+  };
+}
 export function emptyModuleTemplate(name: string): {spec: string; flow: string} {
   return {
     spec: `module ${name} version "1" {

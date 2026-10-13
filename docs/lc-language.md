@@ -483,7 +483,7 @@ In signatures below, `[argument]` means an optional positional argument. The bra
 | --- | --- |
 | `await models.list(provider = "llamacpp")` | Return installed local models, or with another provider (`cloud-files-v1`) the models that provider lists. `provider` defaults to `"llamacpp"`. Each call returns its own list. |
 | `models.select(available, max_size = 6GiB, prefer = "qwen2.5-7b", provider = "llamacpp", id = "exact-id")` | Select a model from the returned list. All named arguments are optional. `id` must match exactly. `max_size` compares GGUF file sizes, so it is an error for a list of cloud models. |
-| `await models.load(selected)` | Load the selected model and return a model role handle. A cloud model needs no loading. |
+| `await models.load(selected [, slots = 6, context = 16384])` | Load the selected model and return a model role handle. A cloud model needs no loading. `slots` (1–16) is how many requests the local model answers at once, each with `context` tokens: what local agents running in parallel need. The model keeps that shape until it is loaded with another. |
 | `await model("exact-id", provider = "deepseek")` | A specific model: an installed local one by ID or display name, or with another provider that provider's model ID. Returns a role handle. |
 
 Local and cloud roles mix in one flow:
@@ -701,6 +701,20 @@ What agents may touch:
 - When two agents change one file, the second finds the version changed, reads it again and redoes its change.
 - No agent runs commands, uses plugins or MCP servers, or asks for approval: a refusal is final, and it is told why.
 - A cloud agent sends what it reads to its provider: the project must allow cloud models.
+
+Local agents share one model through its slots: each slot answers one agent at a time, so give a model as many slots as agents should run at once (memory permitting; the load is refused with a reason when they do not fit).
+
+```lcflow
+installed = await models.list(provider = "llamacpp");
+qwen = await models.load(models.select(installed, prefer = "qwen3.5"), slots = 6, context = 16384);
+agents = [];
+for (i in range(6)) {
+    agents = append(agents, agent(qwen, tools = [files.read("src/**"), files.write("review/notes/**")]));
+}
+results = await parallel_map(agents, tasks, concurrency = 6);
+```
+
+Cloud agents are limited by their provider: when one answers that it is overloaded or rate-limited (HTTP 429), the run sends it fewer requests at once and repeats the refused one after a pause, without spending the agent's turn.
 
 The run shows its agents under **Agents**: how many are queued, running, done and failed, one row per task (model, steps, tokens, time, files, error), and each agent's steps. The run's token counts include every agent's.
 

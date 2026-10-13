@@ -12,7 +12,7 @@ import { compileProgram, namedProviders, SourceSpan, SpecProgram } from "./langu
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readText, relativePath } from "./paths";
-import { calculatorTemplate, emptyModuleTemplate, ModuleFiles, ModuleTemplate, rateLimiterTemplate } from "./templates";
+import { calculatorTemplate, emptyModuleTemplate, ModuleFiles, ModuleTemplate, rateLimiterTemplate, repositoryReviewTemplate } from "./templates";
 import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSources, sourceId } from "./modules";
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
 import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
@@ -224,8 +224,9 @@ export class SynthesisService {
     const relative = directory ? `${directory}/${name}` : name;
     const sources = moduleSources(sourceId(`${relative}/${name}`));
     const folder = await containedPath(project.rootPath, relative);
-    if (options.template !== undefined && !["calculator", "empty", "rate-limiter"].includes(options.template)) throw new SynthesisError("Choose an empty module, the calculator or the rate limiter template.");
-    const template: ModuleFiles = options.template === "empty" ? emptyModuleTemplate(name) : options.template === "rate-limiter" ? rateLimiterTemplate(name) : calculatorTemplate(name);
+    if (options.template !== undefined && !["calculator", "empty", "rate-limiter", "repository-review"].includes(options.template)) throw new SynthesisError("Choose an empty module, the calculator, the rate limiter or the repository review template.");
+    const template: ModuleFiles = options.template === "empty" ? emptyModuleTemplate(name) : options.template === "rate-limiter" ? rateLimiterTemplate(name)
+      : options.template === "repository-review" ? repositoryReviewTemplate(name) : calculatorTemplate(name);
     // Check both final paths before any mutation (including path length limits).
     const specFile = await containedPath(project.rootPath, sources.specPath);
     const flowFile = await containedPath(project.rootPath, sources.flowPath);

@@ -381,3 +381,13 @@ test("a project folder that only looks like a contract folder (src/synthesis) st
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
   assert.match((await f.service.agent(result.id, 0)).final!, /export const engine = true/);
 });
+
+test("New module → Repository review makes a valid agents module: notes, a report and a Grounded gate", async (t) => {
+  const f = await fixture(t, {script: writer});
+  const created = await f.service.createModule(f.project.id, "RepositoryReview", { template: "repository-review" });
+  assert.equal(created.valid, true, JSON.stringify(created.diagnostics));
+  assert.match(created.specSource!, /files "notes\/\*\*";/);
+  assert.match(created.specSource!, /Grounded\("REPORT\.md", min = 3\)/);
+  assert.match(created.flowSource!, /slots = 4/);
+  assert.match(created.flowSource!, /parallel_map\(agents, tasks, concurrency = 4\)/);
+});

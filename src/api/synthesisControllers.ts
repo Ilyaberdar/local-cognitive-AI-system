@@ -13,10 +13,10 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
   router.put("/projects/:projectId/cloud", route(async (req, res) => res.json(await service().setCloudModels(param(req, "projectId"), req.body?.allowed))));
   router.get("/projects/:projectId/folders", route(async (req, res) => res.json(await service().folders(param(req, "projectId"), req.query.directory ?? ""))));
   router.post("/projects/:projectId/modules", route(async (req, res) => {
-    if (!["empty", "calculator", "rate-limiter"].includes(req.body?.template)) throw new SynthesisError("Choose an empty module, the calculator or the rate limiter template.");
+    if (!["empty", "calculator", "rate-limiter", "repository-review"].includes(req.body?.template)) throw new SynthesisError("Choose an empty module, the calculator, the rate limiter or the repository review template.");
     if (req.body.name !== undefined && typeof req.body.name !== "string") throw new SynthesisError("name must be a string.");
     if (req.body.directory !== undefined && typeof req.body.directory !== "string") throw new SynthesisError("directory must be a project-relative path.");
-    res.status(201).json(await service().createModule(param(req, "projectId"), req.body.name ?? (req.body.template === "empty" ? "NewModule" : req.body.template === "rate-limiter" ? "RateLimiter" : "Calculator"), {template: req.body.template, directory: req.body.directory}));
+    res.status(201).json(await service().createModule(param(req, "projectId"), req.body.name ?? (req.body.template === "empty" ? "NewModule" : req.body.template === "rate-limiter" ? "RateLimiter" : req.body.template === "repository-review" ? "RepositoryReview" : "Calculator"), {template: req.body.template, directory: req.body.directory}));
   }));
   router.get("/projects/:projectId/modules/:moduleId", route(async (req, res) => res.json(await service().module(param(req, "projectId"), param(req, "moduleId")))));
   router.post("/projects/:projectId/open", route(async (req, res) => {
