@@ -361,6 +361,9 @@ export class SynthesisService {
     const call = async (name: string, args: unknown[], named: Record<string, unknown>, span: SourceSpan, receiver?: unknown): Promise<unknown> => {
       signal.throwIfAborted();
       await this.event(record, name, name, "running", {line: span.start.line, file: moduleSources(record.moduleId).flowPath});
+      // Keys and the project's consent may change during a run: checked again before a cloud model reads anything.
+      const roleModel = name.startsWith("role.") && receiver && typeof receiver === "object" && roles.has(receiver) ? (receiver as {model: ManagedModel}).model : undefined;
+      if (roleModel && roleModel.providerId !== "llamacpp") await this.provider(record, roleModel.providerId);
       let value: unknown;
       switch (name) {
         case "models.list": {

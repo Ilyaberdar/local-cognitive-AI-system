@@ -598,3 +598,20 @@ test("consent withdrawn after the module was checked still stops the run before 
   assert.match(result.error!, /does not allow cloud models/);
   assert.equal(f.requests.length + f.textRequests.length, 0);
 });
+
+test("consent withdrawn after a cloud role was made stops it before its first request", async (t) => {
+  const loading = deferred(); const loaded = deferred();
+  const f = await fixture(t, {providers: [descriptor("deepseek")], load: async () => { loading.resolve(); await loaded.promise; }});
+  await f.projects.update(f.project.id, {cloudModels: true});
+  await f.writeSources({flow: cloudFlow(`developer = await model("deepseek-flash", provider = "deepseek");
+    local = await models.list(provider = "llamacpp");
+    reviewer = await models.load(models.select(local, prefer = "qwen2.5-1.5b"));`)});
+  const started = await f.service.start(f.project.id, "Calculator");
+  await loading.promise;
+  await f.projects.update(f.project.id, {cloudModels: false});
+  loaded.resolve();
+  const result = await f.service.wait(started.id);
+  assert.equal(result.status, "blocked");
+  assert.match(result.error!, /does not allow cloud models/);
+  assert.equal(f.requests.length + f.textRequests.length, 0);
+});
