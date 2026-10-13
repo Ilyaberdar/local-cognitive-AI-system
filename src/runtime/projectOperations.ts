@@ -17,7 +17,7 @@ const deviceFolder = (project: Project, folders: HostFolders) => project.origin 
 export const safeProject = (project: Project, folders: HostFolders) => {
   const folder = deviceFolder(project, folders);
   return { id: project.id, name: project.name, ...(project.color ? { color: project.color } : {}), archived: Boolean(project.archivedAt),
-    createdAt: project.createdAt, updatedAt: project.updatedAt,
+    createdAt: project.createdAt, updatedAt: project.updatedAt, ...(project.cloudModels ? { cloudModels: true as const } : {}),
     ...(folder ? { folder: { rootId: folder.rootId, rootLabel: folder.label, path: folder.path } } : { hostOnly: true as const }) };
 };
 

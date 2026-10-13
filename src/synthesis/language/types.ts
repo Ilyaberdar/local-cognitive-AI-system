@@ -81,6 +81,8 @@ export interface FlowProgram {
   kind: "flow";
   module: string;
   evaluator: string;
+  /** The top-level policy literal: what the run may use (local models, cloud models, agents). */
+  policy?: string;
   limits: FlowLimits;
   body: Statement[];
   comments: Comment[];

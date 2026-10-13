@@ -1,0 +1,21 @@
+module RateLimiterCloud version "1" {
+    target { language = TypeScript; }
+
+    description = "A token-bucket rate limiter. src/rateLimiter.ts exports class RateLimiter with constructor(options: { capacity: number; refillPerSecond: number; now: () => number }), where now() returns milliseconds. tryAcquire(tokens = 1): boolean takes the tokens and returns true when enough are available; otherwise it returns false and takes nothing. available(): number returns the tokens available now, never more than capacity. Tokens refill continuously with the time that passed, at refillPerSecond, up to capacity; a new limiter starts full. Throw RangeError when capacity or refillPerSecond is not a positive finite number, or when tokens is not a positive integer. Time comes only from options.now(): no timers, no Date.";
+
+    artifacts {
+        file "src/rateLimiter.ts";
+    }
+
+    tests {
+        // The engineer's tests, next to this contract: the model reads them, never writes them.
+        file "tests/rateLimiter.test.ts";
+    }
+
+    evaluate "contract-v1" {
+        hard shape = Exports("src/rateLimiter.ts", ["RateLimiter"]);
+        hard dependencies = Imports("src/**", deny = ["**"]);
+        hard clock = Forbid("src/**", "Date\\.now|new Date|setTimeout|setInterval|performance\\.now", message = "take the time only from options.now()");
+        hard behavior = Tests("tests/rateLimiter.test.ts", timeout = 30s);
+    }
+}

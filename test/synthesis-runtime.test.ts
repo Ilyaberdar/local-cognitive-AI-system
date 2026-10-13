@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
 import { ProjectStore } from "../src/projects/ProjectStore";
-import { LLMRequest, LLMResponse, ManagedModel } from "../src/types";
+import { LLMRequest, LLMResponse, ManagedModel, ProviderDescriptor, ProviderModel } from "../src/types";
 import { SynthesisService } from "../src/synthesis/SynthesisService";
 import { BudgetExhausted, Interpreter } from "../src/synthesis/Interpreter";
 import { compileProgram, parseFlow } from "../src/synthesis/language";
@@ -20,7 +20,12 @@ interface FixtureOptions {
   load?: (model: ManagedModel, signal: AbortSignal) => Promise<void>;
   generation?: (request: LLMRequest) => Promise<void>;
   source?: (file: string, call: number, request: LLMRequest) => string | Partial<LLMResponse>;
+  providers?: ProviderDescriptor[];
+  catalog?: (providerId?: string) => ProviderModel[];
 }
+/** A provider set up here: a cloud one unless `local`. */
+const descriptor = (id: string, configured = true, local = false): ProviderDescriptor => ({id, name: id[0].toUpperCase() + id.slice(1), configured, defaultModel: "",
+  capabilities: {local, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: false, reasoning: false}});
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -49,6 +54,8 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
       return options.models?.() ?? [localModel("large-coder", 7_000_000_000), tiny, localModel("tiny-generic", 500_000_000)];
     } },
     loadModel: async (model: ManagedModel, signal: AbortSignal) => { loads.push(model); await options.load?.(model, signal); },
+    catalog: { listAll: async (providerId?: string) => options.catalog?.(providerId) ?? [] },
+    providers: () => options.providers ?? [],
     llm: {
       generateObject: async <T extends object>(request: LLMRequest, provider?: string): Promise<{data: T | null; response: LLMResponse}> => {
         const match = /^Implement only the file (.+?)\. Other files:/.exec(request.prompt);
@@ -502,4 +509,92 @@ test("saves of a run never land out of order: the record on disk is the latest s
   for (let index = 0; index <= 40; index++) { record.phase = `phase-${index}`; writes.push(save(record)); }
   await Promise.all(writes);
   assert.equal((await f.readRecord(started.id)).phase, "phase-40");
+});
+
+const cloudFlow = (roles: string) => `implement Calculator using "calculator-v1" {
+    limit iterations 3, time 5m;
+    policy = "cloud-files-v1";
+    ${roles}
+    spec = freeze(Calculator.spec);
+    candidate = checkout("calculator");
+    feedback = none;
+    while (!accepted(candidate, spec)) {
+        candidate = await developer.revise(candidate, spec, feedback);
+        review = await reviewer.inspect(candidate, none);
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        if (verdict.status == Pass) { return accept(candidate, evidence); }
+        feedback = verdict.violations;
+    }
+    return unresolved();
+}`;
+
+test("cloud-files-v1: a cloud model by its provider writes the files, a local model reviews them, and nothing loads but the local one", async (t) => {
+  const f = await fixture(t, {providers: [descriptor("deepseek")]});
+  await f.projects.update(f.project.id, {cloudModels: true});
+  await f.writeSources({flow: cloudFlow(`developer = await model("deepseek-flash", provider = "deepseek");
+    local = await models.list(provider = "llamacpp");
+    reviewer = await models.load(models.select(local, prefer = "qwen2.5-1.5b"));`)});
+  assert.equal((await f.service.module(f.project.id, "Calculator")).valid, true);
+  const result = await f.run();
+  assert.equal(result.status, "accepted", result.error);
+  assert.ok(f.requests.length > 0 && f.requests.every(item => item.provider === "deepseek" && item.request.model === "deepseek-flash"));
+  assert.deepEqual(f.loads.map(item => item.id), [tiny.id], "only the local reviewer loads");
+  assert.deepEqual(result.models.map(item => [item.providerId, item.id]), [["deepseek", "deepseek-flash"], ["llamacpp", tiny.id]]);
+});
+
+test("cloud-files-v1: a provider's own list, an exact id, and max_size refused for models without a file size", async (t) => {
+  const f = await fixture(t, {providers: [descriptor("openai")], catalog: provider => provider === "openai"
+    ? [{id: "gpt-5", providerId: "openai", providerName: "OpenAI"}, {id: "gpt-5-mini", providerId: "openai", providerName: "OpenAI"}] : []});
+  await f.projects.update(f.project.id, {cloudModels: true});
+  await f.writeSources({flow: cloudFlow(`listed = await models.list(provider = "openai");
+    developer = await models.load(models.select(listed, id = "gpt-5-mini"));
+    reviewer = developer;`)});
+  const result = await f.run();
+  assert.equal(result.status, "accepted", result.error);
+  assert.ok(f.requests.every(item => item.provider === "openai" && item.request.model === "gpt-5-mini"));
+  assert.ok(result.events.some(item => item.step === "models.list" && item.message === "2 models of openai"));
+  await f.writeSources({flow: cloudFlow(`listed = await models.list(provider = "openai");
+    developer = await models.load(models.select(listed, max_size = 6GiB));
+    reviewer = developer;`)});
+  const sized = await f.run();
+  assert.equal(sized.status, "blocked");
+  assert.match(sized.error!, /max_size compares the sizes of local GGUF files/);
+});
+
+test("cloud models need the project's consent, a provider set up here and its key: the module says so before Run", async (t) => {
+  const f = await fixture(t, {providers: [descriptor("deepseek"), descriptor("groq", false), descriptor("lmstudio", true, true)]});
+  const flow = (provider: string) => cloudFlow(`developer = await model("some-model", provider = "${provider}"); reviewer = developer;`);
+  const refusal = async (provider: string) => {
+    await f.writeSources({flow: flow(provider)});
+    const module = await f.service.module(f.project.id, "Calculator");
+    await assert.rejects(f.service.start(f.project.id, "Calculator"));
+    return module.diagnostics.map(item => [item.code, item.line]);
+  };
+  assert.deepEqual(await refusal("deepseek"), [["SYNTHESIS_CLOUD_CONSENT", 4]]);
+  assert.deepEqual(await refusal("groq"), [["SYNTHESIS_PROVIDER", 4]]);
+  assert.deepEqual(await refusal("mistral"), [["SYNTHESIS_PROVIDER", 4]]);
+  assert.equal(f.requests.length + f.textRequests.length, 0, "nothing was sent anywhere");
+  await f.writeSources({flow: flow("lmstudio")});
+  assert.equal((await f.service.module(f.project.id, "Calculator")).valid, true, "a local provider needs no consent");
+  await f.projects.update(f.project.id, {cloudModels: true});
+  await f.writeSources({flow: flow("deepseek")});
+  assert.equal((await f.service.module(f.project.id, "Calculator")).valid, true);
+});
+
+test("consent withdrawn after the module was checked still stops the run before anything is sent", async (t) => {
+  const loading = deferred(); const loaded = deferred();
+  const f = await fixture(t, {providers: [descriptor("deepseek")], load: async () => { loading.resolve(); await loaded.promise; }});
+  await f.projects.update(f.project.id, {cloudModels: true});
+  await f.writeSources({flow: cloudFlow(`local = await models.list(provider = "llamacpp");
+    reviewer = await models.load(models.select(local, prefer = "qwen2.5-1.5b"));
+    developer = await model("deepseek-flash", provider = "deepseek");`)});
+  const started = await f.service.start(f.project.id, "Calculator");
+  await loading.promise;
+  await f.projects.update(f.project.id, {cloudModels: false});
+  loaded.resolve();
+  const result = await f.service.wait(started.id);
+  assert.equal(result.status, "blocked");
+  assert.match(result.error!, /does not allow cloud models/);
+  assert.equal(f.requests.length + f.textRequests.length, 0);
 });

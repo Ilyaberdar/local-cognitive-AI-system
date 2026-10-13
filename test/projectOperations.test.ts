@@ -94,3 +94,14 @@ test("a project is not made where the folder resolves elsewhere than checked", a
   await assert.rejects(f.store.create({ name: "Moved", rootPath: path.join(f.data, "projects", "site"), expectedRoot: path.join(f.base, "elsewhere") }),
     (error: unknown) => (error as { statusCode?: number }).statusCode === 409);
 });
+
+test("only the host lets a project's files go to cloud models: a device sees it, and cannot turn it on or off", async t => {
+  const f = setup(t);
+  const project = await f.call("projects.create", { commandId: "command-cloud", name: "Cloud", folder: { rootId: "projects", path: ["site"] } });
+  for (const cloudModels of [true, false]) await assert.rejects(f.call("projects.update", { projectId: project.id, cloudModels }), code("invalid_request"));
+  assert.equal((await f.store.get(project.id))?.cloudModels, undefined);
+  await f.store.update(project.id, { cloudModels: true });
+  assert.equal((await f.call("projects.list")).find((item: { id: string }) => item.id === project.id).cloudModels, true);
+  await f.store.update(project.id, { cloudModels: false });
+  assert.equal((await f.store.get(project.id))?.cloudModels, undefined);
+});

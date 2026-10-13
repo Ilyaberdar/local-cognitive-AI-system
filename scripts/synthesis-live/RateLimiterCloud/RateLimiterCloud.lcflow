@@ -1,0 +1,27 @@
+implement RateLimiterCloud using "contract-v1" {
+    limit iterations 4, time 10m;
+    policy = "cloud-files-v1";
+
+    // A cloud model by its provider: DeepSeek writes the file, the engineer's tests decide.
+    developer = await model("deepseek-flash", provider = "deepseek");
+
+    spec = freeze(RateLimiterCloud.spec);
+    candidate = checkout("generated/RateLimiterCloud");
+    feedback = none;
+
+    while (!accepted(candidate, spec)) {
+        candidate = await developer.revise(candidate, spec, feedback, file = "src/rateLimiter.ts", format = "source");
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        checkpoint(candidate, evidence, verdict);
+
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        feedback = verdict.violations;
+    }
+    return unresolved();
+}

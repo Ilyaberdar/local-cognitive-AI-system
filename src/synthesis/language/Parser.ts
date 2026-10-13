@@ -234,7 +234,10 @@ class Parser {
     const limits = body.filter((statement) => statement.kind === "limit").reduce<FlowLimits>(
       (result, statement) => ({ ...result, ...statement.values }), { iterations: 0, timeMs: 0 }
     );
-    return { kind: "flow", module, evaluator, limits, body, comments: this.scan.comments, span: joinSpans(start.span, this.previous.span) };
+    const policy = body.find((statement) => statement.kind === "assign" && statement.name === "policy");
+    const policyValue = policy?.kind === "assign" ? text(policy.value) : undefined;
+    return { kind: "flow", module, evaluator, ...(policyValue !== undefined ? { policy: policyValue } : {}), limits, body,
+      comments: this.scan.comments, span: joinSpans(start.span, this.previous.span) };
   }
 
   private block(): Statement[] {

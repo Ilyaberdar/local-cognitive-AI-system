@@ -15,9 +15,9 @@ interface FunctionDefinition {
 }
 const FUNCTIONS: Record<string, FunctionDefinition> = {
   "models.list": { returns: "modelList", required: 0, max: 0, named: { provider: ["string"] }, async: true },
-  "models.select": { returns: "selectedModel", required: 1, max: 1, parameters: [["modelList"]], named: { max_size: ["bytes"], prefer: ["string"], provider: ["string"] } },
+  "models.select": { returns: "selectedModel", required: 1, max: 1, parameters: [["modelList"]], named: { max_size: ["bytes"], prefer: ["string"], provider: ["string"], id: ["string"] } },
   "models.load": { returns: "model", required: 1, max: 1, parameters: [["selectedModel"]], async: true },
-  model: { returns: "model", required: 1, max: 1, parameters: [["string"]] },
+  model: { returns: "model", required: 1, max: 1, parameters: [["string"]], named: { provider: ["string"] } },
   freeze: { returns: "frozenSpec", required: 1, max: 1, parameters: [["specRef"]] },
   checkout: { returns: "candidate", required: 1, max: 1, parameters: [["string"]] },
   inspect: { returns: "context", required: 1, max: 1, parameters: [["array"]] },
@@ -39,7 +39,41 @@ const METHODS: Record<string, FunctionDefinition> = {
   reconsider: { returns: "design", required: 2, max: 4, parameters: [["frozenSpec"], ["design"]], async: true }
 };
 const STATUSES = new Set(["Pass", "Fail", "Unknown", "Blocked", "Unresolved", "NeedsReview"]);
+/** What a run may use: local llama.cpp models only, also cloud models by API key, also agents. */
+export const POLICIES = ["local-files-v1", "cloud-files-v1", "agents-v1"] as const;
+const POLICY_LIST = POLICIES.map((policy) => `"${policy}"`).join(", ");
+/** Calls that name a provider: the flow states it literally, so where data goes is known before Run. */
+const PROVIDER_CALLS = new Set(["models.list", "models.select", "model"]);
 const FORBIDDEN_MEMBERS = new Set(["__proto__", "prototype", "constructor"]);
+
+/** The providers a flow names (provider = "..."), each with where it is named. */
+export function namedProviders(flow: FlowProgram): Array<{ provider: string; span: SourceSpan }> {
+  const found: Array<{ provider: string; span: SourceSpan }> = [];
+  const pending: Array<Statement | Expression> = [...flow.body];
+  while (pending.length) {
+    const node = pending.pop()!;
+    switch (node.kind) {
+      case "assign": pending.push(node.value); break;
+      case "expression": case "await": pending.push(node.expression); break;
+      case "if": pending.push(node.condition, ...node.then, ...node.else); break;
+      case "while": pending.push(node.condition, ...node.body); break;
+      case "return": if (node.value) pending.push(node.value); break;
+      case "array": pending.push(...node.items); break;
+      case "member": pending.push(node.object); break;
+      case "unary": pending.push(node.operand); break;
+      case "binary": pending.push(node.left, node.right); break;
+      case "call": {
+        for (const arg of node.args) {
+          if (arg.name === "provider" && arg.value.kind === "literal" && typeof arg.value.value === "string") found.push({ provider: arg.value.value, span: arg.value.span });
+          pending.push(arg.value);
+        }
+        pending.push(node.callee);
+        break;
+      }
+    }
+  }
+  return found.sort((a, b) => a.span.start.offset - b.span.start.offset);
+}
 
 /** Resolve only named language intrinsics, never arbitrary host object methods. */
 export function callName(expression: Expression): string | undefined {
@@ -140,7 +174,8 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
   if (flow.limits.costUsd !== undefined && (!Number.isFinite(flow.limits.costUsd) || flow.limits.costUsd < 0)) error("FLOW_COST_LIMIT", "Cost must be finite and non-negative.", flow.span);
   if (flow.body.filter((statement) => statement.kind === "limit").length > 1) error("FLOW_DUPLICATE_LIMIT", "Declare budgets once at the top level.", flow.span);
   const policies = flow.body.filter((statement) => statement.kind === "assign" && statement.name === "policy");
-  if (policies.length !== 1) error("FLOW_POLICY", "Declare exactly one top-level policy = \"local-files-v1\".", flow.span);
+  if (policies.length !== 1) error("FLOW_POLICY", `Declare exactly one top-level policy: ${POLICY_LIST}.`, flow.span);
+  const policy = flow.policy;
 
   type Symbols = Map<string, ValueType>;
   const numeric = (type: ValueType) => ["number", "duration", "bytes", "cost"].includes(type);
@@ -222,6 +257,12 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
     if (signature?.async && !awaited) error("FLOW_AWAIT_REQUIRED", `Action '${name}' requires await.`, call.span);
     if (["accept", "needs_review", "unresolved"].includes(name ?? "") && !terminalReturn) error("FLOW_TERMINAL_RETURN", `Terminal action '${name}' must be the direct expression of a return statement.`, call.span);
     if (name === "accept" && !passGuard) error("FLOW_ACCEPT_GUARD", "accept() must be inside a branch guarded by a verified verdict.status == Pass.", call.span);
+    const provider = PROVIDER_CALLS.has(name ?? "") ? call.args.find((arg) => arg.name === "provider")?.value : undefined;
+    if (provider) {
+      const literal = provider.kind === "literal" && typeof provider.value === "string" ? provider.value : undefined;
+      if (literal === undefined) error("FLOW_PROVIDER_LITERAL", "Name the provider as a string, such as provider = \"openai\": the flow shows where its data goes before it runs.", provider.span);
+      else if (policy === "local-files-v1" && literal !== "llamacpp") error("FLOW_POLICY_PROVIDER", `local-files-v1 runs local llama.cpp models only. Use policy = "cloud-files-v1" to call ${literal}.`, provider.span);
+    }
     const positional = call.args.filter((arg) => arg.name === undefined);
     if (signature && (positional.length < signature.required || positional.length > signature.max)) error("FLOW_ARGUMENT_COUNT", `Action '${name}' expects ${signature.required === signature.max ? signature.required : `${signature.required}–${signature.max}`} positional arguments.`, call.span);
     let index = 0;
@@ -262,7 +303,7 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
           if (blockDepth !== 0) error("FLOW_LIMIT_SCOPE", "Budgets must be declared at the top level.", statement.span);
           break;
         case "assign": {
-          if (statement.name === "policy" && (blockDepth !== 0 || statement.value.kind !== "literal" || statement.value.value !== "local-files-v1")) error("FLOW_POLICY", "The supported policy is a top-level literal: policy = \"local-files-v1\".", statement.span);
+          if (statement.name === "policy" && (blockDepth !== 0 || statement.value.kind !== "literal" || !(POLICIES as readonly unknown[]).includes(statement.value.value))) error("FLOW_POLICY", `The policy is a top-level literal: ${POLICY_LIST}.`, statement.span);
           if (STATUSES.has(statement.name) || statement.name === flow.module || Object.hasOwn(FUNCTIONS, statement.name)) error("FLOW_RESERVED_NAME", `Name '${statement.name}' is reserved.`, statement.span);
           const type = infer(statement.value, symbols, passGuard);
           const previous = symbols.get(statement.name);

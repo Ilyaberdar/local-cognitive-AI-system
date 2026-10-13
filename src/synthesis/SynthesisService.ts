@@ -5,10 +5,10 @@ import { randomUUID } from "node:crypto";
 import { ProjectStore } from "../projects/ProjectStore";
 import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LLMService } from "../llm/LLMService";
-import { ManagedModel } from "../types";
+import { ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { compileProgram, SourceSpan, SpecProgram } from "./language";
+import { compileProgram, namedProviders, SourceSpan, SpecProgram } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readText, relativePath } from "./paths";
@@ -22,6 +22,9 @@ interface Services {
   models: Pick<LocalModelManagerRegistry, "listAllModels">;
   loadModel: (model: ManagedModel, signal: AbortSignal) => Promise<void>;
   llm: Pick<LLMService, "generateObject" | "generateText">;
+  /** The models a cloud provider lists, and the providers set up here (cloud-files-v1). */
+  catalog?: {listAll(providerId?: string): Promise<ProviderModel[]>};
+  providers?: () => ProviderDescriptor[];
   /** Where Tests gates run (a sandbox and a work folder); tests of this service replace them. */
   checks?: Omit<CheckOptions, "signal">;
 }
@@ -82,6 +85,11 @@ function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPat
 const activeStatus = (status: RunStatus) => status === "running" || status === "queued";
 const stamp = () => new Date().toISOString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** Providers whose installed models the app lists itself (local runtimes); the rest are listed by the provider. */
+const MANAGED_PROVIDERS = new Set(["llamacpp", "lmstudio", "ollama"]);
+/** A provider's model as a run's model: it needs no loading and has no file size. */
+const cloudModel = (model: ProviderModel, providerName: string): ManagedModel => ({id: model.id, displayName: model.id, providerId: model.providerId,
+  providerName: model.providerName || providerName, ...(model.vision !== undefined ? {vision: model.vision} : {}), loaded: true, loadedInstanceIds: []});
 const runId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new SynthesisError("Invalid run identifier."); return id; };
 // Synthesis turns produce structured source/JSON and should not inherit a creative chat profile.
 const synthesisSampling = resolveLocalGenerationSettings(preciseLocalGenerationSettings()).sampling;
@@ -135,6 +143,14 @@ export class SynthesisService {
     const ids = await discoverModules(project.rootPath);
     return Promise.all(ids.map(id => this.module(projectId, id)));
   }
+  /** Whether Synthesis may send the project's contract and files to cloud models. Set only on this computer. */
+  async cloudModels(projectId: string): Promise<{allowed: boolean}> { return {allowed: (await this.project(projectId)).cloudModels === true}; }
+  async setCloudModels(projectId: string, allowed: unknown): Promise<{allowed: boolean}> {
+    await this.project(projectId);
+    if (typeof allowed !== "boolean") throw new SynthesisError("allowed must be true or false.");
+    const saved = await this.services.projects.update(projectId, {cloudModels: allowed});
+    return {allowed: saved?.cloudModels === true};
+  }
   async folders(projectId: string, directory: unknown = "") {
     const project = await this.project(projectId);
     const relative = moduleDirectory(directory);
@@ -160,6 +176,19 @@ export class SynthesisService {
       // What Run would refuse is shown before it: the module is not "valid" only to fail at Run.
       ...(compiled.diagnostics.some(item => item.severity === "error") ? [] : profileDiagnostics(compiled, specPath, flowPath))];
     if (compiled.spec?.module !== name) diagnostics.push({severity: "error", code: "MODULE_NAME", message: "Filename and module declaration must match.", file: specPath, line: 1, column: 1});
+    // What Run would refuse about the providers the flow names: unknown, without a key, or cloud without consent.
+    if (compiled.flow && !diagnostics.some(item => item.severity === "error")) {
+      const seen = new Set<string>();
+      for (const {provider, span} of namedProviders(compiled.flow)) {
+        if (provider === "llamacpp" || seen.has(provider)) continue;
+        seen.add(provider);
+        const descriptor = this.services.providers?.().find(item => item.id === provider);
+        const add = (code: string, message: string) => diagnostics.push({severity: "error", code, message, file: flowPath, line: span.start.line, column: span.start.column});
+        if (!descriptor) add("SYNTHESIS_PROVIDER", `No provider ${provider} is set up here. Add it in Settings → Models & Providers.`);
+        else if (!descriptor.configured) add("SYNTHESIS_PROVIDER", `${descriptor.name} has no key or is turned off. Set it up in Settings → Models & Providers.`);
+        else if (descriptor.capabilities?.local !== true && project.cloudModels !== true) add("SYNTHESIS_CLOUD_CONSENT", `This project does not allow cloud models: the contract and project files would be sent to ${descriptor.name}. Allow cloud models for the project first.`);
+      }
+    }
     const folder = path.posix.dirname(specPath);
     for (const file of compiled.spec ? suiteFiles(compiled.spec) : []) {
       const relative = folder === "." ? file : `${folder}/${file}`;
@@ -322,14 +351,22 @@ export class SynthesisService {
     const evidenceMatches = (value: unknown): value is Evidence => value === lastEvidence && !!lastEvidence &&
       lastEvidence.candidateHash === filesHash(record.files) && lastEvidence.specHash === record.specHash && lastEvidence.evaluatorVersion === EVALUATOR_VERSION &&
       lastEvidence.suiteHash === record.suiteHash;
+    // A loaded model becomes a role: only the app's own llama.cpp runtime loads; others answer on request.
+    const role = async (model: ManagedModel) => {
+      if (model.providerId === "llamacpp") await this.services.loadModel(model, signal);
+      const handle = Object.freeze({model}); roles.add(handle);
+      if (!record.models.some(item => item.id === model.id && item.providerId === model.providerId)) record.models.push(model);
+      return handle;
+    };
     const call = async (name: string, args: unknown[], named: Record<string, unknown>, span: SourceSpan, receiver?: unknown): Promise<unknown> => {
       signal.throwIfAborted();
       await this.event(record, name, name, "running", {line: span.start.line, file: moduleSources(record.moduleId).flowPath});
       let value: unknown;
       switch (name) {
         case "models.list": {
-          if ((named.provider ?? "llamacpp") !== "llamacpp") throw new SynthesisError("local-files-v1 currently allows the built-in llamacpp provider only; no cloud fallbacks.");
-          const available = (await this.services.models.listAllModels("llamacpp")).filter(model => model.providerId === "llamacpp");
+          const provider = await this.provider(record, String(named.provider ?? "llamacpp"));
+          const available = (provider.managed ? await this.services.models.listAllModels(provider.id)
+            : (await this.services.catalog?.listAll(provider.id) ?? []).map(item => cloudModel(item, provider.name))).filter(model => model.providerId === provider.id);
           for (const model of available) listed.add(model);
           // This call's list: models listed or loaded earlier in the run are not in it again.
           value = available;
@@ -339,29 +376,37 @@ export class SynthesisService {
           if (!Array.isArray(args[0])) throw new SynthesisError("models.select expects the result of models.list.");
           const max = named.max_size === undefined ? Infinity : Number(named.max_size);
           if (!(max > 0) || (named.max_size !== undefined && !Number.isFinite(max))) throw new SynthesisError("max_size must be positive and finite.");
-          if (named.provider !== undefined && named.provider !== "llamacpp") throw new SynthesisError("Only the built-in local llamacpp provider is allowed.");
+          const list = args[0].filter((model): model is ManagedModel => !!model && listed.has(model) && (named.provider === undefined || model.providerId === named.provider));
+          if (Number.isFinite(max) && list.length && list.every(model => model.sizeBytes === undefined && model.providerId !== "llamacpp")) {
+            throw new SynthesisError("max_size compares the sizes of local GGUF files; cloud models have none. Choose with prefer or id.");
+          }
+          const exact = named.id === undefined ? undefined : String(named.id);
           const prefer = String(named.prefer ?? "").toLowerCase();
-          const eligible = args[0].filter((model): model is ManagedModel => !!model && listed.has(model) && (!Number.isFinite(max) || (typeof model.sizeBytes === "number" && model.sizeBytes > 0 && model.sizeBytes <= max)));
+          const eligible = list.filter(model => (exact === undefined || model.id === exact || model.displayName === exact) &&
+            (!Number.isFinite(max) || (typeof model.sizeBytes === "number" && model.sizeBytes > 0 && model.sizeBytes <= max)));
           eligible.sort((a,b) => Number(`${b.id} ${b.displayName}`.toLowerCase().includes(prefer)) - Number(`${a.id} ${a.displayName}`.toLowerCase().includes(prefer)) || (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity) || a.id.localeCompare(b.id));
-          if (!eligible[0]) throw new SynthesisError("No installed local model matches the selection. Install a suitable model in Models or adjust max_size.");
+          if (!eligible[0]) throw new SynthesisError(exact !== undefined ? `No listed model is ${exact}.` : "No installed local model matches the selection. Install a suitable model in Models or adjust max_size.");
           value = eligible[0]; break;
         }
         case "model": {
-          const available = await this.services.models.listAllModels("llamacpp");
-          const model = available.find(item => item.id === args[0] || item.displayName === args[0]);
-          if (!model) throw new SynthesisError("model() expects an exact installed local model ID or display name.");
+          const provider = await this.provider(record, String(named.provider ?? "llamacpp"));
+          let model: ManagedModel | undefined;
+          if (provider.managed) {
+            const available = await this.services.models.listAllModels(provider.id);
+            model = available.find(item => item.providerId === provider.id && (item.id === args[0] || item.displayName === args[0]));
+            if (!model) throw new SynthesisError(provider.id === "llamacpp" ? "model() expects an exact installed local model ID or display name." : `${provider.name} has no model ${String(args[0])}.`);
+          } else {
+            if (typeof args[0] !== "string" || !args[0].trim() || args[0].length > 200) throw new SynthesisError("model() expects the provider's model ID.");
+            model = cloudModel({id: args[0], providerId: provider.id, providerName: provider.name}, provider.name);
+          }
           listed.add(model);
-          await this.services.loadModel(model, signal);
-          const role = Object.freeze({model}); roles.add(role); value = role;
-          if (!record.models.some(item => item.id === model.id)) record.models.push(model);
+          value = await role(model);
           break;
         }
         case "models.load": {
           const model = args[0] as ManagedModel;
           if (!model || !listed.has(model)) throw new SynthesisError("models.load expects a selected installed model.");
-          await this.services.loadModel(model, signal);
-          const role = Object.freeze({model}); roles.add(role); value = role;
-          if (!record.models.some(item => item.id === model.id)) record.models.push(model);
+          value = await role(model);
           break;
         }
         case "freeze": requireSpec(args[0]); value = spec; break;
@@ -463,7 +508,9 @@ export class SynthesisService {
         default: throw new SynthesisError(`Runtime operation '${name}' is not supported by local-files-v1.`);
       }
       signal.throwIfAborted();
-      const detail = name === "models.list" ? `${(value as ManagedModel[]).length} installed local models` : name === "models.select" ? (value as ManagedModel).displayName : undefined;
+      const listedFrom = name === "models.list" ? String(named.provider ?? "llamacpp") : undefined;
+      const detail = listedFrom === "llamacpp" ? `${(value as ManagedModel[]).length} installed local models` : listedFrom ? `${(value as ManagedModel[]).length} models of ${listedFrom}`
+        : name === "models.select" ? (value as ManagedModel).displayName : undefined;
       await this.event(record, name, detail ?? `${name} completed`, "ok", {line: span.start.line});
       return value;
     };
@@ -486,6 +533,19 @@ export class SynthesisService {
       clearTimeout(timer); clearInterval(watch);
       await this.event(record, "finished", record.error ?? record.status, record.status === "accepted" ? "ok" : "failed");
     }
+  }
+  /** Whether this run may use a provider. local-files-v1 uses the app's llama.cpp models only; a
+   * cloud provider needs its key here and the project's consent, which only this computer gives. */
+  private async provider(record: RunRecord, providerId: string): Promise<{id: string; name: string; managed: boolean}> {
+    if (providerId === "llamacpp") return {id: providerId, name: "Local llama.cpp", managed: true};
+    if ((record.flow.policy ?? "local-files-v1") === "local-files-v1") throw new SynthesisError(`local-files-v1 runs local llama.cpp models only. Use policy = "cloud-files-v1" to call ${providerId}.`);
+    const descriptor = this.services.providers?.().find(item => item.id === providerId);
+    if (!descriptor) throw new SynthesisError(`No provider ${providerId} is set up here. Add it in Settings → Models & Providers.`);
+    if (!descriptor.configured) throw new SynthesisError(`${descriptor.name} has no key or is turned off. Set it up in Settings → Models & Providers.`);
+    if (descriptor.capabilities?.local !== true && (await this.project(record.projectId)).cloudModels !== true) {
+      throw new SynthesisError(`This project does not allow cloud models: the contract and project files would be sent to ${descriptor.name}. Allow cloud models for the project first.`);
+    }
+    return {id: descriptor.id, name: descriptor.name, managed: MANAGED_PROVIDERS.has(descriptor.id)};
   }
   private usage(record: RunRecord, usage?: {inputTokens?: number; outputTokens?: number}): void {
     record.usage.calls++; record.usage.inputTokens += usage?.inputTokens ?? 0; record.usage.outputTokens += usage?.outputTokens ?? 0;

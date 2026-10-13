@@ -308,3 +308,16 @@ test("the analyzer checks paths, test languages, timeouts, symbols and patterns"
   assert.ok(codes(`file "../escape.ts";`, `hard t = Tests("tests/m.test.ts");`).includes("SPEC_ARTIFACT_PATH"));
   assert.ok(codes(`file "src/m.ts";`, `hard t = Tests("tests/m.test.ts");`, `tests { file "/etc/passwd"; }`).includes("SPEC_TEST_PATH"));
 });
+
+test("cloud-files-v1 names cloud providers literally; local-files-v1 stays local", () => {
+  const cloud = flowSource.replace('policy = "local-files-v1";', 'policy = "cloud-files-v1";')
+    .replace('developer = await models.load(selected);', 'developer = await models.load(selected); reviewer = await model("deepseek-flash", provider = "deepseek"); listed = await models.list(provider = "openai"); picked = models.select(listed, id = "gpt-5");');
+  assert.deepEqual(codes(specSource, cloud), []);
+  assert.deepEqual(compileProgram(specSource, cloud).flow?.policy, "cloud-files-v1");
+  assert.deepEqual(codes(specSource, cloud.replace('policy = "cloud-files-v1";', 'policy = "agents-v1";')), []);
+  const local = codes(specSource, cloud.replace('policy = "cloud-files-v1";', 'policy = "local-files-v1";'));
+  assert.deepEqual(local.filter(code => code === "FLOW_POLICY_PROVIDER").length, 2, "both cloud providers are refused, llamacpp is not");
+  assert.ok(codes(specSource, cloud.replace('provider = "deepseek"', 'provider = "deep" + "seek"')).includes("FLOW_PROVIDER_LITERAL"));
+  assert.ok(codes(specSource, cloud.replace('provider = "deepseek"', 'provider = selected.providerId')).includes("FLOW_PROVIDER_LITERAL"));
+  assert.ok(codes(specSource, cloud.replace('policy = "cloud-files-v1";', 'policy = "cloud-everything";')).includes("FLOW_POLICY"));
+});

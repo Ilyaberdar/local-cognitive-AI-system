@@ -180,6 +180,8 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-workspace-footer label, .synthesis-workspace-footer > span { color: var(--muted); }
 .synthesis-workspace-footer select { width: 240px; max-width: 45%; font-size: var(--text-caption); }
 .synthesis-workspace-footer > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: calc(11px * var(--font-scale, 1)); }
+.synthesis-workspace-footer .synthesis-cloud-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+.synthesis-cloud-toggle input { margin: 0; }
 .synthesis-empty { padding: 14px 12px; margin: 0; color: var(--muted); font-size: var(--text-caption); line-height: 1.65; }
 .synthesis-welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px; }
 .synthesis-welcome h2 { font-size: calc(22px * var(--font-scale, 1)); font-weight: 500; margin: 12px 0 0; }

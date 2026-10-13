@@ -18,7 +18,8 @@ export interface SynthesisRun {
   id: string; projectId: string; moduleId: string; moduleName: string;
   status: "queued" | "running" | "accepted" | "needs_review" | "blocked" | "unresolved" | "interrupted" | "cancelled";
   phase: string; iteration: number; createdAt: string; updatedAt: string; error?: string; appliedAt?: string;
-  models?: { id: string; providerId: string; displayName?: string; sizeBytes?: number }[];
+  models?: { id: string; providerId: string; providerName?: string; displayName?: string; sizeBytes?: number }[];
+  usage?: { inputTokens: number; outputTokens: number; calls: number };
   events: SynthesisEvent[];
   evidence?: {
     candidateHash: string; specHash: string; status: "Pass" | "Fail" | "Unknown";

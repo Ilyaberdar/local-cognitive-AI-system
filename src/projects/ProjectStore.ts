@@ -56,6 +56,10 @@ export class ProjectStore {
         if (color) project.color = color;
         else delete project.color;
       }
+      if (patch.cloudModels !== undefined) {
+        if (typeof patch.cloudModels !== "boolean") throw new ProjectError(400, "Field 'cloudModels' must be a boolean.");
+        if (patch.cloudModels) project.cloudModels = true; else delete project.cloudModels;
+      }
       project.updatedAt = new Date().toISOString();
       await writeJsonAtomically(this.filePath, record);
       return project;

@@ -384,12 +384,22 @@ policy = "local-files-v1";
 
 - `iterations` must be a positive integer, at most 32 in the application. It counts **all entries into all `while` bodies across the run**, including nested loops. It does not count model calls.
 - `time` must be a positive duration, at most `120m`. It covers the whole executing flow, including model loading.
-- `cost` must be a nonnegative USD quantity. The current provider is local-only, with no metered API charge. This field is not a limit on electricity, memory, tokens, or cloud spending; cloud calls are unavailable.
+- `cost` must be a nonnegative USD quantity. It is recorded, not yet enforced: a run counts the tokens of every call (shown with the run), but no price table stops a cloud run. Do not rely on it as a spending limit.
 - There is also a runtime ceiling of 10,000 interpreter steps; it is not configurable in DSL.
 
 Exhausting a budget ends the run as Unresolved. It does not jump to code after the loop. To return earlier, use a condition or `return unresolved();` inside the body.
 
-`local-files-v1` permits installed built-in llama.cpp models, confined project reads, and declared candidate artifacts. It does not grant shell commands, downloads, network tools, or arbitrary filesystem access.
+The policy says what the run may use:
+
+| Policy | Models | Also |
+| --- | --- | --- |
+| `local-files-v1` | Installed built-in llama.cpp models only. | — |
+| `cloud-files-v1` | Local models and any provider set up in **Settings → Models & Providers** (OpenAI, Claude, Gemini, Qwen, DeepSeek, OpenRouter, Groq, Perplexity, LM Studio, Ollama…). | — |
+| `agents-v1` | As `cloud-files-v1`. | Agents with file tools, run in parallel: see [Agents](#agents). |
+
+Every policy confines project reads and writes only declared candidate artifacts until Apply. None grants shell commands, downloads, network tools, or arbitrary filesystem access.
+
+A cloud model receives the contract's description, frozen files, visible tests, the candidate's files and whatever `inspect(...)` read. Hidden tests never leave the computer. So a flow names each provider as a string (`provider = "deepseek"`, never a variable), and a cloud provider runs only in a project that allows cloud models: **Allow cloud models** on the project, which only the computer that owns the project can set (a paired device sees it but cannot change it). The module lists what Run would refuse: `SYNTHESIS_PROVIDER` for a provider that is not set up here or has no key, `SYNTHESIS_CLOUD_CONSENT` for a cloud provider in a project that does not allow it.
 
 ### Variables and control flow
 
@@ -451,10 +461,19 @@ In signatures below, `[argument]` means an optional positional argument. The bra
 
 | Function | Meaning |
 | --- | --- |
-| `await models.list(provider = "llamacpp")` | Return installed local models. `provider` is optional and defaults to `"llamacpp"`; no other provider is allowed. |
-| `models.select(available, max_size = 6GiB, prefer = "qwen2.5-7b", provider = "llamacpp")` | Select a model from the returned list. All named arguments are optional. |
-| `await models.load(selected)` | Load the selected model and return a model role handle. |
-| `await model("exact-installed-id-or-display-name")` | Find and load a specific installed local model, returning a role handle. |
+| `await models.list(provider = "llamacpp")` | Return installed local models, or with another provider (`cloud-files-v1`) the models that provider lists. `provider` defaults to `"llamacpp"`. Each call returns its own list. |
+| `models.select(available, max_size = 6GiB, prefer = "qwen2.5-7b", provider = "llamacpp", id = "exact-id")` | Select a model from the returned list. All named arguments are optional. `id` must match exactly. `max_size` compares GGUF file sizes, so it is an error for a list of cloud models. |
+| `await models.load(selected)` | Load the selected model and return a model role handle. A cloud model needs no loading. |
+| `await model("exact-id", provider = "deepseek")` | A specific model: an installed local one by ID or display name, or with another provider that provider's model ID. Returns a role handle. |
+
+Local and cloud roles mix in one flow:
+
+```lcflow
+policy = "cloud-files-v1";
+developer = await model("deepseek-flash", provider = "deepseek");
+local = await models.list(provider = "llamacpp");
+reviewer = await models.load(models.select(local, max_size = 6GiB, prefer = "qwen2.5-7b"));
+```
 
 Selection works as follows:
 
@@ -463,7 +482,7 @@ Selection works as follows:
 3. Prefer a case-insensitive substring match in the model ID or display name.
 4. Sort remaining ties by smaller file size, then by model ID.
 
-No eligible model is a runtime error, not `none`. Without a size limit, a model with unknown size can remain eligible. To require a specific model, use its exact installed ID with `model(...)`; do not rely on `prefer` as an exact match. There is no download or cloud fallback.
+No eligible model is a runtime error, not `none`. Without a size limit, a model with unknown size can remain eligible. To require a specific model, use its exact ID with `model(...)` or `id = ...`; do not rely on `prefer` as an exact match. There is no download, and a local flow never falls back to a cloud model.
 
 ### Contract and workspace
 
@@ -663,7 +682,10 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `FLOW_UNDEFINED_NAME` | Assign the variable before use on every path; initialize loop feedback before the loop. |
 | `FLOW_ASSIGNMENT_TYPE` | Do not reuse a variable for an unrelated value type. |
 | `LEX_UNIT` | Use `GiB`, `MiB`, `m`, or `usd`, with exact spelling and no separating space. |
-| `FLOW_POLICY` | Declare `policy = "local-files-v1";` exactly once at the top level. |
+| `FLOW_POLICY` | Declare `policy = "local-files-v1";` (or `"cloud-files-v1"`, `"agents-v1"`) exactly once at the top level. |
+| `FLOW_POLICY_PROVIDER` | A provider other than `llamacpp` needs `policy = "cloud-files-v1"` or `"agents-v1"`. |
+| `FLOW_PROVIDER_LITERAL` | Write the provider as a string: `provider = "openai"`. |
+| `SYNTHESIS_PROVIDER` / `SYNTHESIS_CLOUD_CONSENT` | Set the provider up (and its key) in Settings → Models & Providers; allow cloud models for the project. |
 | `FLOW_ACCEPT_GUARD` | Put `return accept(...)` inside `if (verdict.status == Pass)` after `verify`. |
 | `FLOW_TERMINAL_RETURN` | Return terminal actions directly; do not assign or invoke them as standalone statements. |
 | `FLOW_UNKNOWN_CALL` | Use registered calls only. There is no `unreal.build`, `analyze`, `shell`, or `getAllModels` intrinsic. Use `models.list`. |
@@ -687,7 +709,7 @@ The research syntax is broader than this implementation. The following are **not
 - Evaluation environment/workload selection and numeric optimization objectives such as `soft minimize Mean(...)`.
 - User-defined functions, custom runtime actions declared in DSL, general object manipulation, or parallel agent orchestration.
 - Executing model-proposed tests (only the engineer's tests run), or registering new trusted evaluators from a DSL file.
-- Model downloads, cloud providers, arbitrary tools, or host shell access.
+- Model downloads, arbitrary tools, or host shell access.
 
 The parser preserves some research-style sections as source, but the compiler rejects unsupported semantics. **Parseable does not mean executable or verified.** An ability system core works today as plain C++ with a frozen header, tests and architecture gates ([example](../examples/synthesis-ability-system/README.md)); the formal sections and engine adapters do not.
 

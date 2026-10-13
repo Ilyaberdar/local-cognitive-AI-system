@@ -9,6 +9,8 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
   const route = (handler: (request: Request, response: Response) => Promise<unknown>) => (request: Request, response: Response, next: NextFunction) => { void handler(request, response).catch(next); };
   const param = (request: Request, key: string) => String(request.params[key] ?? "");
   router.get("/projects/:projectId/modules", route(async (req, res) => res.json({modules: await service().modules(param(req, "projectId"))})));
+  router.get("/projects/:projectId/cloud", route(async (req, res) => res.json(await service().cloudModels(param(req, "projectId")))));
+  router.put("/projects/:projectId/cloud", route(async (req, res) => res.json(await service().setCloudModels(param(req, "projectId"), req.body?.allowed))));
   router.get("/projects/:projectId/folders", route(async (req, res) => res.json(await service().folders(param(req, "projectId"), req.query.directory ?? ""))));
   router.post("/projects/:projectId/modules", route(async (req, res) => {
     if (!["empty", "calculator", "rate-limiter"].includes(req.body?.template)) throw new SynthesisError("Choose an empty module, the calculator or the rate limiter template.");

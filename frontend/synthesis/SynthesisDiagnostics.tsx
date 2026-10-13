@@ -52,8 +52,9 @@ export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose 
         </details>) : <p className="synthesis-section-note">No individual gate results were recorded.</p>}</div> : null}
       </section>
       {run?.models?.length ? <details className="synthesis-inspector-disclosure" open>
-        <summary><span>Local models</span><small>{run.models.length}</small><SynthesisIcon name="chevron" /></summary>
-        <div className="synthesis-models">{run.models.map(item => <div key={`${item.providerId}:${item.id}`}><strong>{item.displayName || item.id}</strong><small>{item.providerId}{item.sizeBytes ? ` · ${(item.sizeBytes / 1024 ** 3).toFixed(1)} GiB` : ""}</small></div>)}</div>
+        <summary><span>Models</span><small>{run.models.length}</small><SynthesisIcon name="chevron" /></summary>
+        <div className="synthesis-models">{run.models.map(item => <div key={`${item.providerId}:${item.id}`}><strong>{item.displayName || item.id}</strong><small>{item.providerName ?? item.providerId}{item.sizeBytes ? ` · ${(item.sizeBytes / 1024 ** 3).toFixed(1)} GiB` : item.providerId === "llamacpp" ? "" : " · cloud"}</small></div>)}</div>
+        {run.usage?.calls ? <p className="synthesis-section-note">{run.usage.calls} model calls · {run.usage.inputTokens.toLocaleString()} tokens in, {run.usage.outputTokens.toLocaleString()} out</p> : null}
       </details> : null}
       {evidence ? <details className="synthesis-inspector-disclosure synthesis-provenance"><summary><span>Evidence identity</span><SynthesisIcon name="chevron" /></summary>
         <dl><div><dt>Candidate</dt><dd>{evidence.candidateHash}</dd></div><div><dt>Contract</dt><dd>{evidence.specHash}</dd></div></dl>

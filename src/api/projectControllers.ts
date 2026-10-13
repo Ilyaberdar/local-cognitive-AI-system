@@ -22,10 +22,10 @@ export const createCreateProjectController = (manager: RuntimeManager) =>
 export const createUpdateProjectController = (manager: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { name, rootPath, archived, color } = req.body ?? {};
+      const { name, rootPath, archived, color, cloudModels } = req.body ?? {};
       if ((name !== undefined && typeof name !== "string") || (rootPath !== undefined && typeof rootPath !== "string") ||
-        (archived !== undefined && typeof archived !== "boolean")) throw new ProjectError(400, "Invalid project update.");
-      const project = await manager.getRuntime().projectStore.update(String(req.params.projectId), { name, rootPath, archived, color });
+        (archived !== undefined && typeof archived !== "boolean") || (cloudModels !== undefined && typeof cloudModels !== "boolean")) throw new ProjectError(400, "Invalid project update.");
+      const project = await manager.getRuntime().projectStore.update(String(req.params.projectId), { name, rootPath, archived, color, cloudModels });
       if (!project) throw new ProjectError(404, "Project was not found.");
       res.json(project);
     } catch (error) { next(error); }

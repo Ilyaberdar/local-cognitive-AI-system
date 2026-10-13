@@ -437,3 +437,29 @@ test("a server's projects arriving after the screen keep the project chosen ther
     assert.equal(asked.some(path => path.startsWith("/projects/p1/")), false);
   } finally { handle.unmount(); dom.window.close(); }
 });
+
+test("Cloud models is the host's switch for the selected project: it shows the project's setting and changes it", async () => {
+  const sent: Array<{ path: string; body?: unknown }> = [];
+  let allowed = false, listed = 0;
+  const ui = harness((path, options) => {
+    if (path.endsWith("/runs")) return [];
+    if (path.endsWith("/cloud")) {
+      if (options.method === "PUT") { sent.push({ path, body: JSON.parse(String(options.body)) }); allowed = true; }
+      return { allowed };
+    }
+    if (path.endsWith("/modules")) { listed++; return { modules: [moduleEntry()] }; }
+    if (path.endsWith("/modules/Calculator")) return moduleEntry();
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const box = () => ui.dom.window.document.querySelector(".synthesis-cloud-toggle input") as any;
+    await until(() => Boolean(box()), "cloud switch");
+    assert.equal(box().checked, false);
+    const before = listed;
+    box().click();
+    await until(() => sent.length === 1 && box().checked === true, "cloud allowed");
+    assert.deepEqual(sent, [{ path: "/synthesis/projects/p1/cloud", body: { allowed: true } }]);
+    await until(() => /Cloud models may now read this project/.test(ui.text()), "notice");
+    await until(() => listed > before, "modules checked again for their diagnostics");
+  } finally { ui.close(); }
+});
