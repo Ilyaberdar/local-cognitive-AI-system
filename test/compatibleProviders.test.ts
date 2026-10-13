@@ -237,10 +237,26 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
   assert.equal(openrouter.calls[1].body.reasoning, undefined);
   assert.equal(openrouter.calls[0].body.reasoning_effort, undefined);
 
-  const perplexity = service(() => new Response("not found", { status: 404 }));
+  // Perplexity's Agent API: Responses-shaped, a preset or a hosted model with web search, its presets listed first.
+  const answer = () => Response.json({ object: "response", status: "completed", model: "openai/gpt-6-luna",
+    output: [{ type: "search_results", results: [] }, { type: "message", role: "assistant", content: [{ type: "output_text", text: "Paris[1]", annotations: [] }] }],
+    usage: { input_tokens: 1457, output_tokens: 5, total_tokens: 1462, input_tokens_details: { cached_tokens: 1400, cache_creation_input_tokens: 0 } } });
+  const perplexity = service((call) => call.url.endsWith("/models") ? Response.json({ object: "list", data: [{ id: "openai/gpt-6-luna" }, { id: "anthropic/claude-sonnet-5-5" }] }) : answer());
   const sonar = provider("perplexity", perplexity.fetchImpl);
   assert.equal(sonar.getDescriptor().capabilities?.jsonMode, false);
-  assert.deepEqual((await sonar.listModels()).map(model => model.id), ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"]);
+  const reply = await sonar.generateText({ prompt: "Capital of France?", systemPrompt: "One word.", maxTokens: 64, images: [{ dataUrl: PNG }] });
+  assert.equal(reply.text, "Paris[1]");
+  assert.deepEqual(reply.usage, { inputTokens: 1457, outputTokens: 5, totalTokens: 1462, cachedInputTokens: 1400 });
+  assert.equal(perplexity.calls[0].url, "https://api.perplexity.ai/v1/responses");
+  assert.equal(perplexity.calls[0].body.preset, "fast");
+  assert.equal(perplexity.calls[0].body.model, undefined);
+  assert.equal(perplexity.calls[0].body.instructions, "One word.");
+  assert.equal(perplexity.calls[0].body.max_output_tokens, 64);
+  assert.equal(perplexity.calls[0].body.input[0].content[1].type, "input_image");
+  await sonar.generateText({ prompt: "Hi", model: "anthropic/claude-sonnet-5-5" });
+  assert.equal(perplexity.calls[1].body.model, "anthropic/claude-sonnet-5-5");
+  assert.deepEqual(perplexity.calls[1].body.tools, [{ type: "web_search" }]);
+  assert.deepEqual((await sonar.listModels()).map(model => model.id), ["fast", "low", "medium", "high", "xhigh", "openai/gpt-6-luna", "anthropic/claude-sonnet-5-5"]);
   for (const preset of PROVIDER_PRESETS) {
     assert.ok(preset.models.includes(preset.model), preset.id);
     assert.match(preset.baseUrl, /^https:\/\//);

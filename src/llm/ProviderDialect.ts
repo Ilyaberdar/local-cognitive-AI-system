@@ -33,8 +33,12 @@ export interface ProviderDialect {
   readonly thinking?: "enable_thinking" | "reasoning";
   /** JSON mode is refused unless the messages say "JSON" (Qwen): the instructions then ask for it. */
   readonly jsonKeyword?: boolean;
-  /** Models offered when the service's list cannot be read, and ids in its list that are not chat models. */
-  readonly models?: { fallback: string[]; exclude?: RegExp };
+  /** Models offered when the service's list cannot be read, ids in its list that are not chat models,
+   * and ids always offered first (Perplexity's presets, which its list does not name). */
+  readonly models?: { fallback: string[]; exclude?: RegExp; pinned?: string[] };
+  /** Perplexity: a model id that is one of these is sent as a preset; any other model gets the web
+   * search tool, which an explicitly chosen model does not have on its own. */
+  readonly presets?: string[];
   readonly capabilities: ProviderCapabilities;
 }
 
@@ -95,10 +99,13 @@ export const GROQ_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "groq", chat
 /** OpenRouter: hundreds of models behind one key, its reasoning asked for in one shape for all of them. */
 export const OPENROUTER_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "openrouter", thinking: "reasoning",
   capabilities: { ...CHAT_DIALECT.capabilities, reasoning: true, vision: true } };
-/** Perplexity: answers searched on the web. It lists no models and has no JSON mode (only schemas). */
-export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity",
-  capabilities: { ...CHAT_DIALECT.capabilities, jsonMode: false },
-  models: { fallback: ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"] } };
+/** Perplexity's Agent API (Sonar moved there in September 2026): Responses-shaped requests, a preset
+ * (fast to xhigh) or a model it hosts, answers searched on the web. JSON comes only as a schema, so
+ * agents use the JSON protocol in words. */
+const PERPLEXITY_PRESETS = ["fast", "low", "medium", "high", "xhigh"];
+export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity", chatOnly: false, allOnResponses: true, presets: PERPLEXITY_PRESETS,
+  capabilities: { ...CHAT_DIALECT.capabilities, jsonMode: false, reasoning: true, vision: true },
+  models: { fallback: PERPLEXITY_PRESETS, pinned: PERPLEXITY_PRESETS } };
 
 const DIALECTS: Record<string, ProviderDialect> = { qwen: QWEN_DIALECT, chat: CHAT_DIALECT, deepseek: DEEPSEEK_DIALECT,
   groq: GROQ_DIALECT, openrouter: OPENROUTER_DIALECT, perplexity: PERPLEXITY_DIALECT };

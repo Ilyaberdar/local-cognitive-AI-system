@@ -82,7 +82,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       ?.map((model) => model.id)
       .filter((modelId): modelId is string => Boolean(modelId))
       .filter((modelId) => !known?.exclude?.test(modelId)) ?? [];
-    return (listed.length || !known ? listed : known.fallback).map((modelId) => ({
+    const offered = listed.length || !known ? listed : known.fallback;
+    return [...new Set([...(known?.pinned ?? []), ...offered])].map((modelId) => ({
       id: modelId,
       providerId: this.id,
       providerName: this.name
@@ -157,7 +158,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
             : request.responseFormat } : {})
         } : {
-          model,
+          ...(dialect.presets?.includes(model) ? { preset: model } : { model, ...(dialect.presets ? { tools: [{ type: "web_search" }] } : {}) }),
           input: images.length || nativeTools || request.inputItems?.length ? [{ role: "user", content: [
             { type: "input_text", text: request.prompt },
             ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" }))

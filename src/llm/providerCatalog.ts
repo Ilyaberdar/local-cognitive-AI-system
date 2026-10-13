@@ -73,9 +73,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [{
   id: "perplexity",
   name: "Perplexity",
   dialect: "perplexity",
-  baseUrl: "https://api.perplexity.ai",
-  model: "sonar",
-  models: ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"],
+  baseUrl: "https://api.perplexity.ai/v1",
+  model: "fast",
+  models: ["fast", "low", "medium", "high", "xhigh"],
   keyUrl: "https://www.perplexity.ai/settings/api",
   env: { apiKey: ["PERPLEXITY_API_KEY"], baseUrl: "PERPLEXITY_BASE_URL", model: "PERPLEXITY_MODEL", timeoutMs: "PERPLEXITY_TIMEOUT_MS" }
 }];

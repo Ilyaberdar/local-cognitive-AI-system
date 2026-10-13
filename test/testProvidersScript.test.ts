@@ -17,8 +17,13 @@ function standIn() {
       const body = raw ? JSON.parse(raw) : {};
       seen.push({ url: request.url ?? "", body, auth: request.headers.authorization });
       if (request.method === "GET") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "stand-in-model" }] })); return; }
-      const prompt = JSON.stringify(body.messages);
-      const text = body.response_format ? "{\"ok\": true}" : /image_url/.test(prompt) ? "Red" : /391/.test(prompt) ? "No" : /Count/.test(prompt) ? "one, two, three, four, five" : "ok";
+      const prompt = JSON.stringify(body.messages ?? body.input);
+      const text = body.response_format ? "{\"ok\": true}" : /image_url|input_image/.test(prompt) ? "Red" : /391/.test(prompt) ? "No" : /Count/.test(prompt) ? "one, two, three, four, five" : "ok";
+      if (request.url?.endsWith("/responses")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }], usage: { input_tokens: 5, output_tokens: 2 } }));
+        return;
+      }
       if (body.stream) {
         response.setHeader("content-type", "text/event-stream");
         for (const piece of [text.slice(0, 2), text.slice(2)]) response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: piece } }] })}\n\n`);
