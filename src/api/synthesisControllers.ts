@@ -1,6 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { SynthesisService } from "../synthesis/SynthesisService";
-import { PREVIEW_POLICY } from "../synthesis/preview";
 import { SynthesisError } from "../synthesis/types";
 import { openWorkspaceEditor } from "./workspaceReview";
 
@@ -38,15 +37,11 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
   router.get("/runs/:id/agents/:index", route(async (req, res) => res.json(await service().agent(param(req, "id"), Number(param(req, "index"))))));
   router.get("/runs/:id/diff", route(async (req, res) => res.json(await service().diff(param(req, "id")))));
   router.post("/runs/:id/apply", route(async (req, res) => { await service().apply(param(req, "id")); res.json({ok: true}); }));
-  router.get("/runs/:id/preview/*", route(async (req, res) => {
-    const file = param(req, "0");
-    // One self-contained page: an opaque origin (even when opened outside the sandboxed frame),
-    // its own inline code and styles only, no network or API access.
-    const source = await service().preview(param(req, "id"), file);
-    res.setHeader("Content-Security-Policy", `sandbox allow-scripts; ${PREVIEW_POLICY}; frame-ancestors 'self'`);
-    res.setHeader("X-Content-Type-Options", "nosniff");
+  // A project file the run cites, for the Changes view on this computer only: no Remote operation reaches it.
+  router.get("/runs/:id/project-file", route(async (req, res) => {
+    const file = await service().projectFile(param(req, "id"), req.query.path);
     res.setHeader("Cache-Control", "no-store");
-    res.type("text/html").send(source);
+    res.json(file);
   }));
   return router;
 }

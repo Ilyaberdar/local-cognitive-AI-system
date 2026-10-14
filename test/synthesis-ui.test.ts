@@ -155,11 +155,8 @@ test("synthesis source tabs and restart preserve prior run history and select th
     assert.ok(calls.includes("/synthesis/runs/old/resume"));
     assert.equal(ui.dom.window.document.querySelectorAll(".synthesis-run-history > button").length, 2);
     assert.match(ui.dom.window.document.querySelector(".synthesis-run-history .is-selected").textContent, /Accepted/);
-    ui.click("Preview");
-    await until(() => Boolean(ui.dom.window.document.querySelector("iframe")), "candidate preview");
-    const iframe = ui.dom.window.document.querySelector("iframe");
-    assert.equal(iframe.getAttribute("sandbox"), "allow-scripts");
-    assert.match(iframe.getAttribute("src"), /runs\/restarted\/preview/);
+    assert.deepEqual([...ui.dom.window.document.querySelectorAll('[role="tab"]')].map((tab: any) => tab.textContent), ["Contract", "Flow", "Changes"], "no Preview tab");
+    assert.equal(ui.dom.window.document.querySelector("iframe"), null, "nothing a candidate wrote runs in the app");
   } finally { ui.close(); }
 });
 
@@ -315,7 +312,7 @@ test("synthesis polls serially and stops polling when the view becomes inactive"
   } finally { release?.(); ui.close(); }
 });
 
-test("Changes highlights real code, uses full width for added files, and resizes modified files", async () => {
+test("Changes lists the files and shows the chosen one: an added file's source with line numbers, a modified one's diff that resizes", async () => {
   const run = runEntry("diff", "accepted");
   const source = 'const title: string = "<img src=x onerror=alert(1)>";';
   const ui = harness(path => {
@@ -332,18 +329,22 @@ test("Changes highlights real code, uses full width for added files, and resizes
   try {
     await until(() => ui.text().includes('diff activity'), 'run loaded');
     ui.click('Changes');
-    await until(() => Boolean(ui.dom.window.document.querySelector('.synthesis-diff')), 'changes loaded');
+    await until(() => Boolean(ui.dom.window.document.querySelector('.synthesis-changes')), 'changes loaded');
     const doc = ui.dom.window.document;
-    const files = doc.querySelectorAll('.synthesis-diff > details');
-    assert.equal(files[0].querySelectorAll('.synthesis-diff__code').length, 1);
-    assert.equal(files[0].querySelector('.synthesis-diff__columns'), null);
-    assert.match(files[0].textContent, /TypeScript/);
-    assert.equal(files[0].querySelector('code').textContent, source);
-    assert.ok(files[0].querySelector('.hljs-keyword'));
-    assert.equal(files[0].querySelector('img'), null, 'source stays text, never executable markup');
-    assert.doesNotMatch(ui.text(), /New file|Project baseline|File removed/);
-    assert.match(files[1].querySelector('summary').textContent, /Modified/);
-    const resize = files[1].querySelector('[role="separator"]');
+    const options = [...doc.querySelectorAll('.synthesis-changes__files [role="option"]')] as any[];
+    assert.deepEqual(options.map(item => item.textContent), ['added.tsAdded', 'empty.jsModified']);
+    assert.equal(options[0].getAttribute('aria-selected'), 'true');
+    const body = () => doc.querySelector('.synthesis-changes__body') as any;
+    assert.equal(body().querySelector('.synthesis-lines__row code').textContent, source);
+    assert.equal(body().querySelector('.synthesis-lines__number').textContent, '1');
+    assert.ok(body().querySelector('.hljs-keyword'));
+    assert.equal(doc.querySelector('.synthesis-changes img'), null, 'source stays text, never executable markup');
+    assert.equal(doc.querySelector('.synthesis-changes__header [role="group"]'), null, 'an added code file has only its source');
+    // Arrow keys move through the list.
+    options[0].dispatchEvent(new ui.dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await until(() => options[1].getAttribute('aria-selected') === 'true', 'next file');
+    assert.deepEqual([...doc.querySelectorAll('.synthesis-changes__header [role="group"] button')].map((item: any) => [item.textContent, item.getAttribute('aria-pressed')]), [['Diff', 'true'], ['Source', 'false']]);
+    const resize = body().querySelector('[role="separator"]');
     resize.dispatchEvent(new ui.dom.window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
     await until(() => resize.getAttribute('aria-valuenow') === '45', 'column split updated');
     assert.equal(ui.dom.window.localStorage.getItem('lcai.synthesis.diffSplit.v1'), '45');
@@ -521,8 +522,110 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     await until(() => Boolean(doc.querySelector('.synthesis-agent-detail')), 'agent steps');
     assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /Agent 1.*deepseek\/deepseek-flash · Done · json actions.*Action.*file\.read.*Result.*Answer.*src\/a\.ts:12/s);
     ui.click('Changes');
-    await until(() => Boolean(doc.querySelector('.synthesis-diff')), 'changes loaded');
-    assert.match(doc.querySelector('.synthesis-diff summary').textContent, /review\/notes\/old\.md.*Deleted/);
+    await until(() => Boolean(doc.querySelector('.synthesis-changes')), 'changes loaded');
+    assert.match(doc.querySelector('.synthesis-changes__files [role="option"]').textContent, /review\/notes\/old\.md.*Deleted/);
+    await until(() => doc.querySelector('.synthesis-changes__body .synthesis-markdown')?.textContent.trim() === 'stale', "a deleted note shows what it held");
     assert.ok(requested.includes('/synthesis/runs/swarm/agents/0'));
   } finally { ui.close(); }
+});
+
+test("a report in Changes is formatted: its citations open the place, broken ones are marked, and what a model wrote never runs", async () => {
+  const report = [
+    "# Report", "", "- `src/a.ts:12` swallows an error", "- src/missing.ts:3 does not exist", "- see notes/n1.md:2 and review/data.json",
+    "", "<img src=x onerror=\"window.ran = true\">", "[run](javascript:window.ran=true) · [relative](src/a.ts) · [site](https://example.com/docs)"
+  ].join("\n");
+  const run = { ...runEntry("report", "needs_review"), evidence: { candidateHash: "h", specHash: "s", status: "Fail", gates: [
+    { id: "grounded", evaluator: "contract-grounded-v1", status: "Fail", message: "1 of 4 references in REPORT.md do not hold", grounded: { file: "REPORT.md", references: [
+      { path: "src/a.ts", start: 12, status: "ok", lines: 40 }, { path: "src/missing.ts", start: 3, status: "missing" }, { path: "notes/n1.md", start: 2, status: "ok", lines: 3 }] } }] } };
+  const requested: string[] = [];
+  const project = Array.from({ length: 40 }, (_value, index) => `const line${index + 1} = ${index + 1};`).join("\n");
+  const ui = harness(path => {
+    requested.push(path);
+    if (path.endsWith('/modules')) return { modules: [moduleEntry()] };
+    if (path.endsWith('/modules/Calculator')) return moduleEntry();
+    if (path.endsWith('/runs')) return [run];
+    if (path === '/synthesis/runs/report') return run;
+    if (path.endsWith('/diff')) return { canApply: false, root: "review", files: [
+      { path: "review/REPORT.md", before: null, after: report }, { path: "review/notes/n1.md", before: null, after: "first\nsecond\nthird" },
+      { path: "review/data.json", before: null, after: '{"agents": [1, 2], "ok": true, "name": "<b>x</b>"}' }, { path: "review/broken.json", before: null, after: "{ not json" }] };
+    if (path === '/synthesis/runs/report/project-file?path=src%2Fa.ts') return { path: "src/a.ts", content: project };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    await until(() => ui.text().includes('report activity'), 'run loaded');
+    ui.click('Changes');
+    const doc = ui.dom.window.document;
+    await until(() => Boolean(doc.querySelector('.synthesis-markdown .synthesis-ref')), 'report formatted');
+    const markdown = doc.querySelector('.synthesis-markdown') as any;
+    assert.ok(markdown.querySelector('h1'), "formatted, not raw text");
+    assert.equal(markdown.querySelector('img, [onerror], script, iframe'), null, "raw HTML stays text");
+    const refs = () => [...doc.querySelectorAll('.synthesis-markdown .synthesis-ref')] as any[];
+    assert.deepEqual(refs().map(item => [item.tagName, item.textContent, item.className]), [
+      ["BUTTON", "src/a.ts:12", "synthesis-ref is-ok"], ["BUTTON", "src/missing.ts:3", "synthesis-ref is-missing"],
+      ["BUTTON", "notes/n1.md:2", "synthesis-ref is-ok"], ["BUTTON", "review/data.json", "synthesis-ref is-unchecked"]]);
+    assert.equal(refs()[1].title, "src/missing.ts does not exist in the project");
+    assert.match(doc.querySelector('.synthesis-changes__files [role="option"]').textContent, /REPORT\.md.*Added.*1 broken/);
+    const link = (text: string) => [...markdown.querySelectorAll('a')].find((item: any) => item.textContent === text) as any;
+    for (const [text, stays] of [["relative", true], ["site", false]] as const) {
+      const event = new ui.dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+      link(text).dispatchEvent(event);
+      assert.equal(event.defaultPrevented, stays, `${text}: only the web leaves the app`);
+    }
+    assert.equal(link("run"), undefined, "a javascript: link is not made a link at all");
+    assert.equal(ui.dom.window.ran, undefined);
+
+    // A citation of a candidate file selects it at the line.
+    refs()[2].click();
+    await until(() => doc.querySelector('.synthesis-changes__files [aria-selected="true"]')?.textContent.startsWith('review/notes/n1.md'), 'cited note selected');
+    assert.equal(doc.querySelector('.synthesis-lines__row.is-target')?.getAttribute('data-line'), '2');
+    // A project file opens read-only, at the line, on this computer.
+    (doc.querySelector('.synthesis-changes__files [data-path="review/REPORT.md"]') as any).click();
+    await until(() => refs().length === 4, 'report again');
+    refs()[0].click();
+    await until(() => Boolean(doc.querySelector('.synthesis-changes__body .synthesis-lines')) && /read-only, as it is now/.test(ui.text()), 'project file');
+    assert.ok(requested.includes('/synthesis/runs/report/project-file?path=src%2Fa.ts'));
+    assert.equal(doc.querySelector('.synthesis-lines__row.is-target')?.getAttribute('data-line'), '12');
+    ui.click('← review/REPORT.md');
+    await until(() => refs().length === 4, 'back to the report');
+
+    // JSON is a tree; text that is not JSON says so and shows its source.
+    (doc.querySelector('.synthesis-changes__files [data-path="review/data.json"]') as any).click();
+    await until(() => Boolean(doc.querySelector('.synthesis-json')), 'json tree');
+    assert.match(doc.querySelector('.synthesis-json').textContent, /agents: \[2\].*0: 1.*ok: true.*name: "<b>x<\/b>"/s);
+    assert.equal(doc.querySelector('.synthesis-json b'), null);
+    (doc.querySelector('.synthesis-changes__files [data-path="review/broken.json"]') as any).click();
+    await until(() => /Not valid JSON/.test(ui.text()), 'invalid json');
+    assert.equal(doc.querySelector('.synthesis-lines__row code').textContent, '{ not json');
+  } finally { ui.close(); }
+});
+
+test("on a server a report's citations of project files are marked but not opened: only the server reads its project", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
+  const run = { ...runEntry("remote", "accepted"), evidence: { candidateHash: "h", specHash: "s", status: "Pass", gates: [
+    { id: "grounded", evaluator: "contract-grounded-v1", status: "Pass", message: "ok", grounded: { file: "REPORT.md", references: [{ path: "src/a.ts", start: 1, status: "ok", lines: 5 }] } }] } };
+  const asked: string[] = [];
+  const transport = { remote: { hostName: "fedora" }, request: async (path: string) => {
+    asked.push(path);
+    if (path.endsWith("/modules")) return { modules: [moduleEntry()] };
+    if (path.endsWith("/modules/Calculator")) return moduleEntry();
+    if (path.endsWith("/runs")) return [run];
+    if (path === "/runs/remote") return run;
+    if (path.endsWith("/diff")) return { canApply: true, root: "review", files: [{ path: "review/REPORT.md", before: null, after: "- src/a.ts:1 and notes/n.md:1" }, { path: "review/notes/n.md", before: null, after: "x" }] };
+    return {};
+  } };
+  const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"),
+    { projects: [{ id: "p1", name: "Calc", rootPath: "fedora › Projects › calc" }], active: true, transport, storageKey: "host-1" });
+  try {
+    const doc = dom.window.document;
+    await until(() => doc.body.textContent.includes("remote activity"), "run loaded");
+    ([...doc.querySelectorAll('[role="tab"]')].find((tab: any) => tab.textContent === "Changes") as any).click();
+    await until(() => doc.querySelectorAll(".synthesis-markdown .synthesis-ref").length === 2, "report formatted");
+    const [project, note] = [...doc.querySelectorAll(".synthesis-markdown .synthesis-ref")] as any[];
+    assert.deepEqual([project.tagName, project.className], ["SPAN", "synthesis-ref is-ok"], "a project file is not opened from a computer");
+    assert.equal(note.tagName, "BUTTON", "a file of the run's own still opens");
+    project.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(asked.some(path => path.includes("project-file")), false);
+  } finally { handle.unmount(); dom.window.close(); }
 });

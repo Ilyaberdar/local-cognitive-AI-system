@@ -2,7 +2,7 @@ export interface SynthesisProject { id: string; name: string; rootPath: string; 
 /** How the screen reaches Synthesis: this computer's API by default, or a paired server (R5-5). */
 export interface SynthesisTransport {
   request<T>(path: string, options?: RequestInit): Promise<T>;
-  /** A server: its candidates are not previewed here and its files are not opened in an editor here. */
+  /** A server: its files are not opened in an editor here, and the project files a run cites are not read from here. */
   remote?: { hostName: string };
 }
 export interface Diagnostic { message: string; line?: number; column?: number; file?: string; severity?: string }
@@ -27,11 +27,15 @@ export interface SynthesisRun {
     gates: { id: string; evaluator: string; status: "Pass" | "Fail" | "Unknown"; message: string;
       /** What the model read for this gate, and the test cases a Tests gate ran. */
       feedback?: string[];
-      cases?: { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }[] }[];
+      cases?: { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }[];
+      /** Grounded: the file it read (relative to the checkout folder) and each place it cites. */
+      grounded?: { file: string; references: GroundedReference[] } }[];
   };
 }
-/** after null: the run deleted the file. */
-export interface CandidateDiff { files: { path: string; before: string | null; after: string | null }[]; canApply: boolean }
+/** after null: the run deleted the file. `root`: the checkout folder the paths start with (older hosts send none). */
+export interface CandidateDiff { files: { path: string; before: string | null; after: string | null }[]; canApply: boolean; root?: string }
+/** A place a Grounded file cites, with what the check found. */
+export interface GroundedReference { path: string; start?: number; end?: number; status: "ok" | "missing" | "range"; lines?: number }
 export interface AgentItem {
   index: number; call: number; task: string; providerId: string; model: string; status: "queued" | "running" | "done" | "failed" | "cancelled";
   steps: number; inputTokens: number; outputTokens: number; durationMs: number; files: string[]; error?: string;

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
+import express from "express";
+import { localApiOriginGuard } from "../src/api/integrationControllers";
+import { createSynthesisRouter } from "../src/api/synthesisControllers";
 import { ProjectStore } from "../src/projects/ProjectStore";
 import { LLMRequest, LLMResponse, ProviderDescriptor } from "../src/types";
 import type { LLMService } from "../src/llm/LLMService";
@@ -679,4 +683,41 @@ test("consent withdrawn while agents work: a started agent's next request is not
   assert.equal(result.status, "blocked");
   assert.match(result.error!, /does not allow cloud models/);
   assert.equal(f.advisory.length, 0, "the lead sent nothing either");
+});
+
+test("Changes reads what a report cites: Grounded marks each place, and this computer may open a cited project file, nothing else", async (t) => {
+  const f = await fixture(t, {script: writer, report: () => "# Report\n- src/alpha.ts:2 is fine\n- src/missing.ts:3 is not\n- src/link.ts and src/bin.ts\n"});
+  await fs.symlink(path.join(f.root, "secret", "keys.txt"), path.join(f.root, "src", "link.ts"));
+  await fs.writeFile(path.join(f.root, "src", "bin.ts"), "binary\0data");
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcspec"), spec.replace('hard clean = Forbid("notes/**", "FORBIDDEN");', 'hard grounded = Grounded("REPORT.md");'));
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcflow"), flow(`agents = [agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), files.write("review/notes/**")], steps = 4)];
+    results = await parallel_map(agents, ["Task 1: write notes/n1.md"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`));
+  const run = await f.service.wait((await f.service.start(f.project.id, "Review")).id);
+  const gate = run.evidence?.gates.find(item => item.id === "grounded");
+  assert.equal(gate?.grounded?.file, "REPORT.md");
+  assert.deepEqual(gate?.grounded?.references.map(item => [item.path, item.status]), [["src/alpha.ts", "ok"], ["src/missing.ts", "missing"], ["src/link.ts", "missing"], ["src/bin.ts", "ok"]]);
+  assert.equal((await f.service.diff(run.id)).root, "review");
+
+  const app = express();
+  app.use(localApiOriginGuard);
+  app.use("/synthesis", createSynthesisRouter(() => f.service));
+  app.use((error: Error & { statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.statusCode ?? 500).json({ message: error.message }); });
+  const server = http.createServer(app);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
+  const origin = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const read = (cited: string, headers: Record<string, string> = {}) => fetch(`${origin}/synthesis/runs/${run.id}/project-file?path=${encodeURIComponent(cited)}`, { headers });
+  const alpha = await read("src/alpha.ts");
+  assert.equal(alpha.status, 200);
+  assert.deepEqual(await alpha.json(), { path: "src/alpha.ts", content: "export const alpha = 1;\n// line two of alpha\n" });
+  assert.equal(alpha.headers.get("cache-control"), "no-store");
+  assert.equal((await read("src/beta.ts")).status, 403, "a project file the run does not cite");
+  assert.equal((await read("secret/keys.txt")).status, 403);
+  assert.equal((await read("../outside.ts")).status, 400);
+  assert.equal((await read(".env/a.ts")).status, 400);
+  assert.equal((await read("src/missing.ts")).status, 404);
+  assert.equal((await read("src/link.ts")).status, 400, "a link leads nowhere");
+  assert.equal((await read("src/bin.ts")).status, 415);
+  assert.equal((await read("src/alpha.ts", { "sec-fetch-site": "cross-site" })).status, 403, "another site cannot read it");
 });

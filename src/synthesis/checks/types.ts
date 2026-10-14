@@ -15,6 +15,10 @@ export interface CheckCase {
   actual?: string;
 }
 
+/** A place a Grounded file cites, once however often it does: whether it holds, and how many lines
+ * the file it names has. */
+export interface GroundedReference { path: string; start?: number; end?: number; status: "ok" | "missing" | "range"; lines?: number }
+
 /** What a check found. `feedback` is what the model reads next: at most 8 short, exact items. */
 export interface CheckResult {
   status: CheckStatus;
@@ -22,6 +26,8 @@ export interface CheckResult {
   message: string;
   feedback: string[];
   cases?: CheckCase[];
+  /** Grounded: the file it read (relative to the checkout folder) and every place it cites. */
+  grounded?: { file: string; references: GroundedReference[] };
 }
 
 /** The files a check sees. `candidate` (written by the model) and `frozen` (written by the engineer,

@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import { previewDocument } from "./preview";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { ProjectStore } from "../projects/ProjectStore";
@@ -15,7 +14,7 @@ import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readT
 import { calculatorTemplate, emptyModuleTemplate, ModuleFiles, ModuleTemplate, rateLimiterTemplate, repositoryReviewTemplate } from "./templates";
 import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSources, sourceId } from "./modules";
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
-import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
+import { CheckOptions, contractChecksVersion, references, runCheck } from "./checks";
 import { matchesGlob } from "./checks/architecture";
 import { AgentSpec, AgentSummary, CandidateStore, checkedLlm, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
 import { platformSandbox } from "./checks/sandbox";
@@ -688,13 +687,14 @@ export class SynthesisService {
           for (const gate of record.spec.gates) {
             signal.throwIfAborted();
             if (gate.check?.kind === "tests") await this.event(record, `gate.${gate.id}`, `Running ${gate.check.files.join(", ")}`, "running");
-            const result: {status: Evidence["status"]; message: string; feedback?: string[]; cases?: EvidenceCase[]} = gate.check
+            const result: {status: Evidence["status"]; message: string; feedback?: string[]; cases?: EvidenceCase[]; grounded?: Evidence["gates"][number]["grounded"]} = gate.check
               ? await runCheck(gate.check, checkFiles, {...this.services.checks, signal, projectLines})
               : record.spec.evaluator === "calculator-v1" && supportedEvaluators.has(gate.evaluatorId)
                 ? await evaluateCalculator(files, gate.evaluatorId)
                 : {status: "Unknown", message: `No trusted evaluator registered for ${gate.evaluatorId}.`};
             gates.push({id: gate.id, evaluator: gate.evaluatorId, severity: gate.severity, status: result.status, message: result.message,
-              ...(result.feedback?.length ? {feedback: result.feedback.slice(0, 8)} : {}), ...(result.cases?.length ? {cases: result.cases.slice(0, 100)} : {})});
+              ...(result.feedback?.length ? {feedback: result.feedback.slice(0, 8)} : {}), ...(result.cases?.length ? {cases: result.cases.slice(0, 100)} : {}),
+              ...(result.grounded ? {grounded: {file: result.grounded.file, references: result.grounded.references.slice(0, 500)}} : {})});
             await this.event(record, `gate.${gate.id}`, `${result.status}: ${result.message}`, result.status === "Pass" ? "ok" : "failed");
           }
           if (!gates.some(gate => gate.severity === "hard")) gates.push({id: "acceptance", evaluator: "registry", severity: "hard", status: "Unknown", message: "At least one trusted hard evaluator is required."});
@@ -869,13 +869,15 @@ export class SynthesisService {
     return {...summary, final: loop?.final?.slice(0, 20_000), protocol: loop?.protocol,
       turns: (loop?.turns ?? []).slice(-120).map(readableTurn)};
   }
-  async diff(id: string): Promise<{files: Array<{path: string; before: string | null; after: string | null}>; canApply: boolean}> {
+  /** The run's changes against the project. `root`: the checkout folder its paths start with (a
+   * citation of a candidate file may leave it out). */
+  async diff(id: string): Promise<{files: Array<{path: string; before: string | null; after: string | null}>; canApply: boolean; root: string}> {
     const record = await this.read(id);
     const files: Array<{path: string; before: string | null; after: string | null}> = Object.entries(record.files).filter(([file, content]) => record.baseline[file] !== content)
       .map(([file, after]) => ({path: `${record.outputPath}/${file}`, before: record.baseline[file] ?? null, after}));
     // A file the run deleted: after is null.
     for (const file of record.removed ?? []) files.push({path: `${record.outputPath}/${file}`, before: record.baseline[file] ?? null, after: null});
-    return {files, canApply: !this.active.has(id) && record.status === "accepted" && !record.appliedAt && !!record.outputPath && record.evidence?.candidateHash === filesHash(record.files)};
+    return {files, root: record.outputPath ?? "", canApply: !this.active.has(id) && record.status === "accepted" && !record.appliedAt && !!record.outputPath && record.evidence?.candidateHash === filesHash(record.files)};
   }
   async apply(id: string): Promise<void> {
     if (this.active.has(id)) throw new SynthesisError("Run is active. Wait for it to finish before Apply.", 409);
@@ -939,12 +941,23 @@ export class SynthesisService {
       return "applied";
     });
   }
-  /** The candidate's page as one self-contained document (its styles and scripts inlined): it loads
-   * nothing else, so it runs in a sandboxed frame here and on a paired device alike. */
-  async preview(id: string, file = "index.html"): Promise<string> {
-    const record = await this.read(id); relativePath(file);
-    if (!/\.html$/.test(file) || !Object.hasOwn(record.files, file)) throw new SynthesisError("Preview artifact not found.", 404);
-    return previewDocument(record.files, file);
+  /** A project file a run's candidate cites, as it is now, for the Changes view on this computer
+   * (never a paired device's): only a cited path, inside the run's project folder, without links,
+   * a text file of at most 1 MiB. */
+  async projectFile(id: string, file: unknown): Promise<{path: string; content: string}> {
+    const record = await this.read(id);
+    const cited = relativePath(file);
+    if (!Object.values(record.files).some(text => references(text).some(reference => reference.path === cited))) throw new SynthesisError("This run's files do not cite that path.", 403);
+    const project = await this.project(record.projectId);
+    if (project.rootPath !== record.rootPath) throw new SynthesisError("The project folder changed since this run.", 409);
+    let content: string;
+    try { content = await readText(await containedPath(record.rootPath, cited), 1024 * 1024); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new SynthesisError(`${cited} does not exist in the project.`, 404);
+      throw error;
+    }
+    if (content.includes("\0")) throw new SynthesisError(`${cited} is not a text file.`, 415);
+    return {path: cited, content};
   }
   private async event(record: RunRecord, step: string, message: string, status: ActivityEvent["status"], extra: Partial<ActivityEvent> = {}): Promise<void> {
     record.phase = step; record.updatedAt = stamp();

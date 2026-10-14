@@ -18,7 +18,9 @@ A Synthesis module has two files in your project:
 
 **Run synthesis** runs the flow: agents write the files, the checks run, failures go back to the agents, and the run ends **Accepted** when every check passes, or stops at its limits. Every iteration, check and decision stays in the run history. You edit the files in your own editor (**Open in editor**) and **Refresh** to validate them.
 
-Nothing in your project changes during a run. **Changes** shows each file the run would add, modify or delete, and **Apply verified patch** writes them all at once, after checking that none of them changed in the meantime.
+Nothing in your project changes during a run. **Changes** lists each file the run would add, modify or delete; choose one to see its diff, its source with line numbers, or, for Markdown and JSON, the file formatted. In a report, every `path:line` it cites opens that place: a file of the run at the line, or the project's file, read-only. The places `Grounded` found missing are marked in red. **Apply verified patch** writes the files all at once, after checking that none of them changed in the meantime.
+
+Nothing a model wrote runs in the app: Markdown is shown without its HTML, links leave the app only for the web, and an HTML page is shown as its source.
 
 ## Contracts on rails
 

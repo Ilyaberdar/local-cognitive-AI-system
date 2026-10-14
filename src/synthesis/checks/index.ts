@@ -14,7 +14,8 @@ export const contractChecksVersion = "contract-v1";
 export interface CheckOptions { sandbox?: SandboxProvider; workRoot?: string; signal?: AbortSignal;
   /** How many lines a project file has (Grounded); without it, Grounded is Unknown. */
   projectLines?: ProjectLines }
-export { references } from "./grounded";
+export { referenceKey, references } from "./references";
+export type { Reference } from "./references";
 
 /** Runs one of the contract's built-in checks: Exports, Imports and Forbid read the files; Tests
  * runs the engineer's tests against them in a sandbox. */

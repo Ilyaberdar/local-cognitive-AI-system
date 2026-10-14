@@ -10,7 +10,7 @@ implement LocalReview using "contract-v1" {
     spec = freeze(LocalReview.spec);
     candidate = checkout("review");
 
-    tasks = await lead.split("Review error handling in these TypeScript files, one file per task: src/synthesis/paths.ts, src/synthesis/preview.ts, src/synthesis/modules.ts, src/synthesis/Interpreter.ts, src/synthesis/checks/support.ts, src/synthesis/checks/grounded.ts. Look for swallowed errors, promises that are not awaited and misleading error messages.", 6);
+    tasks = await lead.split("Review error handling in these TypeScript files, one file per task: src/synthesis/paths.ts, src/synthesis/checks/references.ts, src/synthesis/modules.ts, src/synthesis/Interpreter.ts, src/synthesis/checks/support.ts, src/synthesis/checks/grounded.ts. Look for swallowed errors, promises that are not awaited and misleading error messages.", 6);
 
     agents = [];
     for (i in range(6)) {

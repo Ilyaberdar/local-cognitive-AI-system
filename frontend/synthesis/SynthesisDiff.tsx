@@ -1,38 +1,26 @@
 import { memo, useMemo, useRef } from "react";
 import { codeLanguage, highlightCode } from "../markdown/highlight.js";
 import { usePaneSplit } from "./usePaneSplit";
-import type { CandidateDiff } from "./types";
 
-const labels: Record<string, string> = { javascript: "JavaScript", typescript: "TypeScript", xml: "HTML / XML", json: "JSON", css: "CSS", python: "Python", bash: "Shell", sql: "SQL", yaml: "YAML", markdown: "Markdown" };
+export const languageLabels: Record<string, string> = { javascript: "JavaScript", typescript: "TypeScript", xml: "HTML / XML", json: "JSON", css: "CSS", python: "Python", bash: "Shell", sql: "SQL", yaml: "YAML", markdown: "Markdown" };
 
-const Code = memo(function Code({ source, path, version }: { source: string; path: string; version?: string }) {
+export const Code = memo(function Code({ source, path, version }: { source: string; path: string; version?: string }) {
   const language = codeLanguage(path);
   const html = useMemo(() => highlightCode(source, language), [source, language]);
   return <section className="synthesis-diff__code" aria-label={`${version ? `${version}: ` : ""}${path}`}>
-    <header><span>{labels[language] ?? "Text"}</span>{version ? <span>{version}</span> : null}</header>
+    <header><span>{languageLabels[language] ?? "Text"}</span>{version ? <span>{version}</span> : null}</header>
     <pre tabIndex={0}><code className="hljs" dangerouslySetInnerHTML={{ __html: html }} /></pre>
   </section>;
 });
 
-function FileChange({ file, open }: { file: CandidateDiff["files"][number]; open: boolean }) {
+/** A modified file: before and after side by side, the split kept between files and sessions. */
+export function DiffColumns({ path, before, after }: { path: string; before: string; after: string }) {
   const columns = useRef<HTMLDivElement>(null);
   const split = usePaneSplit("lcai.synthesis.diffSplit.v1", 50, "x", columns);
-  // before null means added, after null deleted; an existing empty file is still a modification.
-  const added = file.before === null, deleted = file.after === null;
-  return <details open={open}>
-    <summary>{file.path}<span>{added ? "Added" : deleted ? "Deleted" : "Modified"}</span></summary>
-    {added ? <Code path={file.path} source={file.after ?? ""} /> : deleted ? <Code path={file.path} source={file.before ?? ""} version="Deleted" /> :
-      <div className="synthesis-diff__columns" ref={columns} data-resizing={split.resizing || undefined}
-        style={{ gridTemplateColumns: `minmax(0, ${split.value}fr) 8px minmax(0, ${100 - split.value}fr)` }}>
-        <Code path={file.path} source={file.before ?? ""} version="Before" />
-        <div {...split.handle} className="synthesis-diff__resize" aria-label={`Resize code columns for ${file.path}`} title="Drag to resize · Double-click to reset" />
-        <Code path={file.path} source={file.after ?? ""} version="After" />
-      </div>}
-  </details>;
-}
-
-export function SynthesisDiff({ diff, loading }: { diff: CandidateDiff | null; loading: boolean }) {
-  if (loading) return <div className="synthesis-empty">Loading candidate changes…</div>;
-  if (!diff?.files.length) return <div className="synthesis-empty">No candidate changes to display yet.</div>;
-  return <div className="synthesis-diff">{diff.files.map(file => <FileChange key={file.path} file={file} open={diff.files.length === 1} />)}</div>;
+  return <div className="synthesis-diff__columns" ref={columns} data-resizing={split.resizing || undefined}
+    style={{ gridTemplateColumns: `minmax(0, ${split.value}fr) 8px minmax(0, ${100 - split.value}fr)` }}>
+    <Code path={path} source={before} version="Before" />
+    <div {...split.handle} className="synthesis-diff__resize" aria-label={`Resize code columns for ${path}`} title="Drag to resize · Double-click to reset" />
+    <Code path={path} source={after} version="After" />
+  </div>;
 }

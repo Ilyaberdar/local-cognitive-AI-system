@@ -54,6 +54,7 @@ test("every synthesis operation is in the catalog; what makes work or writes fil
   const ops = createSynthesisOperations({ runtimeManager: {} as RuntimeManager, ledger: {} as CommandLedger, projects: {} as never, scopeOf: () => "", isDraining: () => false });
   for (const name of Object.keys(ops)) assert.ok(OPERATIONS[name], name);
   for (const name of ["synthesis.modules.create", "synthesis.runs.start", "synthesis.runs.resume", "synthesis.runs.apply"]) assert.equal(OPERATIONS[name]!.kind, "command", name);
+  assert.equal(Object.keys(ops).some(name => /project.?file|preview/i.test(name)), false, "a device reads no project file a run cites, and previews nothing");
 });
 
 test("a device makes a module, runs it once per command, follows it, sees its changes and applies them, with no folder of the host", async t => {

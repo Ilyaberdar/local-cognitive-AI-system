@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { encode, errorMessage, isAbort, synthesisRequest } from "./api";
 import { SynthesisOutput, statusLabel } from "./SynthesisActivity";
-import { SynthesisDiff } from "./SynthesisDiff";
+import { SynthesisChanges } from "./SynthesisChanges";
 import { SynthesisAgents } from "./SynthesisAgents";
 import { diagnosticSummary, SynthesisDiagnostics } from "./SynthesisDiagnostics";
 import { SynthesisIcon } from "./SynthesisIcon";
@@ -10,7 +10,7 @@ import type { CandidateDiff, RunSources, SynthesisModule, SynthesisRun, Synthesi
 
 const activeStatuses = new Set(["running", "queued"]);
 const recoverableStatuses = new Set(["interrupted", "blocked", "unresolved", "cancelled", "needs_review"]);
-type SourceTab = "contract" | "flow" | "agents" | "changes" | "preview";
+type SourceTab = "contract" | "flow" | "agents" | "changes";
 // Each machine keeps its own view preferences (a server's screen passes its key).
 const projectKey = (machine = "") => `lcai.synthesis.project.v1${machine ? `:${machine}` : ""}`;
 const hiddenModulesKey = (machine = "") => `lcai.synthesis.hiddenModules.v1${machine ? `:${machine}` : ""}`;
@@ -259,7 +259,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
         <main className="synthesis-main-pane">
           <header className="synthesis-module-header"><div><h2>{module?.name ?? (moduleId ? "Loading module…" : "Your first synthesis")}</h2><span>{module ? remote ? `The source is edited on ${remote.hostName}. Refresh to see saved changes.` : "Edit the source in your IDE. Refresh to validate saved changes." : "Create a module or save matching .lcspec and .lcflow files in your project, then Refresh."}</span></div>
             {run ? <span className={`synthesis-badge status-${run.status}`}>{statusLabel(run.status)}</span> : null}</header>
-          <div className="synthesis-tabs" role="tablist" aria-label="Module views">{([['contract', 'Contract'], ['flow', 'Flow'], ...(run?.agents ? [['agents', `Agents · ${run.agents.total}`]] : []), ['changes', 'Changes'], ...(remote ? [] : [['preview', 'Preview']])] as Array<[SourceTab, string]>).map(([id, label]) =>
+          <div className="synthesis-tabs" role="tablist" aria-label="Module views">{([['contract', 'Contract'], ['flow', 'Flow'], ...(run?.agents ? [['agents', `Agents · ${run.agents.total}`]] : []), ['changes', 'Changes']] as Array<[SourceTab, string]>).map(([id, label]) =>
             <button role="tab" type="button" key={id} id={`synthesis-tab-${id}`} aria-selected={tab === id} aria-controls="synthesis-source-panel" disabled={!module && !run} onClick={() => setTab(id)}>{label}</button>)}
             {sourceTab && module && !remote ? <button type="button" className="synthesis-open-source" disabled={Boolean(busy)} onClick={() => open(tab === "contract" ? "spec" : "flow")}>Open project .{tab === "contract" ? "lcspec" : "lcflow"} ↗</button> : null}
           </div>
@@ -271,8 +271,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
           <section className="synthesis-source-panel" id="synthesis-source-panel" role="tabpanel" aria-labelledby={`synthesis-tab-${tab}`}>
             {sourceTab ? sourceOrigin === "snapshot" && run ? snapshot ? <SourcePreview source={tab === "contract" ? snapshot.specSource : snapshot.flowSource} name={tab === "contract" ? "LC Spec run snapshot" : "LC Flow run snapshot"} /> : <div className="synthesis-empty" role={sourceError ? "alert" : "status"}>{sourceError || "Loading frozen run sources…"}</div> : module ? <SourcePreview source={(tab === "contract" ? module.specSource : module.flowSource) ?? ""} name={tab === "contract" ? "LC Spec source" : "LC Flow source"} /> : <div className="synthesis-empty">Select a module to inspect its contract and flow.</div>
               : tab === "agents" && run ? <SynthesisAgents run={run} request={request} />
-              : tab === "changes" ? <><div className="synthesis-diff-toolbar"><span>{run?.appliedAt ? "Applied to project" : running ? "Changes are available after this run stops." : `${diff?.files.length ?? 0} changed files`}</span><button type="button" disabled={!diff?.canApply || run?.status !== "accepted" || Boolean(run?.appliedAt) || Boolean(busy)} onClick={apply}>{busy === "apply" ? "Applying…" : "Apply verified patch"}</button></div><SynthesisDiff diff={diff} loading={diffLoading && !running} /></>
-                : run ? <div className="synthesis-preview"><p>Candidate preview · isolated from the application</p><iframe key={`${run.id}:${run.status}`} title="Generated candidate preview" src={`/synthesis/runs/${encode(run.id)}/preview/index.html`} sandbox="allow-scripts" referrerPolicy="no-referrer" /></div> : <div className="synthesis-empty">Run the module to preview a generated candidate.</div>}
+              : <div className="synthesis-changes-view"><div className="synthesis-diff-toolbar"><span>{run?.appliedAt ? "Applied to project" : running ? "Changes are available after this run stops." : `${diff?.files.length ?? 0} changed files`}</span><button type="button" disabled={!diff?.canApply || run?.status !== "accepted" || Boolean(run?.appliedAt) || Boolean(busy)} onClick={apply}>{busy === "apply" ? "Applying…" : "Apply verified patch"}</button></div><SynthesisChanges diff={diff} loading={diffLoading && !running} gates={run?.evidence?.gates} runId={runId} request={request} remote={Boolean(remote)} /></div>}
           </section>
           {run?.error ? <div className="synthesis-message synthesis-message--error">{run.error}</div> : null}
           {run && recoverableStatuses.has(run.status) ? <div className="synthesis-recovery"><span>Start a new run from this frozen snapshot. The existing run and its history stay available.</span><button type="button" disabled={Boolean(busy)} onClick={() => runAction("resume")}>{busy === "resume" ? "Restarting…" : "Restart from snapshot"}</button></div> : null}

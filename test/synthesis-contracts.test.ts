@@ -225,12 +225,16 @@ test("Grounded: every path and line a report cites exists, as Apply would leave 
   const ok = await check("# Report\n- src/a.ts:12 swallows an error\n- see src/deep/b.py:1-3 and review/notes/x.md.\nNode.js and REPORT.md are not references; neither is https://example.com/src/a.ts:99.", 3);
   assert.equal(ok.status, "Pass", ok.message);
   assert.match(ok.message, /3 references \(3 files\)/);
+  assert.deepEqual(ok.grounded, { file: "REPORT.md", references: [{ path: "src/a.ts", start: 12, status: "ok", lines: 40 },
+    { path: "src/deep/b.py", start: 1, end: 3, status: "ok", lines: 3 }, { path: "review/notes/x.md", status: "ok", lines: 2 }] });
   const wrong = await check("# Report\n- src/a.ts:41 is past the end\n- src/missing.ts:1 does not exist\n- src/deep/b.py:2-9 runs past it");
   assert.equal(wrong.status, "Fail");
   assert.deepEqual(wrong.feedback, [
     "REPORT.md:2 cites src/a.ts:41, but src/a.ts has 40 lines.",
     "REPORT.md:3 cites src/missing.ts, which does not exist in the project.",
     "REPORT.md:4 cites src/deep/b.py:2-9, but src/deep/b.py has 3 lines."]);
+  assert.deepEqual(wrong.grounded?.references.map(item => [item.path, item.status]), [["src/a.ts", "range"], ["src/missing.ts", "missing"], ["src/deep/b.py", "range"]], "each place once, with what was found");
+  assert.equal((await check("src/a.ts:1 and again src/a.ts:1, then src/a.ts:2")).grounded?.references.length, 2, "a place cited twice is listed once");
   const few = await check("# Report\n- src/a.ts:1", 2);
   assert.equal(few.status, "Fail"); assert.match(few.feedback[0], /cites 1 files .* at least 2/);
   assert.equal((await check("# Nothing cited")).status, "Fail");

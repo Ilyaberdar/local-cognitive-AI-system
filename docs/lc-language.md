@@ -129,7 +129,7 @@ implement Calculator using "calculator-v1" {
 1. Install or import a suitable GGUF model through **Models**. This flow does not download models.
 2. Open **Synthesis**, select the project workspace, and refresh the module list.
 3. Select **Calculator**, resolve any diagnostics, and choose **Run synthesis**.
-4. Follow **Agent Activity**, inspect the gate results, and review **Preview** and **Changes**.
+4. Follow **Agent Activity**, inspect the gate results, and review **Changes**.
 5. If accepted, choose **Apply verified patch** to write the files into `your-project/calculator/`.
 
 `max_size` limits the GGUF file size, not parameter count, RAM, or VRAM. `prefer` is a preference, not a requirement: the runtime can choose another eligible installed model. See [model discovery and selection](#model-discovery-and-selection) for strict selection.
@@ -773,7 +773,7 @@ Acceptance proves the implemented checks, not every sentence in `description`, v
 
 Edit the two DSL files in any editor. **Open in editor** opens the project/module externally; the application supplies read-only source views and diagnostics rather than a full IDE.
 
-With a paired server selected, the screen shows that server's projects (those made from a device in its shared folders), runs on its models, and applies to its folders. Its sources are edited on the server; **Open in editor** and the candidate preview are not offered there.
+With a paired server selected, the screen shows that server's projects (those made from a device in its shared folders), runs on its models, and applies to its folders. Its sources are edited on the server; **Open in editor** is not offered there, and a project file a report cites is marked but not opened (only the server reads its project).
 
 **+ Project** registers an existing project folder and selects it. Selecting a project or pressing **Refresh** discovers matching DSL files recursively, without importing or copying them. **New module** creates new files and is separate from discovery. The list displays source paths, so equally named modules in different folders remain distinct; existing conventional modules retain their run-history identity. Moving a module to a different path changes its identity. Historical run records are not imported from another application data directory.
 

@@ -205,10 +205,9 @@ const createWindow = async (url) => {
     event.preventDefault();
     openOutside(url);
   });
-  // The window's only frames are Synthesis previews: they stay on the application's own pages.
+  // The window has no frames of its own: one a page made would stay blank, never load anything.
   mainWindow.webContents.on("will-frame-navigate", event => {
     if (event.isMainFrame || ["about:blank", "about:srcdoc"].includes(event.url)) return;
-    try { if (new URL(event.url).origin === applicationOrigin) return; } catch { /* Not a URL: refused. */ }
     event.preventDefault();
   });
   await mainWindow.loadURL(url);

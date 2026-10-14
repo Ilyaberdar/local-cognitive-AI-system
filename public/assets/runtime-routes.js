@@ -250,8 +250,8 @@ export const SETTINGS_ROUTES = [
 ];
 
 /** The Synthesis screen's routes (frontend/synthesis, paths without its `/synthesis` prefix) →
- * src/runtime/synthesisOperations.ts. "Open in editor" and the preview are not here: they stay on
- * the server's own screen. */
+ * src/runtime/synthesisOperations.ts. "Open in editor" and reading a cited project file are not
+ * here: they stay on the server's own screen. */
 export const SYNTHESIS_ROUTES = [
   { method: "GET", pattern: /^\/projects\/([^/]+)\/modules$/, op: "synthesis.modules.list", payload: match => ({ projectId: segment(match[1]) }) },
   { method: "GET", pattern: /^\/projects\/([^/]+)\/modules\/([^/]+)$/, op: "synthesis.modules.get", payload: match => ({ projectId: segment(match[1]), moduleId: segment(match[2]) }) },

@@ -47,8 +47,8 @@ export interface SynthesisOperationDependencies {
 
 /** Synthesis on the host for a paired device (R5-5): modules and runs of projects a device may
  * use, read as safe views; making a module, starting, restarting and applying a run are commands
- * (a resend acts once, a restart finds what was done). The candidate preview and "Open in editor"
- * stay on the host's own screen. */
+ * (a resend acts once, a restart finds what was done). "Open in editor" and reading a project file a
+ * run cites stay on the host's own screen. */
 export const createSynthesisOperations = (deps: SynthesisOperationDependencies): Record<string, RemoteOperation> => {
   const service = (): SynthesisService => deps.runtimeManager.getRuntime().synthesis;
   const scrubberFor = async (projectId: string): Promise<Scrubber> => {
@@ -178,7 +178,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
           budget -= size;
           return { path: file.path, before: file.before, after: file.after, ...sizes };
         });
-        return { files, canApply: diff.canApply };
+        return { files, canApply: diff.canApply, root: diff.root };
       });
     },
     /** The run's agents, one row per task, as the host's Agents tab shows them. */

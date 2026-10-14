@@ -122,9 +122,8 @@ test("DSL lists/selects/loads a tiny local model, repairs failed evidence, and a
   assert.equal(diff.canApply, true);
   assert.equal(diff.files.length, 3);
   assert.ok(diff.files.every(item => item.before === null));
-  const page = await f.service.preview(result.id, "index.html");
-  assert.match(page, /<meta http-equiv="Content-Security-Policy"/);
-  assert.doesNotMatch(page, /<script[^>]+src=/, "the preview is one self-contained page");
+  assert.equal(diff.root, "calculator", "the checkout folder its paths start with");
+  assert.ok(diff.files.every(item => item.path.startsWith("calculator/")));
 });
 
 test("Apply writes only an accepted candidate, preserves unrelated files and prevents repeated application", async (t) => {
@@ -283,7 +282,7 @@ test("paths reject candidate traversal and module/editor identifiers outside the
   assert.equal(f.requests.length, 0);
   await assert.rejects(f.service.editorPath(f.project.id, "../outside"), /Module names/);
   await assert.rejects(f.service.createModule(f.project.id, "../outside"), /Module names/);
-  await assert.rejects(f.service.preview(result.id, "../outside.js"), /relative path/);
+  await assert.rejects(f.service.projectFile(result.id, "../outside.js"), /relative path/);
 });
 
 test("symlinks cannot redirect source reads, candidate checkout or Apply", async (t) => {

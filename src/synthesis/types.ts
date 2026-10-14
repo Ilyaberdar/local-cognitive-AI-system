@@ -20,7 +20,9 @@ export interface Evidence {
   suiteHash?: string;
   gates: Array<{id: string; evaluator: string; status: VerdictStatus; message: string; severity: "hard" | "soft";
     /** What the model reads next for this gate; the test cases a Tests gate ran. */
-    feedback?: string[]; cases?: EvidenceCase[]}>;
+    feedback?: string[]; cases?: EvidenceCase[];
+    /** Grounded: the file it read (relative to the checkout folder) and each place it cites, with what was found. */
+    grounded?: {file: string; references: Array<{path: string; start?: number; end?: number; status: "ok" | "missing" | "range"; lines?: number}>}}>;
 }
 export interface SynthesisRun {
   id: string; projectId: string; moduleId: string; moduleName: string; status: RunStatus;

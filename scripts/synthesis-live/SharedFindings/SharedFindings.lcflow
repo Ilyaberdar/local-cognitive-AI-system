@@ -5,7 +5,7 @@ implement SharedFindings using "contract-v1" {
     spec = freeze(SharedFindings.spec);
     candidate = checkout("review");
 
-    files_to_review = ["src/synthesis/paths.ts", "src/synthesis/preview.ts", "src/synthesis/modules.ts", "src/synthesis/Interpreter.ts", "src/synthesis/checks/grounded.ts", "src/synthesis/agents/Checkouts.ts"];
+    files_to_review = ["src/synthesis/paths.ts", "src/synthesis/checks/references.ts", "src/synthesis/modules.ts", "src/synthesis/Interpreter.ts", "src/synthesis/checks/grounded.ts", "src/synthesis/agents/Checkouts.ts"];
     tasks = [];
     for (file in files_to_review) {
         tasks = append(tasks, "Review error handling in " + file + ". Then add your findings as a new section to the shared file review/FINDINGS.md.");

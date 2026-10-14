@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
-import express from "express";
-import { localApiOriginGuard } from "../src/api/integrationControllers";
-import { createSynthesisRouter } from "../src/api/synthesisControllers";
 import { ProjectStore } from "../src/projects/ProjectStore";
 import { SynthesisService } from "../src/synthesis/SynthesisService";
 import { calculatorTemplate } from "../src/synthesis/templates";
@@ -183,41 +179,4 @@ test("acceptance remains Running until the terminal action finishes and Apply st
     await f.service.apply(started.id);
     assert.ok((await f.service.get(started.id)).appliedAt);
   } finally { releaseAction.resolve(); }
-});
-
-test("preview is one self-contained page that works behind the API's origin guard", { timeout: 15_000 }, async t => {
-  const f = await fixture(t, acceptanceFlow);
-  await f.seedCandidate();
-  const run = await f.service.wait((await f.start()).id);
-  assert.equal(run.status, "accepted", run.error);
-  const app = express();
-  // As in the app: the whole API sits behind the origin guard. A sandboxed frame's own requests
-  // would come cross-site and be refused, so the page must need none.
-  app.use(localApiOriginGuard);
-  app.use("/synthesis", createSynthesisRouter(() => f.service));
-  app.use((error: Error & { statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error.statusCode ?? 500).json({ message: error.message });
-  });
-  const server = http.createServer(app);
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  t.after(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
-  const origin = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
-  const preview = `${origin}/synthesis/runs/${run.id}/preview/`;
-  const response = await fetch(preview + "index.html", { headers: { "sec-fetch-site": "same-origin" } });
-  assert.equal(response.status, 200);
-  const page = await response.text();
-  assert.ok(page.includes(baselineFiles["calculator.js"]!.split("\n")[0]!), "the script is in the page");
-  assert.ok(page.includes(baselineFiles["style.css"]!.trim().split("\n")[0]!), "the styles are in the page");
-  assert.doesNotMatch(page, /<script[^>]+src=|<link[^>]+stylesheet/i, "nothing is loaded separately");
-  assert.match(page, /<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'/);
-  assert.ok(response.headers.get("content-type")?.startsWith("text/html"));
-  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  const csp = response.headers.get("content-security-policy")!;
-  assert.match(csp, /^sandbox allow-scripts;/);
-  assert.match(csp, /connect-src 'none';/);
-  assert.doesNotMatch(csp, /allow-same-origin|'unsafe-eval'|'self'[^;]*script|http:/);
-  assert.equal((await fetch(preview + "calculator.js")).status, 404, "a script is not served on its own");
-  assert.equal((await fetch(preview + "candidate.json")).status, 404);
-  assert.equal((await fetch(preview + "..%2FCalculator.lcspec")).status, 400);
 });

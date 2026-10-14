@@ -55,7 +55,7 @@ function createTransport({ target, runtime }) {
       };
       return { path: file.path, before: await side("before"), after: await side("after") };
     }));
-    return { files, canApply: diff.canApply };
+    return { files, canApply: diff.canApply, ...(typeof diff.root === "string" ? { root: diff.root } : {}) };
   };
 
   return {
