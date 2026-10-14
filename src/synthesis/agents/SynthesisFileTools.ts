@@ -10,12 +10,16 @@ import { searchFilter } from "../../tools/searchGlob";
 export { globMatches } from "../../tools/searchGlob";
 import { SynthesisError } from "../types";
 import { Checkouts, Holder } from "./Checkouts";
+import { AgentTerminal, TerminalHost } from "./Terminal";
 
 /** What an agent may touch, by project-relative patterns. `own`: of the write patterns, those whose
  * files belong to the agent that first creates or changes them. */
-export interface FilePermissions { read: string[]; write: string[]; delete: string[]; own?: string[] }
-/** The agents of one parallel_map: their checkouts and owned files, and which of them this one is. */
-export interface Team { checkouts: Checkouts; me: Holder }
+export interface FilePermissions { read: string[]; write: string[]; delete: string[]; own?: string[];
+  /** The commands its terminal may run (terminal(...)); none without one. */
+  terminal?: string[] }
+/** The agents of one parallel_map: their checkouts and owned files, which of them this one is, and
+ * where their terminals run. */
+export interface Team { checkouts: Checkouts; me: Holder; terminal?: TerminalHost }
 
 /** The run's copy of the files it may change: the files of the candidate and what the project holds. */
 export interface CandidateStore {
@@ -70,9 +74,10 @@ export class SynthesisFileTools extends OperationExecutor {
 
   async execute(input: OperationInput): Promise<{result?: ToolExecutionResult; pendingApproval?: PendingApproval}> {
     const action = parseAgentAction({tool: input.tool, arguments: input.arguments});
-    if (!action.tool.startsWith("file.")) throw new Error(`${action.tool} is not one of this agent's tools.`);
     const args = action.arguments;
     input.signal?.throwIfAborted();
+    if (action.tool === "terminal.run") return {result: await this.runCommand(String(args.command), (args.args as string[]) ?? [], String(args.cwd ?? "."), Number(args.timeoutSeconds ?? 60), input.signal)};
+    if (!action.tool.startsWith("file.")) throw new Error(`${action.tool} is not one of this agent's tools.`);
     if (action.tool === "file.checkout") return {result: await this.checkout((args.paths as string[]).map(item => this.path(item)), Number(args.waitSeconds ?? 0), input.signal)};
     if (action.tool === "file.submit" || action.tool === "file.revert") {
       const paths = (args.paths as string[] | undefined)?.map(item => this.path(item));
@@ -355,8 +360,34 @@ export class SynthesisFileTools extends OperationExecutor {
     this.team.checkouts.release(this.team.me.agent, keys ? this.team.checkouts.heldBy(this.team.me.agent).filter(key => keys.includes(key) || keys.includes(`${output}/${key}`)) : undefined);
     return this.result("revert", reverted.join(", ") || "-", reverted.length ? `Reverted ${reverted.join(", ")}; the files are released.` : "Nothing to revert; the files are released.");
   }
+  private shell?: AgentTerminal;
+  /** A command in the agent's sandboxed copy of what it may read. */
+  private async runCommand(command: string, args: string[], cwd: string, timeoutSeconds: number, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    if (!this.rights.terminal?.length || !this.team?.terminal) throw new Error("This agent has no terminal.");
+    this.shell ??= new AgentTerminal(this.team.terminal, {
+      root: this.candidates.root,
+      readable: limit => this.readable(limit),
+      content: file => this.content(file),
+      candidate: () => {
+        const output = this.candidates.outputPath;
+        const files: Record<string, string> = {}, removed: string[] = [];
+        if (output) {
+          for (const [relative, content] of Object.entries(this.candidates.files)) files[`${output}/${relative}`] = content;
+          for (const relative of this.candidates.removed) removed.push(`${output}/${relative}`);
+          for (const [relative, change] of this.pending) { if (change.content === null) { delete files[`${output}/${relative}`]; removed.push(`${output}/${relative}`); } else files[`${output}/${relative}`] = change.content; }
+        }
+        // Only what the agent may read reaches its copy.
+        for (const file of Object.keys(files)) if (!this.mayRead(file)) delete files[file];
+        return {files, removed: removed.filter(file => this.mayRead(file))};
+      }
+    }, `agent-${this.team.me.agent}`, this.rights.terminal);
+    const result = await this.shell.run(command, args, cwd === "." ? "" : this.path(cwd), timeoutSeconds, signal);
+    return {tool: "terminal", ok: result.exitCode === 0 && !result.timedOut, output: JSON.stringify(result),
+      metadata: {operation: "run", filePath: [command, ...args].join(" ").slice(0, 200), exitCode: result.exitCode}};
+  }
   /** At the end of the agent's task: a finished agent submits what it left pending, any other reverts it. */
   async finish(finished: boolean): Promise<string[]> {
+    await this.shell?.dispose();
     if (!this.team) return [];
     const left = [...this.pending.values()].map(change => change.target);
     if (finished) await this.submit(); else this.revert();
@@ -379,7 +410,7 @@ export class SynthesisFileTools extends OperationExecutor {
 export function agentTools(rights: FilePermissions): string[] {
   const changes = rights.write.length > 0 || rights.delete.length > 0;
   return [...rights.read.length ? ["file.list", "file.search", "file.read"] : [], ...rights.write.length ? ["file.write", "file.replace", "file.append", "file.mkdir"] : [],
-    ...rights.delete.length ? ["file.delete"] : [], ...changes ? ["file.checkout", "file.submit", "file.revert"] : []];
+    ...rights.delete.length ? ["file.delete"] : [], ...changes ? ["file.checkout", "file.submit", "file.revert"] : [], ...rights.terminal?.length ? ["terminal.run"] : []];
 }
 export function agentToolText(rights: FilePermissions): string {
   return [
@@ -389,6 +420,7 @@ export function agentToolText(rights: FilePermissions): string {
     rights.delete.length ? "file.delete {path,expectedVersion} deletes a file." : "",
     rights.write.length || rights.delete.length ? 'file.checkout {paths:["a.md","src/b.ts"],waitSeconds?:0} (wait up to 600 s for files another agent holds) takes files for your work, like a checkout in Perforce: the other agents read their last submitted version and change nothing of them until you file.submit {paths?} (your changes become visible) or file.revert {paths?} (they are dropped). Check out together every file your change depends on, including ones you only read. When you finish, what you left checked out is submitted.' : "",
     rights.write.length ? "Other agents work at the same time: when a write reports a version conflict, read the file again and redo your change; when a file is checked out by or belongs to another agent, work on other files." : "",
-    rights.own?.length ? `Files you create or change under ${rights.own.join(", ")} are yours: no other agent may change them.` : ""
+    rights.own?.length ? `Files you create or change under ${rights.own.join(", ")} are yours: no other agent may change them.` : "",
+    rights.terminal?.length ? `terminal.run {command:"${rights.terminal[0]}",args:["..."],cwd?:".",timeoutSeconds?:60} runs ${rights.terminal.join(", ")} in a sandbox: a copy of the files you may read with your current changes, no network, at most 120 s. What it writes stays in the copy; change files with the file tools. Run the tests or a build before you answer, and fix what fails.` : ""
   ].filter(Boolean).join("\n");
 }

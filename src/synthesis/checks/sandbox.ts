@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { SandboxProvider } from "./types";
@@ -59,9 +61,59 @@ export function darwinProfile(workDir: string, readable: string[]): string {
   ].join("\n");
 }
 
+/** Whether the sandbox isolates in fact, not only exists: a process inside it tries to read a file
+ * outside its folders, to write outside its work folder and to reach a port on this machine. Any
+ * success means no sandbox, and nothing runs (a deprecated sandbox-exec that stopped enforcing its
+ * profile, a bubblewrap that lost its namespaces). The probe's own run must succeed: a sandbox that
+ * runs nothing is no answer either. */
+export async function verifyIsolation(provider: Pick<SandboxProvider, "wrap">): Promise<string | undefined> {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-canary-"));
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-probe-"));
+  // Given to the sandbox to read only (as a tool's folder is): a write there tests the write rule alone.
+  const readOnly = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-readonly-"));
+  const secret = randomBytes(12).toString("hex");
+  const canary = path.join(outside, "canary.txt"), written = path.join(readOnly, "written.txt");
+  fs.writeFileSync(canary, secret);
+  let connections = 0;
+  const server = net.createServer(socket => { connections++; socket.destroy(); });
+  try {
+    const port = await new Promise<number>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve((server.address() as net.AddressInfo).port)); });
+    const script = 'cat "$1" 2>/dev/null; echo x > "$2" 2>/dev/null; if command -v nc >/dev/null 2>&1; then nc -z -w 2 127.0.0.1 "$3" >/dev/null 2>&1 && echo LC_REACHED; fi; echo LC_PROBE_RAN';
+    const wrapped = provider.wrap("/bin/sh", ["-c", script, "sh", canary, written, String(port)], work, [readOnly]);
+    const result = await new Promise<{ stdout: string; error?: string }>(resolve => execFile(wrapped.executable, wrapped.args, { cwd: work, env: wrapped.env, timeout: 20_000 },
+      (error, stdout, stderr) => resolve({ stdout: String(stdout), ...(error && !String(stdout).includes("LC_PROBE_RAN") ? { error: String(stderr).trim().split("\n")[0] || error.message } : {}) })));
+    if (result.error) return `the sandbox could not run a check (${result.error})`;
+    if (!result.stdout.includes("LC_PROBE_RAN")) return "the sandbox did not run its check";
+    if (result.stdout.includes(secret)) return "a sandboxed process read a file outside its folders";
+    if (fs.existsSync(written)) return "a sandboxed process wrote outside its work folder";
+    if (result.stdout.includes("LC_REACHED") || connections > 0) return "a sandboxed process reached the network";
+    return undefined;
+  } catch (error) {
+    return `the sandbox could not be checked (${error instanceof Error ? error.message : String(error)})`;
+  } finally {
+    server.close();
+    for (const dir of [outside, work, readOnly]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+/** Kept once a check passes: a failed one is asked again, in case it was fixed meanwhile. */
+const verified = new Map<string, Promise<string | undefined>>();
+const isolated = (name: string, provider: Pick<SandboxProvider, "wrap">): Promise<string | undefined> => {
+  let check = verified.get(name);
+  if (!check) {
+    check = verifyIsolation(provider);
+    verified.set(name, check);
+    void check.then(reason => { if (reason) verified.delete(name); });
+  }
+  return check;
+};
+
 const darwin: SandboxProvider = {
   name: "sandbox-exec",
-  unavailable: async () => fs.existsSync("/usr/bin/sandbox-exec") ? undefined : "Contract tests need /usr/bin/sandbox-exec, which this Mac does not have.",
+  unavailable: async () => {
+    if (!fs.existsSync("/usr/bin/sandbox-exec")) return "Contract tests need /usr/bin/sandbox-exec, which this Mac does not have.";
+    const reason = await isolated("sandbox-exec", darwin);
+    return reason ? `sandbox-exec does not isolate on this Mac: ${reason}. Nothing runs without a sandbox.` : undefined;
+  },
   wrap: (executable, args, workDir, readable) => ({
     executable: "/usr/bin/sandbox-exec",
     args: ["-p", darwinProfile(workDir, readable), executable, ...args],
@@ -116,8 +168,9 @@ const linux: SandboxProvider = {
   unavailable: async () => {
     const reason = await (bwrapProbe ??= probeBwrap());
     // Only success is kept: an administrator may install bubblewrap without restarting the server.
-    if (reason) bwrapProbe = undefined;
-    return reason;
+    if (reason) { bwrapProbe = undefined; return reason; }
+    const leak = await isolated("bubblewrap", linux);
+    return leak ? `bubblewrap does not isolate here: ${leak}. Nothing runs without a sandbox.` : undefined;
   },
   wrap: (executable, args, workDir, readable) => {
     if (nestedUsernsBlocked === undefined) throw new Error("bubblewrap has not been checked on this machine yet.");

@@ -561,3 +561,49 @@ test("an agent's steps read as actions and file text, and its requests may take 
   assert.ok(f.agentRequests.every(request => (request.timeoutMs ?? 0) >= 600_000), "a step may take ten minutes, whatever a chat's timeout is");
   assert.ok(f.advisory.every(request => (request.timeoutMs ?? 0) >= 600_000), "and so may split and synthesize");
 });
+
+const sandboxed = process.platform === "darwin" || process.platform === "linux";
+test("terminal: an agent runs node in a sandboxed copy of what it may read, with its own changes, and nothing leaves the copy", { skip: !sandboxed }, async (t) => {
+  const { platformSandbox } = await import("../src/synthesis/checks/sandbox");
+  if (await platformSandbox().unavailable()) { t.skip("no working sandbox here"); return; }
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-terminal-outside-"));
+  t.after(() => fs.rm(outside, {recursive: true, force: true}));
+  await fs.writeFile(path.join(outside, "secret.txt"), "the host's secret");
+  const node = (code: string, extra: Record<string, unknown> = {}) => tool("terminal.run", {command: "node", args: ["-e", code], ...extra});
+  const f = await fixture(t, {script: steps({ builder: [
+    tool("file.write", {path: "review/notes/mine.md", content: "my own change", expectedVersion: "missing"}),
+    node("const fs=require('fs');console.log(fs.readFileSync('src/alpha.ts','utf8').trim(), '|', fs.readFileSync('review/notes/mine.md','utf8'))"),
+    tool("terminal.run", {command: "cat", args: [path.join(outside, "secret.txt")]}),
+    node("console.log(require('fs').existsSync('Synthesis') || require('fs').existsSync('secret'))"),
+    node("require('fs').writeFileSync('src/made-in-the-copy.ts','x'); console.log('written')"),
+    node("setTimeout(() => {}, 20000)", {timeoutSeconds: 1}),
+    tool("terminal.run", {command: "curl", args: ["https://example.com"]}),
+    tool("terminal.run", {command: "git", args: ["push"]})
+  ]})});
+  const result = await f.run(`builder = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**", "review/**"), files.write("review/notes/**"), terminal(allow = ["node", "cat", "git"])], steps = 12);
+    results = await parallel_map(builder, ["builder"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const lines = (await f.service.agent(result.id, 0)).final!.split("\n");
+  assert.match(lines[1], /export const alpha = 1;.*\| my own change/, "the copy holds the project's files and the agent's own change");
+  assert.doesNotMatch(lines[2], /the host's secret/, "a file outside the copy is out of reach");
+  assert.match(lines[3], /false/, "no contract and no unreadable folder in the copy");
+  assert.match(lines[4], /written/);
+  assert.match(lines[5], /"timedOut":true/);
+  assert.match(lines[6], /curl is not one of this agent's commands/);
+  assert.match(lines[7], /git runs only to read/);
+  const diff = (await f.service.diff(result.id)).files.map(file => file.path);
+  assert.ok(!diff.some(file => file.includes("made-in-the-copy")), "what a command writes stays in its copy");
+  await assert.rejects(fs.access(path.join(f.root, "src", "made-in-the-copy.ts")), {code: "ENOENT"});
+});
+
+test("terminal: a run refuses agents with a terminal where no sandbox isolates, before any agent starts", async (t) => {
+  const f = await fixture(t, {script: writer});
+  const service = f.service as unknown as {services: {checks?: {sandbox: unknown}}};
+  service.services.checks = {sandbox: {name: "none", unavailable: async () => "this platform has no sandbox yet", wrap: () => { throw new Error("never"); }}};
+  const result = await f.run(`builder = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), terminal()]);
+    results = await parallel_map(builder, ["x"]);`);
+  assert.equal(result.status, "blocked");
+  assert.match(result.error!, /Agents with a terminal need a sandbox.*this platform has no sandbox yet/);
+  assert.equal(f.agentRequests.length, 0);
+  assert.ok(compileProgram(spec, flow(`t = terminal(allow = ["node"]);`).replace('policy = "agents-v1";', 'policy = "cloud-files-v1";')).diagnostics.some(item => item.code === "FLOW_POLICY_CAPABILITY"));
+});

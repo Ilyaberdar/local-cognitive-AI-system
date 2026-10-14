@@ -17,7 +17,8 @@ import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSour
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
 import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
 import { matchesGlob } from "./checks/architecture";
-import { AgentSpec, AgentSummary, CandidateStore, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult } from "./agents";
+import { AgentSpec, AgentSummary, CandidateStore, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
+import { platformSandbox } from "./checks/sandbox";
 import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
 
@@ -49,7 +50,7 @@ const MAX_CANDIDATE_FILES = 300;
 /** How much of the project a run keeps as its agents first read it. */
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 /** Calls that only make a value (rights, an agent's description): no activity events. */
-const QUIET_CALLS = new Set(["files.read", "files.write", "files.delete", "agent"]);
+const QUIET_CALLS = new Set(["files.read", "files.write", "files.delete", "terminal", "agent"]);
 const counts = (agents: AgentSummary[]): AgentCounts => {
   const total = {total: agents.length, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0};
   for (const agent of agents) total[agent.status]++;
@@ -507,6 +508,7 @@ export class SynthesisService {
           value = await role(model);
           break;
         }
+        case "terminal": value = terminalPermission(named.allow); permissions.add(value as object); break;
         case "files.read": case "files.write": case "files.delete": {
           value = permission(name.slice(6) as Permission["access"], args, named.own); permissions.add(value as object); break;
         }
@@ -518,7 +520,7 @@ export class SynthesisService {
           } else model = (await role(await resolveModel(String(named.provider), named.model))).model;
           const tools = named.tools ?? [];
           if (!Array.isArray(tools) || tools.some(item => !item || typeof item !== "object" || !permissions.has(item))) throw new SynthesisError("tools is a list of files.read(...), files.write(...) and files.delete(...).");
-          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[], own: [] as string[]};
+          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[], own: [] as string[], terminal: [] as string[]};
           for (const item of tools as Permission[]) { rights[item.access].push(...item.patterns); if (item.own) rights.own.push(...item.patterns); }
           const instructions = named.instructions ?? "";
           if (typeof instructions !== "string" || instructions.length > 6000) throw new SynthesisError("An agent's instructions are at most 6,000 characters.");
@@ -542,6 +544,12 @@ export class SynthesisService {
             if (!record.outputPath) throw new SynthesisError("Check out the candidate before giving agents write access: they write into it.");
             if (!pattern.startsWith(`${record.outputPath}/`)) throw new SynthesisError(`files.write("${pattern}") is outside the candidate folder ${record.outputPath}: agents write only there.`);
           }
+          // A terminal runs only in a sandbox that isolates: checked before any agent starts.
+          const sandbox = this.services.checks?.sandbox ?? platformSandbox();
+          if (agents.some(agent => agent.rights.terminal?.length)) {
+            const reason = await sandbox.unavailable();
+            if (reason) throw new SynthesisError(`Agents with a terminal need a sandbox, and this computer has none that works: ${reason}`);
+          }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
           // A provider that asks to slow down gets fewer requests at once; the run says so, at most every 30 s.
@@ -553,6 +561,9 @@ export class SynthesisService {
           const {results, summaries} = await runAgents({llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
             module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
             failFast: named.on_error === "fail", checkoutRequired: named.checkout === "required", signal,
+            // History is out of the copies when the contract has hidden tests: it could hold them.
+            terminal: {sandbox, workRoot: path.join(this.directory, "..", "agents", record.id, "terminal", `map-${call}`),
+              git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden)},
             admit: async spec => { await this.provider(record, spec.model.providerId); },
             update: current => { record.agentRuns = [...earlier, ...current]; record.agents = counts(record.agentRuns); saveSoon(); }});
           for (const summary of summaries) { record.usage.calls += summary.steps; record.usage.inputTokens += summary.inputTokens; record.usage.outputTokens += summary.outputTokens; }

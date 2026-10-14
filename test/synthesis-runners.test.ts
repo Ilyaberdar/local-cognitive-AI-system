@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { runContractTests, type TestRunRequest } from "../src/synthesis/checks/runners";
-import { bwrapArgs, darwinProfile, platformSandbox, sandboxEnv, unsandboxed } from "../src/synthesis/checks/sandbox";
+import { bwrapArgs, darwinProfile, platformSandbox, sandboxEnv, unsandboxed, verifyIsolation } from "../src/synthesis/checks/sandbox";
 import type { CheckFiles, CheckResult, SandboxProvider } from "../src/synthesis/checks/types";
 
 const sandbox = platformSandbox();
@@ -607,4 +607,18 @@ test("cancelling a run stops it and removes its folder", async () => {
     assert.ok(Date.now() - started < 10_000);
     assert.deepEqual(await fs.readdir(workRoot), []);
   } finally { await fs.rm(workRoot, { recursive: true, force: true }); }
+});
+
+
+test("the sandbox is trusted only after it shows it isolates: reading, writing and network leaks each mean no sandbox", { skip: !["darwin", "linux"].includes(process.platform) }, async (t) => {
+  assert.equal(await verifyIsolation(unsandboxed), "a sandboxed process read a file outside its folders");
+  const reason = await platformSandbox().unavailable();
+  if (process.platform === "linux") { if (reason) t.skip(reason); return; }
+  assert.equal(reason, undefined, "this Mac's sandbox-exec isolates");
+  // sandbox-exec with a profile that lost one of its rules, as a future macOS might enforce it.
+  const weakened = (drop: RegExp): Pick<SandboxProvider, "wrap"> => ({ wrap: (executable, args, workDir, readable) => ({
+    executable: "/usr/bin/sandbox-exec", args: ["-p", darwinProfile(workDir, readable).split("\n").filter(line => !drop.test(line)).join("\n"), executable, ...args], env: sandboxEnv(executable, workDir) }) });
+  assert.equal(await verifyIsolation(weakened(/deny network/)), "a sandboxed process reached the network");
+  assert.equal(await verifyIsolation(weakened(/deny file-write\*\)$/)), "a sandboxed process wrote outside its work folder");
+  assert.match(String(await verifyIsolation({ wrap: () => ({ executable: "/usr/bin/false", args: [], env: {} }) })), /did not run its check|could not run a check/, "a sandbox that runs nothing is no answer");
 });

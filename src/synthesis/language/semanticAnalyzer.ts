@@ -44,11 +44,12 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   "files.read": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
   "files.write": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]), named: { own: ["boolean"] } },
   "files.delete": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
+  terminal: { returns: "permission", required: 0, max: 0, named: { allow: ["array:string"] } },
   agent: { returns: "agent", required: 0, max: 1, parameters: [["model"]], named: { provider: ["string"], model: ["string"], tools: ["array:permission"], instructions: ["string"], steps: ["number"] } },
   parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"], checkout: ["string"] }, async: true }
 };
 /** What only agents-v1 may use. */
-const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "agent", "parallel_map"]);
+const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "terminal", "agent", "parallel_map"]);
 const AGENT_METHODS = new Set(["split", "synthesize"]);
 const METHODS: Record<string, FunctionDefinition> = {
   revise: { returns: "candidate", required: 2, max: 4, parameters: [["candidate"], ["frozenSpec"]], named: { file: ["string"], format: ["string"], instruction: ["string"] }, async: true },

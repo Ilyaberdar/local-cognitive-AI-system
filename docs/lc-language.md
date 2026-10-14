@@ -693,6 +693,7 @@ evaluate "contract-v1" {
 | --- | --- |
 | `files.read("src/**", ...)`, `files.write(...)`, `files.delete(...)` | Rights: 1–12 project-relative patterns (`*` within a folder, `**` across folders). Reading gives `file.list`, `file.search` and `file.read`; writing `file.write`, `file.replace` and `file.append`; deleting `file.delete`. |
 | `agent(provider = "deepseek", model = "deepseek-flash", tools = [...], instructions = "...", steps = 16)` | An agent: a description, not a process. `agent(role, tools = [...])` uses a loaded role instead (a local model with slots, for example). `steps` (1–60, 16 by default) bounds its turns. |
+| `terminal(allow = ["node", "npm"])` | A terminal: the agent runs these commands (of `node`, `npm`, `npx`, `python3`, `git`, `rg`, `ls`, `cat`; all of them without `allow`) in a sandbox, in a copy of the files it may read with its current changes. See [Agents' terminal](#agents-terminal). |
 | `files.write("notes/**", own = true)` | Writing, where each file belongs to the agent that first creates or changes it, for the rest of the `parallel_map`: the others read it and change nothing of it. |
 | `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect", checkout = "required")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. |
 | `await lead.split(goal, n [, context], paths = files.read(...), instruction = "...")` | A model splits a goal into `n` independent tasks; `paths` lists the files the agents can read (up to 400) for it. |
@@ -707,7 +708,7 @@ What agents may touch:
 - When two agents change one file, the second finds the version changed, reads it again and redoes its change.
 - An agent can check files out for its work, as in Perforce: `file.checkout {"paths": [...]}` takes them all or none, including files it only reads. Until it submits (`file.submit`), reverts (`file.revert`) or finishes, the others read the last submitted version (its changes stay its own) and change nothing of them. A finished agent's checkout is submitted, a failed one's dropped (listed as reverted on its row). With `checkout = "required"`, every change needs a checkout first.
 - Only an agent that holds nothing may wait for files (`waitSeconds`, up to 600): one that holds files is refused at once, so two agents never wait on each other.
-- No agent runs commands, uses plugins or MCP servers, or asks for approval: a refusal is final, and it is told why.
+- No agent uses plugins or MCP servers or asks for approval: a refusal is final, and it is told why. Only an agent given `terminal(...)` runs commands, and only in its sandbox.
 - A cloud agent sends what it reads to its provider: the project must allow cloud models.
 
 Local agents share one model through its slots: each slot answers one agent at a time, so give a model as many slots as agents should run at once (memory permitting; the load is refused with a reason when they do not fit).
@@ -723,6 +724,16 @@ results = await parallel_map(agents, tasks, concurrency = 6);
 ```
 
 Cloud agents are limited by their provider: when one answers that it is overloaded or rate-limited (HTTP 429), the run sends it fewer requests at once and repeats the refused one after a pause, without spending the agent's turn.
+
+### Agents' terminal
+
+With `terminal(...)` among its tools, an agent can build and test as it works: `terminal.run {"command": "node", "args": ["--test", "tests/a.test.ts"]}` and the like. It sees the real output and fixes what fails before it answers.
+
+- Commands run in the same sandbox as the contract's tests (`sandbox-exec` on macOS, bubblewrap on Linux): no network, nothing of the user's home folder, other temporary folders or the app's data, writes only in the agent's own copy.
+- The copy holds the files the agent may read, as the run read them, with the candidate's files as the agent sees them (its own changes included), refreshed before each command. The project's `node_modules` is linked read-only; its git history too, unless the contract has hidden tests (history could hold them). Contracts and their tests are never in it.
+- What a command writes stays in the copy: the candidate changes only through the file tools, so the gates and Apply see only those changes.
+- At most 120 s a command, output bounded. `git` only reads (log, show, diff, blame, status, grep…); `npm` runs `test`, `run` and `ls`.
+- Before a run gives agents a terminal, the sandbox shows it isolates: a process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. Any success, and the run stops with the reason (contract tests are Unknown for the same reason). Windows has no sandbox yet, so there a terminal is refused.
 
 The run shows its agents under **Agents**: how many are queued, running, done and failed, one row per task (model, steps, tokens, time, files, error), and each agent's steps. The run's token counts include every agent's.
 
@@ -821,7 +832,7 @@ The research syntax is broader than this implementation. The following are **not
 - Evaluation environment/workload selection and numeric optimization objectives such as `soft minimize Mean(...)`.
 - User-defined functions, custom runtime actions declared in DSL, or general object manipulation.
 - Executing model-proposed tests (only the engineer's tests run), or registering new trusted evaluators from a DSL file.
-- Agents running commands (a sandboxed terminal is planned), or writing outside the run's candidate.
+- Agents writing outside the run's candidate, or a terminal on Windows (no sandbox yet).
 - Model downloads, arbitrary tools, or host shell access.
 
 The parser preserves some research-style sections as source, but the compiler rejects unsupported semantics. **Parseable does not mean executable or verified.** An ability system core works today as plain C++ with a frozen header, tests and architecture gates ([example](../examples/synthesis-ability-system/README.md)); the formal sections and engine adapters do not.

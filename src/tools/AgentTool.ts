@@ -27,6 +27,7 @@ export const agentToolSchemas = {
   "file.checkout": z.object({ paths: z.array(filePath).min(1).max(24), waitSeconds: z.number().min(0).default(0) }).strict(),
   "file.submit": z.object({ paths: z.array(filePath).min(1).max(24).optional() }).strict(),
   "file.revert": z.object({ paths: z.array(filePath).min(1).max(24).optional() }).strict(),
+  "terminal.run": z.object({ command: z.string().min(1).max(20), args: z.array(z.string().max(4000)).max(64).default([]), cwd: filePath.default("."), timeoutSeconds: z.number().min(1).default(60) }).strict(),
   "command.run": z.object({ executable: z.string().trim().min(1).max(4096), args: z.array(z.string().max(32_000)).max(200), cwd: filePath.default("."), timeoutMs: z.number().int().min(1000).max(120_000).default(30_000) }).strict()
 };
 export type AgentToolName = keyof typeof agentToolSchemas;
@@ -45,7 +46,7 @@ export function parseAgentAction(value: unknown): AgentAction {
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.
 export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call", "mcp.search"].includes(tool);
 /** Tools only an agent that names them gets (a Synthesis agent's checkouts); never a chat's. */
-const NAMED_ONLY = new Set(["file.checkout", "file.submit", "file.revert"]);
+const NAMED_ONLY = new Set(["file.checkout", "file.submit", "file.revert", "terminal.run"]);
 export interface AgentToolOptions { plugins?: boolean; mcp?: boolean; pluginOnly?: boolean;
   /** Only these tools (a Synthesis agent's rights); undefined offers every tool the rest allows. */
   only?: string[]; }
@@ -61,6 +62,7 @@ export function agentFunctionTools(readOnly = false, options: AgentToolOptions =
         : action === "mcp.call" ? "Call a tool found by mcp.search. toolId must match exactly; argumentsJson must be a JSON object serialized as a string matching the returned schema. A call may wait for the user's approval (approvalRequired in search results) and is never retried automatically."
         : action === "plugins.search" ? "Find tools from enabled connected plugins by service name or task keywords. Returns exact tool IDs, account names, schemas and read/write status. Search first; never invent IDs or arguments."
         : action === "file.checkout" ? "Take files for your work, all of them or none, like a Perforce checkout: until you submit, revert or finish, the other agents read their last submitted version and change nothing of them. Include files your change depends on that you only read. waitSeconds (up to 600) waits for files another agent holds, when you hold none."
+        : action === "terminal.run" ? "Run a command in a sandbox: a copy of the files you may read, with your current changes, without network. What it writes stays in that copy; change files with the file tools. Use it to build, run tests and check your work before you answer."
         : action === "file.submit" ? "Make your changes to checked-out files visible to the other agents and release the files (all of them without paths)."
         : action === "file.revert" ? "Drop your changes to checked-out files and release them (all of them without paths)."
         : action === "plugins.call" ? "Call a tool found by plugins.search. toolId must match exactly; argumentsJson must be a JSON object serialized as a string matching the returned schema. External writes require approval. Never repeat a denied or unknown operation."

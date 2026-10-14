@@ -37,6 +37,8 @@ export interface PoolOptions {
   failFast: boolean;
   /** Every change needs a checkout first. */
   checkoutRequired?: boolean;
+  /** Where agents with a terminal run their commands. */
+  terminal?: import("./Terminal").TerminalHost;
   signal: AbortSignal;
   /** Checked before each agent starts: its provider may still be used. */
   admit(spec: AgentSpec): Promise<void>;
@@ -72,7 +74,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
     const spec = agents[index % agents.length], summary = summaries[index], task = tasks[index];
     const started = Date.now();
     summary.status = "running"; options.update(summaries);
-    const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights, { checkouts, me: { agent: index, task } });
+    const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights, { checkouts, me: { agent: index, task }, ...(options.terminal ? { terminal: options.terminal } : {}) });
     let finished = false;
     try {
       await options.admit(spec);

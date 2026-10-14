@@ -3,9 +3,10 @@ import { LLMResponse, ManagedModel, TokenUsage } from "../../types";
 import { filePattern } from "../language/semanticAnalyzer";
 import { SynthesisError } from "../types";
 import type { TaskResult } from "./AgentPool";
+import { TERMINAL_COMMANDS } from "./Terminal";
 
 type Llm = Pick<LLMService, "generateObject" | "generateText"> & Partial<Pick<LLMService, "getContextWindow">>;
-export interface Permission { kind: "permission"; access: "read" | "write" | "delete"; patterns: string[]; own?: boolean }
+export interface Permission { kind: "permission"; access: "read" | "write" | "delete" | "terminal"; patterns: string[]; own?: boolean }
 export const MAX_TASK_CHARS = 8000;
 
 /** files.read(...), files.write(...), files.delete(...): project-relative patterns. */
@@ -18,6 +19,14 @@ export function permission(access: Permission["access"], patterns: unknown[], ow
   return Object.freeze({ kind: "permission", access, patterns: Object.freeze([...patterns as string[]]) as string[], ...(own ? { own: true } : {}) });
 }
 
+/** terminal(allow = [...]): the commands an agent's sandboxed terminal may run; all of them without allow. */
+export function terminalPermission(allow?: unknown): Permission {
+  const commands = allow === undefined ? [...TERMINAL_COMMANDS] : allow;
+  if (!Array.isArray(commands) || !commands.length || commands.some(command => !(TERMINAL_COMMANDS as readonly unknown[]).includes(command))) {
+    throw new SynthesisError(`terminal(allow = [...]) names commands of ${TERMINAL_COMMANDS.join(", ")}.`);
+  }
+  return Object.freeze({ kind: "permission", access: "terminal", patterns: Object.freeze([...new Set(commands as string[])]) as string[] });
+}
 /** How many characters of prompt a model takes, leaving room for its answer (and its thinking). A cloud
  * model whose window is not known is taken to have the 128k tokens current ones have; a local one 8k. */
 function promptBudget(llm: Llm, model: ManagedModel): number {
