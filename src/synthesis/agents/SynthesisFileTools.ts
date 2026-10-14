@@ -43,6 +43,8 @@ export interface CandidateStore {
 
 const hash = (content: string) => createHash("sha256").update(content).digest("hex");
 const MAX_READ_BYTES = 5 * 1024 * 1024, MAX_RESULT_BYTES = 48_000;
+/** The longest an agent waits for files another one holds: a wait costs no turn, a retry does. */
+const MAX_WAIT_SECONDS = 600;
 const SKIPPED = new Set([".git", "node_modules", "dist", "build", "release", "coverage", "vendor", "target", "Binaries", "Intermediate", "DerivedDataCache"]);
 
 /** The literal folder a pattern starts with: "src/**" → "src", "**" → "". */
@@ -322,7 +324,7 @@ export class SynthesisFileTools extends OperationExecutor {
     }
     const keys = await Promise.all(targets.map(target => this.key(target)));
     const holding = this.team.checkouts.heldBy(this.team.me.agent).length > 0;
-    const blocking = await this.team.checkouts.acquire(this.team.me, keys, holding ? 0 : Math.min(120, Math.max(0, waitSeconds)) * 1000, signal);
+    const blocking = await this.team.checkouts.acquire(this.team.me, keys, holding ? 0 : Math.min(MAX_WAIT_SECONDS, Math.max(0, Math.floor(waitSeconds))) * 1000, signal);
     if (blocking.length) {
       throw new Error(`Nothing was checked out: ${blocking.map(holder => `agent ${holder.agent + 1} (its task: ${holder.task.slice(0, 100)})`).join(", ")} ${blocking.length === 1 ? "holds or owns" : "hold or own"} some of these files. ` +
         (holding ? "You hold other files, so you cannot wait: submit or revert yours first, or work on other files." : "Wait for them with waitSeconds, or work on other files."));
@@ -385,7 +387,7 @@ export function agentToolText(rights: FilePermissions): string {
     rights.read.length ? 'file.list {path:"."} lists a folder. file.search {path:".",query:"literal text",include?:["*.ts"]} finds lines (an empty query lists files). file.read {path,startLine?:1,endLine?} reads up to 200 lines and returns the file\'s version.' : "",
     rights.write.length ? 'file.write {path,content,expectedVersion} writes a whole file: for a NEW file expectedVersion is "missing", for an existing one the version file.read returned. file.replace {path,oldText,newText,expectedVersion} changes one unique range. file.append {path,content,expectedVersion} adds to the end.' : "",
     rights.delete.length ? "file.delete {path,expectedVersion} deletes a file." : "",
-    rights.write.length || rights.delete.length ? 'file.checkout {paths:["a.md","src/b.ts"],waitSeconds?:0} takes files for your work, like a checkout in Perforce: the other agents read their last submitted version and change nothing of them until you file.submit {paths?} (your changes become visible) or file.revert {paths?} (they are dropped). Check out together every file your change depends on, including ones you only read. When you finish, what you left checked out is submitted.' : "",
+    rights.write.length || rights.delete.length ? 'file.checkout {paths:["a.md","src/b.ts"],waitSeconds?:0} (wait up to 600 s for files another agent holds) takes files for your work, like a checkout in Perforce: the other agents read their last submitted version and change nothing of them until you file.submit {paths?} (your changes become visible) or file.revert {paths?} (they are dropped). Check out together every file your change depends on, including ones you only read. When you finish, what you left checked out is submitted.' : "",
     rights.write.length ? "Other agents work at the same time: when a write reports a version conflict, read the file again and redo your change; when a file is checked out by or belongs to another agent, work on other files." : "",
     rights.own?.length ? `Files you create or change under ${rights.own.join(", ")} are yours: no other agent may change them.` : ""
   ].filter(Boolean).join("\n");

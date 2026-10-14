@@ -1,0 +1,29 @@
+implement SharedFindings using "contract-v1" {
+    limit iterations 2, time 30m, steps 20000;
+    policy = "agents-v1";
+
+    spec = freeze(SharedFindings.spec);
+    candidate = checkout("review");
+
+    files_to_review = ["src/synthesis/paths.ts", "src/synthesis/preview.ts", "src/synthesis/modules.ts", "src/synthesis/Interpreter.ts", "src/synthesis/checks/grounded.ts", "src/synthesis/agents/Checkouts.ts"];
+    tasks = [];
+    for (file in files_to_review) {
+        tasks = append(tasks, "Review error handling in " + file + ". Then add your findings as a new section to the shared file review/FINDINGS.md.");
+    }
+
+    agents = [];
+    for (i in range(6)) {
+        agents = append(agents, agent(provider = "deepseek", model = "deepseek-flash",
+            tools = [files.read("src/**", "review/**"), files.write("review/FINDINGS.md")],
+            instructions = "Read the file of your task first. Then check out review/FINDINGS.md (wait for it with waitSeconds if another agent has it), read it, and write it back with everything already in it plus one new section of your own: a line '## <the file you reviewed>' and a Markdown list where each item starts with path:line. Then submit it. Never remove another agent's section.",
+            steps = 14));
+    }
+    results = await parallel_map(agents, tasks, concurrency = 6, checkout = "required");
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) {
+        return accept(candidate, evidence);
+    }
+    return needs_review(evidence);
+}

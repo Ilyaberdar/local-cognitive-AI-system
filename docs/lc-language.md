@@ -706,7 +706,7 @@ What agents may touch:
 - They write only into the run's candidate: inside the `checkout` folder, and only its declared files and areas. The project changes only on Apply, which writes every file at once (deletions included) after checking that none changed meanwhile.
 - When two agents change one file, the second finds the version changed, reads it again and redoes its change.
 - An agent can check files out for its work, as in Perforce: `file.checkout {"paths": [...]}` takes them all or none, including files it only reads. Until it submits (`file.submit`), reverts (`file.revert`) or finishes, the others read the last submitted version (its changes stay its own) and change nothing of them. A finished agent's checkout is submitted, a failed one's dropped (listed as reverted on its row). With `checkout = "required"`, every change needs a checkout first.
-- Only an agent that holds nothing may wait for files (`waitSeconds`, up to 120): one that holds files is refused at once, so two agents never wait on each other.
+- Only an agent that holds nothing may wait for files (`waitSeconds`, up to 600): one that holds files is refused at once, so two agents never wait on each other.
 - No agent runs commands, uses plugins or MCP servers, or asks for approval: a refusal is final, and it is told why.
 - A cloud agent sends what it reads to its provider: the project must allow cloud models.
 

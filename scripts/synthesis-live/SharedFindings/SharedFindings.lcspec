@@ -1,0 +1,13 @@
+module SharedFindings version "1" {
+    target { language = TypeScript; }
+    description = "One shared file of findings, FINDINGS.md, that agents reviewing src/synthesis add to at the same time: each agent adds one section headed with the file it reviewed, and none overwrites another's.";
+
+    artifacts {
+        file "FINDINGS.md";
+    }
+
+    evaluate "contract-v1" {
+        hard sections = Tests("tests/findings.test.ts", timeout = 30s);
+        hard grounded = Grounded("FINDINGS.md", min = 4);
+    }
+}
