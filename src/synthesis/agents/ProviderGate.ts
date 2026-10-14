@@ -1,6 +1,9 @@
 import type { LLMService } from "../../llm/LLMService";
 import { LLMRequest, LLMResponse } from "../../types";
 
+/** How long one request of an agent may take: a thinking model with a long transcript needs minutes,
+ * longer than a chat's default allows (a request extends its provider's timeout, never shortens it). */
+export const AGENT_REQUEST_TIMEOUT_MS = 600_000;
 /** A provider's answer that says to slow down: a rate limit or an overload, not a refusal of the request. */
 export const slowDown = (text: string | undefined): boolean => !!text && /\bHTTP (?:429|503|529)\b|rate.?limit|too many requests|overloaded/i.test(text);
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -69,10 +72,11 @@ export function gatedLlm(llm: LLMService, most: number, options: { retries?: num
   };
   return new Proxy(llm, {
     get(target, property, receiver) {
+      const longer = (request: LLMRequest): LLMRequest => ({ ...request, timeoutMs: Math.max(request.timeoutMs ?? 0, AGENT_REQUEST_TIMEOUT_MS) });
       if (property === "generateObject") return <T extends object>(request: LLMRequest, providerId?: string) =>
-        send(providerId, request, () => target.generateObject<T>(request, providerId), (result: { response: LLMResponse }) => result.response.error);
+        send(providerId, request, () => target.generateObject<T>(longer(request), providerId), (result: { response: LLMResponse }) => result.response.error);
       if (property === "generateText") return (request: LLMRequest, providerId?: string) =>
-        send(providerId, request, () => target.generateText(request, providerId), (result: LLMResponse) => result.error);
+        send(providerId, request, () => target.generateText(longer(request), providerId), (result: LLMResponse) => result.error);
       const value = Reflect.get(target, property, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     }

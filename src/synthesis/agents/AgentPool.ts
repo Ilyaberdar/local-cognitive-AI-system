@@ -81,7 +81,11 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
       const context: ExecutionContext = { actor: { sessionId: `synthesis:${options.runId}`, channel: "system" }, memory: [], conversation: [], providerId: target.providerId,
         activeTarget: target, sessionSettings: settings(target), pluginIds: [], signal: controller.signal, workspace,
         execution: { pluginIds: [], mcpServerIds: [], workspace, accessMode: "default", agentRunId: summary.loopId },
-        onProgress: event => { if (event.phase === "tool_result" || event.phase === "tool_error") options.update(summaries); } };
+        // Each request is a turn: counted as it starts, so the row moves while the agent works (the end sets the exact count).
+        onProgress: event => {
+          if (event.phase === "preparing") { summary.steps++; summary.durationMs = Date.now() - started; options.update(summaries); }
+          else if (event.phase === "tool_result" || event.phase === "tool_error") options.update(summaries);
+        } };
       const readOnly = !spec.rights.write.length && !spec.rights.delete.length;
       const runner = new AgentLoopRunner(options.llm, tools, options.baseDir,
         { maxSteps: spec.steps, advisorMaxSteps: spec.steps, maxTotalSteps: 0, maxActiveMs: 0, maxRepairs: 3 });
@@ -97,7 +101,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
         instructions: [`Module ${options.module.name}: ${options.module.description}`.slice(0, 4000), spec.instructions].filter(Boolean).join("\n\n") });
       // Bookkeeping only: a record that cannot be read leaves the step count at 0, not the agent failed.
       const saved = await runner.store.get(summary.loopId).catch(() => undefined);
-      summary.steps = saved?.steps ?? 0;
+      summary.steps = saved?.steps ?? summary.steps;
       summary.inputTokens = result.usage.inputTokens ?? 0; summary.outputTokens = result.usage.outputTokens ?? 0;
       summary.files = [...tools.touched].sort();
       finished = !result.error;

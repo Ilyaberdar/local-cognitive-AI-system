@@ -108,6 +108,31 @@ function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPat
 const activeStatus = (status: RunStatus) => status === "running" || status === "queued";
 const stamp = () => new Date().toISOString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** An agent's step as a person reads it: the action with its file, the result's text (a file's lines,
+ * not escaped JSON) and whether it was refused, at most 4,000 characters. */
+function readableTurn(turn: {type: "tool" | "result" | "format_error"; content: string}): {type: string; content: string; ok?: boolean} {
+  try {
+    if (turn.type === "tool") {
+      const action = JSON.parse(turn.content) as {tool: string; arguments?: Record<string, unknown>};
+      const args = action.arguments ?? {};
+      const target = typeof args.path === "string" ? args.path : Array.isArray(args.paths) ? args.paths.join(", ") : "";
+      // Lines only when the agent chose them: a whole read starts at 1 by default.
+      const detail = action.tool === "file.read" && (args.endLine || Number(args.startLine) > 1) ? ` · lines ${String(args.startLine ?? 1)}${args.endLine ? `–${String(args.endLine)}` : " on"}`
+        : action.tool === "file.search" ? ` · "${String(args.query ?? "")}"` : action.tool === "file.checkout" && args.waitSeconds ? ` · waits ${String(args.waitSeconds)} s` : "";
+      return {type: "tool", content: `${action.tool} ${target}${detail}`.trim()};
+    }
+    if (turn.type === "result") {
+      const result = JSON.parse(turn.content) as {ok?: boolean; output?: string};
+      let text = String(result.output ?? "");
+      try {
+        const data = JSON.parse(text) as Record<string, unknown>;
+        text = typeof data.content === "string" ? data.content : JSON.stringify(data, null, 1);
+      } catch { /* Plain text output. */ }
+      return {type: "result", ok: result.ok !== false, content: text.slice(0, 4000)};
+    }
+  } catch { /* Not the shape the loop writes: shown as it is. */ }
+  return {type: turn.type, content: turn.content.slice(0, 4000)};
+}
 /** Providers whose installed models the app lists itself (local runtimes); the rest are listed by the provider. */
 const MANAGED_PROVIDERS = new Set(["llamacpp", "lmstudio", "ollama"]);
 /** A provider's model as a run's model: it needs no loading and has no file size. */
@@ -819,7 +844,7 @@ export class SynthesisService {
     if (!Number.isInteger(index) || !summary) throw new SynthesisError("This run has no such agent.", 404);
     const loop = await new AgentRunStore(path.join(this.directory, "..", "agents", runId(record.id))).get(summary.loopId);
     return {...summary, final: loop?.final?.slice(0, 20_000), protocol: loop?.protocol,
-      turns: (loop?.turns ?? []).slice(-120).map(turn => ({type: turn.type, content: turn.content.slice(0, 4000)}))};
+      turns: (loop?.turns ?? []).slice(-120).map(readableTurn)};
   }
   async diff(id: string): Promise<{files: Array<{path: string; before: string | null; after: string | null}>; canApply: boolean}> {
     const record = await this.read(id);

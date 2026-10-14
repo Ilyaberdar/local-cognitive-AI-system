@@ -51,7 +51,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
     {detail && selected !== null ? <section className="synthesis-agent-detail" aria-label={`Agent ${selected + 1}`}>
       <header><strong>Agent {selected + 1}</strong><span>{detail.providerId}/{detail.model} · {statusText[detail.status]}{detail.protocol ? ` · ${detail.protocol} actions` : ""}</span></header>
       <p className="synthesis-agent-detail__task">{detail.task}</p>
-      <ol>{detail.turns.map((turn, index) => <li key={index} className={`synthesis-agent-turn is-${turn.type}`}><span>{turn.type === "tool" ? "Action" : turn.type === "result" ? "Result" : "Correction"}</span><pre>{turn.content}</pre></li>)}</ol>
+      <ol>{detail.turns.map((turn, index) => <li key={index} className={`synthesis-agent-turn is-${turn.type}${turn.ok === false ? " is-refused" : ""}`}><span>{turn.type === "tool" ? "Action" : turn.type === "result" ? turn.ok === false ? "Refused" : "Result" : "Correction"}</span><pre>{turn.content}</pre></li>)}</ol>
       {detail.final ? <div className="synthesis-agent-detail__final"><span>Answer</span><pre>{detail.final}</pre></div> : null}
     </section> : null}
   </div>;

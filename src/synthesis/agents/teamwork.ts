@@ -24,6 +24,8 @@ function promptBudget(llm: Llm, model: ManagedModel): number {
   const window = llm.getContextWindow?.(model.providerId, model.id) ?? (model.providerId === "llamacpp" ? 8192 : 128_000);
   return Number.isFinite(window) ? Math.max(6000, Math.min(300_000, Math.floor((window - Math.min(36_000, window / 3)) * 2.5))) : 60_000;
 }
+/** A split or a report may take a thinking model minutes: longer than a chat's default timeout. */
+const LONG_REQUEST_MS = 600_000;
 /** The answer's room: thinking models spend much of it reasoning before they write. */
 const OUTPUT_TOKENS = 32_000;
 
@@ -46,7 +48,7 @@ export async function splitGoal(llm: Llm, model: ManagedModel, request: { goal: 
     `Return JSON only: {"tasks": ["first task", "second task", ...]} with exactly ${count} strings.`
   ].filter(Boolean).join("\n\n");
   // Room for a thinking model's reasoning as well as the list itself.
-  const { data, response } = await llm.generateObject<{ tasks?: unknown }>({ usagePurpose: "synthesis", model: model.id, signal: request.signal, prompt, maxTokens: OUTPUT_TOKENS,
+  const { data, response } = await llm.generateObject<{ tasks?: unknown }>({ usagePurpose: "synthesis", model: model.id, signal: request.signal, prompt, maxTokens: OUTPUT_TOKENS, timeoutMs: LONG_REQUEST_MS,
     systemPrompt: "You plan work for parallel agents. Output only the JSON object.", localReasoningBudget: 0,
     responseFormat: { type: "json_schema", name: "tasks", strict: true, schema: { type: "object", properties: { tasks: { type: "array", items: { type: "string" } } }, required: ["tasks"], additionalProperties: false } } },
     model.providerId);
@@ -74,7 +76,7 @@ export async function synthesizeResults(llm: Llm, model: ManagedModel, request: 
   const budget = promptBudget(llm, model);
   const generate = async (systemPrompt: string, prompt: string, maxTokens: number) => {
     request.signal.throwIfAborted();
-    const response = await llm.generateText({ usagePurpose: "synthesis", model: model.id, signal: request.signal, systemPrompt, prompt, maxTokens, localReasoningBudget: 0 }, model.providerId);
+    const response = await llm.generateText({ usagePurpose: "synthesis", model: model.id, signal: request.signal, systemPrompt, prompt, maxTokens, localReasoningBudget: 0, timeoutMs: LONG_REQUEST_MS }, model.providerId);
     request.spent(response.usage);
     if (response.error) throw new SynthesisError(`${model.id}: ${response.error}`);
     return response.text.trim();

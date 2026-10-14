@@ -36,7 +36,7 @@ export interface AgentItem {
   index: number; call: number; task: string; providerId: string; model: string; status: "queued" | "running" | "done" | "failed" | "cancelled";
   steps: number; inputTokens: number; outputTokens: number; durationMs: number; files: string[]; error?: string;
 }
-export interface AgentDetail extends AgentItem { final?: string; protocol?: string; turns: { type: "tool" | "result" | "format_error"; content: string }[] }
+export interface AgentDetail extends AgentItem { final?: string; protocol?: string; turns: { type: "tool" | "result" | "format_error"; content: string; ok?: boolean }[] }
 export interface RunSources { specSource: string; flowSource: string; specHash: string }
 export interface SynthesisWorkspaceProps {
   projects: SynthesisProject[]; colorMode?: "dark" | "light"; active?: boolean;

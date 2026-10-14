@@ -548,3 +548,16 @@ test("checkout: an agent holding files never waits for others, so two agents can
   assert.match(left + right, /You hold other files, so you cannot wait/);
   assert.match(patient.split("\n")[0], /"checkedOut"/, "the agent holding nothing waited for x.md and got it");
 });
+
+test("an agent's steps read as actions and file text, and its requests may take the minutes a thinking model needs", async (t) => {
+  const f = await fixture(t, {script: steps({ reader: [tool("file.read", {path: "src/alpha.ts", startLine: 1, endLine: 2}), tool("file.read", {path: "secret/keys.txt"})] })});
+  const result = await f.run(`agents = [agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**")])];
+    results = await parallel_map(agents, ["reader"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const { turns } = await f.service.agent(result.id, 0);
+  assert.deepEqual(turns.slice(0, 4).map(turn => [turn.type, turn.content.split("\n")[0], turn.ok]), [
+    ["tool", "file.read src/alpha.ts · lines 1–2", undefined], ["result", "1: export const alpha = 1;", true],
+    ["tool", "file.read secret/keys.txt", undefined], ["result", "This agent may not read secret/keys.txt. It may read: src/**.", false]]);
+  assert.ok(f.agentRequests.every(request => (request.timeoutMs ?? 0) >= 600_000), "a step may take ten minutes, whatever a chat's timeout is");
+  assert.ok(f.advisory.every(request => (request.timeoutMs ?? 0) >= 600_000), "and so may split and synthesize");
+});

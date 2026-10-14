@@ -292,7 +292,8 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-agent-detail ol { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
 .synthesis-agent-turn, .synthesis-agent-detail__final { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
 .synthesis-agent-turn > span, .synthesis-agent-detail__final > span { color: var(--muted); }
-.synthesis-agent-turn.is-format_error > span { color: var(--danger); }
+.synthesis-agent-turn.is-format_error > span, .synthesis-agent-turn.is-refused > span { color: var(--danger); }
+.synthesis-agent-turn.is-tool pre { font-weight: 500; }
 .synthesis-agent-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; font-size: calc(11px * var(--font-scale, 1)); }
 @media (max-width: 720px) {
   .synthesis-agents__table { grid-template-columns: 30px minmax(80px, 1fr) 64px minmax(120px, 2fr); }
