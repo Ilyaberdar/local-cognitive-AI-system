@@ -51,10 +51,12 @@ test("a project is found by its id, its name or its folder, never by a guess", t
   const list = [project("11111111-1111-4111-8111-111111111111", "Review", path.join(temp, "a")), project("22222222-2222-4222-8222-222222222222", "Twin", "/srv/b"),
     project("33333333-3333-4333-8333-333333333333", "Twin", "/srv/c"), project("44444444-4444-4444-8444-444444444444", "review", "/srv/d")];
   assert.equal(findProject(list, "22222222-2222-4222-8222-222222222222").rootPath, "/srv/b");
-  assert.equal(findProject(list, "Review").id, list[0]!.id, "the exact name first");
   assert.equal(findProject(list, `${path.join(temp, "a")}/`).id, list[0]!.id, "a folder with a trailing slash");
-  assert.equal(findProject(list, path.join(temp, "link")).id, list[0]!.id, "a folder through a link");
-  assert.throws(() => findProject(list, "REVIEW"), (error: {code?: string}) => error.code === "ambiguous", "two names differ only in case");
+  // Names and folders come from computers: none is preferred to another that looks like it.
+  assert.throws(() => findProject(list, "Review"), (error: {code?: string}) => error.code === "ambiguous", "an exact name is not preferred to one in another case");
+  assert.throws(() => findProject(list, "REVIEW"), (error: {code?: string}) => error.code === "ambiguous");
+  assert.throws(() => findProject(list, path.join(temp, "link")), (error: Error & {code?: string}) => error.code === "ambiguous" && /leads to/.test(error.message), "a folder through a link");
+  assert.equal(findProject(list.slice(0, 3), "REVIEW").id, list[0]!.id, "a name in another case, when only one project has it");
   assert.throws(() => findProject(list, "Twin"), (error: Error & {code?: string}) => error.code === "ambiguous" && /\/srv\/b/.test(error.message) && /\/srv\/c/.test(error.message));
   assert.throws(() => findProject(list, "a"), (error: {code?: string}) => error.code === "project_unknown", "a relative path is a name, not a folder");
   assert.throws(() => findProject(list, "Nothing"), (error: {code?: string}) => error.code === "project_unknown");
@@ -107,7 +109,8 @@ test("the control socket checks the request; the CLI prints names safely and say
   assert.match(listed.stdout, /^allowed {5}Mallory�\]52;c;cm0gLXJmIC8=��\[2J {2}11111111-1111-4111-8111-111111111111 {2}\/srv\/Mallory/m);
   assert.equal(listed.stdout.includes("\u001b"), false, "a name from a computer never reaches the terminal as escape codes");
   const allowed = await run(process.execPath, [cli, "cloud-models", "allow", "My", "review", "--data-dir", root], {env});
-  assert.match(allowed.stdout, /^Cloud models allowed for Mallory.* \(11111111-1111-4111-8111-111111111111\)\. .*hidden tests stay on this server\.$/m);
+  assert.match(allowed.stdout, /^Cloud models allowed for Mallory.* \(11111111-1111-4111-8111-111111111111, \/srv\/Mallory.*, made from a computer\)\. .*hidden tests stay on this server\.$/m);
+  assert.equal(allowed.stdout.includes("\u001b"), false);
   assert.deepEqual(requests, [{}, {project: "My review", allowed: true}]);
   const json = await run(process.execPath, [cli, "cloud-models", "--json", "--data-dir", root], {env});
   assert.equal(JSON.parse(json.stdout).projects[0].id, view.id);

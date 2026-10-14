@@ -17,21 +17,22 @@ const view = (project: Project): CloudModelsProject => ({ id: project.id, name: 
 
 const realpath = (file: string) => { try { return fs.realpathSync(file); } catch { return undefined; } };
 
-/** The project an admin named: its id, its name (exactly, then ignoring case, when only one has
- * it) or its folder as an absolute path. Never a guess: a name two projects share is refused. */
+/** The project an admin named: its id, its name or its folder as an absolute path. A server's
+ * project names and folders are mostly chosen on computers, so they never steer the owner's choice:
+ * a name matches every project that has it in any letter case (one made to look like another is
+ * refused, never preferred), and a folder reached through a link is refused. */
 export function findProject(projects: Project[], query: string): Project {
   const byId = projects.find(project => project.id === query);
   if (byId) return byId;
-  const named = (match: (name: string) => boolean) => projects.filter(project => match(project.name));
-  let found = named(name => name === query);
-  if (!found.length) found = named(name => name.toLowerCase() === query.toLowerCase());
+  let found = projects.filter(project => project.name.toLowerCase() === query.toLowerCase());
   // A relative path would be read from / (the command runs there): only an absolute one is a folder.
   if (!found.length && path.isAbsolute(query)) {
     const target = path.resolve(query), real = realpath(target);
-    found = projects.filter(project => project.rootPath === target || (real !== undefined && project.rootPath === real));
+    if (real !== undefined && real !== target) throw new ControlError(`${printable(target)} leads to ${printable(real)}: name the project by its id or by its own folder.`, "ambiguous");
+    found = projects.filter(project => project.rootPath === target);
   }
   if (found.length === 1) return found[0]!;
-  if (found.length > 1) throw new ControlError(`${found.length} projects are called that. Name one by its id:\n${found.map(project => `  ${project.id}  ${printable(project.rootPath)}`).join("\n")}`, "ambiguous");
+  if (found.length > 1) throw new ControlError(`${found.length} projects have that name. Name one by its id:\n${found.map(project => `  ${project.id}  ${printable(project.name)}  ${printable(project.rootPath)}${project.origin === "device" ? "  (made from a computer)" : ""}`).join("\n")}`, "ambiguous");
   throw new ControlError("No project on this server has that id, name or folder. See: sudo local-cognitive-server cloud-models", "project_unknown");
 }
 

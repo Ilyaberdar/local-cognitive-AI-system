@@ -178,7 +178,8 @@ const devices = async (args: ServerArgs) => {
 const cloudModels = async (args: ServerArgs) => {
   const request = args.cloudModels!;
   const result = await remoteRequest(args, { op: "cloud-models", ...(request.action === "list" ? {} : { project: request.project, allowed: request.action === "allow" }) }) as unknown as CloudModelsResult;
-  const label = (project: CloudModelsProject) => `${printable(project.name)} (${project.id})`;
+  // What was changed, in full: the project's folder and who made it, so the owner sees it is the one meant.
+  const label = (project: CloudModelsProject) => `${printable(project.name)} (${project.id}, ${printable(project.rootPath)}, ${project.origin === "device" ? "made from a computer" : "set up on this server"})`;
   if (request.action !== "list") {
     const changed = result.changed;
     print(args, !changed ? "Changed." : changed.allowed

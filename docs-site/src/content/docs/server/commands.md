@@ -46,7 +46,7 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | `sudo local-cognitive-server cloud-models allow <project>` | Let the project's flows send its contract and files to the cloud providers they name; hidden tests stay on the server |
 | `sudo local-cognitive-server cloud-models deny <project>` | Back to the server's local models; a run in progress stops at its next cloud request |
 
-Name the project by its id, its name or its folder (an absolute path). A name two projects share is refused, with their ids to choose from. A connected computer shows the project's choice at the bottom of its Synthesis screen but can't change it. The console has the same command.
+Name the project by its id, its name or its folder (an absolute path). Its name and folder were usually chosen on a computer, so the command never guesses: a name two projects share, even in different letter case, is refused with their ids to choose from, and so is a folder reached through a link. After a change it prints the project's id, folder and where it was made. A connected computer shows the project's choice at the bottom of its Synthesis screen but can't change it. The console has the same command.
 
 ## GPUs and removal
 

@@ -178,7 +178,7 @@ test("init → start → status → MCP bridge → drain, with a second start re
   assert.deepEqual(JSON.parse(listed.stdout).projects.map((item: { id: string; allowed: boolean }) => [item.id, item.allowed]), [[project.id, false]]);
   const allowed = run("cloud-models", "allow", "My", "review", "--data-dir", root);
   assert.equal(allowed.status, 0, allowed.stderr);
-  assert.match(allowed.stdout, /^Cloud models allowed for My review \(/);
+  assert.match(allowed.stdout, /^Cloud models allowed for My review \([0-9a-f-]{36}, .*My review, set up on this server\)\./);
   assert.equal(await cloud(), true, "the running server sees it at once");
   const denied = run("cloud-models", "deny", fs.realpathSync(folder), "--data-dir", root);
   assert.equal(denied.status, 0, denied.stderr);
