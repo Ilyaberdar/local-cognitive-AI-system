@@ -506,6 +506,7 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     if (path === '/synthesis/runs/swarm/agents') return { counts: run.agents, items };
     if (path === '/synthesis/runs/swarm/agents/0') return { ...items[0], protocol: "json", final: "Wrote review/notes/a.md: src/a.ts:12", turns: [
       { type: "tool", content: '{"tool":"file.read","arguments":{"path":"src/a.ts"}}' }, { type: "result", content: "file.read: succeeded" }] };
+    if (path === '/synthesis/runs/swarm/agents/1') return { ...items[1], protocol: "json", turns: [{ type: "tool", content: '{"tool":"file.list","arguments":{}}' }] };
     if (path.endsWith('/diff')) return { canApply: true, files: [{ path: 'review/notes/old.md', before: 'stale', after: null }] };
     throw new Error(`Unexpected request ${path}`);
   });
@@ -516,10 +517,14 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     const doc = ui.dom.window.document;
     assert.match(doc.querySelector('.synthesis-agents__counts').textContent, /2 agents.*1 done.*1 failed/);
     const [first, second] = [...doc.querySelectorAll('.synthesis-agents__row')] as any[];
-    assert.match(first.textContent, /deepseek-flash.*Done.*12k \/ 900.*4\.2 s.*Review src\/a\.ts.*review\/notes\/a\.md/);
+    assert.match(first.textContent, /deepseek-flash.*Done.*Review src\/a\.ts.*3 steps · 12k \/ 900 · 4\.2 s.*review\/notes\/a\.md/);
     assert.match(second.textContent, /openai\/gpt-5-mini.*Failed.*step limit/);
+    // Beside the list: the first that failed, until one is chosen.
+    await until(() => /Agent 2/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'failed agent shown first');
+    assert.equal(second.getAttribute('aria-selected'), 'true');
     first.click();
-    await until(() => Boolean(doc.querySelector('.synthesis-agent-detail')), 'agent steps');
+    await until(() => /Agent 1/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'agent steps');
+    assert.equal(first.getAttribute('aria-selected'), 'true');
     assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /Agent 1.*deepseek\/deepseek-flash · Done · json actions.*Action.*file\.read.*Result.*Answer.*src\/a\.ts:12/s);
     ui.click('Changes');
     await until(() => Boolean(doc.querySelector('.synthesis-changes')), 'changes loaded');

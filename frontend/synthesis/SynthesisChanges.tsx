@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { encode, errorMessage } from "./api";
 import { DiffColumns } from "./SynthesisDiff";
 import { JsonView, MarkdownView, SourceLines, type Cited, type Citations } from "./fileViews";
@@ -32,8 +32,10 @@ export function SynthesisChanges({ diff, loading, gates, runId, request, remote 
   const [focus, setFocus] = useState<{ start?: number; end?: number } | undefined>();
   const [project, setProject] = useState<{ path: string; start?: number; end?: number; content?: string; error?: string } | null>(null);
   useEffect(() => { setSelected(""); setModes({}); setFocus(undefined); setProject(null); }, [runId]);
-  const file = files.find(item => item.path === selected) ?? files[0];
   const relative = (path: string) => root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+  // Until one is chosen: the file Grounded checked (the report), else the first Markdown, else the first.
+  const checkedFiles = new Set((gates ?? []).flatMap(gate => gate.grounded ? [gate.grounded.file] : []));
+  const file = files.find(item => item.path === selected) ?? files.find(item => checkedFiles.has(relative(item.path))) ?? files.find(item => kind(item.path) === "markdown") ?? files[0];
 
   // What Grounded found for each place each checked file cites, by the file's path as Changes shows it.
   const checked = useMemo(() => {
@@ -70,6 +72,11 @@ export function SynthesisChanges({ diff, loading, gates, runId, request, remote 
     }
   }), [file?.path, checked, files, root, remote, runId]);
 
+  const list = useRef<HTMLUListElement>(null);
+  const option = (path: string) => [...(list.current?.querySelectorAll<HTMLElement>("[data-path]") ?? [])].find(item => item.dataset.path === path);
+  // The chosen file stays in view in its list (also when a citation chose it).
+  useEffect(() => { if (file) option(file.path)?.scrollIntoView?.({ block: "nearest" }); }, [file?.path]);
+
   if (loading) return <div className="synthesis-empty">Loading candidate changes…</div>;
   if (!files.length || !file) return <div className="synthesis-empty">No candidate changes to display yet.</div>;
   const available = modesOf(file);
@@ -82,12 +89,12 @@ export function SynthesisChanges({ diff, loading, gates, runId, request, remote 
     const index = files.indexOf(file) + (event.key === "ArrowDown" ? 1 : -1);
     const next = files[Math.max(0, Math.min(files.length - 1, index))]!;
     choose(next.path);
-    (event.currentTarget.querySelector(`[data-path="${CSS.escape(next.path)}"]`) as HTMLElement | null)?.focus();
+    option(next.path)?.focus();
   };
   const broken = (path: string) => [...(checked.get(relative(path))?.values() ?? [])].filter(reference => reference.status !== "ok").length;
 
   return <div className="synthesis-changes">
-    <ul className="synthesis-changes__files" role="listbox" aria-label="Changed files" onKeyDown={move}>
+    <ul className="synthesis-changes__files" role="listbox" aria-label="Changed files" ref={list} onKeyDown={move}>
       {files.map(item => {
         const failing = broken(item.path);
         return <li key={item.path}><button type="button" role="option" data-path={item.path} aria-selected={item === file && !project} tabIndex={item === file ? 0 : -1} onClick={() => choose(item.path)}>
