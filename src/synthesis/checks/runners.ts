@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { removeInSandbox } from "../agents/Terminal";
 import { runCommand } from "../../utils/runCommand";
 import { LC_NODE_REPORTER, LC_PYTHON_RUNNER, LC_TEST_HPP } from "./support";
 import type { CheckCase, CheckFiles, CheckResult, SandboxProvider } from "./types";
@@ -345,12 +346,16 @@ export async function runContractTests(request: TestRunRequest): Promise<CheckRe
     if (request.signal?.aborted) throw error;
     return unknown(`The tests could not run: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    if (given) await remove(given);
+    // The code under test ran in this folder: emptied inside the sandbox, where a link it left leads
+    // a delete nowhere but the folder (the app never deletes it recursively itself).
+    if (given) { const folder = given; await removeInSandbox(request.sandbox, folder); await remove(folder, false); }
   }
 }
 
 /** Removes a run's folder, even one the code under test locked (chmod 000): only real folders are unlocked, never link targets. */
-async function remove(folder: string): Promise<void> {
+async function remove(folder: string, recursive = true): Promise<void> {
+  // What removeInSandbox could not empty stays: only an empty folder is removed here then.
+  if (!recursive) { await fs.rmdir(folder).catch(() => undefined); return; }
   if (await fs.rm(folder, { recursive: true, force: true }).then(() => true, () => false)) return;
   const unlock = async (dir: string): Promise<void> => {
     await fs.chmod(dir, 0o700).catch(() => {});

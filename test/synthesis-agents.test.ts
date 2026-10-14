@@ -633,6 +633,7 @@ test("terminal, security: links a command plants in its copy lead nowhere: the a
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
   const lines = (await f.service.agent(result.id, 0)).final!.split("\n");
   await assert.rejects(fs.access(path.join(outside, "notes", "escape.md")), {code: "ENOENT"}, "nothing was written through the planted link");
+  assert.equal(await fs.readFile(path.join(outside, "secret.txt"), "utf8"), "outside secret", "removing the copy deleted nothing through the links left in it");
   assert.doesNotMatch(lines.join("\n"), /outside secret/, "the swapped node_modules link opens nothing");
   assert.match(lines[2], /synced/, "a copy the command broke is made again, and the terminal goes on");
   assert.match(lines[4], /denied/);
@@ -640,4 +641,21 @@ test("terminal, security: links a command plants in its copy lead nowhere: the a
   assert.equal(toolchainPrefix(path.join(os.homedir(), "Documents")), false, "a folder of the user's is never a tool's prefix");
   assert.equal(toolchainPrefix(path.join(os.homedir(), ".nvm", "versions", "node", "v22.18.0")), true);
   assert.equal(toolchainPrefix("/opt/homebrew"), true);
+});
+
+test("a command that exits before reading its input, and one that leaves a process running, leave the app as it was", { skip: !sandboxed }, async () => {
+  const { runCommand } = await import("../src/utils/runCommand");
+  const early = await runCommand("/bin/sh", ["-c", "exit 3"], os.tmpdir(), 10_000, undefined, undefined, { input: "x".repeat(4 * 1024 * 1024) });
+  assert.equal(early.exitCode, 3, "a broken pipe is the command's answer, not the app's failure");
+  const { platformSandbox } = await import("../src/synthesis/checks/sandbox");
+  if (await platformSandbox().unavailable()) return;
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-orphan-"));
+  const wrapped = platformSandbox().wrap("/bin/sh", ["-c", '"$@"; status=$?; trap "" TERM; kill -TERM 0 2>/dev/null; exit $status', "sh", "/bin/sh", "-c", "sleep 300 & echo $!"], work, []);
+  const result = await runCommand(wrapped.executable, wrapped.args, work, 10_000, undefined, undefined, { env: wrapped.env });
+  const orphan = Number(result.stdout.trim().split("\n").pop());
+  await new Promise(resolve => setTimeout(resolve, 200));
+  let alive = true; try { process.kill(orphan, 0); } catch { alive = false; }
+  if (alive) process.kill(orphan, "SIGKILL");
+  assert.equal(alive, false, "what the command left running ended with it");
+  await fs.rm(work, { recursive: true, force: true });
 });

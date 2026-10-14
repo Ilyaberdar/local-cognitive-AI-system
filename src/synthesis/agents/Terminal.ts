@@ -61,6 +61,17 @@ function program(command: TerminalCommand): Promise<string | undefined> {
   }
   return answer;
 }
+/** Runs "$@", then ends whatever is left in its process group (all but itself), and exits with the command's status. */
+const ENDS_ITS_GROUP = '"$@"; status=$?; trap "" TERM; kill -TERM 0 2>/dev/null; exit $status';
+/** Empties a folder sandboxed code has used, inside the sandbox (links it left lead nowhere but the
+ * folder), then removes the empty folder; never a recursive delete by the app itself. */
+export async function removeInSandbox(sandbox: SandboxProvider, folder: string): Promise<void> {
+  try {
+    const wrapped = sandbox.wrap("/bin/sh", ["-c", 'trap "" TERM; kill -TERM 0 2>/dev/null; chmod -R u+rwx . 2>/dev/null; rm -rf -- ./* ./.[!.]* ./..?* 2>/dev/null; exit 0'], folder, []);
+    await runCommand(wrapped.executable, wrapped.args, folder, 30_000, undefined, undefined, { env: wrapped.env });
+  } catch { /* No sandbox to empty it with: the folder stays, under the app's own data. */ }
+  await fs.rmdir(folder).catch(() => undefined);
+}
 /** A toolchain's own prefix (Homebrew's, /usr/local, an nvm version), never a folder of the user's. */
 const underHome = (dir: string) => dir === os.homedir() || dir.startsWith(`${os.homedir()}${path.sep}`);
 const nvmDir = () => path.join(os.homedir(), ".nvm", "versions", "node");
@@ -109,17 +120,21 @@ export class AgentTerminal {
     // where they are a toolchain's (npm's own modules), never a folder of the user's; the project's
     // node_modules and git history, when the copy links them.
     const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...this.linked];
-    const wrapped = this.host.sandbox.wrap(executable, args, work, readable);
+    // The command runs under a shell that, once it ends, ends whatever it left running in its process
+    // group, from inside the sandbox while the group is still its own (never a group the app guesses).
+    const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", ENDS_ITS_GROUP, "sh", executable, ...args], work, readable);
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
-      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, killGroup: true });
+      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" } });
     const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
     return { exitCode: result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout)), stderr: clip(hide(result.stderr)) };
   }
 
-  /** Removes the agent's copy (the run's candidate keeps what the agent wrote with its file tools). */
+  /** Removes the agent's copy (the run's candidate keeps what the agent wrote with its file tools).
+   * Its contents are removed inside the sandbox, where a link a command left can lead a delete nowhere
+   * but the copy; the app then removes only the empty folder, never recursively. */
   async dispose(): Promise<void> {
     const copy = await this.copy?.catch(() => undefined);
-    if (copy) await fs.rm(copy, { recursive: true, force: true }).catch(() => undefined);
+    if (copy) await removeInSandbox(this.host.sandbox, copy);
   }
 
   /** The copy, made once: the files the agent may read as the run sees them (one version for all its
@@ -127,8 +142,9 @@ export class AgentTerminal {
   private prepare(): Promise<string> {
     this.copy ??= (async () => {
       const work = path.join(this.host.workRoot, this.generation ? `${this.name}-${this.generation}` : this.name);
-      await fs.rm(work, { recursive: true, force: true });
-      await fs.mkdir(work, { recursive: true });
+      await fs.mkdir(this.host.workRoot, { recursive: true });
+      // A new folder: one that exists already is never emptied by the app (a command may have left links in it).
+      await fs.mkdir(work);
       const files = await this.view.readable(MAX_COPY_FILES);
       const candidate = this.view.candidate();
       let copied = 0;
@@ -167,7 +183,7 @@ export class AgentTerminal {
       ...removed.filter(file => this.synced.get(file) !== null).map(file => [file, null] as [string, null])];
     for (const [file, content] of changes) {
       const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", content === null ? 'rm -f -- "$1"' : 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", file], work, []);
-      const result = await runCommand(wrapped.executable, wrapped.args, work, 20_000, undefined, undefined, { env: wrapped.env, killGroup: true, ...(content === null ? {} : { input: content }) });
+      const result = await runCommand(wrapped.executable, wrapped.args, work, 20_000, undefined, undefined, { env: wrapped.env, ...(content === null ? {} : { input: content }) });
       if (result.exitCode !== 0) throw new Error(`The terminal's copy could not take ${file}: ${result.stderr.trim().split("\n")[0] ?? "it refused"}.`);
       this.synced.set(file, content);
     }
