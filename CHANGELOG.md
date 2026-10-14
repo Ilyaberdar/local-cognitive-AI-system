@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+Synthesis with cloud models and agents in parallel: tens of agents on one task, with file rights set in the flow, checkouts as in Perforce, and a terminal in a sandbox.
+
+### Synthesis
+
+- **Cloud models in flows.** With `policy = "cloud-files-v1"`, a flow uses any provider from Settings → Models & Providers next to your local models, for example `model("deepseek-flash", provider = "deepseek")`. A project sends nothing to the cloud until you switch on **Cloud models** for it, on the computer that owns it; hidden tests never leave. The module lists what Run would refuse, and the run checks the key and the switch again before every call. The Models panel shows each model's provider and the run's tokens.
+- **Agents in parallel.** With `policy = "agents-v1"`, `agent(...)` makes an agent with file rights set by path (`files.read("src/**")`, `files.write("notes/**")`, `files.delete(...)`), and `parallel_map` runs up to 64 at once and 1,000 tasks a run. `split` has a model divide a goal into tasks, and `synthesize` writes one file from their results. Agents write only into the run: your project changes on **Apply verified patch**, which now also deletes the files the run deleted.
+- **Agents that don't overwrite each other.** `own = true` gives each file to the agent that first writes it. Checkouts, as in Perforce (`file.checkout`, `file.submit`, `file.revert`, and `checkout = "required"`), keep an agent's changes its own until it submits. An agent waits for a held file only while it holds nothing, so two agents never wait on each other. Every agent reads the same version of a project file for the whole run.
+- **A terminal for agents.** `terminal(allow = ["node", "npm"])` lets an agent build and run tests as it works, in a sandbox and in a copy of what it may read: no network, at most 120 s a command, and `git` only reads. Before anything runs in it, contract tests included, the sandbox shows it isolates.
+- **`Grounded`**, a gate that checks that every file and line a report cites exists. `synthesize(..., feedback = verdict.violations)` writes the report again until it holds.
+- **Local agents share a model** through slots: `models.load(selected, slots = 6, context = 16384)` answers six agents at once, and the memory check plans for every slot.
+- **The Agents tab** lists a run's agents with their model, steps, tokens, time and files, and shows each agent's steps. **Changes** marks deleted files.
+- **New module → Repository review (parallel agents):** four agents on one local model review `src/`, and the report is accepted when every file and line it cites exists.
+- **Providers that limit requests:** when one answers 429, the run sends it fewer requests at once and repeats the refused one after the pause it asks for, without spending agents' turns. An agent's request may take up to 10 minutes.
+- **The flow language** has lists and `for (item in list)`, `range(n)`, `list[i]`, `append(list, item)`, and `limit steps N` for long loops.
+
+### Remote
+
+- A paired computer sees the agents of a run on the server, and each agent's steps.
+
+### Known limits
+
+- Windows has no sandbox yet: agents there can't use a terminal, and contract tests don't run.
+- On a paired server, Synthesis uses the server's local models only: the server has no **Cloud models** switch yet.
+- A flow's `cost` limit is recorded, not enforced: watch your spending in the provider's dashboard.
+- Agents on an added provider choose actions in JSON, and some models don't keep to it, such as Perplexity's presets and `openai/gpt-5.4-nano`.
+
+### Docs
+
+- The Synthesis, Synthesis language, Models, Remote and Troubleshooting pages cover cloud models, agents, slots and the terminal.
+
 ## 0.1.5 — 2026-10-12
 
 Answers you can watch being written, and GPU servers that keep their CUDA runtime.

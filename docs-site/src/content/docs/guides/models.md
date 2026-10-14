@@ -30,7 +30,7 @@ Downloads can be paused and resumed and are checked by SHA-256. Models split int
 - **Import GGUF** adds a model you already have, with all its parts.
 - **Add vision adapter** attaches an `mmproj` file you downloaded yourself.
 
-Installed models are also available to agents and workflow steps; a model that isn't loaded loads when a request needs it.
+Installed models are also available to agents, workflow steps and Synthesis flows; a model that isn't loaded loads when a request needs it.
 
 ## Acceleration
 
@@ -54,6 +54,16 @@ Each loaded model runs in its own process. Loading a model never unloads another
 If nothing fits, the error says what would help: unloading models, a smaller context or a smaller quantization.
 
 The gear in Models opens the model settings: context size, GPU layers, memory warnings, load and response timeouts, generation settings and GPUs. Saving reconfigures the runtime and unloads the loaded models; they use the new values when they load again. **Settings → Local Runtime** has the same settings and the folder where models are stored.
+
+## Slots for parallel agents
+
+A loaded model answers one request at a time. Synthesis agents running in parallel can share it through **slots**: in a flow, `models.load(selected, slots = 6, context = 16384)` loads the model to answer six requests at once, each with its own 16,384-token context.
+
+- **Memory** is the model's weights once, plus one context for each slot. The memory check plans for all of them, and if they don't fit, the load is refused with the reason: choose fewer slots, a smaller context or a smaller quantization.
+- **Up to 16 slots,** each with at least 512 tokens and all of them together at most 262,144. A loaded model keeps its slots: a flow that asks for no more than it has uses it as it is, and one that asks for more loads it again once the requests in progress finish.
+- **Stopping one agent** frees only its own slot; the others keep working.
+
+*Checked live: six agents on one Qwen3.5 4B (a 2.3 GB file) with six slots finished their reviews together in 78 s on an M4 Pro Mac.* See [Synthesis](/guides/synthesis/#agents-in-parallel).
 
 ## File formats
 

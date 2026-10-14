@@ -415,9 +415,9 @@ The policy says what the run may use:
 | `cloud-files-v1` | Local models and any provider set up in **Settings → Models & Providers** (OpenAI, Claude, Gemini, Qwen, DeepSeek, OpenRouter, Groq, Perplexity, LM Studio, Ollama…). | — |
 | `agents-v1` | As `cloud-files-v1`. | Agents with file tools, run in parallel: see [Agents](#agents). |
 
-Every policy confines project reads and writes only declared candidate artifacts until Apply. None grants shell commands, downloads, network tools, or arbitrary filesystem access.
+Every policy confines project reads and writes only declared candidate artifacts until Apply. None grants downloads, network tools, arbitrary filesystem access or commands on the computer itself: under `agents-v1`, an agent given `terminal(...)` runs a few programs in a sandbox, in a copy of what it may read.
 
-A cloud model receives the contract's description, frozen files, visible tests, the candidate's files and whatever `inspect(...)` read. Hidden tests never leave the computer. So a flow names each provider as a string (`provider = "deepseek"`, never a variable), and a cloud provider runs only in a project that allows cloud models: **Allow cloud models** on the project, which only the computer that owns the project can set (a paired device sees it but cannot change it). The module lists what Run would refuse: `SYNTHESIS_PROVIDER` for a provider that is not set up here or has no key, `SYNTHESIS_CLOUD_CONSENT` for a cloud provider in a project that does not allow it.
+A cloud model receives the contract's description, frozen files, visible tests, the candidate's files and whatever `inspect(...)` read. Hidden tests never leave the computer. So a flow names each provider as a string (`provider = "deepseek"`, never a variable), and a cloud provider runs only in a project that allows cloud models: the **Cloud models** switch at the bottom of the Synthesis workspace, which only the computer that owns the project can set (a paired device cannot, and a server has no switch for it yet, so Synthesis on a server uses its local models). The module lists what Run would refuse: `SYNTHESIS_PROVIDER` for a provider that is not set up here or has no key, `SYNTHESIS_CLOUD_CONSENT` for a cloud provider in a project that does not allow it.
 
 ### Variables and control flow
 
@@ -455,7 +455,7 @@ developer = await models.load(selected);
 
 `await` is required for `models.list`, `models.load`, `evaluate`, and every model role method. `model("exact-name")` also loads a model, but its current compiler signature allows omission of `await`; using `await model(...)` is valid and clearer.
 
-Statements execute in order. `await` is not a facility for spawning background agents, and V1 has no authored parallel blocks. Call model methods through a variable such as `developer.revise(...)`, not a chained expression such as `models.load(selected).revise(...)`.
+Statements execute in order: `await` starts nothing in the background, and there are no parallel blocks. Work runs in parallel only in `parallel_map`, which runs agents (see [Agents](#agents)). Call model methods through a variable such as `developer.revise(...)`, not a chained expression such as `models.load(selected).revise(...)`.
 
 ### Exposed fields
 
@@ -574,7 +574,7 @@ Revisions replace the whole selected file in the candidate; they are not patches
 
 When `instruction` is supplied and nonempty, it replaces the full description and peer-file excerpts in that generation prompt. The model still receives the current file and bounded feedback. Include the relevant interface and integration requirements in the focused instruction. Trusted evaluation still uses the whole contract's registered gates.
 
-V1 uses bounded prompts and responses; it is not a general coding agent with shell or repository tools. Generation settings such as token limit and temperature are currently runtime-controlled, not DSL arguments.
+`revise` uses bounded prompts and responses: one request per file, with no tools. For models that read, search and change files themselves, see [Agents](#agents). Generation settings such as token limit and temperature are currently runtime-controlled, not DSL arguments.
 
 ### Advisory methods
 
@@ -637,11 +637,13 @@ implement Calculator using "calculator-v1" {
 }
 ```
 
-Replace `inspect([])` with specific project files if context is needed. Use a loaded role variable for each model; there is no per-role configuration block or parallel agent execution syntax yet.
+Replace `inspect([])` with specific project files if context is needed. Use a loaded role variable for each model; there is no per-role configuration block. To run many models at once, see [Agents](#agents).
 
 ## Agents
 
-With `policy = "agents-v1"` a flow makes agents and runs them in parallel. An agent is a model with file rights; it works in its own loop of tool calls (read, search, write) until it returns an answer. Rights are set in the flow by path patterns relative to the project:
+With `policy = "agents-v1"` a flow makes agents and runs them in parallel. An agent is a model with file rights; it works in its own loop of tool calls (read, search, write) until it returns an answer. Rights are set in the flow by path patterns relative to the project. To start from a working module, choose **New module → Repository review (parallel agents)**: four agents on one local model review `src/`, and a lead writes the report.
+
+Twenty cloud agents review a folder, each leaving a note, and a lead writes a report that must cite real code:
 
 ```lcflow
 implement RepoReview using "contract-v1" {
@@ -701,10 +703,13 @@ evaluate "contract-v1" {
 
 Each result has `.ok`, `.output` (the agent's answer, at most 8,000 characters), `.error`, `.task`, `.files` (what it wrote) and `.index`; the list has `.completed` and `.failed`. With `on_error = "collect"` (the default) a failed agent is a result with `ok == false`; with `"fail"` the first failure stops the others and the run ends Blocked.
 
+A run starts at most 1,000 agent tasks in all, and its candidate holds at most 300 files.
+
 What agents may touch:
 
 - They read only what their rights name, and never a contract or its tests (any `Synthesis` folder and the module's own folder), whatever the patterns say.
 - They write only into the run's candidate: inside the `checkout` folder, and only its declared files and areas. The project changes only on Apply, which writes every file at once (deletions included) after checking that none changed meanwhile.
+- Every agent reads a project file as the run first read it (up to 256 MB a run), so an edit to the project during the run never gives two agents different versions; `Grounded` checks against the same.
 - When two agents change one file, the second finds the version changed, reads it again and redoes its change.
 - An agent can check files out for its work, as in Perforce: `file.checkout {"paths": [...]}` takes them all or none, including files it only reads. Until it submits (`file.submit`), reverts (`file.revert`) or finishes, the others read the last submitted version (its changes stay its own) and change nothing of them. A finished agent's checkout is submitted, a failed one's dropped (listed as reverted on its row). With `checkout = "required"`, every change needs a checkout first.
 - Only an agent that holds nothing may wait for files (`waitSeconds`, up to 600): one that holds files is refused at once, so two agents never wait on each other.
@@ -723,7 +728,7 @@ for (i in range(6)) {
 results = await parallel_map(agents, tasks, concurrency = 6);
 ```
 
-Cloud agents are limited by their provider: when one answers that it is overloaded or rate-limited (HTTP 429), the run sends it fewer requests at once and repeats the refused one after a pause, without spending the agent's turn.
+Cloud agents are limited by their provider: when one answers that it is overloaded or rate-limited (HTTP 429), the run sends it fewer requests at once and repeats the refused one after a pause, without spending the agent's turn. An agent's request, and `split` and `synthesize`, may take up to 10 minutes, so a slow model's long answer is not cut off (a chat gives an added provider 60 s).
 
 ### Agents' terminal
 
@@ -732,7 +737,7 @@ With `terminal(...)` among its tools, an agent can build and test as it works: `
 - Commands run in the same sandbox as the contract's tests (`sandbox-exec` on macOS, bubblewrap on Linux): no network, nothing of the user's home folder, other temporary folders or the app's data, writes only in the agent's own copy.
 - The copy holds the files the agent may read, as the run read them, with the candidate's files as the agent sees them (its own changes included), refreshed before each command. The project's `node_modules` is linked read-only; its git history too, unless the contract has hidden tests (history could hold them). Contracts and their tests are never in it.
 - What a command writes stays in the copy: the candidate changes only through the file tools, so the gates and Apply see only those changes.
-- At most 120 s a command, output bounded. `git` only reads (log, show, diff, blame, status, grep…); `npm` runs `test`, `run` and `ls`.
+- At most 120 s a command, and 240 s of CPU time for each of its processes; output bounded. Whatever a command leaves running is killed when it ends. `git` only reads (log, show, diff, blame, status, grep…); `npm` runs `test`, `run` and `ls`.
 - Before a run gives agents a terminal, the sandbox shows it isolates: a process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. Any success, and the run stops with the reason (contract tests are Unknown for the same reason). Windows has no sandbox yet, so there a terminal is refused.
 
 The run shows its agents under **Agents**: how many are queued, running, done and failed, one row per task (model, steps, tokens, time, files, error), and each agent's steps. The run's token counts include every agent's.
@@ -808,7 +813,7 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `FLOW_POLICY` | Declare `policy = "local-files-v1";` (or `"cloud-files-v1"`, `"agents-v1"`) exactly once at the top level. |
 | `FLOW_POLICY_PROVIDER` | A provider other than `llamacpp` needs `policy = "cloud-files-v1"` or `"agents-v1"`. |
 | `FLOW_PROVIDER_LITERAL` | Write the provider as a string: `provider = "openai"`. |
-| `SYNTHESIS_PROVIDER` / `SYNTHESIS_CLOUD_CONSENT` | Set the provider up (and its key) in Settings → Models & Providers; allow cloud models for the project. |
+| `SYNTHESIS_PROVIDER` / `SYNTHESIS_CLOUD_CONSENT` | Set the provider up (and its key) in Settings → Models & Providers; switch on **Cloud models** for the project. |
 | `FLOW_ACCEPT_GUARD` | Put `return accept(...)` inside `if (verdict.status == Pass)` after `verify`. |
 | `FLOW_TERMINAL_RETURN` | Return terminal actions directly; do not assign or invoke them as standalone statements. |
 | `FLOW_UNKNOWN_CALL` | Use registered calls only. There is no `unreal.build`, `analyze`, `shell`, or `getAllModels` intrinsic. Use `models.list`. |

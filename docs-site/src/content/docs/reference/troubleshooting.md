@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Common problems with models, GPUs, Remote and updates, and how to fix them.
+description: Common problems with models, GPUs, Remote, Synthesis and updates, and how to fix them.
 ---
 
 ## Models
@@ -41,6 +41,35 @@ description: Common problems with models, GPUs, Remote and updates, and how to f
 
 **The connection key doesn't work**
 : Keys expire after 10 minutes and work once. Run `pair` again. Check that you're signed in to the account that owns the server.
+
+## Synthesis
+
+**"No provider X is set up here" or "X has no key or is turned off"**
+: The flow names a provider this computer doesn't have ready. Add it, or enter its key and turn it on, in **Settings → Models & Providers**, then **Refresh** the module.
+
+**"This project does not allow cloud models"**
+: Switch on **Cloud models** at the bottom of the Synthesis workspace, on the computer that owns the project. On a paired server there is no such switch yet: use the server's local models.
+
+**"sandbox-exec does not isolate on this Mac" or "bubblewrap does not isolate here"**
+: Before running tests or an agent's terminal, the app checks that its sandbox really isolates: a process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. One of these succeeded, so nothing runs: tests are Unknown, and a terminal is refused. On Linux, run `sudo local-cognitive-server sandbox` on a server, or check that bubblewrap is installed and user namespaces are allowed. On a Mac, [report it](#reporting-a-problem) with the message.
+
+**"Agents with a terminal need a sandbox, and this computer has none that works"**
+: The run stops before any agent starts, and the rest of the message says why. On Windows, which has no sandbox yet, agents can't run commands: remove `terminal(...)` from their tools, or run the flow on a Mac or a Linux server. On Linux, install bubblewrap (on a server, `sudo local-cognitive-server sandbox`).
+
+**A terminal command is refused**
+: The message says why: the command isn't in the agent's `terminal(allow = [...])`; `git` only reads history; `npm` only runs `test`, `run` and `ls`; a contract with hidden tests leaves the git history out of the copy; or the files the agent may read are over 512 MB, so narrow its `files.read` patterns.
+
+**An agent fails with a timeout**
+: A request to its model took longer than 10 minutes, the most an agent's request may take. Some models hosted by Perplexity (Kimi, GLM) are this slow on big tasks: give agents smaller tasks or a faster model.
+
+**An agent fails because its model doesn't answer with an action**
+: Agents on an added provider choose each action in JSON, and some models don't keep to it: in our tests, Perplexity's presets (`fast` to `xhigh`) and `openai/gpt-5.4-nano` through Perplexity. Name a hosted model such as `openai/gpt-5-mini` or `anthropic/claude-haiku-4-5`, or use DeepSeek.
+
+**Agents slow down, or the provider answers 429**
+: The provider limits how many requests it takes. The run sends it fewer at once and repeats a refused request after the pause the provider asks for, without spending the agent's turns. If it stays slow, lower `concurrency` in `parallel_map`.
+
+**A report fails `Grounded`**
+: The report cites a file or line that doesn't exist. Feed the failures back with `synthesize(..., feedback = verdict.violations)` in a loop (the **Repository review** template does), and allow enough `iterations` for it.
 
 ## Updates
 

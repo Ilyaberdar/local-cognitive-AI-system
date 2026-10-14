@@ -36,7 +36,7 @@ A computer of the owner's account can use almost everything on the server:
 
 - chats, including subagents, debates and attachments;
 - models: download, load, unload, delete, settings, GPUs and Rebalance;
-- tasks, schedules, workflows and Synthesis;
+- tasks, schedules, workflows and Synthesis, with each run's agents and their steps;
 - projects in the server's shared folders;
 - the server's settings: provider keys can be replaced but never read back;
 - usage and error-report settings.
@@ -47,9 +47,12 @@ Some things can only be set up on the server itself, because they reach its whol
 
 - full file access, and anything set up on the server with it;
 - folders and projects chosen on the server;
-- the server's MCP servers and plugins.
+- the server's MCP servers and plugins;
+- a Synthesis project's **Cloud models** switch, which decides whether the project's files may go to a cloud provider.
 
 From a computer you can delete, cancel or pause such work, but not start, continue or edit it.
+
+The server has no **Cloud models** switch of its own yet, so Synthesis on a server uses the server's local models, its agents included. Agents, their terminal and contract tests run on the server, in its bubblewrap sandbox, and work only in the project's folder there.
 
 ## When the app is closed
 
