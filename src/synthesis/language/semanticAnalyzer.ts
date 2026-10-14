@@ -42,10 +42,10 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   append: { returns: "array", required: 2, max: 2, parameters: [["array"]] },
   // agents-v1: agents with file rights, run in parallel.
   "files.read": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
-  "files.write": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
+  "files.write": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]), named: { own: ["boolean"] } },
   "files.delete": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
   agent: { returns: "agent", required: 0, max: 1, parameters: [["model"]], named: { provider: ["string"], model: ["string"], tools: ["array:permission"], instructions: ["string"], steps: ["number"] } },
-  parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"] }, async: true }
+  parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"], checkout: ["string"] }, async: true }
 };
 /** What only agents-v1 may use. */
 const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "agent", "parallel_map"]);
@@ -316,6 +316,8 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
     if (name === "parallel_map") {
       const onError = call.args.find((arg) => arg.name === "on_error")?.value;
       if (onError && !(onError.kind === "literal" && (onError.value === "collect" || onError.value === "fail"))) error("FLOW_TYPE", "on_error is \"collect\" (every task runs; failures are results) or \"fail\" (the first failure stops the others).", onError.span);
+      const checkout = call.args.find((arg) => arg.name === "checkout")?.value;
+      if (checkout && !(checkout.kind === "literal" && (checkout.value === "optional" || checkout.value === "required"))) error("FLOW_TYPE", "checkout is \"optional\" (agents may check files out) or \"required\" (every change needs a checkout first, as in Perforce).", checkout.span);
     }
     if (signature?.async && !awaited) error("FLOW_AWAIT_REQUIRED", `Action '${name}' requires await.`, call.span);
     if (["accept", "needs_review", "unresolved"].includes(name ?? "") && !terminalReturn) error("FLOW_TERMINAL_RETURN", `Terminal action '${name}' must be the direct expression of a return statement.`, call.span);

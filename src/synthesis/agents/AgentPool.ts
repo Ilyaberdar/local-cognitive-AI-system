@@ -3,6 +3,7 @@ import type { LLMService } from "../../llm/LLMService";
 import { ExecutionContext, ManagedModel, SessionSettings } from "../../types";
 import type { WorkspaceSnapshot } from "../../workspace/types";
 import { agentTools, agentToolText, CandidateStore, FilePermissions, SynthesisFileTools } from "./SynthesisFileTools";
+import { Checkouts } from "./Checkouts";
 
 /** An agent as a flow describes it: a model, its file rights and what it is told. A description,
  * not a process: every task parallel_map gives it runs a fresh agent from it. */
@@ -14,6 +15,8 @@ export type AgentStatus = "queued" | "running" | "done" | "failed" | "cancelled"
 export interface AgentSummary {
   index: number; call: number; task: string; providerId: string; model: string; status: AgentStatus;
   steps: number; inputTokens: number; outputTokens: number; durationMs: number; files: string[]; error?: string;
+  /** Changes it left checked out when it failed or was stopped: dropped, as in Perforce. */
+  reverted?: string[];
   /** The agent loop's own record, for its steps. */
   loopId: string;
 }
@@ -32,6 +35,8 @@ export interface PoolOptions {
   tasks: string[];
   concurrency: number;
   failFast: boolean;
+  /** Every change needs a checkout first. */
+  checkoutRequired?: boolean;
   signal: AbortSignal;
   /** Checked before each agent starts: its provider may still be used. */
   admit(spec: AgentSpec): Promise<void>;
@@ -58,6 +63,8 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
       inputTokens: 0, outputTokens: 0, durationMs: 0, files: [], loopId: `synthesis:${options.runId}:map-${options.call}:task-${index}` };
   });
   const results: TaskResult[] = new Array(tasks.length);
+  // One parallel_map's checkouts and owned files, shared by its agents.
+  const checkouts = new Checkouts(options.checkoutRequired);
   let next = 0;
   let failure: Error | undefined;
   options.update(summaries);
@@ -65,7 +72,8 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
     const spec = agents[index % agents.length], summary = summaries[index], task = tasks[index];
     const started = Date.now();
     summary.status = "running"; options.update(summaries);
-    const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights);
+    const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights, { checkouts, me: { agent: index, task } });
+    let finished = false;
     try {
       await options.admit(spec);
       const target = { providerId: spec.model.providerId, model: spec.model.id };
@@ -92,11 +100,17 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
       summary.steps = saved?.steps ?? 0;
       summary.inputTokens = result.usage.inputTokens ?? 0; summary.outputTokens = result.usage.outputTokens ?? 0;
       summary.files = [...tools.touched].sort();
+      finished = !result.error;
+      // What it left checked out: submitted when it finished, dropped when it did not.
+      const reverted = await tools.finish(finished);
+      if (reverted.length) summary.reverted = reverted;
+      summary.files = [...tools.touched].sort();
       if (result.error) { summary.status = "failed"; summary.error = result.error.slice(0, 1000); }
       else summary.status = "done";
       results[index] = { index, task, ok: !result.error, output: result.text.slice(0, MAX_AGENT_OUTPUT), error: result.error?.slice(0, 1000) ?? "", files: summary.files };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (!finished) { const reverted = await tools.finish(false).catch(() => []); if (reverted.length) summary.reverted = reverted; }
       summary.files = [...tools.touched].sort();
       summary.status = controller.signal.aborted ? "cancelled" : "failed"; summary.error = message.slice(0, 1000);
       results[index] = { index, task, ok: false, output: "", error: summary.error, files: summary.files };

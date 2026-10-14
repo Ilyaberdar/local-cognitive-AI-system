@@ -7,9 +7,13 @@ import { isMissingFile } from "../../utils/fileStore";
 import { matchesGlob } from "../checks/architecture";
 import { containedPath, MAX_ARTIFACT_BYTES, readText } from "../paths";
 import { SynthesisError } from "../types";
+import { Checkouts, Holder } from "./Checkouts";
 
-/** What an agent may touch, by project-relative patterns. */
-export interface FilePermissions { read: string[]; write: string[]; delete: string[] }
+/** What an agent may touch, by project-relative patterns. `own`: of the write patterns, those whose
+ * files belong to the agent that first creates or changes them. */
+export interface FilePermissions { read: string[]; write: string[]; delete: string[]; own?: string[] }
+/** The agents of one parallel_map: their checkouts and owned files, and which of them this one is. */
+export interface Team { checkouts: Checkouts; me: Holder }
 
 /** The run's copy of the files it may change: the files of the candidate and what the project holds. */
 export interface CandidateStore {
@@ -88,18 +92,25 @@ function mayHold(folder: string, pattern: string): boolean {
 /** A Synthesis agent's file tools: reads the project within its rights, writes only into the run's copy.
  * Nothing it does reaches the project before Apply, and nothing asks for approval: a refusal is final. */
 export class SynthesisFileTools extends OperationExecutor {
-  /** Files this agent created, changed or deleted, project-relative. */
+  /** Files this agent created, changed or deleted in the candidate (submitted), project-relative. */
   readonly touched = new Set<string>();
+  /** Changes to checked-out files, the agent's own until it submits them (null: deleted). */
+  private readonly pending = new Map<string, {target: string; content: string | null}>();
   private static readonly locks = new Map<string, Promise<unknown>>();
-  constructor(baseDir: string, private readonly candidates: CandidateStore, private readonly rights: FilePermissions) { super(baseDir); }
+  constructor(baseDir: string, private readonly candidates: CandidateStore, private readonly rights: FilePermissions, private readonly team?: Team) { super(baseDir); }
   async hasExternalMcp(): Promise<boolean> { return false; }
 
   async execute(input: OperationInput): Promise<{result?: ToolExecutionResult; pendingApproval?: PendingApproval}> {
     const action = parseAgentAction({tool: input.tool, arguments: input.arguments});
     if (!action.tool.startsWith("file.")) throw new Error(`${action.tool} is not one of this agent's tools.`);
-    const target = this.path(String(action.arguments.path ?? "."));
     const args = action.arguments;
     input.signal?.throwIfAborted();
+    if (action.tool === "file.checkout") return {result: await this.checkout((args.paths as string[]).map(item => this.path(item)), Number(args.waitSeconds ?? 0), input.signal)};
+    if (action.tool === "file.submit" || action.tool === "file.revert") {
+      const paths = (args.paths as string[] | undefined)?.map(item => this.path(item));
+      return {result: action.tool === "file.submit" ? await this.submit(paths) : this.revert(paths)};
+    }
+    const target = this.path(String(action.arguments.path ?? "."));
     switch (action.tool) {
       case "file.list": return {result: await this.list(target, Number(args.limit))};
       case "file.search": return {result: await this.search(target, String(args.query), Number(args.maxResults ?? args.limit), Number(args.maxFiles), args)};
@@ -164,7 +175,11 @@ export class SynthesisFileTools extends OperationExecutor {
     if (this.candidates.removed.includes(relative)) return {relative, content: null};
     return undefined;
   }
-  private async content(target: string): Promise<string | null> {
+  /** A file as this agent sees it: its own pending change first (`mine`), then the candidate, then the project. */
+  private async content(target: string, mine = true): Promise<string | null> {
+    const output = this.candidates.outputPath;
+    const own = mine && output && target.startsWith(`${output}/`) ? this.pending.get(target.slice(output.length + 1)) : undefined;
+    if (own) return own.content;
     const copy = this.candidate(target);
     if (copy) return copy.content;
     // Every agent of the run reads one version of a project file, the one read first: an edit made
@@ -264,41 +279,121 @@ export class SynthesisFileTools extends OperationExecutor {
     return this.result("search", root || ".", JSON.stringify({root: root || ".", query, scannedFiles: scanned, matches, truncated: more || matches.length >= limit,
       note: "Paths are relative to the project; pass them to file.read as they are."}), {results: matches});
   }
+  /** The key two agents share for one file, whatever case they write it in. */
+  private async key(target: string): Promise<string> { return (await this.spelled(target)).toLowerCase(); }
+  /** Whether the other agents leave this file to this one: not checked out or owned by another, and
+   * checked out here when the parallel_map requires it. */
+  private mayChange(key: string, target: string): void {
+    if (!this.team) return;
+    const {checkouts, me} = this.team;
+    const holder = checkouts.holder(key), owner = checkouts.owner(key);
+    if (holder && holder.agent !== me.agent) throw new Error(`${target} is checked out by agent ${holder.agent + 1} (its task: ${holder.task.slice(0, 120)}). Read it, or work on other files; it is released when that agent submits or finishes.`);
+    if (owner && owner.agent !== me.agent) throw new Error(`${target} belongs to agent ${owner.agent + 1}, which created it: agents may read it, not change it.`);
+    if (checkouts.required && holder?.agent !== me.agent) throw new Error(`Check ${target} out before changing it: file.checkout {"paths":["${target}"]}.`);
+  }
   private async change(tool: string, target: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const access = tool === "file.delete" ? "delete" : "write";
     this.mayWrite(target, access);
+    const key = await this.key(target);
     // One change of a path at a time, whatever case an agent writes it in (the disk may ignore case).
-    return SynthesisFileTools.locked(`${this.candidates.root}\0${target.toLowerCase()}`, async () => {
+    return SynthesisFileTools.locked(`${this.candidates.root}\0${key}`, async () => {
       const before = await this.content(target);
-      // Checked again with no wait before the change: another agent may have made a twin or the last file meanwhile.
+      // Checked again with no wait before the change: another agent may have made a twin, the last
+      // file, or a checkout meanwhile.
       const relative = this.mayWrite(target, access);
+      this.mayChange(key, target);
       const version = before === null ? "missing" : hash(before);
       if (args.expectedVersion !== version) throw new Error(`File version conflict at ${target}: it changed since you read it (another agent may have written it). Read it again before changing it.`);
-      if (!Object.hasOwn(this.candidates.baseline, relative)) {
-        // What the project holds now, for Apply to find any edit made meanwhile.
-        const copy = this.candidate(target);
-        this.candidates.baseline[relative] = copy ? copy.content : before;
-      }
+      let after: string | null;
       if (tool === "file.delete") {
         if (before === null) throw new Error(`${target} does not exist.`);
-        delete this.candidates.files[relative];
-        if (this.candidates.baseline[relative] !== null && !this.candidates.removed.includes(relative)) this.candidates.removed.push(relative);
-        this.touched.add(target); this.candidates.changed();
-        return this.result("delete", target, `Deleted ${target} in the run's copy (the project changes only on Apply).`);
+        after = null;
+      } else {
+        after = String(args.content ?? "");
+        if (tool === "file.append") after = (before ?? "") + after;
+        if (tool === "file.replace") {
+          const original = String(args.oldText), current = before ?? "";
+          if (!current.includes(original) || current.indexOf(original) !== current.lastIndexOf(original)) throw new Error("oldText must match exactly one range. Read the file and provide a unique range.");
+          after = current.replace(original, () => String(args.newText));
+        }
+        if (Buffer.byteLength(after) > MAX_ARTIFACT_BYTES) throw new Error(`A candidate file holds at most ${MAX_ARTIFACT_BYTES / 1024} KiB.`);
       }
-      let after = String(args.content ?? "");
-      if (tool === "file.append") after = (before ?? "") + after;
-      if (tool === "file.replace") {
-        const original = String(args.oldText), current = before ?? "";
-        if (!current.includes(original) || current.indexOf(original) !== current.lastIndexOf(original)) throw new Error("oldText must match exactly one range. Read the file and provide a unique range.");
-        after = current.replace(original, () => String(args.newText));
+      // A checked-out file changes in this agent's checkout: the others see it once it is submitted.
+      if (this.team?.checkouts.holder(key)?.agent === this.team?.me.agent && this.team) {
+        this.pending.set(relative, {target, content: after});
+        return this.result(tool.slice(5), target, `${after === null ? "Deleted" : "Saved"} ${target} in your checkout: the other agents see it when you submit it (file.submit) or finish.`,
+          after === null ? {} : {version: hash(after), bytes: Buffer.byteLength(after)});
       }
-      if (Buffer.byteLength(after) > MAX_ARTIFACT_BYTES) throw new Error(`A candidate file holds at most ${MAX_ARTIFACT_BYTES / 1024} KiB.`);
+      await this.commit(relative, target, key, after);
+      return after === null ? this.result("delete", target, `Deleted ${target} in the run's copy (the project changes only on Apply).`)
+        : this.result(tool.slice(5), target, `Saved ${target} in the run's copy (the project changes only on Apply).`, {version: hash(after), bytes: Buffer.byteLength(after)});
+    });
+  }
+  /** Puts a change into the candidate (null deletes the file), recording what the project held before it. */
+  private async commit(relative: string, target: string, key: string, after: string | null): Promise<void> {
+    if (!Object.hasOwn(this.candidates.baseline, relative)) {
+      // What the project holds now, for Apply to find any edit made meanwhile.
+      const copy = this.candidate(target);
+      this.candidates.baseline[relative] = copy ? copy.content : await this.content(target, false);
+    }
+    if (after === null) {
+      delete this.candidates.files[relative];
+      if (this.candidates.baseline[relative] !== null && !this.candidates.removed.includes(relative)) this.candidates.removed.push(relative);
+    } else {
       this.candidates.files[relative] = after;
       this.candidates.removed = this.candidates.removed.filter(item => item !== relative);
-      this.touched.add(target); this.candidates.changed();
-      return this.result(tool.slice(5), target, `Saved ${target} in the run's copy (the project changes only on Apply).`, {version: hash(after), bytes: Buffer.byteLength(after)});
-    });
+    }
+    if (this.team && (this.rights.own ?? []).some(pattern => matchesGlob(target, pattern))) this.team.checkouts.own(key, this.team.me);
+    this.touched.add(target); this.candidates.changed();
+  }
+  /** Takes files for this agent's work, all of them or none: the others read their last submitted
+   * version and change nothing of them until it submits, reverts or finishes. */
+  private async checkout(targets: string[], waitSeconds: number, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    if (!this.team) throw new Error("Checkouts are for agents of a parallel_map.");
+    for (const target of targets) {
+      const writable = [...this.rights.write, ...this.rights.delete].some(pattern => matchesGlob(target, pattern));
+      if (!writable && !this.mayRead(target)) throw new Error(`This agent may not check out ${target}: it may neither read nor change it.`);
+    }
+    const keys = await Promise.all(targets.map(target => this.key(target)));
+    const holding = this.team.checkouts.heldBy(this.team.me.agent).length > 0;
+    const blocking = await this.team.checkouts.acquire(this.team.me, keys, holding ? 0 : Math.min(120, Math.max(0, waitSeconds)) * 1000, signal);
+    if (blocking.length) {
+      throw new Error(`Nothing was checked out: ${blocking.map(holder => `agent ${holder.agent + 1} (its task: ${holder.task.slice(0, 100)})`).join(", ")} ${blocking.length === 1 ? "holds or owns" : "hold or own"} some of these files. ` +
+        (holding ? "You hold other files, so you cannot wait: submit or revert yours first, or work on other files." : "Wait for them with waitSeconds, or work on other files."));
+    }
+    const files = await Promise.all(targets.map(async target => { const content = await this.content(target).catch(() => null); return {path: target, version: content === null ? "missing" : hash(content)}; }));
+    return this.result("checkout", targets.join(", "), JSON.stringify({checkedOut: files, note: "Change them with expectedVersion as usual; submit with file.submit, or drop the changes with file.revert."}));
+  }
+  /** Puts this agent's pending changes into the candidate and releases their files (all without paths). */
+  private async submit(targets?: string[]): Promise<ToolExecutionResult> {
+    if (!this.team) throw new Error("Checkouts are for agents of a parallel_map.");
+    const keys = targets ? await Promise.all(targets.map(target => this.key(target))) : this.team.checkouts.heldBy(this.team.me.agent);
+    const submitted: string[] = [];
+    for (const [relative, change] of [...this.pending]) {
+      const key = await this.key(change.target);
+      if (!keys.includes(key)) continue;
+      await SynthesisFileTools.locked(`${this.candidates.root}\0${key}`, () => this.commit(relative, change.target, key, change.content));
+      this.pending.delete(relative); submitted.push(change.target);
+    }
+    this.team.checkouts.release(this.team.me.agent, keys);
+    return this.result("submit", submitted.join(", ") || "-", submitted.length ? `Submitted ${submitted.join(", ")}: the other agents see it now, and the files are released.` : "Nothing to submit; the files are released.");
+  }
+  /** Drops this agent's pending changes and releases their files (all without paths). */
+  private revert(targets?: string[]): ToolExecutionResult {
+    if (!this.team) throw new Error("Checkouts are for agents of a parallel_map.");
+    const output = this.candidates.outputPath ?? "";
+    const reverted = [...this.pending].filter(([, change]) => !targets || targets.some(target => target.toLowerCase() === change.target.toLowerCase())).map(([relative, change]) => { this.pending.delete(relative); return change.target; });
+    const keys = targets?.map(target => target.toLowerCase());
+    this.team.checkouts.release(this.team.me.agent, keys ? this.team.checkouts.heldBy(this.team.me.agent).filter(key => keys.includes(key) || keys.includes(`${output}/${key}`)) : undefined);
+    return this.result("revert", reverted.join(", ") || "-", reverted.length ? `Reverted ${reverted.join(", ")}; the files are released.` : "Nothing to revert; the files are released.");
+  }
+  /** At the end of the agent's task: a finished agent submits what it left pending, any other reverts it. */
+  async finish(finished: boolean): Promise<string[]> {
+    if (!this.team) return [];
+    const left = [...this.pending.values()].map(change => change.target);
+    if (finished) await this.submit(); else this.revert();
+    this.team.checkouts.release(this.team.me.agent);
+    return finished ? [] : left;
   }
   private result(operation: string, filePath: string, output: string, extra: Record<string, unknown> = {}): ToolExecutionResult {
     return {tool: "file", ok: true, output, metadata: {operation, filePath, ...extra}};
@@ -314,8 +409,9 @@ export class SynthesisFileTools extends OperationExecutor {
 
 /** The tools each right gives, and how an agent is told to use them. */
 export function agentTools(rights: FilePermissions): string[] {
+  const changes = rights.write.length > 0 || rights.delete.length > 0;
   return [...rights.read.length ? ["file.list", "file.search", "file.read"] : [], ...rights.write.length ? ["file.write", "file.replace", "file.append", "file.mkdir"] : [],
-    ...rights.delete.length ? ["file.delete"] : []];
+    ...rights.delete.length ? ["file.delete"] : [], ...changes ? ["file.checkout", "file.submit", "file.revert"] : []];
 }
 export function agentToolText(rights: FilePermissions): string {
   return [
@@ -323,6 +419,8 @@ export function agentToolText(rights: FilePermissions): string {
     rights.read.length ? 'file.list {path:"."} lists a folder. file.search {path:".",query:"literal text",include?:["*.ts"]} finds lines (an empty query lists files). file.read {path,startLine?:1,endLine?} reads up to 200 lines and returns the file\'s version.' : "",
     rights.write.length ? 'file.write {path,content,expectedVersion} writes a whole file: for a NEW file expectedVersion is "missing", for an existing one the version file.read returned. file.replace {path,oldText,newText,expectedVersion} changes one unique range. file.append {path,content,expectedVersion} adds to the end.' : "",
     rights.delete.length ? "file.delete {path,expectedVersion} deletes a file." : "",
-    rights.write.length ? "Other agents work at the same time: when a write reports a version conflict, read the file again and redo your change." : ""
+    rights.write.length || rights.delete.length ? 'file.checkout {paths:["a.md","src/b.ts"],waitSeconds?:0} takes files for your work, like a checkout in Perforce: the other agents read their last submitted version and change nothing of them until you file.submit {paths?} (your changes become visible) or file.revert {paths?} (they are dropped). Check out together every file your change depends on, including ones you only read. When you finish, what you left checked out is submitted.' : "",
+    rights.write.length ? "Other agents work at the same time: when a write reports a version conflict, read the file again and redo your change; when a file is checked out by or belongs to another agent, work on other files." : "",
+    rights.own?.length ? `Files you create or change under ${rights.own.join(", ")} are yours: no other agent may change them.` : ""
   ].filter(Boolean).join("\n");
 }

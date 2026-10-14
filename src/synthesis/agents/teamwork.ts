@@ -5,16 +5,17 @@ import { SynthesisError } from "../types";
 import type { TaskResult } from "./AgentPool";
 
 type Llm = Pick<LLMService, "generateObject" | "generateText"> & Partial<Pick<LLMService, "getContextWindow">>;
-export interface Permission { kind: "permission"; access: "read" | "write" | "delete"; patterns: string[] }
+export interface Permission { kind: "permission"; access: "read" | "write" | "delete"; patterns: string[]; own?: boolean }
 export const MAX_TASK_CHARS = 8000;
 
 /** files.read(...), files.write(...), files.delete(...): project-relative patterns. */
-export function permission(access: Permission["access"], patterns: unknown[]): Permission {
+export function permission(access: Permission["access"], patterns: unknown[], own?: unknown): Permission {
+  if (own !== undefined && (typeof own !== "boolean" || access !== "write")) throw new SynthesisError("own = true is for files.write: the files an agent creates or changes there are its own.");
   if (!patterns.length || patterns.length > 12) throw new SynthesisError(`files.${access} takes 1 to 12 patterns.`);
   for (const pattern of patterns) {
     if (typeof pattern !== "string" || !filePattern(pattern)) throw new SynthesisError(`files.${access}: ${String(pattern)} is not a project-relative pattern such as "src/**".`);
   }
-  return Object.freeze({ kind: "permission", access, patterns: Object.freeze([...patterns as string[]]) as string[] });
+  return Object.freeze({ kind: "permission", access, patterns: Object.freeze([...patterns as string[]]) as string[], ...(own ? { own: true } : {}) });
 }
 
 /** How many characters of prompt a model takes, leaving room for its answer (and its thinking). A cloud

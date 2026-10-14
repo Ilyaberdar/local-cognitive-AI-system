@@ -483,7 +483,7 @@ export class SynthesisService {
           break;
         }
         case "files.read": case "files.write": case "files.delete": {
-          value = permission(name.slice(6) as Permission["access"], args); permissions.add(value as object); break;
+          value = permission(name.slice(6) as Permission["access"], args, named.own); permissions.add(value as object); break;
         }
         case "agent": {
           let model: ManagedModel;
@@ -493,8 +493,8 @@ export class SynthesisService {
           } else model = (await role(await resolveModel(String(named.provider), named.model))).model;
           const tools = named.tools ?? [];
           if (!Array.isArray(tools) || tools.some(item => !item || typeof item !== "object" || !permissions.has(item))) throw new SynthesisError("tools is a list of files.read(...), files.write(...) and files.delete(...).");
-          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[]};
-          for (const item of tools as Permission[]) rights[item.access].push(...item.patterns);
+          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[], own: [] as string[]};
+          for (const item of tools as Permission[]) { rights[item.access].push(...item.patterns); if (item.own) rights.own.push(...item.patterns); }
           const instructions = named.instructions ?? "";
           if (typeof instructions !== "string" || instructions.length > 6000) throw new SynthesisError("An agent's instructions are at most 6,000 characters.");
           const steps = named.steps ?? 16;
@@ -511,6 +511,7 @@ export class SynthesisService {
           if (!Array.isArray(tasks) || !tasks.length || tasks.some(task => typeof task !== "string" || !task.trim() || task.length > MAX_TASK_CHARS)) throw new SynthesisError(`parallel_map takes a list of tasks, each a text of at most ${MAX_TASK_CHARS} characters.`);
           if ((record.agentRuns?.length ?? 0) + tasks.length > MAX_AGENT_TASKS) throw new SynthesisError(`A run starts at most ${MAX_AGENT_TASKS} agent tasks.`);
           const concurrency = named.concurrency ?? Math.min(16, tasks.length);
+          if (named.checkout !== undefined && named.checkout !== "optional" && named.checkout !== "required") throw new SynthesisError('checkout is "optional" or "required".');
           if (!Number.isInteger(concurrency) || (concurrency as number) < 1 || (concurrency as number) > MAX_CONCURRENCY) throw new SynthesisError(`concurrency is 1 to ${MAX_CONCURRENCY}.`);
           for (const agent of agents) for (const pattern of [...agent.rights.write, ...agent.rights.delete]) {
             if (!record.outputPath) throw new SynthesisError("Check out the candidate before giving agents write access: they write into it.");
@@ -526,7 +527,7 @@ export class SynthesisService {
           }});
           const {results, summaries} = await runAgents({llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
             module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
-            failFast: named.on_error === "fail", signal,
+            failFast: named.on_error === "fail", checkoutRequired: named.checkout === "required", signal,
             admit: async spec => { await this.provider(record, spec.model.providerId); },
             update: current => { record.agentRuns = [...earlier, ...current]; record.agents = counts(record.agentRuns); saveSoon(); }});
           for (const summary of summaries) { record.usage.calls += summary.steps; record.usage.inputTokens += summary.inputTokens; record.usage.outputTokens += summary.outputTokens; }

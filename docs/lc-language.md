@@ -693,7 +693,8 @@ evaluate "contract-v1" {
 | --- | --- |
 | `files.read("src/**", ...)`, `files.write(...)`, `files.delete(...)` | Rights: 1–12 project-relative patterns (`*` within a folder, `**` across folders). Reading gives `file.list`, `file.search` and `file.read`; writing `file.write`, `file.replace` and `file.append`; deleting `file.delete`. |
 | `agent(provider = "deepseek", model = "deepseek-flash", tools = [...], instructions = "...", steps = 16)` | An agent: a description, not a process. `agent(role, tools = [...])` uses a loaded role instead (a local model with slots, for example). `steps` (1–60, 16 by default) bounds its turns. |
-| `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. |
+| `files.write("notes/**", own = true)` | Writing, where each file belongs to the agent that first creates or changes it, for the rest of the `parallel_map`: the others read it and change nothing of it. |
+| `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect", checkout = "required")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. |
 | `await lead.split(goal, n [, context], paths = files.read(...), instruction = "...")` | A model splits a goal into `n` independent tasks; `paths` lists the files the agents can read (up to 400) for it. |
 | `await lead.synthesize(candidate, spec, results, file = "REPORT.md", instruction = "...", feedback = verdict.violations)` | A model writes one candidate file from the results. Results too many for its prompt are merged in groups first. With `feedback`, it writes the file again knowing exactly which checks the last one failed: the repair loop for a report. |
 
@@ -704,6 +705,8 @@ What agents may touch:
 - They read only what their rights name, and never a contract or its tests (any `Synthesis` folder and the module's own folder), whatever the patterns say.
 - They write only into the run's candidate: inside the `checkout` folder, and only its declared files and areas. The project changes only on Apply, which writes every file at once (deletions included) after checking that none changed meanwhile.
 - When two agents change one file, the second finds the version changed, reads it again and redoes its change.
+- An agent can check files out for its work, as in Perforce: `file.checkout {"paths": [...]}` takes them all or none, including files it only reads. Until it submits (`file.submit`), reverts (`file.revert`) or finishes, the others read the last submitted version (its changes stay its own) and change nothing of them. A finished agent's checkout is submitted, a failed one's dropped (listed as reverted on its row). With `checkout = "required"`, every change needs a checkout first.
+- Only an agent that holds nothing may wait for files (`waitSeconds`, up to 120): one that holds files is refused at once, so two agents never wait on each other.
 - No agent runs commands, uses plugins or MCP servers, or asks for approval: a refusal is final, and it is told why.
 - A cloud agent sends what it reads to its provider: the project must allow cloud models.
 

@@ -454,3 +454,97 @@ test("a report that cites what does not exist is written again with the exact pr
   assert.match(prompts[1], /The last REPORT\.md, to correct[\s\S]*- src\/missing\.ts:3 swallows an error/, "the repair edits the last version");
   assert.equal((await f.service.diff(result.id)).files.find(file => file.path === "review/REPORT.md")?.after, "# Report\n- src/alpha.ts:1 is fine");
 });
+
+/** An agent that runs its steps in order: each a tool call, or a function of what it has seen. */
+const steps = (byTask: Record<string, Array<Action | ((results: string[]) => Action)>>): Script => (task, results) => {
+  const plan = byTask[task] ?? [];
+  const next = plan[results.length];
+  return next === undefined ? final(results.join("\n")) : typeof next === "function" ? next(results) : next;
+};
+const versionOf = (result: string) => /"version":"([a-f0-9]{64}|missing)"/.exec(result)?.[1];
+
+test("ownership: a file under an own right belongs to the agent that made it; the others read it and change nothing", async (t) => {
+  const f = await fixture(t, {script: steps({
+    maker: [tool("file.write", {path: "review/notes/mine.md", content: "made by the maker", expectedVersion: "missing"})],
+    other: [tool("file.read", {path: "review/notes/mine.md"}), results => tool("file.write", {path: "review/notes/mine.md", content: "taken over", expectedVersion: versionOf(results[0])}),
+      results => tool("file.delete", {path: "review/notes/mine.md", expectedVersion: versionOf(results[0])})]
+  }), delay: task => new Promise(resolve => setTimeout(resolve, task === "other" ? 30 : 1))});
+  const result = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("review/**"), files.write("review/notes/**", own = true), files.delete("review/notes/**")], steps = 6);
+    results = await parallel_map(team, ["maker", "other"], concurrency = 2);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const other = (await f.service.agent(result.id, 1)).final!.split("\n");
+  assert.match(other[0], /made by the maker/, "it reads the owner's file");
+  assert.match(other[1], /belongs to agent 1, which created it/);
+  assert.match(other[2], /belongs to agent 1/);
+  assert.equal((await f.service.diff(result.id)).files.find(file => file.path === "review/notes/mine.md")?.after, "made by the maker");
+});
+
+test("checkout: the holder's changes stay its own until it submits; the others read the submitted version and change nothing meanwhile", async (t) => {
+  const order: string[] = [];
+  let holderSubmitted!: () => void; const submitted = new Promise<void>(resolve => { holderSubmitted = resolve; });
+  const f = await fixture(t, {script: steps({
+    holder: [tool("file.checkout", {paths: ["review/notes/shared.md", "src/alpha.ts"]}),
+      results => tool("file.write", {path: "review/notes/shared.md", content: "draft 1", expectedVersion: versionOf(results[0]) ?? "missing"}),
+      results => tool("file.write", {path: "review/notes/shared.md", content: "final", expectedVersion: versionOf(results[1])}),
+      tool("file.submit", {})],
+    reader: [tool("file.read", {path: "review/notes/shared.md"}), tool("file.write", {path: "review/notes/shared.md", content: "mine", expectedVersion: "missing"}),
+      tool("file.checkout", {paths: ["src/alpha.ts"]}), tool("file.read", {path: "review/notes/shared.md"})]
+  }), delay: async task => {
+    if (task === "reader") {
+      order.push("reader");
+      // The reader's last read comes after the holder submitted.
+      if (order.filter(item => item === "reader").length === 4) await submitted;
+      else await new Promise(resolve => setTimeout(resolve, 20));
+    } else {
+      order.push("holder");
+      if (order.filter(item => item === "holder").length === 5) holderSubmitted();
+      await new Promise(resolve => setTimeout(resolve, order.filter(item => item === "holder").length === 1 ? 1 : 60));
+    }
+  }});
+  const result = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**", "review/**"), files.write("review/notes/**")], steps = 8);
+    results = await parallel_map(team, ["holder", "reader"], concurrency = 2);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const holder = (await f.service.agent(result.id, 0)).final!.split("\n"), reader = (await f.service.agent(result.id, 1)).final!.split("\n");
+  assert.match(holder[0], /"checkedOut"/);
+  assert.match(holder[1], /in your checkout/);
+  assert.match(holder[3], /Submitted review\/notes\/shared\.md/);
+  assert.match(reader[0], /does not exist/, "the holder's draft is not visible before it submits");
+  assert.match(reader[1], /checked out by agent 1/);
+  assert.match(reader[2], /Nothing was checked out: agent 1/, "a file only read is held too");
+  assert.match(reader[3], /final/, "after the submit, everyone reads it");
+  assert.equal((await f.service.diff(result.id)).files.find(file => file.path === "review/notes/shared.md")?.after, "final");
+  assert.deepEqual((await f.service.agents(result.id)).items[0].files, ["review/notes/shared.md"]);
+});
+
+test("checkout: a failed agent's pending changes are dropped, a finished one's submitted; checkout = \"required\" refuses changes without one", async (t) => {
+  const f = await fixture(t, {script: (task, results) => {
+    if (task === "fails") return results.length < 2 ? [tool("file.checkout", {paths: ["review/notes/f.md"]}), tool("file.write", {path: "review/notes/f.md", content: "half done", expectedVersion: "missing"})][results.length] : {error: "model unavailable"};
+    if (task === "forgets") return results.length < 2 ? [tool("file.checkout", {paths: ["review/notes/g.md"]}), tool("file.write", {path: "review/notes/g.md", content: "kept", expectedVersion: "missing"})][results.length] : final("done");
+    return results.length ? final(results.join("\n")) : tool("file.write", {path: "review/notes/h.md", content: "no checkout", expectedVersion: "missing"});
+  }});
+  const result = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("review/**"), files.write("review/notes/**")], steps = 6);
+    results = await parallel_map(team, ["fails", "forgets", "writes"], concurrency = 3, checkout = "required");
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const items = (await f.service.agents(result.id)).items;
+  assert.equal(items[0].status, "failed"); assert.deepEqual(items[0].reverted, ["review/notes/f.md"]);
+  assert.deepEqual(items[1].files, ["review/notes/g.md"], "a finished agent's checkout is submitted");
+  const diff = (await f.service.diff(result.id)).files.map(file => file.path);
+  assert.ok(!diff.includes("review/notes/f.md") && diff.includes("review/notes/g.md") && !diff.includes("review/notes/h.md"), diff.join(" "));
+  assert.match((await f.service.agent(result.id, 2)).final!, /Check review\/notes\/h\.md out before changing it/);
+});
+
+test("checkout: an agent holding files never waits for others, so two agents cannot wait on each other; one holding nothing may wait", async (t) => {
+  const f = await fixture(t, {script: steps({
+    left: [tool("file.checkout", {paths: ["review/notes/x.md"]}), tool("file.checkout", {paths: ["review/notes/y.md"], waitSeconds: 60})],
+    right: [tool("file.checkout", {paths: ["review/notes/y.md"]}), tool("file.checkout", {paths: ["review/notes/x.md"], waitSeconds: 60})],
+    patient: [tool("file.checkout", {paths: ["review/notes/x.md"], waitSeconds: 60}), tool("file.revert", {})]
+  }), delay: task => new Promise(resolve => setTimeout(resolve, task === "patient" ? 15 : 5))});
+  const started = Date.now();
+  const result = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("review/**"), files.write("review/notes/**")], steps = 4);
+    results = await parallel_map(team, ["left", "right", "patient"], concurrency = 3);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.ok(Date.now() - started < 30_000, "no one waited out its 60 s");
+  const [left, right, patient] = await Promise.all([0, 1, 2].map(async index => (await f.service.agent(result.id, index)).final!));
+  assert.match(left + right, /You hold other files, so you cannot wait/);
+  assert.match(patient.split("\n")[0], /"checkedOut"/, "the agent holding nothing waited for x.md and got it");
+});
