@@ -1,11 +1,12 @@
 import type { ActivityEvent, SynthesisModule, SynthesisRun } from "../synthesis/types";
+import type { AgentSummary } from "../synthesis/agents";
 import type { Scrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 
 /** What a paired device sees of Synthesis on the host (R5-5): modules and runs without the
  * project's folder or the server's data directory (scrubbed to `<workspace>` / `<server>`), error
  * texts reduced by `publicError` (an event's failure to its first line, other absolute paths
- * removed), models by four fields, and answers bounded to fit a frame. */
+ * removed), models by five fields, and answers bounded to fit a frame. */
 
 const MAX_EVENT_BYTES = 256 * 1024;
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
@@ -38,6 +39,18 @@ export const runSummary = (run: SynthesisRun, scrub: Scrubber) => ({
   ...(run.error ? { error: publicError(scrub(run.error)) } : {})
 });
 
+/** A run's agents: what a row shows, errors shortened like events' (files are project-relative). */
+export const safeAgents = (agents: AgentSummary[], scrub: Scrubber) => agents.map(({ loopId, ...agent }) => scrub({
+  ...agent, task: withoutPaths(agent.task), ...(agent.error ? { error: failure(agent.error) } : {})
+}));
+/** One agent with its steps, bounded to fit a frame: the oldest steps go first. */
+export const safeAgent = (agent: AgentSummary & { final?: string; protocol?: string; turns: Array<{ type: string; content: string }> }, scrub: Scrubber) => {
+  const { loopId, ...rest } = agent;
+  let turns = scrub(agent.turns).map(turn => ({ type: turn.type, content: withoutPaths(turn.content) }));
+  while (turns.length > 1 && bytes(turns) > MAX_EVENT_BYTES) turns = turns.slice(Math.ceil(turns.length / 4));
+  return { ...scrub({ ...rest, task: withoutPaths(rest.task), ...(rest.error ? { error: failure(rest.error) } : {}),
+    ...(rest.final !== undefined ? { final: withoutPaths(rest.final.slice(0, 20_000)) } : {}) }), turns };
+};
 /** A run with its evidence, models, usage and its events after `after` (newest kept when many). */
 export const runDetail = (run: SynthesisRun, scrub: Scrubber, after = 0) => {
   let events = scrub(run.events.filter(event => event.sequence > after)).map(safeEvent);
@@ -46,7 +59,7 @@ export const runDetail = (run: SynthesisRun, scrub: Scrubber, after = 0) => {
   return {
     ...runSummary(run, scrub),
     ...(run.evidence ? { evidence: scrub(run.evidence) } : {}),
-    models: run.models.map(model => ({ id: model.id, displayName: model.displayName, providerId: model.providerId, sizeBytes: model.sizeBytes })),
-    usage: run.usage, events, lastSequence: run.events.at(-1)?.sequence ?? 0, ...(truncated ? { truncated: true } : {})
+    models: run.models.map(model => ({ id: model.id, displayName: model.displayName, providerId: model.providerId, providerName: model.providerName, sizeBytes: model.sizeBytes })),
+    usage: run.usage, ...(run.agents ? { agents: run.agents } : {}), events, lastSequence: run.events.at(-1)?.sequence ?? 0, ...(truncated ? { truncated: true } : {})
   };
 };

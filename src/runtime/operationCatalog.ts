@@ -55,6 +55,8 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "synthesis.runs.get": { kind: "request", timeoutMs: 15_000 },
   "synthesis.runs.sources": { kind: "request", timeoutMs: 15_000 },
   "synthesis.runs.diff": { kind: "request", timeoutMs: 30_000 },
+  "synthesis.runs.agents": { kind: "request", timeoutMs: 15_000 },
+  "synthesis.runs.agent": { kind: "request", timeoutMs: 15_000 },
   "synthesis.runs.file": { kind: "request", timeoutMs: 15_000 },
   "synthesis.runs.start": { kind: "command", timeoutMs: 30_000 },
   "synthesis.runs.cancel": { kind: "request", timeoutMs: 30_000 },

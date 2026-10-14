@@ -267,6 +267,8 @@ export const SYNTHESIS_ROUTES = [
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, op: "synthesis.runs.get", payload: (match, query) => ({ runId: segment(match[1]), ...(query.get("after") ? { after: Number(query.get("after")) } : {}) }) },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/sources$/, op: "synthesis.runs.sources", payload: match => ({ runId: segment(match[1]) }) },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/diff$/, op: "synthesis.runs.diff", payload: match => ({ runId: segment(match[1]) }) },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/agents$/, op: "synthesis.runs.agents", payload: match => ({ runId: segment(match[1]) }) },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/agents\/(\d+)$/, op: "synthesis.runs.agent", payload: match => ({ runId: segment(match[1]), index: Number(match[2]) }) },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/file$/, op: "synthesis.runs.file",
     payload: (match, query) => ({ runId: segment(match[1]), path: query.get("path") ?? "", side: query.get("side") ?? "after" }) },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, op: "synthesis.runs.cancel", payload: match => ({ runId: segment(match[1]) }) },

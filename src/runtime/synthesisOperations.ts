@@ -8,7 +8,7 @@ import type { CommandLedger, CommandRecord } from "./CommandLedger";
 import { pathScrubber, type Scrubber } from "./orchestrationDto";
 import { PROJECT_ON_HOST, type ProjectAccess } from "./projectOperations";
 import { publicError } from "./publicError";
-import { runDetail, runSummary, safeModule } from "./synthesisDto";
+import { runDetail, runSummary, safeAgent, safeAgents, safeModule } from "./synthesisDto";
 
 /** What a diff answer carries at most; larger files are fetched one by one (`synthesis.runs.file`). */
 const MAX_DIFF_BYTES = 768 * 1024, MAX_FILE_BYTES = 512 * 1024;
@@ -23,6 +23,7 @@ const schemas = {
   create: z.object({ commandId, projectId: id, template: z.enum(["empty", "calculator", "rate-limiter", "repository-review"]), name: z.string().min(1).max(64).optional(),
     directory: z.string().max(240).optional() }).strict(),
   run: z.object({ runId }).strict(),
+  agent: z.object({ runId, index: z.number().int().nonnegative().max(10_000) }).strict(),
   get: z.object({ runId, after: z.number().int().nonnegative().optional() }).strict(),
   file: z.object({ runId, path: z.string().min(1).max(240), side: z.enum(["before", "after"]) }).strict(),
   start: z.object({ commandId, projectId: id, moduleId }).strict(),
@@ -169,6 +170,23 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
           return { path: file.path, before: file.before, after: file.after, ...sizes };
         });
         return { files, canApply: diff.canApply };
+      });
+    },
+    /** The run's agents, one row per task, as the host's Agents tab shows them. */
+    "synthesis.runs.agents": payload => {
+      const { runId: id } = parse(schemas.run, payload);
+      return known(undefined, async () => {
+        const run = await requireRun(id, false);
+        const { counts, items } = await service().agents(id);
+        return { ...(counts ? { counts } : {}), items: safeAgents(items, await scrubberFor(run.projectId)) };
+      });
+    },
+    /** One agent with its steps. */
+    "synthesis.runs.agent": payload => {
+      const { runId: id, index } = parse(schemas.agent, payload);
+      return known(undefined, async () => {
+        const run = await requireRun(id, false);
+        return safeAgent(await service().agent(id, index), await scrubberFor(run.projectId));
       });
     },
     "synthesis.runs.file": payload => {

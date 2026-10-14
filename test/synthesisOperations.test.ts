@@ -23,7 +23,7 @@ const until = async <T>(read: () => Promise<T>, done: (value: T) => boolean) => 
   throw new Error("condition not reached");
 };
 
-async function setup(t: TestContext, llm = workingProvider()) {
+async function setup(t: TestContext, llm = workingProvider(), agentLlm?: unknown) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "synthesis-ops-")));
   const data = path.join(base, "data"), app = path.join(data, "app");
   await fs.mkdir(app, { recursive: true });
@@ -34,7 +34,7 @@ async function setup(t: TestContext, llm = workingProvider()) {
   await fs.mkdir(path.join(base, "elsewhere"));
   const calls: string[] = [];
   const synthesis = new SynthesisService(app, { projects: projectStore, models: { listAllModels: async () => [localModel("qwen2.5-1.5b", 950_000_000)] },
-    loadModel: async () => undefined, llm });
+    loadModel: async () => undefined, llm, ...(agentLlm ? { agents: { llm: agentLlm as never } } : {}) });
   await synthesis.init();
   t.after(async () => { await synthesis.dispose(); host.close(); await fs.rm(base, { recursive: true, force: true }); });
   const runtimeManager = { getRuntime: () => ({ synthesis, projectStore }) } as unknown as RuntimeManager;
@@ -72,7 +72,7 @@ test("a device makes a module, runs it once per command, follows it, sees its ch
   assert.ok(done.events.length > 0 && done.lastSequence >= done.events.at(-1).sequence);
   const later = await f.call("synthesis.runs.get", { runId: started.id, after: done.lastSequence });
   assert.deepEqual(later.events, [], "only events after the cursor");
-  assert.deepEqual(Object.keys(done.models[0]).sort(), ["displayName", "id", "providerId", "sizeBytes"]);
+  assert.deepEqual(Object.keys(done.models[0]).sort(), ["displayName", "id", "providerId", "providerName", "sizeBytes"]);
   assert.equal((await f.call("synthesis.runs.list", { projectId: f.device.id })).runs.length, 1);
 
   const diff = await f.call("synthesis.runs.diff", { runId: started.id });
@@ -207,4 +207,40 @@ test("an Apply a restart interrupted is reported by what the project's files hol
   await assert.rejects(call("synthesis.runs.apply", some.resend), code("unknown_outcome"));
   await assert.rejects(call("synthesis.runs.apply", some.resend), code("unknown_outcome"), "the answer is kept");
   assert.equal((await f.synthesis.get(some.id)).appliedAt, undefined);
+});
+
+test("a device sees a run's agents and one agent's steps, with no folder of the host", async t => {
+  const agentLlm = { supportsNativeTools: () => false, supportsStructuredOutputs: () => false, getContextWindow: () => undefined,
+    generateObject: async (request: { prompt: string }) => {
+      const read = /RESULT: /.test(request.prompt);
+      const data = read ? { type: "final", text: "Read notes.txt: it says hello" } : { type: "tool_call", tool: "file.read", arguments: { path: "notes.txt" } };
+      return { data, response: { provider: "llamacpp", model: "qwen2.5-1.5b", text: JSON.stringify(data), usage: { inputTokens: 5, outputTokens: 5 } } };
+    } };
+  const f = await setup(t, workingProvider(), agentLlm);
+  const root = path.join(f.data, "projects", "calc");
+  await fs.writeFile(path.join(root, "notes.txt"), `hello from ${root}`);
+  await fs.mkdir(path.join(root, "Synthesis", "Team"), { recursive: true });
+  await fs.writeFile(path.join(root, "Synthesis", "Team", "Team.lcspec"), `module Team version "1" { description = "notes"; artifacts { files "notes/**"; } evaluate "contract-v1" { hard clean = Forbid("notes/**", "x"); } }`);
+  await fs.writeFile(path.join(root, "Synthesis", "Team", "Team.lcflow"), `implement Team using "contract-v1" {
+    limit iterations 1, time 2m;
+    policy = "agents-v1";
+    installed = await models.list(provider = "llamacpp");
+    qwen = await models.load(models.select(installed), slots = 2);
+    candidate = checkout("review");
+    reader = agent(qwen, tools = [files.read("**")]);
+    results = await parallel_map(reader, ["read notes.txt", "read it again"]);
+    return unresolved();
+}`);
+  const started = await f.call("synthesis.runs.start", { commandId: "cmd-team-1", projectId: f.device.id, moduleId: "Team" });
+  const done = await until(() => f.call("synthesis.runs.get", { runId: started.id }), run => !["queued", "running"].includes(run.status));
+  assert.deepEqual(done.agents, { total: 2, queued: 0, running: 0, done: 2, failed: 0, cancelled: 0 });
+  const listed = await f.call("synthesis.runs.agents", { runId: started.id });
+  assert.equal(listed.items.length, 2);
+  assert.equal("loopId" in listed.items[0], false);
+  const one = await f.call("synthesis.runs.agent", { runId: started.id, index: 1 });
+  assert.ok(one.turns.some((turn: { type: string; content: string }) => turn.type === "result" && turn.content.includes("hello from")));
+  const text = JSON.stringify([listed, one]);
+  assert.equal(text.includes(f.data), false, "no folder of the host reaches the device");
+  await assert.rejects(f.call("synthesis.runs.agent", { runId: started.id, index: 7 }), code("not_found"));
+  await assert.rejects(f.call("synthesis.runs.agents", { runId: "4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d11" }), code("not_found"));
 });
