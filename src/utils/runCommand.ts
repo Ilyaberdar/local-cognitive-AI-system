@@ -11,8 +11,10 @@ export const runCommand = (
   signal?: AbortSignal,
   onOutput?: CommandOutputHandler,
   /** `env` replaces the app's own environment (a sandboxed check passes only what it allows).
-   * `input`: written to the command's stdin, which is then closed. */
-  options: { env?: NodeJS.ProcessEnv; input?: string } = {}
+   * `input`: written to the command's stdin, which is then closed.
+   * `endWhen`: once the output so far says the command is done, its whole process group is killed,
+   * while the group's leader still waits (so the group is the command's, never another's). */
+  options: { env?: NodeJS.ProcessEnv; input?: string; endWhen?: (stdout: string) => boolean } = {}
 ): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean }> =>
   new Promise((resolve, reject) => {
     signal?.throwIfAborted();
@@ -69,7 +71,11 @@ export const runCommand = (
       signal?.removeEventListener("abort", onAbort);
     };
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { stdoutTruncated ||= stdout.length + chunk.length > 65_536; stdout = append(stdout, chunk); observe("stdout", chunk); });
+    let ended = false;
+    child.stdout.on("data", (chunk: string) => {
+      stdoutTruncated ||= stdout.length + chunk.length > 65_536; stdout = append(stdout, chunk); observe("stdout", chunk);
+      if (!ended && options.endWhen?.(stdout)) { ended = true; kill("SIGKILL"); }
+    });
     child.stderr.on("data", (chunk: string) => { stderrTruncated ||= stderr.length + chunk.length > 65_536; stderr = append(stderr, chunk); observe("stderr", chunk); });
     child.on("error", (error) => { cleanup(); reject(error); });
     // A command that exits before reading its input breaks the pipe: that is its answer, not the app's failure.

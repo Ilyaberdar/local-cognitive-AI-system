@@ -649,13 +649,20 @@ test("a command that exits before reading its input, and one that leaves a proce
   assert.equal(early.exitCode, 3, "a broken pipe is the command's answer, not the app's failure");
   const { platformSandbox } = await import("../src/synthesis/checks/sandbox");
   if (await platformSandbox().unavailable()) return;
-  const work = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-orphan-"));
-  const wrapped = platformSandbox().wrap("/bin/sh", ["-c", '"$@"; status=$?; trap "" TERM; kill -TERM 0 2>/dev/null; exit $status', "sh", "/bin/sh", "-c", "sleep 300 & echo $!"], work, []);
-  const result = await runCommand(wrapped.executable, wrapped.args, work, 10_000, undefined, undefined, { env: wrapped.env });
-  const orphan = Number(result.stdout.trim().split("\n").pop());
-  await new Promise(resolve => setTimeout(resolve, 200));
+  const { AgentTerminal } = await import("../src/synthesis/agents/Terminal");
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-orphan-project-")));
+  const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-orphan-work-"));
+  const terminal = new AgentTerminal({ sandbox: platformSandbox(), workRoot, git: false },
+    { root, readable: async () => [], content: async () => null, candidate: () => ({ files: {}, removed: [] }) }, "agent-0", ["node"]);
+  // A child that ignores SIGTERM and would run for good.
+  const result = await terminal.run("node", ["-e", "const c=require('child_process').spawn(process.execPath,['-e','process.on(\\'SIGTERM\\',()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});console.log(c.pid);process.exit(7)"], "", 30);
+  assert.equal(result.exitCode, 7, "the command's own status comes back");
+  const orphan = Number(result.stdout.trim().split("\n")[0]);
+  assert.ok(orphan > 0, result.stdout + result.stderr);
+  await new Promise(resolve => setTimeout(resolve, 300));
   let alive = true; try { process.kill(orphan, 0); } catch { alive = false; }
   if (alive) process.kill(orphan, "SIGKILL");
-  assert.equal(alive, false, "what the command left running ended with it");
-  await fs.rm(work, { recursive: true, force: true });
+  assert.equal(alive, false, "what the command left running, even ignoring SIGTERM, ended with it");
+  await terminal.dispose();
+  for (const dir of [root, workRoot]) await fs.rm(dir, { recursive: true, force: true });
 });

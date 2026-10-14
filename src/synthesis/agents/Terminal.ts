@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -61,8 +62,12 @@ function program(command: TerminalCommand): Promise<string | undefined> {
   }
   return answer;
 }
-/** Runs "$@", then ends whatever is left in its process group (all but itself), and exits with the command's status. */
-const ENDS_ITS_GROUP = '"$@"; status=$?; trap "" TERM; kill -TERM 0 2>/dev/null; exit $status';
+/** Runs "$@" with a bound on every process's CPU time (one that leaves the group still ends), says
+ * when it is done and with what status, and waits: the app then kills the whole group with SIGKILL
+ * while this shell, its leader, is still alive. */
+const ENDS_ITS_GROUP = 'ulimit -t "$1" 2>/dev/null; token="$2"; shift 2; "$@"; status=$?; printf "\\n%s:%s\\n" "$token" "$status"; read -r _';
+/** CPU seconds any process of a command may use (its time limit is wall clock, this one CPU). */
+const CPU_SECONDS = MAX_COMMAND_SECONDS * 2;
 /** Empties a folder sandboxed code has used, inside the sandbox (links it left lead nowhere but the
  * folder), then removes the empty folder; never a recursive delete by the app itself. */
 export async function removeInSandbox(sandbox: SandboxProvider, folder: string): Promise<void> {
@@ -122,11 +127,14 @@ export class AgentTerminal {
     const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...this.linked];
     // The command runs under a shell that, once it ends, ends whatever it left running in its process
     // group, from inside the sandbox while the group is still its own (never a group the app guesses).
-    const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", ENDS_ITS_GROUP, "sh", executable, ...args], work, readable);
+    const token = `LC_TERMINAL_DONE_${randomBytes(9).toString("hex")}`;
+    const done = new RegExp(`\\n${token}:(\\d+)\\n$`);
+    const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", ENDS_ITS_GROUP, "sh", String(CPU_SECONDS), token, executable, ...args], work, readable);
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
-      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" } });
+      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
+    const status = done.exec(result.stdout);
     const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
-    return { exitCode: result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout)), stderr: clip(hide(result.stderr)) };
+    return { exitCode: status ? Number(status[1]) : result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout.replace(done, "\n"))), stderr: clip(hide(result.stderr)) };
   }
 
   /** Removes the agent's copy (the run's candidate keeps what the agent wrote with its file tools).
