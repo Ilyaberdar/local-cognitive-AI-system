@@ -128,3 +128,12 @@ test("a path a model ran on into prose is refused with a short reason, before th
     (error: Error) => /at most 255 bytes/.test(error.message));
   assert.equal(parseAgentAction({ tool: "file.read", arguments: { path: "notes/README.md" } }).arguments.path, "notes/README.md");
 });
+
+test("a model's include pattern full of wildcards is matched in linear time, not by a backtracking regex", async t => {
+  const search = await fixture(t, { [`src/${"a".repeat(200)}.ts`]: "plugin" });
+  const started = Date.now();
+  const result = await search({ include: [`${"*a".repeat(40)}*b`] });
+  assert.deepEqual(result.matches, []);
+  assert.ok(Date.now() - started < 1000, `${Date.now() - started} ms`);
+  assert.equal((await search({ include: ["*.ts"] })).matches.length, 1, "ordinary filters still match at any depth");
+});

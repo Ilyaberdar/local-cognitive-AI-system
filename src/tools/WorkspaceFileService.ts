@@ -6,21 +6,11 @@ import { AgentAction } from "./AgentTool";
 import { WorkspaceSnapshot } from "../workspace/types";
 import { canonicalPath, isWorkspacePath } from "./AccessPolicy";
 import { withFileLock } from "../utils/fileStore";
+import { searchFilter } from "./searchGlob";
 
 const hash = (content: Buffer | string) => createHash("sha256").update(content).digest("hex");
 const maxReadBytes = 5 * 1024 * 1024;
 const maxResultBytes = 48_000;
-
-function searchGlob(pattern: string): RegExp {
-  // Like a filename filter in recursive search, "*.ts" also matches
-  // "agents/Atlas.ts". A slash (or explicit ./) anchors a filter to the root.
-  const rootRelative = pattern.startsWith("./") || pattern.includes("/");
-  const normalized = pattern.replace(/^\.\//, "");
-  const expression = normalized.split("**/").map(part => part.split("**").map(piece =>
-    piece.split("*").map(literal => literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")
-  ).join(".*")).join("(?:.*/)?");
-  return new RegExp((rootRelative ? "^" : "^(?:.*/)?") + expression + "$");
-}
 
 export class WorkspaceFileService {
   async prepare(action: AgentAction, workspace: WorkspaceSnapshot): Promise<AgentAction> {
@@ -126,8 +116,8 @@ export class WorkspaceFileService {
     const matches: Array<{path: string; absolutePath: string; line?: number; text?: string}> = [];
     let scannedFiles = 0;
     const excluded = new Set([".git", "node_modules", "dist", "release"]);
-    const include=(args.include as string[]|undefined)?.map(searchGlob);
-    const exclude=(args.exclude as string[]|undefined)?.map(searchGlob)??[];
+    const include=(args.include as string[]|undefined)?.map(searchFilter);
+    const exclude=(args.exclude as string[]|undefined)?.map(searchFilter)??[];
     while (queue.length && scannedFiles < maxFiles && matches.length < limit) {
       signal?.throwIfAborted();
       const dir = queue.shift()!;
@@ -136,12 +126,12 @@ export class WorkspaceFileService {
         if (excluded.has(item.name) || item.isSymbolicLink()) continue;
         const file = path.join(dir,item.name);
         const relative = path.relative(root,file).split(path.sep).join("/");
-        if(exclude.some(pattern=>pattern.test(relative)||pattern.test(relative+"/"))) continue;
+        if(exclude.some(matches=>matches(relative)||matches(relative+"/"))) continue;
         if (item.isDirectory()) { queue.push(file); continue; }
         if (!item.isFile() || !await isWorkspacePath(file,[root])) continue;
         if (scannedFiles >= maxFiles) break;
         scannedFiles++;
-        if(include?.length&&!include.some(pattern=>pattern.test(relative)))continue;
+        if(include?.length&&!include.some(matches=>matches(relative)))continue;
         if (!query) matches.push({path:relative,absolutePath:file});
         else {
           const stat = await fs.stat(file);
