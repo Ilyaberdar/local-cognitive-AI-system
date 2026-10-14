@@ -89,6 +89,7 @@ export const COMMANDS: Array<[string, string]> = [
   ["start / stop / restart", "The server's service"],
   ["update", "Install the newest release"],
   ["config", "Settings (config error-reports on|off)"],
+  ["cloud-models", "Projects' cloud models (allow|deny <project>)"],
   ["clear", "Clear the screen"],
   ["help", "Show this list"],
   ["exit", "Leave the console; the server keeps running"]
@@ -262,8 +263,8 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
       paint(s, GREY, "Ready when you are. Type a command to get started.")]);
   };
 
-  const names = ["status", "watch", "pair", "devices", "revoke", "logs", "start", "stop", "restart", "update", "config", "clear", "help", "exit"];
-  const following: Record<string, string[]> = { config: ["error-reports"], "error-reports": ["on", "off"] };
+  const names = ["status", "watch", "pair", "devices", "revoke", "logs", "start", "stop", "restart", "update", "config", "cloud-models", "clear", "help", "exit"];
+  const following: Record<string, string[]> = { config: ["error-reports"], "error-reports": ["on", "off"], "cloud-models": ["allow", "deny"] };
   /** One Tab completes a single match (with a space); two list them. Words after the first: config's. */
   const completer = (line: string): [string[], string] => {
     const words = line.trimStart().split(/\s+/);
@@ -382,6 +383,12 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
           write([paint(s, GREY, "  Inference, the data folder and Remote are set at install; see sudo local-cognitive-server help.")]);
         }
         return true;
+      case "cloud-models": {
+        if (!rest.length) { await handOver(["cloud-models"]); return true; }
+        if (!["allow", "deny"].includes(rest[0]!) || rest.length < 2) { write([`  ${paint(s, YELLOW, "Use: cloud-models, or cloud-models allow|deny <project> (its id, name or folder)")}`]); return true; }
+        // A project's name may hold spaces, kept as typed.
+        await handOver(["cloud-models", rest[0]!, line.trim().replace(/^cloud-models\s+(?:allow|deny)\s+/, "")]); return true;
+      }
       case "exit": case "quit": return false;
       default: {
         const close = names.find(name => name.startsWith(command.slice(0, 2)));

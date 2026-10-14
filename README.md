@@ -111,6 +111,7 @@ sudo local-cognitive-server            # the console: status, a live view and th
 sudo local-cognitive-server pair       # a key for another computer of your account
 sudo local-cognitive-server status     # running? reachable? CUDA or CPU, and why
 sudo local-cognitive-server devices    # computers that can connect; revoke-device <id>
+sudo local-cognitive-server cloud-models  # Synthesis projects that may use cloud models; allow|deny <project>
 sudo local-cognitive-server update     # the newest signed release: backed up, rolled back if it fails
 sudo local-cognitive-server rollback   # back to the previous release and its data
 sudo local-cognitive-server cuda       # install the CUDA runtime later (driver 570+)

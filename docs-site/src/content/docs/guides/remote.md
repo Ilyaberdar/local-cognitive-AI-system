@@ -48,11 +48,11 @@ Some things can only be set up on the server itself, because they reach its whol
 - full file access, and anything set up on the server with it;
 - folders and projects chosen on the server;
 - the server's MCP servers and plugins;
-- a Synthesis project's **Cloud models** switch, which decides whether the project's files may go to a cloud provider.
+- whether a Synthesis project may use cloud models: its files would go to a cloud provider.
 
 From a computer you can delete, cancel or pause such work, but not start, continue or edit it.
 
-The server has no **Cloud models** switch of its own yet, so Synthesis on a server uses the server's local models, its agents included. Agents, their terminal and contract tests run on the server, in its bubblewrap sandbox, and work only in the project's folder there.
+Cloud models for a Synthesis project on the server are allowed on the server, with `sudo local-cognitive-server cloud-models allow <project>` (see [Server commands](/server/commands/#synthesis)). A computer shows the choice at the bottom of its Synthesis screen, **Cloud models: on** or **off**, but can't change it. The cloud providers are the server's own: the ones with a key in its environment file, or a key set from a computer in Settings. Agents, their terminal and contract tests run on the server, in its bubblewrap sandbox, and work only in the project's folder there.
 
 ## When the app is closed
 

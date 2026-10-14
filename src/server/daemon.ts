@@ -16,6 +16,7 @@ import { DataRootLockedError } from "../runtime/db/DataRootLock";
 import { resolveHeadlessVault } from "../security/headlessVault";
 import { appVersion } from "../utils/appVersion";
 import { Logger } from "../utils/Logger";
+import { createCloudModelsControl } from "./cloudModels";
 import { ControlError, ControlServer } from "./ControlServer";
 import { controlSocketPathFor } from "./dataRoot";
 import { drainBackend } from "./drain";
@@ -178,6 +179,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       agent.resetOwner();
       return { reset: true };
     },
+    // The runtime is rebuilt when settings change: each request reaches the current one.
+    cloudModels: createCloudModelsControl({ projects: () => backend.runtimeManager.getRuntime().projectStore,
+      synthesis: () => backend.runtimeManager.getRuntime().synthesis, logger }),
     mcp: config.mcp.server.enabled ? socket => {
       if (drained) { socket.destroy(); return; }
       mcpSessions.add(socket);

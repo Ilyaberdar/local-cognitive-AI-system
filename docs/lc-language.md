@@ -417,7 +417,7 @@ The policy says what the run may use:
 
 Every policy confines project reads and writes only declared candidate artifacts until Apply. None grants downloads, network tools, arbitrary filesystem access or commands on the computer itself: under `agents-v1`, an agent given `terminal(...)` runs a few programs in a sandbox, in a copy of what it may read.
 
-A cloud model receives the contract's description, frozen files, visible tests, the candidate's files and whatever `inspect(...)` read. Hidden tests never leave the computer. So a flow names each provider as a string (`provider = "deepseek"`, never a variable), and a cloud provider runs only in a project that allows cloud models: the **Cloud models** switch at the bottom of the Synthesis workspace, which only the computer that owns the project can set (a paired device cannot, and a server has no switch for it yet, so Synthesis on a server uses its local models). The module lists what Run would refuse: `SYNTHESIS_PROVIDER` for a provider that is not set up here or has no key, `SYNTHESIS_CLOUD_CONSENT` for a cloud provider in a project that does not allow it.
+A cloud model receives the contract's description, frozen files, visible tests, the candidate's files and whatever `inspect(...)` read. Hidden tests never leave the computer. So a flow names each provider as a string (`provider = "deepseek"`, never a variable), and a cloud provider runs only in a project that allows cloud models: the **Cloud models** switch at the bottom of the Synthesis workspace, which only the computer that owns the project can set. On a server its owner sets it with `sudo local-cognitive-server cloud-models allow <project>`; a paired device only shows it. The module lists what Run would refuse: `SYNTHESIS_PROVIDER` for a provider that is not set up here or has no key, `SYNTHESIS_CLOUD_CONSENT` for a cloud provider in a project that does not allow it.
 
 ### Variables and control flow
 
@@ -813,7 +813,7 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `FLOW_POLICY` | Declare `policy = "local-files-v1";` (or `"cloud-files-v1"`, `"agents-v1"`) exactly once at the top level. |
 | `FLOW_POLICY_PROVIDER` | A provider other than `llamacpp` needs `policy = "cloud-files-v1"` or `"agents-v1"`. |
 | `FLOW_PROVIDER_LITERAL` | Write the provider as a string: `provider = "openai"`. |
-| `SYNTHESIS_PROVIDER` / `SYNTHESIS_CLOUD_CONSENT` | Set the provider up (and its key) in Settings → Models & Providers; switch on **Cloud models** for the project. |
+| `SYNTHESIS_PROVIDER` / `SYNTHESIS_CLOUD_CONSENT` | Set the provider up (and its key) in Settings → Models & Providers; switch on **Cloud models** for the project (on a server: `sudo local-cognitive-server cloud-models allow <project>`). |
 | `FLOW_ACCEPT_GUARD` | Put `return accept(...)` inside `if (verdict.status == Pass)` after `verify`. |
 | `FLOW_TERMINAL_RETURN` | Return terminal actions directly; do not assign or invoke them as standalone statements. |
 | `FLOW_UNKNOWN_CALL` | Use registered calls only. There is no `unreal.build`, `analyze`, `shell`, or `getAllModels` intrinsic. Use `models.list`. |

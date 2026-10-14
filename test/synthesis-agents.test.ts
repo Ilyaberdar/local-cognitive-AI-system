@@ -95,7 +95,7 @@ async function fixture(t: TestContext, options: {script: Script; delay?: (task: 
     return service.wait((await service.start(project.id, "Review")).id);
   };
   t.after(async () => { await service.dispose(); await fs.rm(temp, {recursive: true, force: true}); });
-  return {root, data, service, project, run, agentRequests, advisory, peak: () => peak};
+  return {root, data, service, project, projects, run, agentRequests, advisory, peak: () => peak};
 }
 
 /** An agent that writes the note its task names, then reports it. */
@@ -665,4 +665,18 @@ test("a command that exits before reading its input, and one that leaves a proce
   assert.equal(alive, false, "what the command left running, even ignoring SIGTERM, ended with it");
   await terminal.dispose();
   for (const dir of [root, workRoot]) await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("consent withdrawn while agents work: a started agent's next request is not sent, nor the lead's", async (t) => {
+  let withdrawn = false;
+  const f: Awaited<ReturnType<typeof fixture>> = await fixture(t, {script: (_task, results) => results.length ? final(results.join("\n")) : tool("file.read", {path: "src/alpha.ts"}),
+    delay: async () => { if (!withdrawn) { withdrawn = true; await f.projects.update(f.project.id, {cloudModels: false}); } }});
+  const result = await f.run(`agents = [agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**")])];
+    results = await parallel_map(agents, ["read alpha"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.equal(f.agentRequests.length, 1, "the agent's second request was never sent");
+  assert.match((await f.service.agent(result.id, 0)).error ?? "", /does not allow cloud models/);
+  assert.equal(result.status, "blocked");
+  assert.match(result.error!, /does not allow cloud models/);
+  assert.equal(f.advisory.length, 0, "the lead sent nothing either");
 });

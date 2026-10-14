@@ -255,6 +255,8 @@ export const SETTINGS_ROUTES = [
 export const SYNTHESIS_ROUTES = [
   { method: "GET", pattern: /^\/projects\/([^/]+)\/modules$/, op: "synthesis.modules.list", payload: match => ({ projectId: segment(match[1]) }) },
   { method: "GET", pattern: /^\/projects\/([^/]+)\/modules\/([^/]+)$/, op: "synthesis.modules.get", payload: match => ({ projectId: segment(match[1]), moduleId: segment(match[2]) }) },
+  // Read only: a device sees whether the project may use cloud models; only the server sets it.
+  { method: "GET", pattern: /^\/projects\/([^/]+)\/cloud$/, op: "synthesis.cloud.get", payload: match => ({ projectId: segment(match[1]) }) },
   { method: "GET", pattern: /^\/projects\/([^/]+)\/folders$/, op: "synthesis.folders.list",
     payload: (match, query) => ({ projectId: segment(match[1]), ...(query.get("directory") ? { directory: query.get("directory") } : {}) }) },
   { method: "POST", pattern: /^\/projects\/([^/]+)\/modules$/, op: "synthesis.modules.create", send: true,

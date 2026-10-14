@@ -42,7 +42,7 @@ developer = await model("deepseek-flash", provider = "deepseek");
 
 Local and cloud models can work in one flow, for example a cloud developer and a local reviewer.
 
-A cloud model receives the contract's description, the frozen files, the visible tests, the candidate's files and whatever the flow gives it to read. Hidden tests never leave your computer. So a project sends nothing to the cloud until you allow it: switch on **Cloud models** at the bottom of the Synthesis workspace. The switch belongs to each project, and only the computer that owns the project can set it.
+A cloud model receives the contract's description, the frozen files, the visible tests, the candidate's files and whatever the flow gives it to read. Hidden tests never leave your computer. So a project sends nothing to the cloud until you allow it: switch on **Cloud models** at the bottom of the Synthesis workspace. The switch belongs to each project, and only the computer that owns the project can set it. For a project on your GPU server, the server's owner allows it there with `sudo local-cognitive-server cloud-models allow <project>`; your computer shows **Cloud models: on** or **off**.
 
 Before you run, the module lists what Run would refuse: a provider that isn't set up or has no key, or a cloud provider in a project that doesn't allow cloud models. The run checks again before every call, so switching **Cloud models** off stops the next request.
 

@@ -117,6 +117,15 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
         return safeModule(await service().module(projectId, module), await scrubberFor(projectId), true);
       });
     },
+    /** Whether the project's flows may use cloud models: shown on the device, set only on the server
+     * (sudo local-cognitive-server cloud-models). There is no operation that changes it. */
+    "synthesis.cloud.get": payload => {
+      const { projectId } = parse(schemas.project, payload);
+      return known(projectId, async () => {
+        await requireProject(projectId, false);
+        return service().cloudModels(projectId);
+      });
+    },
     "synthesis.folders.list": payload => {
       const { projectId, directory } = parse(schemas.folders, payload);
       return known(projectId, async () => {

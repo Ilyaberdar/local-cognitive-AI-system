@@ -49,6 +49,7 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   // Synthesis (R5-5): reads are requests; making a module, starting, restarting and applying a run are commands.
   "synthesis.modules.list": { kind: "request", timeoutMs: 30_000 },
   "synthesis.modules.get": { kind: "request", timeoutMs: 15_000 },
+  "synthesis.cloud.get": { kind: "request", timeoutMs: 15_000 },
   "synthesis.folders.list": { kind: "request", timeoutMs: 15_000 },
   "synthesis.modules.create": { kind: "command", timeoutMs: 30_000 },
   "synthesis.runs.list": { kind: "request", timeoutMs: 30_000 },

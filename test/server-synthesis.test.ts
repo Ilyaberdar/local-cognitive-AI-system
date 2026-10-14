@@ -62,3 +62,16 @@ test("a module made at the project's root asks for the root, not the server's de
   assert.deepEqual(payload({ name: "Dash", template: "empty", directory: "" }), { projectId: "p1", name: "Dash", template: "empty", directory: "" });
   assert.deepEqual(payload({ name: "Dash", template: "empty" }), { projectId: "p1", name: "Dash", template: "empty" });
 });
+
+test("a device reads a project's Cloud models from the server and has no route to change it", async () => {
+  const { SYNTHESIS_ROUTES } = await importModule(pathToFileURL(path.resolve("public/assets/runtime-routes.js")).href);
+  const routes = SYNTHESIS_ROUTES.filter((item: any) => item.pattern.test("/projects/p1/cloud"));
+  assert.deepEqual(routes.map((item: any) => [item.method, item.op]), [["GET", "synthesis.cloud.get"]]);
+  assert.deepEqual(routes[0].payload(routes[0].pattern.exec("/projects/p1/cloud"), new URLSearchParams()), { projectId: "p1" });
+  const { createServerSynthesis } = await importModule(pathToFileURL(path.resolve("public/assets/server-synthesis.js")).href);
+  const f = server();
+  const transport = createServerSynthesis({ target: f.target, bridge: { runtime: f.runtime } }).transport();
+  const before = f.calls.length;
+  await assert.rejects(transport.request("/projects/p1/cloud", { method: "PUT", body: JSON.stringify({ allowed: true }) }));
+  assert.equal(f.calls.length, before, "nothing is sent to the server");
+});

@@ -582,6 +582,23 @@ test("cloud models need the project's consent, a provider set up here and its ke
   assert.equal((await f.service.module(f.project.id, "Calculator")).valid, true);
 });
 
+test("on a server the consent refusal names its command; withdrawing works for an archived project too", async (t) => {
+  const f = await fixture(t, {providers: [descriptor("deepseek")]});
+  f.service.cloudConsentHint = project => `Allow them on the server: sudo local-cognitive-server cloud-models allow ${project.id}`;
+  await f.writeSources({flow: cloudFlow(`developer = await model("some-model", provider = "deepseek"); reviewer = developer;`)});
+  const command = `sudo local-cognitive-server cloud-models allow ${f.project.id}`;
+  const module = await f.service.module(f.project.id, "Calculator");
+  assert.ok(module.diagnostics.some(item => item.code === "SYNTHESIS_CLOUD_CONSENT" && item.message.endsWith(command)), JSON.stringify(module.diagnostics));
+  await f.projects.update(f.project.id, {cloudModels: true});
+  assert.equal((await f.service.module(f.project.id, "Calculator")).valid, true);
+  await f.projects.update(f.project.id, {archived: true});
+  await assert.rejects(f.service.setCloudModels(f.project.id, true), /non-archived/);
+  assert.deepEqual(await f.service.setCloudModels(f.project.id, false), {allowed: false});
+  await f.projects.update(f.project.id, {archived: false});
+  assert.deepEqual(await f.service.cloudModels(f.project.id), {allowed: false}, "restoring the project brings no cloud models back");
+  assert.equal(f.requests.length + f.textRequests.length, 0);
+});
+
 test("consent withdrawn after the module was checked still stops the run before anything is sent", async (t) => {
   const loading = deferred(); const loaded = deferred();
   const f = await fixture(t, {providers: [descriptor("deepseek")], load: async () => { loading.resolve(); await loaded.promise; }});

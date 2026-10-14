@@ -8,6 +8,7 @@
 #   sudo local-cognitive-server pair          connect a computer (Local Cognitive → Remote → Connect)
 #   sudo local-cognitive-server status        is it running, can computers reach it
 #   sudo local-cognitive-server devices       computers that can connect; revoke-device <id>
+#   sudo local-cognitive-server cloud-models  Synthesis projects that may use cloud models; allow|deny <project>
 #   sudo local-cognitive-server update        install the newest release (backed up, rolled back if it fails)
 #   sudo local-cognitive-server logs | restart | stop | start
 #   sudo local-cognitive-server cuda          install the CUDA runtime (NVIDIA GPU, driver 570+)

@@ -43,7 +43,9 @@ class Gate {
 /** The model service as a run's agents use it: requests to each provider go through its gate, and a
  * "slow down" answer is waited out and the request sent again (its Retry-After, else 2 s doubling up to
  * 60 s, six times at most) without spending the agent's step. */
-export function gatedLlm(llm: LLMService, most: number, options: { retries?: number; baseDelayMs?: number; waited?: (providerId: string, ms: number) => void } = {}): LLMService {
+export function gatedLlm(llm: LLMService, most: number, options: { retries?: number; baseDelayMs?: number; waited?: (providerId: string, ms: number) => void;
+  /** Asked before every request: throws when the run may no longer use this provider (consent withdrawn). */
+  before?: (providerId: string) => Promise<void> } = {}): LLMService {
   // Shared by every run on this model service: two runs together never send a provider more than one would.
   let gates = providerGates.get(llm);
   if (!gates) { gates = new Map(); providerGates.set(llm, gates); }
@@ -53,6 +55,7 @@ export function gatedLlm(llm: LLMService, most: number, options: { retries?: num
   const send = async <T>(providerId: string | undefined, request: LLMRequest, call: () => Promise<T>, error: (result: T) => string | undefined): Promise<T> => {
     const id = providerId ?? "default";
     for (let attempt = 0; ; attempt++) {
+      if (providerId && options.before) await options.before(providerId);
       const current = gate(id);
       await current.acquire(request.signal);
       let result: T | undefined, failure: unknown;
@@ -77,6 +80,24 @@ export function gatedLlm(llm: LLMService, most: number, options: { retries?: num
         send(providerId, request, () => target.generateObject<T>(longer(request), providerId), (result: { response: LLMResponse }) => result.response.error);
       if (property === "generateText") return (request: LLMRequest, providerId?: string) =>
         send(providerId, request, () => target.generateText(longer(request), providerId), (result: LLMResponse) => result.error);
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+
+/** The model service with `before` asked ahead of every request to a named provider. */
+export function checkedLlm<L extends Pick<LLMService, "generateObject" | "generateText">>(llm: L, before: (providerId: string) => Promise<void>): L {
+  return new Proxy(llm, {
+    get(target, property, receiver) {
+      if (property === "generateObject") return async <T extends object>(request: LLMRequest, providerId?: string) => {
+        if (providerId) await before(providerId);
+        return target.generateObject<T>(request, providerId);
+      };
+      if (property === "generateText") return async (request: LLMRequest, providerId?: string) => {
+        if (providerId) await before(providerId);
+        return target.generateText(request, providerId);
+      };
       const value = Reflect.get(target, property, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     }

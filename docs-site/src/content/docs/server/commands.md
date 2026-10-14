@@ -38,6 +38,16 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | `sudo local-cognitive-server restore <backup>` | Restore one |
 | `sudo local-cognitive-server folders` | Folders on the server that connected computers may use for projects |
 
+## Synthesis
+
+| Command | What it does |
+| --- | --- |
+| `sudo local-cognitive-server cloud-models` | The server's projects, and whether each may use cloud models in Synthesis |
+| `sudo local-cognitive-server cloud-models allow <project>` | Let the project's flows send its contract and files to the cloud providers they name; hidden tests stay on the server |
+| `sudo local-cognitive-server cloud-models deny <project>` | Back to the server's local models; a run in progress stops at its next cloud request |
+
+Name the project by its id, its name or its folder (an absolute path). A name two projects share is refused, with their ids to choose from. A connected computer shows the project's choice at the bottom of its Synthesis screen but can't change it. The console has the same command.
+
 ## GPUs and removal
 
 | Command | What it does |

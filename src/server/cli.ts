@@ -16,6 +16,7 @@ import { selectInference } from "./inference";
 import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from "../runtime/hostFolders";
 import { serverEnvironment } from "./serverEnv";
 import { printable, printableDeep, printableMessage } from "./terminalText";
+import type { CloudModelsProject, CloudModelsResult } from "./cloudModels";
 
 // Only modules that do not read the application configuration are imported above: the
 // configuration is evaluated when its module loads, after `start` has set the environment.
@@ -171,6 +172,26 @@ const devices = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** Which Synthesis projects may send their contract and files to cloud models: the owner's choice,
+ * made here because a paired computer may only see it. Through the running server, which owns the
+ * projects file. */
+const cloudModels = async (args: ServerArgs) => {
+  const request = args.cloudModels!;
+  const result = await remoteRequest(args, { op: "cloud-models", ...(request.action === "list" ? {} : { project: request.project, allowed: request.action === "allow" }) }) as unknown as CloudModelsResult;
+  const label = (project: CloudModelsProject) => `${printable(project.name)} (${project.id})`;
+  if (request.action !== "list") {
+    const changed = result.changed;
+    print(args, !changed ? "Changed." : changed.allowed
+      ? `Cloud models allowed for ${label(changed)}. Its Synthesis flows may send the contract, frozen files, visible tests and the files they read to the cloud providers they name; hidden tests stay on this server.`
+      : `${label(changed)} uses local models only. A run in progress stops at its next cloud request.`, result);
+    return ExitCode.ok;
+  }
+  print(args, result.projects.length ? [...result.projects.map(project => `${project.allowed ? "allowed   " : "local only"}  ${printable(project.name)}  ${project.id}  ${printable(project.rootPath)}${project.archived ? "  (archived)" : ""}`),
+    "", "Change one: sudo local-cognitive-server cloud-models allow|deny <project> (its id, name or folder)"].join("\n")
+    : "No projects on this server yet. A computer makes one in Synthesis (+ Project), in a shared folder.", result);
+  return ExitCode.ok;
+};
+
 /** Backups of the server's state (not its models): taken and restored with the server stopped,
  * under the data root lock, as the server's user. */
 const backupCommand = async (args: ServerArgs) => {
@@ -277,6 +298,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "devices": return await devices(args);
       case "folders": return await folders(args);
       case "error-reports": return errorReports(args);
+      case "cloud-models": return await cloudModels(args);
       case "backup": case "backups": case "restore": return await backupCommand(args);
       case "update": case "rollback": case "adopt": return await updateCommand(args);
       case "revoke-device": {

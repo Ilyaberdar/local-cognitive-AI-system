@@ -109,6 +109,9 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   // The server keeps chat turns durable across disconnects and restarts (R4); the desktop does not yet.
   let host: HostServices | undefined;
   if (options.runtimeKind === "server") {
+    // A server has no Cloud models switch: its owner allows them with a command (the same Synthesis
+    // service lives through runtime rebuilds, so this is set once).
+    runtime.synthesis.cloudConsentHint = project => `Allow them on the server: sudo local-cognitive-server cloud-models allow ${project.id}`;
     try { host = openHostServices(database!, config, runtimeManager, sessionIndexStore); }
     catch (error) { failed(error); await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   }

@@ -313,7 +313,7 @@ implement RepoReview using "contract-v1" {
 Осталось:
 
 - Песочница для Windows (помощник AppContainer + Job Object): отдельный этап, с проверкой на Windows-машине владельца.
-- Облако в Synthesis на сервере: переключателя Cloud models у сервера нет (устройству его ставить нельзя), поэтому там только локальные модели. Решение за владельцем, например команда сервера.
+- ~~Облако в Synthesis на сервере~~: сделано командой `sudo local-cognitive-server cloud-models [allow|deny <project>]` (через управляющий сокет, по id, имени или папке; есть в консоли). Устройство видит «Cloud models: on/off» (`synthesis.cloud.get`), изменить не может. Согласие проверяется перед каждым запросом агентов, `split`, `synthesize` и каждого файла `revise`.
 - Ubuntu с AppArmor (`bwrap-userns-restrict`) не проверена: нужна настоящая машина.
 - Если Apple уберёт `sandbox-exec`: помощник на том же Seatbelt (`sandbox_init_with_parameters`), строгий режим на Apple Containerization.
 - Слияние в `main`: по слову владельца. Ветка трогает `OpenAICompatibleProvider` (Perplexity без веб-поиска для агентов) и при слиянии с `feature/providers` может дать небольшой конфликт.

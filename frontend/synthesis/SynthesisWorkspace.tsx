@@ -207,14 +207,15 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     if (selection.current.runId !== runId) return;
     setRunId(updated.id); setRun(updated); setRuns(current => [updated, ...current.filter(item => item.id !== updated.id)]);
   });
+  // Another project (or host) shows nothing until its own answer arrives.
+  useEffect(() => { setCloud(undefined); }, [projectId, remote]);
   useEffect(() => {
-    setCloud(undefined);
-    if (remote || !projectId) return;
+    if (!projectId) return;
     let current = true;
-    // An older host has no such setting: the switch is not shown.
-    request<{ allowed?: unknown } | null>(`/projects/${encode(projectId)}/cloud`).then(result => { if (current && typeof result?.allowed === "boolean") setCloud(result.allowed); }, () => undefined);
+    // An older host has no such setting: the switch (on a server, the status) is not shown. Refresh reads it again.
+    request<{ allowed?: unknown } | null>(`/projects/${encode(projectId)}/cloud`).then(result => { if (current) setCloud(typeof result?.allowed === "boolean" ? result.allowed : undefined); }, () => { if (current) setCloud(undefined); });
     return () => { current = false; };
-  }, [projectId, remote]);
+  }, [projectId, remote, revision]);
   const toggleCloud = (allowed: boolean) => void perform("cloud", async () => {
     const result = await request<{ allowed?: unknown } | null>(`/projects/${encode(projectId)}/cloud`, { method: "PUT", body: JSON.stringify({ allowed }) });
     if (selection.current.projectId !== projectId) return;
@@ -279,7 +280,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
         </main>
         {diagnosticsOpen ? <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} onOpenSource={remote ? undefined : open} onClose={closeDiagnostics} /> : null}
       </div>}
-    <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
+    <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && remote && cloud !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server cloud-models ${cloud ? "deny" : "allow"} ${project.id}`}>Cloud models: {cloud ? "on" : "off"}</span> : null}{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
     {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} request={request} /> : null}
   </div>;
 }

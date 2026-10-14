@@ -20,11 +20,11 @@ Synthesis with cloud models and agents in parallel: tens of agents on one task, 
 ### Remote
 
 - A paired computer sees the agents of a run on the server, and each agent's steps.
+- **Cloud models for a project on the server** are its owner's choice, made on the server: `sudo local-cognitive-server cloud-models` lists the projects, `allow <project>` and `deny <project>` change one (by its id, name or folder; also in the console). A computer shows **Cloud models: on** or **off** and can't change it, and Run says which command allows them.
 
 ### Known limits
 
 - Windows has no sandbox yet: agents there can't use a terminal, and contract tests don't run.
-- On a paired server, Synthesis uses the server's local models only: the server has no **Cloud models** switch yet.
 - A flow's `cost` limit is recorded, not enforced: watch your spending in the provider's dashboard.
 - Agents on an added provider choose actions in JSON, and some models don't keep to it, such as Perplexity's presets and `openai/gpt-5.4-nano`.
 

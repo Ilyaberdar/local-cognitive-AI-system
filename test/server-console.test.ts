@@ -127,6 +127,12 @@ test("the console runs status, watch and exit against a live control socket, and
   input.write("\r");
   for (let attempt = 0; attempt < 250 && !calls.length; attempt++) await delay(20);
   assert.deepEqual(calls, [["error-reports"]]);
+  // cloud-models completes too, and a project's name keeps its spaces.
+  input.write("clo\t");
+  input.write("al\t");
+  input.write("My  review\r");
+  for (let attempt = 0; attempt < 250 && calls.length < 2; attempt++) await delay(20);
+  assert.deepEqual(calls[1], ["cloud-models", "allow", "My  review"]);
   // Ctrl+C clears a typed line without leaving; on an empty line it asks, and the second one leaves.
   input.write("stat");
   input.write("\x03");

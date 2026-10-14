@@ -166,6 +166,25 @@ test("init → start → status → MCP bridge → drain, with a second start re
   assert.ok(view.metrics.memoryTotalBytes > 0 && view.metrics.cpuPercent >= 0);
   assert.equal(JSON.stringify(view).includes(root), false, "no data paths");
 
+  // cloud-models: the owner allows a Synthesis project's cloud models through the running server.
+  const api = `http://127.0.0.1:${status.http!.port}`;
+  const folder = path.join(base, "My review"); fs.mkdirSync(folder);
+  const created = await fetch(`${api}/projects`, { method: "POST", headers: { "Content-Type": "application/json", "X-Local-Cognitive": "1" }, body: JSON.stringify({ name: "My review", rootPath: folder }) });
+  assert.equal(created.status, 201, await created.clone().text());
+  const project = await created.json() as { id: string };
+  const cloud = async () => (await (await fetch(`${api}/synthesis/projects/${project.id}/cloud`)).json() as { allowed: boolean }).allowed;
+  const listed = run("cloud-models", "--data-dir", root, "--json");
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout).projects.map((item: { id: string; allowed: boolean }) => [item.id, item.allowed]), [[project.id, false]]);
+  const allowed = run("cloud-models", "allow", "My", "review", "--data-dir", root);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stdout, /^Cloud models allowed for My review \(/);
+  assert.equal(await cloud(), true, "the running server sees it at once");
+  const denied = run("cloud-models", "deny", fs.realpathSync(folder), "--data-dir", root);
+  assert.equal(denied.status, 0, denied.stderr);
+  assert.equal(await cloud(), false);
+  assert.equal(run("cloud-models", "allow", "Nobody", "--data-dir", root).status, 1);
+
   // Someone other than the server's user is refused by the system: the CLI says to use sudo.
   const runtimeDir = path.join(root, "app", "runtime");
   fs.chmodSync(runtimeDir, 0o000);

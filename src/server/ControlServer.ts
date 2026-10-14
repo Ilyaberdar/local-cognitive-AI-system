@@ -2,6 +2,7 @@ import fs from "fs";
 import net from "net";
 import path from "path";
 import type { Logger } from "../utils/Logger";
+import type { CloudModelsRequest } from "./cloudModels";
 
 export class ControlError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 export type RemoteControlOp = "connect-key" | "invitation" | "devices" | "revoke-device" | "reset-owner";
@@ -16,6 +17,8 @@ export interface ControlHandlers {
   drain(timeoutSec: number | undefined, progress: (active: number) => void): Promise<{ drained: boolean; remaining: number; elapsedMs: number }>;
   /** Takes over the connection for an MCP session; undefined when MCP is disabled. */
   mcp?(socket: net.Socket): void;
+  /** The server's Synthesis projects, and the owner's choice whether each may use cloud models. */
+  cloudModels?(request: CloudModelsRequest): Promise<unknown>;
 }
 
 const MAX_LINE = 64 * 1024;
@@ -52,7 +55,7 @@ export class ControlServer {
       if (end < 0) return;
       clearTimeout(timer);
       socket.off("data", onData);
-      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string };
+      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string; project?: unknown; allowed?: unknown };
       try { request = JSON.parse(buffer.slice(0, end)); } catch { fail("bad_request", "Invalid JSON."); return; }
       if (request.v !== 1) { fail("unsupported_version", "Unsupported control protocol version."); return; }
       if (request.op === "status") { send({ v: 1, ok: true, result: handlers.status() }); socket.end(); return; }
@@ -81,6 +84,16 @@ export class ControlServer {
         if (request.op === "revoke-device" && !deviceId) { fail("bad_request", "A device id is required."); return; }
         if (request.op === "invitation" && !invitationId) { fail("bad_request", "An invitation id is required."); return; }
         void handlers.remote(request.op as RemoteControlOp, { ...(ttlSec ? { ttlSec } : {}), ...(deviceId ? { deviceId } : {}), ...(invitationId ? { invitationId } : {}) }).then(
+          result => { send({ v: 1, ok: true, result }); socket.end(); },
+          (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
+        return;
+      }
+      if (request.op === "cloud-models") {
+        if (!handlers.cloudModels) { fail("unknown_op", "This server cannot change cloud models: restart it after updating."); return; }
+        const project = request.project;
+        if (project !== undefined && (typeof project !== "string" || !project.trim() || project.length > 4096 || project.includes("\0"))) { fail("bad_request", "Name a project by its id, name or folder."); return; }
+        if (project !== undefined && typeof request.allowed !== "boolean") { fail("bad_request", "Say whether cloud models are allowed."); return; }
+        void handlers.cloudModels({ ...(project !== undefined ? { project, allowed: request.allowed as boolean } : {}) }).then(
           result => { send({ v: 1, ok: true, result }); socket.end(); },
           (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
         return;

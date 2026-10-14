@@ -48,7 +48,7 @@ description: Common problems with models, GPUs, Remote, Synthesis and updates, a
 : The flow names a provider this computer doesn't have ready. Add it, or enter its key and turn it on, in **Settings → Models & Providers**, then **Refresh** the module.
 
 **"This project does not allow cloud models"**
-: Switch on **Cloud models** at the bottom of the Synthesis workspace, on the computer that owns the project. On a paired server there is no such switch yet: use the server's local models.
+: Switch on **Cloud models** at the bottom of the Synthesis workspace, on the computer that owns the project. For a project on a paired server, run the command the message names on the server: `sudo local-cognitive-server cloud-models allow <project>`.
 
 **"sandbox-exec does not isolate on this Mac" or "bubblewrap does not isolate here"**
 : Before running tests or an agent's terminal, the app checks that its sandbox really isolates: a process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. One of these succeeded, so nothing runs: tests are Unknown, and a terminal is refused. On Linux, run `sudo local-cognitive-server sandbox` on a server, or check that bubblewrap is installed and user namespaces are allowed. On a Mac, [report it](#reporting-a-problem) with the message.

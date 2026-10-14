@@ -110,6 +110,19 @@ test("a project set up on the server keeps its Synthesis there, and errors name 
   await assert.rejects(f.call("synthesis.runs.list", { projectId: f.device.id }), code("not_found"));
 });
 
+test("a device sees whether a project may use cloud models, and no operation lets it change that", async t => {
+  const f = await setup(t);
+  assert.deepEqual(await f.call("synthesis.cloud.get", { projectId: f.device.id }), { allowed: false });
+  await f.synthesis.setCloudModels(f.device.id, true);
+  assert.deepEqual(await f.call("synthesis.cloud.get", { projectId: f.device.id }), { allowed: true });
+  await assert.rejects(f.call("synthesis.cloud.get", { projectId: f.hostOwned.id }), code("unsupported"), "a project set up on the server stays its own");
+  await assert.rejects(async () => f.call("synthesis.cloud.get", { projectId: f.device.id, allowed: false }), code("invalid_request"), "a read takes nothing else");
+  const ops = createSynthesisOperations({ runtimeManager: {} as RuntimeManager, ledger: {} as CommandLedger, projects: {} as never, scopeOf: () => "", isDraining: () => false });
+  assert.deepEqual(Object.keys(ops).filter(name => /cloud/.test(name)), ["synthesis.cloud.get"]);
+  assert.equal(OPERATIONS["synthesis.cloud.get"]!.kind, "request");
+  assert.equal((await f.projectStore.get(f.device.id))?.cloudModels, true, "unchanged by the reads");
+});
+
 test("while the server drains, new modules and runs are refused; reading still answers", async t => {
   const f = await setup(t);
   f.state.draining = true;

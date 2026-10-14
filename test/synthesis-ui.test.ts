@@ -464,6 +464,31 @@ test("Cloud models is the host's switch for the selected project: it shows the p
   } finally { ui.close(); }
 });
 
+test("on a server Cloud models is shown, not switched: the server's owner sets it with a command", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.fetch = async () => { throw new Error("this computer's API is not asked"); };
+  dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
+  const asked: string[] = [];
+  const transport = { remote: { hostName: "fedora" }, request: async (path: string, options: RequestInit = {}) => {
+    asked.push(`${options.method ?? "GET"} ${path}`);
+    if (path.endsWith("/cloud")) return { allowed: true };
+    if (path.endsWith("/modules")) return { modules: [] };
+    if (path.endsWith("/runs")) return [];
+    return {};
+  } };
+  const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"),
+    { projects: [{ id: "p1", name: "Calc", rootPath: "fedora › Projects › calc" }], active: true, transport, storageKey: "host-1" });
+  try {
+    const status = () => dom.window.document.querySelector(".synthesis-cloud-status") as HTMLElement | null;
+    await until(() => Boolean(status()), "cloud status");
+    assert.equal(status()!.textContent, "Cloud models: on");
+    assert.equal(status()!.getAttribute("title"), "Set on fedora: sudo local-cognitive-server cloud-models deny p1");
+    assert.equal(dom.window.document.querySelector(".synthesis-cloud-toggle"), null, "no switch on a device");
+    assert.ok(asked.includes("GET /projects/p1/cloud"));
+    assert.equal(asked.some(line => line.startsWith("PUT")), false, "nothing is changed from here");
+  } finally { handle.unmount(); dom.window.close(); }
+});
+
 test("Agents lists a run's agents with their model, status and files, and shows one agent's steps; Changes marks deleted files", async () => {
   const run = { ...runEntry("swarm", "accepted"), agents: { total: 2, queued: 0, running: 0, done: 1, failed: 1, cancelled: 0 } };
   const items = [

@@ -17,7 +17,7 @@ import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSour
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
 import { CheckOptions, contractChecksVersion, runCheck } from "./checks";
 import { matchesGlob } from "./checks/architecture";
-import { AgentSpec, AgentSummary, CandidateStore, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
+import { AgentSpec, AgentSummary, CandidateStore, checkedLlm, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
 import { platformSandbox } from "./checks/sandbox";
 import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
@@ -156,6 +156,8 @@ export class SynthesisService {
   private readonly active = new Map<string, {controller: AbortController; done: Promise<void>; interruption: boolean}>();
   /** How often a run a paired device started asks whether the device may still use its project. */
   guardIntervalMs = 5_000;
+  /** How a project's owner allows cloud models here: the workspace's switch, or on a server its command. */
+  cloudConsentHint: (project: {id: string; name: string}) => string = () => "Allow cloud models for the project first.";
   private accepting = true;
   private readonly pendingStarts = new Set<Promise<SynthesisRun>>();
   private reservations = 0;
@@ -195,10 +197,15 @@ export class SynthesisService {
   /** Whether Synthesis may send the project's contract and files to cloud models. Set only on this computer. */
   async cloudModels(projectId: string): Promise<{allowed: boolean}> { return {allowed: (await this.project(projectId)).cloudModels === true}; }
   async setCloudModels(projectId: string, allowed: unknown): Promise<{allowed: boolean}> {
-    await this.project(projectId);
     if (typeof allowed !== "boolean") throw new SynthesisError("allowed must be true or false.");
+    // Withdrawing always works, for an archived or moved project too: restoring one never brings cloud models back.
+    if (allowed) await this.project(projectId);
+    else if (!await this.services.projects.get(projectId)) throw new SynthesisError("Select an existing project.", 404);
     const saved = await this.services.projects.update(projectId, {cloudModels: allowed});
     return {allowed: saved?.cloudModels === true};
+  }
+  private consentRefusal(providerName: string, project: {id: string; name: string}): string {
+    return `This project does not allow cloud models: the contract and project files would be sent to ${providerName}. ${this.cloudConsentHint(project)}`;
   }
   async folders(projectId: string, directory: unknown = "") {
     const project = await this.project(projectId);
@@ -235,7 +242,7 @@ export class SynthesisService {
         const add = (code: string, message: string) => diagnostics.push({severity: "error", code, message, file: flowPath, line: span.start.line, column: span.start.column});
         if (!descriptor) add("SYNTHESIS_PROVIDER", `No provider ${provider} is set up here. Add it in Settings → Models & Providers.`);
         else if (!descriptor.configured) add("SYNTHESIS_PROVIDER", `${descriptor.name} has no key or is turned off. Set it up in Settings → Models & Providers.`);
-        else if (descriptor.capabilities?.local !== true && project.cloudModels !== true) add("SYNTHESIS_CLOUD_CONSENT", `This project does not allow cloud models: the contract and project files would be sent to ${descriptor.name}. Allow cloud models for the project first.`);
+        else if (descriptor.capabilities?.local !== true && project.cloudModels !== true) add("SYNTHESIS_CLOUD_CONSENT", this.consentRefusal(descriptor.name, project));
       }
     }
     const folder = path.posix.dirname(specPath);
@@ -458,6 +465,8 @@ export class SynthesisService {
         return content;
       }
     };
+    // Consent and keys may change during a run: asked again before every request to a cloud provider.
+    const consented = async (providerId: string) => { if (providerId !== "llamacpp") await this.provider(record, providerId); };
     const resolveModel = async (providerId: string, id: unknown): Promise<ManagedModel> => {
       const provider = await this.provider(record, providerId);
       if (!provider.managed) {
@@ -557,7 +566,7 @@ export class SynthesisService {
           const llm = gatedLlm(this.services.agents.llm, concurrency as number, {waited: (provider, ms) => {
             if (Date.now() - told < 30_000) return; told = Date.now();
             void this.event(record, "agents", `${provider} asked to slow down: fewer requests at once, retrying in ${Math.round(ms / 1000)} s`, "running", {line: span.start.line}).catch(() => undefined);
-          }});
+          }, before: consented});
           const {results, summaries} = await runAgents({llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
             module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
             failFast: named.on_error === "fail", checkoutRequired: named.checkout === "required", signal,
@@ -578,7 +587,7 @@ export class SynthesisService {
           const scope = named.paths;
           if (scope !== undefined && (!scope || typeof scope !== "object" || !permissions.has(scope) || (scope as Permission).access !== "read")) throw new SynthesisError("paths is a files.read(...) of the files the agents will read.");
           const paths = scope ? await new SynthesisFileTools(this.directory, store, {read: (scope as Permission).patterns, write: [], delete: []}).readable(400) : undefined;
-          value = await splitGoal(this.services.llm, model, {goal: String(args[0] ?? ""), count: Number(args[1]), module: record.spec.module, description: record.spec.description,
+          value = await splitGoal(checkedLlm(this.services.llm, consented), model, {goal: String(args[0] ?? ""), count: Number(args[1]), module: record.spec.module, description: record.spec.description,
             context: args[2] === undefined ? undefined : JSON.stringify(args[2]), paths, instruction: typeof named.instruction === "string" ? named.instruction : undefined, signal,
             spent: usage => this.usage(record, usage)});
           break;
@@ -592,7 +601,7 @@ export class SynthesisService {
           if (refusal) throw new SynthesisError(refusal);
           const model = (receiver as {model: ManagedModel}).model;
           await this.event(record, "agent.generate", `Writing ${file} from ${(args[2] as TaskResult[]).length} results`, "running", {model: model.displayName, file});
-          const content = await synthesizeResults(this.services.llm, model, {results: args[2] as TaskResult[], file, module: record.spec.module, description: record.spec.description,
+          const content = await synthesizeResults(checkedLlm(this.services.llm, consented), model, {results: args[2] as TaskResult[], file, module: record.spec.module, description: record.spec.description,
             instruction: typeof named.instruction === "string" ? named.instruction : undefined,
             feedback: Array.isArray(named.feedback) ? named.feedback.flat(2).filter((item): item is string => typeof item === "string") : undefined,
             current: Array.isArray(named.feedback) && named.feedback.length ? record.files[file] : undefined, signal,
@@ -767,8 +776,9 @@ export class SynthesisService {
     const descriptor = this.services.providers?.().find(item => item.id === providerId);
     if (!descriptor) throw new SynthesisError(`No provider ${providerId} is set up here. Add it in Settings → Models & Providers.`);
     if (!descriptor.configured) throw new SynthesisError(`${descriptor.name} has no key or is turned off. Set it up in Settings → Models & Providers.`);
-    if (descriptor.capabilities?.local !== true && (await this.project(record.projectId)).cloudModels !== true) {
-      throw new SynthesisError(`This project does not allow cloud models: the contract and project files would be sent to ${descriptor.name}. Allow cloud models for the project first.`);
+    if (descriptor.capabilities?.local !== true) {
+      const project = await this.project(record.projectId);
+      if (project.cloudModels !== true) throw new SynthesisError(this.consentRefusal(descriptor.name, project));
     }
     return {id: descriptor.id, name: descriptor.name, managed: MANAGED_PROVIDERS.has(descriptor.id)};
   }
@@ -793,6 +803,8 @@ export class SynthesisService {
     const web = (name: string) => /\.(?:js|html|css)$/.test(name);
     for (const file of files) {
       signal.throwIfAborted();
+      // Consent withdrawn while earlier files were written stops the next one.
+      if (model.providerId !== "llamacpp") await this.provider(record, model.providerId);
       await this.event(record, "agent.generate", `Writing ${file}`, "running", {model: model.displayName, file});
       const prompt = [
         `Implement only the file ${file}. Other files: ${record.spec.artifacts.filter(item => item !== file).join(", ") || "none"}.`,

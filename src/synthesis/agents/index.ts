@@ -6,4 +6,4 @@ export { MAX_TASK_CHARS, permission, splitGoal, synthesizeResults, terminalPermi
 export { TERMINAL_COMMANDS } from "./Terminal";
 export type { TerminalHost } from "./Terminal";
 export type { Permission } from "./teamwork";
-export { gatedLlm, slowDown } from "./ProviderGate";
+export { checkedLlm, gatedLlm, slowDown } from "./ProviderGate";
