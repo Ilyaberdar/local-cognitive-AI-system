@@ -75,7 +75,7 @@ candidate = await lead.synthesize(candidate, spec, results,
 - **Local agents** share one loaded model through its slots: `models.load(selected, slots = 6, context = 16384)` answers six agents at once. See [Models](/guides/models/#slots-for-parallel-agents).
 - **Cloud agents** need the project's **Cloud models** switch. When a provider answers that it is rate-limited, the run sends it fewer requests at once and repeats the refused one after a pause, without spending the agent's turns. An agent's request may take up to 10 minutes, so a slow model's long answer isn't cut off.
 
-The run's **Agents** tab counts the agents that are queued, running, done and failed, and lists one row per task: its model, steps, tokens, time, the files it wrote and its error. Click a row to see that agent's steps: each action, its result or refusal, and the answer.
+The run's **Agents** tab counts the agents that are queued, running, done and failed. The agents are listed on the left, one per task, with the model, steps, tokens, time, the files each wrote and its error; the chosen agent's steps are on the right, each action with its result or refusal, and the answer. The first agent that failed is shown until you choose another.
 
 *Checked live: 20 DeepSeek agents reviewed a folder of this app's code in 5 minutes. 18 of them finished and wrote 15 notes, and the lead's report passed the contract.*
 

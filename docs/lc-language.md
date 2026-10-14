@@ -740,7 +740,7 @@ With `terminal(...)` among its tools, an agent can build and test as it works: `
 - At most 120 s a command, and 240 s of CPU time for each of its processes; output bounded. Whatever a command leaves running is killed when it ends. `git` only reads (log, show, diff, blame, status, grep…); `npm` runs `test`, `run` and `ls`.
 - Before a run gives agents a terminal, the sandbox shows it isolates: a process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. Any success, and the run stops with the reason (contract tests are Unknown for the same reason). Windows has no sandbox yet, so there a terminal is refused.
 
-The run shows its agents under **Agents**: how many are queued, running, done and failed, one row per task (model, steps, tokens, time, files, error), and each agent's steps. The run's token counts include every agent's.
+The run shows its agents under **Agents**: how many are queued, running, done and failed, the agents one per task (model, steps, tokens, time, files, error), and beside them the chosen agent's steps. The run's token counts include every agent's.
 
 ## Acceptance and run outcomes
 
