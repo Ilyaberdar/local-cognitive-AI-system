@@ -57,6 +57,13 @@ test("a project is found by its id, its name or its folder, never by a guess", t
   assert.throws(() => findProject(list, "REVIEW"), (error: {code?: string}) => error.code === "ambiguous");
   assert.throws(() => findProject(list, path.join(temp, "link")), (error: Error & {code?: string}) => error.code === "ambiguous" && /leads to/.test(error.message), "a folder through a link");
   assert.equal(findProject(list.slice(0, 3), "REVIEW").id, list[0]!.id, "a name in another case, when only one project has it");
+  // Each form names one thing: a project named like a folder or an id is not reached by that text.
+  const posing = [...list, project("55555555-5555-4555-8555-555555555555", "/srv/b", "/srv/e"), project("66666666-6666-4666-8666-666666666666", "11111111-1111-4111-8111-111111111111", "/srv/f")];
+  assert.equal(findProject(posing, "/srv/b").id, list[1]!.id, "an absolute path is a folder, never a name");
+  assert.equal(findProject(posing, "11111111-1111-4111-8111-111111111111").id, list[0]!.id, "an id is an id, never a name");
+  assert.equal(findProject(posing, "11111111-1111-4111-8111-111111111111".toUpperCase()).id, list[0]!.id);
+  assert.throws(() => findProject(posing, "99999999-9999-4999-8999-999999999999"), (error: {code?: string}) => error.code === "project_unknown");
+  assert.throws(() => findProject(posing, "/srv/nothing"), (error: {code?: string}) => error.code === "project_unknown");
   assert.throws(() => findProject(list, "Twin"), (error: Error & {code?: string}) => error.code === "ambiguous" && /\/srv\/b/.test(error.message) && /\/srv\/c/.test(error.message));
   assert.throws(() => findProject(list, "a"), (error: {code?: string}) => error.code === "project_unknown", "a relative path is a name, not a folder");
   assert.throws(() => findProject(list, "Nothing"), (error: {code?: string}) => error.code === "project_unknown");

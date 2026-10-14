@@ -17,23 +17,29 @@ const view = (project: Project): CloudModelsProject => ({ id: project.id, name: 
 
 const realpath = (file: string) => { try { return fs.realpathSync(file); } catch { return undefined; } };
 
-/** The project an admin named: its id, its name or its folder as an absolute path. A server's
- * project names and folders are mostly chosen on computers, so they never steer the owner's choice:
- * a name matches every project that has it in any letter case (one made to look like another is
- * refused, never preferred), and a folder reached through a link is refused. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const unknown = () => new ControlError("No project on this server has that id, name or folder. See: sudo local-cognitive-server cloud-models", "project_unknown");
+
+/** The project an admin named. A server's project names and folders are mostly chosen on computers,
+ * so they never steer the owner's choice:
+ * - each form names one thing: an id is looked up only among ids, an absolute path only among
+ *   folders, anything else only among names (a project named like a folder or an id is not reached
+ *   by that text);
+ * - a name matches every project that has it in any letter case, so one made to look like another
+ *   is refused, never preferred;
+ * - a folder reached through a link is refused. */
 export function findProject(projects: Project[], query: string): Project {
-  const byId = projects.find(project => project.id === query);
-  if (byId) return byId;
-  let found = projects.filter(project => project.name.toLowerCase() === query.toLowerCase());
+  if (UUID.test(query)) return projects.find(project => project.id.toLowerCase() === query.toLowerCase()) ?? (() => { throw unknown(); })();
+  let found: Project[];
   // A relative path would be read from / (the command runs there): only an absolute one is a folder.
-  if (!found.length && path.isAbsolute(query)) {
+  if (path.isAbsolute(query)) {
     const target = path.resolve(query), real = realpath(target);
     if (real !== undefined && real !== target) throw new ControlError(`${printable(target)} leads to ${printable(real)}: name the project by its id or by its own folder.`, "ambiguous");
     found = projects.filter(project => project.rootPath === target);
-  }
+  } else found = projects.filter(project => project.name.toLowerCase() === query.toLowerCase());
   if (found.length === 1) return found[0]!;
   if (found.length > 1) throw new ControlError(`${found.length} projects have that name. Name one by its id:\n${found.map(project => `  ${project.id}  ${printable(project.name)}  ${printable(project.rootPath)}${project.origin === "device" ? "  (made from a computer)" : ""}`).join("\n")}`, "ambiguous");
-  throw new ControlError("No project on this server has that id, name or folder. See: sudo local-cognitive-server cloud-models", "project_unknown");
+  throw unknown();
 }
 
 /** The control socket's `cloud-models`: the server's owner allows or forbids a project's Synthesis
