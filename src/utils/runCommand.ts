@@ -10,8 +10,9 @@ export const runCommand = (
   timeoutMs: number,
   signal?: AbortSignal,
   onOutput?: CommandOutputHandler,
-  /** `env` replaces the app's own environment (a sandboxed check passes only what it allows). */
-  options: { env?: NodeJS.ProcessEnv } = {}
+  /** `env` replaces the app's own environment (a sandboxed check passes only what it allows).
+   * `killGroup`: when the command ends, whatever it left running in its process group is killed too. */
+  options: { env?: NodeJS.ProcessEnv; killGroup?: boolean; input?: string } = {}
 ): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean }> =>
   new Promise((resolve, reject) => {
     signal?.throwIfAborted();
@@ -71,8 +72,9 @@ export const runCommand = (
     child.stdout.on("data", (chunk: string) => { stdoutTruncated ||= stdout.length + chunk.length > 65_536; stdout = append(stdout, chunk); observe("stdout", chunk); });
     child.stderr.on("data", (chunk: string) => { stderrTruncated ||= stderr.length + chunk.length > 65_536; stderr = append(stderr, chunk); observe("stderr", chunk); });
     child.on("error", (error) => { cleanup(); reject(error); });
+    if (options.input !== undefined) child.stdin.end(options.input);
     child.on("close", (code) => {
-      if (aborted || timedOut) kill("SIGKILL");
+      if (aborted || timedOut || options.killGroup) kill("SIGKILL");
       cleanup();
       if (aborted) reject(signal?.reason ?? new Error("Command cancelled."));
       else resolve({ exitCode: timedOut ? 124 : code ?? 1, stdout, stderr, timedOut,

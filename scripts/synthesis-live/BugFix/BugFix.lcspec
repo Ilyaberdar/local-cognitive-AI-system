@@ -1,0 +1,15 @@
+module BugFix version "1" {
+    target { language = TypeScript; }
+    description = "Three small TypeScript modules under app/src, each with a bug its tests in app/tests show: a stack, money formatting and days between dates. The fixes keep each module's public functions as they are.";
+
+    artifacts {
+        file "src/stack.ts";
+        file "src/money.ts";
+        file "src/dates.ts";
+    }
+
+    evaluate "contract-v1" {
+        hard shape = Exports("src/stack.ts", ["Stack"]);
+        hard tests = Tests("tests/stack.test.ts", "tests/money.test.ts", "tests/dates.test.ts", timeout = 30s);
+    }
+}

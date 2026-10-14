@@ -607,3 +607,37 @@ test("terminal: a run refuses agents with a terminal where no sandbox isolates, 
   assert.equal(f.agentRequests.length, 0);
   assert.ok(compileProgram(spec, flow(`t = terminal(allow = ["node"]);`).replace('policy = "agents-v1";', 'policy = "cloud-files-v1";')).diagnostics.some(item => item.code === "FLOW_POLICY_CAPABILITY"));
 });
+
+test("terminal, security: links a command plants in its copy lead nowhere: the app never writes through them, and they open nothing to reading", { skip: !sandboxed }, async (t) => {
+  const { platformSandbox } = await import("../src/synthesis/checks/sandbox");
+  if (await platformSandbox().unavailable()) { t.skip("no working sandbox here"); return; }
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "lcai-terminal-escape-"));
+  t.after(() => fs.rm(outside, {recursive: true, force: true}));
+  await fs.writeFile(path.join(outside, "secret.txt"), "outside secret");
+  const node = (code: string) => tool("terminal.run", {command: "node", args: ["-e", code]});
+  const f = await fixture(t, {script: steps({ attacker: [
+    // The copy's review folder becomes a link out of it; the agent then changes a candidate file there.
+    node(`const fs=require('fs');fs.rmSync('review',{recursive:true,force:true});fs.symlinkSync(${JSON.stringify(outside)},'review');console.log('planted')`),
+    tool("file.write", {path: "review/notes/escape.md", content: "should stay in the run", expectedVersion: "missing"}),
+    node("console.log('synced')"),
+    // node_modules becomes a link to the outside folder: reading through it must still fail.
+    node(`const fs=require('fs');fs.rmSync('node_modules',{recursive:true,force:true});fs.symlinkSync(${JSON.stringify(outside)},'node_modules');console.log('swapped')`),
+    node("try{console.log(require('fs').readFileSync('node_modules/secret.txt','utf8'))}catch(e){console.log('denied',e.code)}")
+  ]})});
+  await fs.mkdir(path.join(f.root, "node_modules", "pkg"), {recursive: true});
+  await fs.writeFile(path.join(f.root, "node_modules", "pkg", "index.js"), "module.exports = 1;");
+  await fs.mkdir(path.join(f.root, "review", "notes"), {recursive: true});
+  await fs.writeFile(path.join(f.root, "review", "notes", "keep.md"), "kept");
+  const result = await f.run(`attacker = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**", "review/**"), files.write("review/notes/**"), terminal(allow = ["node"])], steps = 10);
+    results = await parallel_map(attacker, ["attacker"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const lines = (await f.service.agent(result.id, 0)).final!.split("\n");
+  await assert.rejects(fs.access(path.join(outside, "notes", "escape.md")), {code: "ENOENT"}, "nothing was written through the planted link");
+  assert.doesNotMatch(lines.join("\n"), /outside secret/, "the swapped node_modules link opens nothing");
+  assert.match(lines[2], /synced/, "a copy the command broke is made again, and the terminal goes on");
+  assert.match(lines[4], /denied/);
+  const { toolchainPrefix } = await import("../src/synthesis/agents/Terminal");
+  assert.equal(toolchainPrefix(path.join(os.homedir(), "Documents")), false, "a folder of the user's is never a tool's prefix");
+  assert.equal(toolchainPrefix(path.join(os.homedir(), ".nvm", "versions", "node", "v22.18.0")), true);
+  assert.equal(toolchainPrefix("/opt/homebrew"), true);
+});

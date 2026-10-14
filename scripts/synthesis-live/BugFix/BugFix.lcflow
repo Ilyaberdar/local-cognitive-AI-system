@@ -1,0 +1,26 @@
+implement BugFix using "contract-v1" {
+    limit iterations 2, time 30m, steps 20000;
+    policy = "agents-v1";
+
+    spec = freeze(BugFix.spec);
+    candidate = checkout("app");
+
+    modules = ["stack", "money", "dates"];
+    tasks = [];
+    for (name in modules) {
+        tasks = append(tasks, "Make app/tests/" + name + ".test.ts pass by fixing app/src/" + name + ".ts. Run the test yourself with terminal.run {\"command\":\"node\",\"args\":[\"--test\",\"tests/" + name + ".test.ts\"],\"cwd\":\"app\"}, fix the file, and run it again until it passes.");
+    }
+
+    fixer = agent(provider = "deepseek", model = "deepseek-flash",
+        tools = [files.read("app/**"), files.write("app/src/**"), terminal(allow = ["node", "ls", "cat"])],
+        instructions = "Change only the file of your task. Answer when its test passes, with the test's last output.",
+        steps = 14);
+    results = await parallel_map(fixer, tasks, concurrency = 3);
+
+    evidence = await evaluate(candidate, spec);
+    verdict = verify(spec, evidence);
+    if (verdict.status == Pass) {
+        return accept(candidate, evidence);
+    }
+    return needs_review(evidence);
+}

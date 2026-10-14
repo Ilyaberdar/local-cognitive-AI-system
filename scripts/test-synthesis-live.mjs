@@ -8,6 +8,7 @@
 //
 // --module: a folder with Name.lcspec, Name.lcflow and the contract's tests (copied to Synthesis/Name).
 // --project: folders of this repository copied into the project (default: none), for agents to read.
+// --seed: a folder whose contents are copied to the project's root.
 // --keep: keep the temporary folder (its path is printed) to look at the run and its agents.
 // --local: a GGUF file imported into a local llama.cpp runtime for the run (provider "llamacpp"), from
 //          this repository's resources/llama (or --runtime <folder>); local models need no keys.
@@ -79,6 +80,8 @@ const firstProvider = configured[0];
 const llm = new LLMService(registry, firstProvider, logger, new OutputSanitizer());
 
 for (const folder of (option("project") ?? "").split(",").filter(Boolean)) fs.cpSync(path.join(root, folder), path.join(project, folder), { recursive: true });
+// --seed: a folder whose contents become the project's (a small project made for the check).
+if (option("seed")) fs.cpSync(path.resolve(option("seed")), project, { recursive: true });
 const name = path.basename(moduleDir);
 fs.cpSync(moduleDir, path.join(project, "Synthesis", name), { recursive: true });
 

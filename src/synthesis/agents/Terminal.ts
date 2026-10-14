@@ -48,8 +48,10 @@ function program(command: TerminalCommand): Promise<string | undefined> {
       const dirs = [...searchPath(), ...(newest && ["node", "npm", "npx"].includes(command) ? [path.join(nvm, newest, "bin")] : [])];
       for (const dir of dirs) {
         const candidate = path.join(dir, command);
-        // macOS's /usr/bin/python3 is a shim that fails in a sandbox; the real one is xcrun's.
+        // macOS's /usr/bin/python3 is a shim that fails in a sandbox; the real one is xcrun's. A program
+        // in the user's own folders (other than nvm's) would open them to reading: not taken.
         if (candidate === "/usr/bin/python3" && process.platform === "darwin") continue;
+        if (underHome(candidate) && !candidate.startsWith(`${nvmDir()}${path.sep}`)) continue;
         if (await executableAt(candidate)) return candidate;
       }
       return undefined;
@@ -59,6 +61,11 @@ function program(command: TerminalCommand): Promise<string | undefined> {
   }
   return answer;
 }
+/** A toolchain's own prefix (Homebrew's, /usr/local, an nvm version), never a folder of the user's. */
+const underHome = (dir: string) => dir === os.homedir() || dir.startsWith(`${os.homedir()}${path.sep}`);
+const nvmDir = () => path.join(os.homedir(), ".nvm", "versions", "node");
+export const toolchainPrefix = (dir: string): boolean =>
+  underHome(dir) ? dir.startsWith(`${nvmDir()}${path.sep}`) : dir.split(path.sep).filter(Boolean).length >= 2;
 const clip = (text: string) => text.length <= MAX_OUTPUT_CHARS ? text
   : `${text.slice(0, Math.floor(MAX_OUTPUT_CHARS * 2 / 3))}\n[… ${text.length - MAX_OUTPUT_CHARS} characters left out …]\n${text.slice(-Math.floor(MAX_OUTPUT_CHARS / 3))}`;
 
@@ -66,6 +73,11 @@ const clip = (text: string) => text.length <= MAX_OUTPUT_CHARS ? text
  * current changes, without network, writing only in that copy (never the candidate or the project). */
 export class AgentTerminal {
   private copy?: Promise<string>;
+  /** The project folders the copy links (its node_modules, its .git), as resolved when the copy was made:
+   * never read back from the copy, where a command could have replaced them. */
+  private linked: string[] = [];
+  /** How many copies the agent has had: a broken one is replaced by a new folder, never reused. */
+  private generation = 0;
   constructor(private readonly host: TerminalHost, private readonly view: TerminalView, private readonly name: string, private readonly allowed: string[]) {}
 
   async run(command: string, args: string[], cwd: string, timeoutSeconds: number, signal?: AbortSignal): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> {
@@ -80,18 +92,26 @@ export class AgentTerminal {
     if (!executable) throw new Error(`${command} is not installed on this computer.`);
     const reason = await this.host.sandbox.unavailable();
     if (reason) throw new Error(`The terminal needs a sandbox: ${reason}`);
-    const work = await this.prepare();
-    await this.sync(work);
+    let work = await this.prepare();
+    try { await this.sync(work); }
+    catch {
+      // A command broke its own copy (a folder made a link out of it, which the sandbox refused):
+      // the copy is the agent's scratch, so it starts again, in a new folder.
+      await this.dispose();
+      this.copy = undefined; this.linked = []; this.synced.clear(); this.generation++;
+      work = await this.prepare();
+      await this.sync(work);
+    }
     const folder = path.resolve(work, cwd || ".");
     if (folder !== work && !folder.startsWith(`${work}${path.sep}`)) throw new Error("cwd is a folder of the project, such as src.");
     const real = await fs.realpath(executable).catch(() => executable);
-    // The tool's folders, read-only: its own, its real place (Homebrew, nvm) and that one's parent
-    // (npm's own modules); the project's node_modules and git history, when the copy links them.
-    const readable = [path.dirname(executable), path.dirname(real), path.dirname(path.dirname(real)), path.dirname(path.dirname(executable)),
-      ...await this.links(work)];
+    // The tool's folders, read-only: its own and its real place (Homebrew, nvm); their parents only
+    // where they are a toolchain's (npm's own modules), never a folder of the user's; the project's
+    // node_modules and git history, when the copy links them.
+    const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...this.linked];
     const wrapped = this.host.sandbox.wrap(executable, args, work, readable);
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
-      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" } });
+      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, killGroup: true });
     const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
     return { exitCode: result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout)), stderr: clip(hide(result.stderr)) };
   }
@@ -106,7 +126,7 @@ export class AgentTerminal {
    * agents), text files only, within bounds; the project's node_modules and .git linked read-only. */
   private prepare(): Promise<string> {
     this.copy ??= (async () => {
-      const work = path.join(this.host.workRoot, this.name);
+      const work = path.join(this.host.workRoot, this.generation ? `${this.name}-${this.generation}` : this.name);
       await fs.rm(work, { recursive: true, force: true });
       await fs.mkdir(work, { recursive: true });
       const files = await this.view.readable(MAX_COPY_FILES);
@@ -115,37 +135,41 @@ export class AgentTerminal {
       for (const file of files) {
         const target = path.join(work, ...file.split("/"));
         await fs.mkdir(path.dirname(target), { recursive: true });
-        if (Object.hasOwn(candidate.files, file)) { await fs.writeFile(target, candidate.files[file]!); continue; }
+        // The copy is new and no command has run in it yet: the app may still write it itself.
+        if (Object.hasOwn(candidate.files, file)) { await fs.writeFile(target, candidate.files[file]!); this.synced.set(file, candidate.files[file]!); continue; }
         const content = await this.view.content(file).catch(() => null);
         if (content === null || content.includes("\0")) continue;
         copied += Buffer.byteLength(content);
         if (copied > MAX_COPY_BYTES) throw new Error("The files this agent may read are too many for a terminal copy (512 MB): narrow its read rights.");
         await fs.writeFile(target, content);
       }
+      // Linked only when they are the project's own (a link elsewhere would open that folder to reading).
+      const root = await fs.realpath(this.view.root);
       for (const [name, wanted] of [["node_modules", true], [".git", this.host.git]] as const) {
-        const source = path.join(this.view.root, name);
-        if (wanted && await fs.lstat(source).then(stat => stat.isDirectory(), () => false)) await fs.symlink(await fs.realpath(source), path.join(work, name)).catch(() => undefined);
+        if (!wanted) continue;
+        const source = await fs.realpath(path.join(this.view.root, name)).catch(() => undefined);
+        if (!source || !source.startsWith(`${root}${path.sep}`) || !await fs.stat(source).then(stat => stat.isDirectory(), () => false)) continue;
+        await fs.symlink(source, path.join(work, name));
+        this.linked.push(source);
       }
       return work;
     })();
     return this.copy;
   }
-  /** The candidate's files as the agent sees them now: its own and the others' submitted changes. */
+  /** The candidate's files as the agent sees them now: its own and the others' submitted changes.
+   * Once a command has run, the copy is the sandbox's to change (a folder may now be a link out of it),
+   * so the app never writes there itself: a writer inside the same sandbox does, which can write
+   * nowhere but the copy whatever links it meets. */
+  private synced = new Map<string, string | null>();
   private async sync(work: string): Promise<void> {
     const { files, removed } = this.view.candidate();
-    for (const [file, content] of Object.entries(files)) {
-      const target = path.join(work, ...file.split("/"));
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      if (await fs.readFile(target, "utf8").catch(() => null) !== content) await fs.writeFile(target, content);
+    const changes: Array<[string, string | null]> = [...Object.entries(files).filter(([file, content]) => this.synced.get(file) !== content),
+      ...removed.filter(file => this.synced.get(file) !== null).map(file => [file, null] as [string, null])];
+    for (const [file, content] of changes) {
+      const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", content === null ? 'rm -f -- "$1"' : 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", file], work, []);
+      const result = await runCommand(wrapped.executable, wrapped.args, work, 20_000, undefined, undefined, { env: wrapped.env, killGroup: true, ...(content === null ? {} : { input: content }) });
+      if (result.exitCode !== 0) throw new Error(`The terminal's copy could not take ${file}: ${result.stderr.trim().split("\n")[0] ?? "it refused"}.`);
+      this.synced.set(file, content);
     }
-    for (const file of removed) await fs.rm(path.join(work, ...file.split("/")), { force: true });
-  }
-  private async links(work: string): Promise<string[]> {
-    const linked: string[] = [];
-    for (const name of ["node_modules", ".git"]) {
-      const link = path.join(work, name);
-      if (await fs.lstat(link).then(stat => stat.isSymbolicLink(), () => false)) linked.push(await fs.readlink(link));
-    }
-    return linked;
   }
 }
