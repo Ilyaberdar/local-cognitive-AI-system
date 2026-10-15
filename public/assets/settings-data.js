@@ -13,6 +13,12 @@ export function createSettingsData({ request, onSaved }) {
       return next;
     },
     discoverModels: body => request('/providers/discover', { method: 'POST', body: JSON.stringify(body), timeoutMs: 30000 }),
+    /** A server's Add provider: it saves the preset at its own address and answers with the id it chose. */
+    async addProvider(body) {
+      const response = await request('/providers', { method: 'POST', body: JSON.stringify(body), timeoutMs: 60000 });
+      if (response?.settings) onSaved(response, {});
+      return response;
+    },
     testProvider: (id, model, timeoutMs) => request(`/providers/${encodeURIComponent(id)}/test`, {
       method: 'POST', body: JSON.stringify({ model }), timeoutMs: id === 'llamacpp' ? 0 : Math.max(60000, timeoutMs || 0) + 30000
     }),

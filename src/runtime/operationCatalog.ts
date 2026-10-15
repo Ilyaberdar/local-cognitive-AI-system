@@ -111,7 +111,10 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   // hash of a key is ever stored in the command ledger.
   "settings.get": { kind: "request", timeoutMs: 15_000 },
   "settings.update": { kind: "request", timeoutMs: 120_000 },
-  "providers.test": { kind: "request", timeoutMs: 330_000 }
+  "providers.test": { kind: "request", timeoutMs: 330_000 },
+  // Add provider from a device: requests (never in the command ledger, which would keep the key's hash).
+  "providers.discover": { kind: "request", timeoutMs: 30_000 },
+  "providers.add": { kind: "request", timeoutMs: 60_000 },
 };
 
 export const operationsOfKind = (kind: OperationKind): string[] => Object.entries(OPERATIONS).filter(([, spec]) => spec.kind === kind).map(([name]) => name);

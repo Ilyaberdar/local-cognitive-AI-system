@@ -83,7 +83,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   const context = () => getContext() || {};
   const providerCatalog = id => (context().providers || []).find(provider => provider.id === id)?.catalog;
   /** A provider the user added (an OpenAI-compatible service that is not one every installation has). */
-  const isAddedProvider = (id, entry) => entry?.kind === 'openai-compatible' && !(context().providerPresets || []).some(preset => preset.id === id && preset.builtIn);
+  const isAddedProvider = (id, entry) => entry?.kind === 'openai-compatible' && entry?.source !== 'environment' && !(context().providerPresets || []).some(preset => preset.id === id && preset.builtIn);
   let addProviderStatus;
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
@@ -605,14 +605,16 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   }
   /** Settings → Add provider: a preset (or any OpenAI-compatible address), its key and model; saved,
    * then tested, then its own page opens with the test's result. */
-  function addProviderPage() {
-    const presets = (context().providerPresets || []).filter(preset => !preset.builtIn);
+  function addProviderPage(server) {
+    // On a server: its own presets, no address (the server has its own for each), no other service (added
+    // in the server's environment file by its owner).
+    const presets = server ? server.presets() : (context().providerPresets || []).filter(preset => !preset.builtIn);
     const first = presets[0];
-    return `<p class="settings-description">Connect a cloud service that speaks the OpenAI API. Its key stays on this device; chats and workflows can then use its models.</p>
+    return `<p class="settings-description">${server ? `Connect a cloud service on ${escape(server.hostName())}. Its key is saved there and never shown again; chats, agents and Synthesis on ${escape(server.hostName())} can then use its models. Another OpenAI-compatible service is added in ${escape(server.hostName())}'s environment file.` : 'Connect a cloud service that speaks the OpenAI API. Its key stays on this device; chats and workflows can then use its models.'}</p>
       <form id="add-provider-form" class="settings-form"><div class="settings-rows">
-        <div class="settings-row"><div><label for="add-provider-preset">Service</label><p>Known services fill in their address and models.</p></div><div class="settings-control"><select id="add-provider-preset" data-add-provider-preset>${presets.map(preset => `<option value="${escape(preset.id)}">${escape(preset.name)}</option>`).join('')}<option value="">Other OpenAI-compatible service</option></select></div></div>
+        <div class="settings-row"><div><label for="add-provider-preset">Service</label><p>Known services fill in their address and models.</p></div><div class="settings-control"><select id="add-provider-preset" data-add-provider-preset>${presets.map(preset => `<option value="${escape(preset.id)}">${escape(preset.name)}</option>`).join('')}${server ? '' : '<option value="">Other OpenAI-compatible service</option>'}</select></div></div>
         <div class="settings-row"><div><label for="add-provider-name">Name</label><p>Shown in Settings and where you choose a model.</p></div><div class="settings-control"><input id="add-provider-name" data-add-field="name" maxlength="80" required value="${escape(first?.name ?? '')}" /></div></div>
-        <div class="settings-row"><div><label for="add-provider-address">Address</label><p>Its OpenAI-compatible API address.</p></div><div class="settings-control"><input id="add-provider-address" data-add-field="baseUrl" type="url" required placeholder="https://api.example.com/v1" value="${escape(first?.baseUrl ?? '')}" /></div></div>
+        ${server ? '' : `<div class="settings-row"><div><label for="add-provider-address">Address</label><p>Its OpenAI-compatible API address.</p></div><div class="settings-control"><input id="add-provider-address" data-add-field="baseUrl" type="url" required placeholder="https://api.example.com/v1" value="${escape(first?.baseUrl ?? '')}" /></div></div>`}
         <div class="settings-row"><div><label for="add-provider-key">API key</label><p data-add-key-help>${first ? `<a href="${escape(first.keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : 'From the service’s console.'}</p></div><div class="settings-control"><input id="add-provider-key" data-add-field="apiKey" type="password" autocomplete="new-password" required placeholder="Enter API key" /></div></div>
         <div class="settings-row"><div><label for="add-provider-model">Model</label><p>Chosen from the service’s own list once it is added and tested.</p></div><div class="settings-control"><select id="add-provider-model" disabled><option>After the test</option></select></div></div>
       </div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status ${addProviderStatus?.error ? 'is-error' : ''}" data-add-provider-status>${escape(addProviderStatus?.text ?? 'Nothing is saved until you add it.')}</span><button type="submit" class="primary-button">Add & test</button></div></form>`;
@@ -629,32 +631,36 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function bindAddProvider() {
     const form = root.querySelector('#add-provider-form');
     if (!form) return;
-    const presets = context().providerPresets || [], field = name => form.querySelector(`[data-add-field="${name}"]`);
+    // Fixed when the page opens: a server's Add provider stays that server's.
+    const server = serverFor(page), store = placeOf(page).store;
+    const presets = server ? server.presets() : context().providerPresets || [], field = name => form.querySelector(`[data-add-field="${name}"]`);
     const status = (text, error = false) => { addProviderStatus = { text, error }; const slot = form.querySelector('[data-add-provider-status]'); if (slot) { slot.textContent = text; slot.classList.toggle('is-error', error); } };
     form.querySelector('[data-add-provider-preset]').addEventListener('change', event => {
       const preset = presets.find(item => item.id === event.target.value);
       field('name').value = preset?.name ?? '';
-      field('baseUrl').value = preset?.baseUrl ?? '';
+      if (field('baseUrl')) field('baseUrl').value = preset?.baseUrl ?? '';
       form.querySelector('[data-add-key-help]').innerHTML = preset ? `<a href="${escape(preset.keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : 'From the service’s console.';
     });
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!form.reportValidity()) return;
       const preset = presets.find(item => item.id === form.querySelector('[data-add-provider-preset]').value);
-      const name = field('name').value.trim(), baseUrl = field('baseUrl').value.trim(), apiKey = field('apiKey').value.trim();
-      const id = newProviderId(preset?.id ?? name);
+      const name = field('name').value.trim(), baseUrl = field('baseUrl')?.value.trim() ?? '', apiKey = field('apiKey').value.trim();
+      let id = newProviderId(preset?.id ?? name);
       const submit = form.querySelector('button[type="submit"]');
       submit.disabled = true;
       // The service's own list is the first check of the address and key; nothing is saved before it.
-      status('Checking the address and key…');
+      status(server ? 'Checking the key…' : 'Checking the address and key…');
       let models;
-      try { models = (await data.discoverModels({ baseUrl, apiKey, ...(preset ? { dialect: preset.dialect } : {}) })).models; }
+      try { models = (await store.discoverModels(server ? { preset: preset?.id, apiKey } : { baseUrl, apiKey, ...(preset ? { dialect: preset.dialect } : {}) })).models; }
       catch (error) { submit.disabled = false; status(error.message || 'The service did not answer.', true); return; }
       if (!models?.length) { submit.disabled = false; status('The service lists no models at this address.', true); return; }
       const model = models.includes(preset?.model) ? preset.model : models[0];
       status('Adding…');
       try {
-        await data.save({ providers: { [id]: { kind: 'openai-compatible', dialect: preset?.dialect ?? 'chat', ...(preset ? { preset: preset.id } : {}), name,
+        // A server chooses the id (and keeps the address); here it is made from the preset or the name.
+        if (server) id = (await store.addProvider({ preset: preset?.id, apiKey, model, name })).id;
+        else await store.save({ providers: { [id]: { kind: 'openai-compatible', dialect: preset?.dialect ?? 'chat', ...(preset ? { preset: preset.id } : {}), name,
           baseUrl, apiKey, model, enabled: true, timeoutMs: 300000 } } });
       } catch (error) {
         submit.disabled = false;
@@ -663,10 +669,20 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       }
       status('Added. Testing…');
       let result;
-      try { result = await data.testProvider(id, model, 300000); } catch (error) { result = { ok: false, message: error.message }; }
-      results.set(`providers/${id}`, result);
+      try { result = await store.testProvider(id, model, 300000); } catch (error) { result = { ok: false, message: error.message }; }
+      results.set(server ? `${server.key}\u0000providers/${id}` : `providers/${id}`, result);
       addProviderStatus = undefined;
       location.hash = `#/settings/providers/${id}`;
+    });
+  }
+  /** Remove provider: an added one, from this computer's settings or the selected server's. */
+  function bindRemoveProvider(id) {
+    root.querySelector('[data-remove-provider]')?.addEventListener('click', async event => {
+      const button = event.currentTarget, label = titleFor(page), place = placeOf(page);
+      if (!window.confirm(`Remove ${label}? Chats and workflows set to use it will need another provider.`)) return;
+      button.disabled = true;
+      try { await place.store.save({ providers: { [id]: null } }); location.hash = '#/settings/providers'; }
+      catch (error) { button.disabled = false; setStatus(place.key, { text: `Not removed. ${error.message}`, error: true }); }
     });
   }
   function blockedPage(blocked) {
@@ -696,9 +712,10 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'data' && server) return serverErrorReportsRow(server) + form(specs);
     if (name === 'data') return `<p class="settings-description">Chats, configuration, memory and downloaded models are stored locally. External providers and integrations receive the requests you send to them. Account tokens use protected desktop storage.</p>${errorReportsRow()}<button type="button" class="ghost-button" data-open-data ${window.desktopApp ? '' : 'disabled'}>Open data folder</button><p class="settings-footnote">${window.desktopApp ? 'Opens the actual application data folder in Finder.' : 'Opening the data folder is available in the desktop app.'}</p><div role="status" data-folder-status></div>` + form(specs);
     if (name === 'plugins') return '<div data-integrations-page></div>';
-    if (name === 'providers' && id === 'new') return server ? note('Add providers on the server itself', 'Adding a provider sets its address, which only the server owner can do there.') : addProviderPage();
+    if (name === 'providers' && id === 'new') return server ? server.supports?.('providers.add') && server.presets().length ? addProviderPage(server)
+      : note(`Update Local Cognitive on ${server.hostName()}`, `The version on ${server.hostName()} cannot add providers from here yet. Its owner can set one in ${server.hostName()}'s environment file.`) : addProviderPage();
     if (name === 'providers' && !id) return form(specs) + `<div class="settings-section-actions"><a class="primary-button mcp-add-button" href="#/settings/providers/new">${icon('plus')}<span>Add provider</span></a></div><div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerLabel(key, provider), provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
-    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button>${!server && isAddedProvider(id, settings().providers?.[id]) ? '<button type="button" class="ghost-button danger-button" data-remove-provider>Remove provider</button>' : ''}</div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
+    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button>${(server ? settings().providers?.[id]?.removable === true : isAddedProvider(id, settings().providers?.[id])) ? '<button type="button" class="ghost-button danger-button" data-remove-provider>Remove provider</button>' : ''}</div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
     if (name === 'runtime') {
       const generation = specs.find(spec => spec.type === 'local-generation');
       const runtimeSpecs = specs.filter(spec => spec !== generation);
@@ -795,6 +812,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       root.querySelectorAll('.settings-content-inner :is(form, .settings-test-actions) :is(input, select, textarea, button)').forEach(control => { control.disabled = true; });
     }
     if (name === 'data' && server) bindServerErrorReports(server);
+    // A server's providers: Add provider and Remove, through that server's own store.
+    if (server && name === 'providers' && id === 'new') bindAddProvider();
+    if (server && name === 'providers' && id) bindRemoveProvider(id);
     if (server) return;
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
@@ -810,13 +830,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       input.value = select.value;
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }));
-    root.querySelector('[data-remove-provider]')?.addEventListener('click', async event => {
-      const button = event.currentTarget, label = titleFor(page);
-      if (!window.confirm(`Remove ${label}? Chats and workflows set to use it will need another provider.`)) return;
-      button.disabled = true;
-      try { await data.save({ providers: { [id]: null } }); location.hash = '#/settings/providers'; }
-      catch (error) { button.disabled = false; setStatus(placeOf(page).key, { text: `Not removed. ${error.message}`, error: true }); }
-    });
+    bindRemoveProvider(id);
     if (name === 'mcp' && id === 'import') bindMcpImport();
     else if (name === 'mcp' && id && id !== 'local-cognitive') bindMcpEditor();
     if (page === 'voice') disposeVoice = voiceInput?.mountSettings(root.querySelector('[data-voice-settings-page]'));

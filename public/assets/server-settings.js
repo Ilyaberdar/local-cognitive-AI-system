@@ -35,7 +35,7 @@ function createSource({ target, runtime, onChange, onSaved }) {
   const isCurrent = () => target.isRemote() && target.hostId() === hostId && target.generation() === generation;
   const name = () => target.hostName();
   const online = () => target.online();
-  let view, runtimeStatus, loaded = false, loadError = "", inFlight = null, wasOnline = online(), disposed = false;
+  let view, runtimeStatus, presets = [], loaded = false, loadError = "", inFlight = null, wasOnline = online(), disposed = false;
   const request = createRemoteRequest({ runtime, hostId, routes: SETTINGS_ROUTES, isCurrent, online,
     offlineMessage: () => `${name()} is not connected. Nothing was saved.` });
   const data = createSettingsData({ request, onSaved: response => {
@@ -54,6 +54,8 @@ function createSource({ target, runtime, onChange, onSaved }) {
       if (!result?.ok) { loadError = result?.error?.message || `${name()} did not send its settings.`; return; }
       view = result.value.settings;
       runtimeStatus = result.value.runtimeStatus;
+      // The presets the server can add (an older server sends none, and offers no Add provider).
+      presets = Array.isArray(result.value.presets) ? result.value.presets : [];
       loaded = true;
       loadError = "";
     })().catch(error => { loadError = error?.message || `${name()} did not send its settings.`; })
@@ -69,6 +71,8 @@ function createSource({ target, runtime, onChange, onSaved }) {
       const count = settings?.filesystem?.allowedDirectoryCount ?? 0;
       return `${count} folder${count === 1 ? "" : "s"} · ${onServer}`;
     }
+    const fromFile = /^providers\.([^.]+)\.apiKey$/.exec(field);
+    if (fromFile && settings?.providers?.[fromFile[1]]?.source === "environment") return `In its environment file · ${onServer}`;
     const address = /^providers\.([^.]+)\.baseUrl$/.exec(field);
     if (address) return `${settings?.providers?.[address[1]]?.baseUrl || "Default address"} · ${onServer}`;
     if (["filesystem.outputDir", "localModels.modelsDir", "memory.baseDir", "memory.openMemory.dbPath"].includes(field)) return `Set on ${name()}`;
@@ -86,6 +90,8 @@ function createSource({ target, runtime, onChange, onSaved }) {
     unsupported,
     settings: () => view,
     runtimeStatus: () => runtimeStatus,
+    presets: () => presets,
+    supports: operation => target.supports(operation),
     data,
     ensureLoaded() { if (!loaded && !loadError && !inFlight && online() && !unsupported()) void load(); },
     reload: () => { loadError = ""; return load(); },

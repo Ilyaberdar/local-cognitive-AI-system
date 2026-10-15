@@ -142,7 +142,7 @@ test("this computer's Settings make exactly the same requests with or without a 
 });
 
 /** fedora's settings behind the host operations, as a device sees them (the real view). */
-function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start", "settings.get", "settings.update", "providers.test"] } = {}) {
+function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start", "settings.get", "settings.update", "providers.test"], presets = undefined as unknown[] | undefined } = {}) {
   let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: name, serverVersion: "0.2.0", capabilities };
   const statusListeners: Array<(value: unknown) => void> = [];
   const raw: any = {
@@ -166,11 +166,18 @@ function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start"
     "sessions.list": () => [],
     "models.available": () => ({ providers: [], availableModels: [{ providerId: "openai", id: "gpt-4.1" }], loadedModels: [],
       allManagedModels: [{ providerId: "llamacpp", id: "qwen-14b", libraryId: "qwen-14b", displayName: "Qwen 14B", loaded: true }], appSettings: { llm: {}, providers: {} } }),
-    "settings.get": () => ({ settings: hostSettingsView(raw), runtimeStatus: "running" }),
+    "settings.get": () => ({ settings: hostSettingsView(raw), runtimeStatus: "running", ...(presets ? { presets } : {}) }),
+    "providers.discover": () => ({ models: ["deepseek-v4-pro", "deepseek-flash"] }),
+    "providers.add": payload => {
+      raw.providers.deepseek = { kind: "openai-compatible", dialect: "deepseek", preset: payload.preset, name: payload.name, enabled: true, baseUrl: "https://api.deepseek.com",
+        apiKey: payload.apiKey.set, model: payload.model, timeoutMs: 300000 };
+      return { id: "deepseek", settings: hostSettingsView(raw) };
+    },
     "settings.update": async payload => {
       if (gate.held) await new Promise<void>(resolve => gate.waiting.push(resolve));
       const patch = copy(payload);
-      for (const provider of Object.values<any>(patch.providers ?? {})) if (provider.apiKey) provider.apiKey = provider.apiKey.set ?? "";
+      for (const provider of Object.values<any>(patch.providers ?? {})) if (provider?.apiKey) provider.apiKey = provider.apiKey.set ?? "";
+      for (const [id, provider] of Object.entries<any>(patch.providers ?? {})) if (provider === null) { delete raw.providers[id]; delete patch.providers[id]; }
       merge(raw, patch);
       return { settings: hostSettingsView(raw) };
     },
@@ -392,4 +399,50 @@ test("fedora's error reports: its owner turns them on from Data & Privacy, and t
   await settle();
   assert.equal(consent.automatic, true);
   assert.match(text(app, ".settings-consent"), /Saved · on/);
+});
+
+
+test("with fedora selected, Add provider adds one of fedora's presets with a key and a model, never an address; it can be removed; one its environment sets cannot", async t => {
+  const presets = [{ id: "deepseek", name: "DeepSeek", dialect: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-flash", models: ["deepseek-flash"], keyUrl: "https://platform.deepseek.com/api_keys" },
+    { id: "perplexity", name: "Perplexity", dialect: "perplexity", baseUrl: "https://api.perplexity.ai/v1", model: "fast", models: ["fast"], keyUrl: "https://www.perplexity.ai/settings/api" }];
+  const fedora = fedoraWithSettings({ capabilities: ["chat.runs.start", "settings.get", "settings.update", "providers.test", "providers.discover", "providers.add"], presets });
+  fedora.raw.providers.perplexity = { kind: "openai-compatible", dialect: "perplexity", preset: "perplexity", name: "Perplexity", enabled: true, baseUrl: "https://api.perplexity.ai/v1", model: "fast", timeoutMs: 300000, source: "environment" };
+  const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  app.window.confirm = () => true;
+  await selectFedora(app);
+  const before = app.bridgeCalls.length;
+  open(app, "providers/new"); await settle();
+  assert.match(text(app, ".settings-content"), /Connect a cloud service on fedora[\s\S]*environment file/);
+  assert.equal(app.document.querySelector("#settings-root #add-provider-address"), null, "no address: fedora has its own for each preset");
+  assert.deepEqual([...app.document.querySelectorAll("#settings-root [data-add-provider-preset] option")].map((option: any) => option.value), ["deepseek", "perplexity"], "fedora's presets, no other service");
+  change(app, "#add-provider-key", "sk-device-key-for-fedora-1", "input");
+  inRoot(app, "#add-provider-form").dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let attempt = 0; attempt < 50 && !/providers\/deepseek$/.test(app.window.location.hash); attempt++) await settle();
+  const calls = runtimeCalls(app, before).filter(call => /^providers\./.test(String(call[0])));
+  assert.deepEqual(calls.map(call => [call[0], call[1]]), [
+    ["providers.discover", { preset: "deepseek", apiKey: { set: "sk-device-key-for-fedora-1" } }],
+    ["providers.add", { preset: "deepseek", model: "deepseek-flash", name: "DeepSeek", apiKey: { set: "sk-device-key-for-fedora-1" } }],
+    ["providers.test", { providerId: "deepseek", model: "deepseek-flash" }]]);
+  assert.equal(app.requests.some(entry => /providers/.test(entry)), false, "nothing of it went to this computer's API");
+  await settle();
+  assert.match(text(app, ".settings-test-result"), /Test succeeded/);
+  assert.ok(app.document.querySelector("#settings-root [data-remove-provider]"), "an added provider can be removed");
+  inRoot(app, "[data-remove-provider]").click(); await settle(); await settle();
+  assert.deepEqual(updates(app, before).at(-1), { providers: { deepseek: null } });
+  assert.equal(fedora.raw.providers.deepseek, undefined);
+  open(app, "providers/perplexity"); await settle();
+  assert.equal(text(app, '[data-setting="providers.perplexity.apiKey"] .settings-control'), "In its environment file · set on fedora");
+  assert.equal(app.document.querySelector("#settings-root [data-remove-provider]"), null, "one the environment file sets is changed there");
+  assert.equal(app.document.querySelector("#settings-root #setting-providers-perplexity-name"), null);
+});
+
+test("an older fedora without Add provider says so", async t => {
+  const fedora = fedoraWithSettings();
+  const app = await bootApp({ ...localSettings(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  open(app, "providers/new"); await settle();
+  assert.match(text(app, ".settings-content"), /Update Local Cognitive on fedora/);
+  assert.equal(app.document.querySelector("#settings-root #add-provider-form"), null);
 });

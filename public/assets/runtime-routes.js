@@ -246,7 +246,10 @@ const hostSettingsPatch = body => {
  * MCP clients and integrations are not here: on a server they are refused before anything is sent. */
 export const SETTINGS_ROUTES = [
   { method: "PUT", pattern: /^\/app\/settings$/, op: "settings.update", payload: (_match, _query, body) => hostSettingsPatch(body) },
-  { method: "POST", pattern: /^\/providers\/([^/]+)\/test$/, op: "providers.test", payload: (match, _query, body) => ({ providerId: segment(match[1]), ...pick(body, ["model"]) }) }
+  { method: "POST", pattern: /^\/providers\/([^/]+)\/test$/, op: "providers.test", payload: (match, _query, body) => ({ providerId: segment(match[1]), ...pick(body, ["model"]) }) },
+  // Add provider on a server: one of its presets, a key and a model, never an address (the server has its own).
+  { method: "POST", pattern: /^\/providers\/discover$/, op: "providers.discover", payload: (_match, _query, body) => ({ ...pick(body, ["preset", "region"]), apiKey: { set: String(body?.apiKey ?? "") } }) },
+  { method: "POST", pattern: /^\/providers$/, op: "providers.add", payload: (_match, _query, body) => ({ ...pick(body, ["preset", "region", "model", "name"]), apiKey: { set: String(body?.apiKey ?? "") } }) }
 ];
 
 /** The Synthesis screen's routes (frontend/synthesis, paths without its `/synthesis` prefix) →

@@ -1,4 +1,5 @@
 import { defaultUiPreferences } from "../app/settingsValidation";
+import { BUILT_IN_PROVIDER_IDS, providerPreset } from "../llm/providerCatalog";
 import type { AppSettings } from "../types";
 import { publicError } from "./publicError";
 
@@ -26,7 +27,12 @@ export const hostSettingsView = (settings: AppSettings) => {
       : {
         enabled: Boolean(provider.enabled), model: provider.model ?? "", timeoutMs: provider.timeoutMs, baseUrl: originOnly(provider.baseUrl),
         ...(id === "anthropic" ? { version: provider.version, maxTokens: provider.maxTokens } : {}),
-        ...(takesKey(id) ? { apiKeyState: provider.apiKey?.trim() ? "set" : "unset" } : {})
+        // An OpenAI-compatible service: its name and preset, whether the environment file sets it, and
+        // whether a device may remove it (one added on the server, not the default).
+        ...(provider.kind === "openai-compatible" && !BUILT_IN_PROVIDER_IDS.includes(id) ? { kind: provider.kind, ...(provider.name ? { name: provider.name } : {}),
+          ...(provider.preset ? { preset: provider.preset } : {}), ...(provider.source === "environment" ? { source: "environment" } : {}),
+          removable: !providerPreset(id)?.builtIn && provider.source !== "environment" && settings.llm?.defaultProvider !== id } : {}),
+        ...(takesKey(id) ? { apiKeyState: provider.source === "environment" ? "environment" : provider.apiKey?.trim() ? "set" : "unset" } : {})
       }])),
     localModels: models ? { contextSize: models.contextSize, gpuLayers: models.gpuLayers, memoryLimitPercent: models.memoryLimitPercent, loadTimeoutMs: models.loadTimeoutMs,
       generationTimeoutMs: models.generationTimeoutMs, generation: models.generation, ...(models.multiGpu ? { multiGpu: models.multiGpu } : {}) } : {},

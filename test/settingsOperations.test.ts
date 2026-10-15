@@ -10,16 +10,19 @@ import { config } from "../src/config/config";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
 import { createSettingsOperations } from "../src/runtime/settingsOperations";
+import { environmentProviders } from "../src/config/environmentProviders";
+import { providerPreset } from "../src/llm/providerCatalog";
+import http from "node:http";
 import type { AppSettingsPatch, LLMRequest } from "../src/types";
 
 const KEY = "sk-saved-secret-key-1234567890";
 const code = (expected: string) => (error: unknown) => error instanceof RemoteOperationError && error.code === expected;
 const context = (signal = new AbortController().signal): OperationContext => ({ accountId: "account", deviceId: "mac", signal });
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, base = config) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "settings-ops-")));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const store = new AppSettingsStore(root, config);
+  const store = new AppSettingsStore(root, base);
   // Keys from this machine's environment are cleared: the fixture decides which keys are saved.
   await store.update({ providers: { openai: { apiKey: KEY, baseUrl: "https://user:pass@api.example.com/v1?token=abc", enabled: true },
     anthropic: { apiKey: "" }, gemini: { apiKey: "" }, lmstudio: { apiKey: "" } },
@@ -143,4 +146,87 @@ test("while the host drains, changes and tests are refused and reading still ans
   await assert.rejects(f.call("settings.update", { ui: { language: "en" } }), code("host_draining"));
   await assert.rejects(f.call("providers.test", { providerId: "openai" }), code("host_draining"));
   assert.ok((await f.call("settings.get")).settings);
+});
+
+
+test("a device adds a preset to the server with its key and model, never an address; the server picks the id", async t => {
+  const f = await setup(t);
+  const added = await f.call("providers.add", { preset: "deepseek", apiKey: { set: "sk-device-deepseek-1234567" }, model: "deepseek-flash" });
+  assert.equal(added.id, "deepseek");
+  const saved = (await f.store.get()).providers.deepseek!;
+  assert.deepEqual([saved.kind, saved.dialect, saved.preset, saved.name, saved.baseUrl, saved.model, saved.enabled], ["openai-compatible", "deepseek", "deepseek", "DeepSeek", providerPreset("deepseek")!.baseUrl, "deepseek-flash", true]);
+  assert.equal(JSON.stringify(added).includes("sk-device-deepseek"), false, "the key comes back in no answer");
+  assert.deepEqual(added.settings.providers.deepseek, { enabled: true, model: "deepseek-flash", timeoutMs: 300000, baseUrl: "https://api.deepseek.com", kind: "openai-compatible", name: "DeepSeek",
+    preset: "deepseek", removable: true, apiKeyState: "set" });
+  const second = await f.call("providers.add", { preset: "deepseek", apiKey: { set: "sk-device-deepseek-7654321" }, model: "deepseek-v4-pro" });
+  assert.deepEqual([second.id, (await f.store.get()).providers["deepseek-2"]!.name], ["deepseek-2", "DeepSeek 2"]);
+  for (const payload of [
+    { preset: "deepseek", apiKey: { set: "sk-x-1234567" }, model: "m", baseUrl: "http://169.254.169.254/latest" },
+    { preset: "deepseek", apiKey: { set: "sk-x-1234567" }, model: "m", region: "sg" },
+    { preset: "qwen", apiKey: { set: "sk-x-1234567" }, model: "m" },
+    { preset: "openai", apiKey: { set: "sk-x-1234567" }, model: "m" },
+    { preset: "__proto__", apiKey: { set: "sk-x-1234567" }, model: "m" },
+    { preset: "deepseek", apiKey: { clear: true }, model: "m" },
+    { preset: "deepseek", apiKey: { set: "sk-x-1234567" } }
+  ]) await assert.rejects(async () => f.call("providers.add", payload), code("invalid_request"), JSON.stringify(payload));
+  const { presets } = await f.call("settings.get");
+  assert.deepEqual(presets.map((preset: { id: string }) => preset.id), ["deepseek", "openrouter", "groq", "perplexity"]);
+  assert.equal(JSON.stringify(presets).includes("API_KEY"), false, "no environment names");
+});
+
+test("a device renames and removes a provider added on the server, never a built-in, Qwen, the default or one the environment sets", async t => {
+  const f = await setup(t, { ...config, compatibleProviders: environmentProviders({ PERPLEXITY_API_KEY: "pplx-environment-key-123" }, 300000).providers });
+  await f.call("providers.add", { preset: "groq", apiKey: { set: "gsk-device-groq-1234567" }, model: "openai/gpt-oss-120b" });
+  await f.call("settings.update", { providers: { groq: { name: "Groq (fast)" } } });
+  assert.equal((await f.store.get()).providers.groq!.name, "Groq (fast)");
+  const view = (await f.call("settings.get")).settings.providers;
+  assert.deepEqual([view.perplexity.source, view.perplexity.apiKeyState, view.perplexity.removable], ["environment", "environment", false]);
+  assert.equal(JSON.stringify(view).includes("pplx-environment"), false);
+  await assert.rejects(f.call("settings.update", { providers: { perplexity: null } }), code("host_only"));
+  await assert.rejects(f.call("settings.update", { providers: { perplexity: { apiKey: { set: "pplx-other-123456" } } } }), code("host_only"));
+  await assert.rejects(f.call("settings.update", { providers: { perplexity: { name: "Mine" } } }), code("host_only"));
+  for (const id of ["openai", "qwen"]) {
+    await assert.rejects(f.call("settings.update", { providers: { [id]: null } }), code("invalid_request"), id);
+    await assert.rejects(f.call("settings.update", { providers: { [id]: { name: "Renamed" } } }), code("invalid_request"), id);
+  }
+  await f.call("settings.update", { llm: { defaultProvider: "groq" } });
+  await assert.rejects(f.call("settings.update", { providers: { groq: null } }), code("invalid_request"), "the default provider stays");
+  assert.equal((await f.call("settings.get")).settings.providers.groq.removable, false);
+  await f.call("settings.update", { llm: { defaultProvider: "llamacpp" } });
+  await f.call("settings.update", { providers: { groq: null } });
+  assert.equal((await f.store.get()).providers.groq, undefined);
+});
+
+test("Add provider reads the preset's models at the server's own address for it; a refused key says so; keys never come back", async t => {
+  const seen: string[] = [];
+  const server = http.createServer((request, response) => {
+    seen.push(`${request.method} ${request.url} ${request.headers.authorization}`);
+    if (request.headers.authorization !== "Bearer sk-good-key-1234567") { response.writeHead(401).end(JSON.stringify({ error: { message: "bad key sk-good-key-1234567" } })); return; }
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const previous = process.env.DEEPSEEK_BASE_URL;
+  // The owner's override in the server's environment is the address; a device never sends one.
+  process.env.DEEPSEEK_BASE_URL = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  t.after(() => { if (previous === undefined) delete process.env.DEEPSEEK_BASE_URL; else process.env.DEEPSEEK_BASE_URL = previous; });
+  const f = await setup(t);
+  assert.deepEqual(await f.call("providers.discover", { preset: "deepseek", apiKey: { set: "sk-good-key-1234567" } }), { models: ["deepseek-flash", "deepseek-v4-pro"] });
+  await assert.rejects(f.call("providers.discover", { preset: "deepseek", apiKey: { set: "sk-wrong-key-1234567" } }), (error: unknown) =>
+    error instanceof RemoteOperationError && error.code === "provider_unreachable" && /refused this key/.test(error.message) && !error.message.includes("sk-"));
+  await assert.rejects(async () => f.call("providers.discover", { preset: "deepseek", apiKey: { set: "sk-good-key-1234567" }, baseUrl: "http://10.0.0.1" }), code("invalid_request"));
+  assert.ok(seen.every(line => line.startsWith("GET /models")), seen.join("\n"));
+  assert.equal(seen.length, 2, "nothing is saved, nothing else is called");
+  assert.equal((await f.store.get()).providers.deepseek, undefined);
+});
+
+test("a provider test's answer never carries a key the server has from its environment", async t => {
+  const previous = process.env.PERPLEXITY_API_KEY;
+  process.env.PERPLEXITY_API_KEY = "pplx-environment-secret-98765";
+  t.after(() => { if (previous === undefined) delete process.env.PERPLEXITY_API_KEY; else process.env.PERPLEXITY_API_KEY = previous; });
+  const f = await setup(t);
+  f.state.generate = async (_request, providerId) => ({ provider: providerId, model: "m", text: "", error: "401 for key pplx-environment-secret-98765" });
+  const result = await f.call("providers.test", { providerId: "openai" });
+  assert.equal(result.ok, false);
+  assert.equal(result.message.includes("pplx-environment-secret"), false, result.message);
 });
