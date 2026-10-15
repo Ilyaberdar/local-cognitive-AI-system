@@ -195,10 +195,44 @@ const cloudModels = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** Why a lock file is not installed, or undefined: every package it names comes from a registry over
+ * https, never git, a local path, a link, an IP address or this machine. A project's files are a
+ * device's, so its lock file must not make the server clone, read or call what it names. */
+export function lockRefusal(lock: unknown): string | undefined {
+  const entries: Array<[string, Record<string, unknown>]> = [];
+  const value = lock && typeof lock === "object" ? lock as Record<string, unknown> : {};
+  if (value.packages && typeof value.packages === "object") {
+    for (const [name, entry] of Object.entries(value.packages as Record<string, unknown>)) if (name && entry && typeof entry === "object") entries.push([name, entry as Record<string, unknown>]);
+  } else {
+    const walk = (dependencies: unknown, at: string) => {
+      for (const [name, entry] of Object.entries(dependencies && typeof dependencies === "object" ? dependencies as Record<string, unknown> : {})) {
+        if (!entry || typeof entry !== "object") continue;
+        entries.push([`${at}${name}`, entry as Record<string, unknown>]);
+        walk((entry as Record<string, unknown>).dependencies, `${at}${name}/`);
+      }
+    };
+    walk(value.dependencies, "");
+  }
+  for (const [name, entry] of entries) {
+    if (entry.link === true) return `${name} is a link to a folder`;
+    const resolved = typeof entry.resolved === "string" ? entry.resolved : typeof entry.version === "string" && /^(git|file|link|github|https?):|^[^@]*\//.test(entry.version) ? entry.version : undefined;
+    // A bundled package comes inside its parent's tarball.
+    if (resolved === undefined) { if (entry.inBundle === true || entry.bundled === true) continue; if (typeof entry.version === "string") continue; return `${name} names no source`; }
+    let url: URL;
+    try { url = new URL(resolved); } catch { return `${name} comes from ${resolved.slice(0, 80)}, not a registry`; }
+    if (url.protocol !== "https:") return `${name} comes from ${url.protocol} (only https registries)`;
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || /^[\d.]+$/.test(host) || host.includes(":") || host.startsWith("[") || /\.(local|internal|localhost|lan|home)$/.test(host)) return `${name} comes from ${host}, an address on this machine or its network`;
+  }
+  return undefined;
+}
+
 /** A project's dependencies, installed once by the server's owner (npm ci with its lock file, as the
  * server's user, with the network) so agents can run npm test in it: they never install, and their
- * sandbox has no network. Install scripts run only with --scripts. The project is found as cloud-models
- * finds it, through the running server; no key of the server reaches npm. */
+ * sandbox has no network. The project's files are a device's, so npm never runs in its folder: only
+ * package.json and the lock file are copied to a folder of the server's, the lock file is checked
+ * first (registries over https only), and the node_modules it makes then replaces the project's. A
+ * project's .npmrc is never read. Install scripts run only with --scripts. No key of the server reaches npm. */
 const deps = async (args: ServerArgs) => {
   const request = args.deps!;
   const { projects } = await remoteRequest(args, { op: "cloud-models" }) as unknown as CloudModelsResult;
@@ -206,25 +240,44 @@ const deps = async (args: ServerArgs) => {
   try { project = findProject(projects, request.project); }
   catch (error) { throw new CliError(printableMessage(error instanceof Error ? error.message : String(error)), ExitCode.failure); }
   const folder = project.rootPath, label = `${printable(project.name)} (${printable(folder)})`;
-  if (!fs.existsSync(path.join(folder, "package.json"))) throw new CliError(`${label} has no package.json: nothing to install.`, ExitCode.failure);
-  if (!fs.existsSync(path.join(folder, "package-lock.json")) && !fs.existsSync(path.join(folder, "npm-shrinkwrap.json"))) {
-    throw new CliError(`${label} has no package-lock.json: npm ci installs exactly what a lock file names. Add one to the project (npm install on a computer), then run deps again.`, ExitCode.failure);
-  }
+  const regular = (file: string) => { try { return fs.lstatSync(file).isFile(); } catch { return false; } };
+  if (!regular(path.join(folder, "package.json"))) throw new CliError(`${label} has no package.json: nothing to install.`, ExitCode.failure);
+  const lockName = ["package-lock.json", "npm-shrinkwrap.json"].find(name => regular(path.join(folder, name)));
+  if (!lockName) throw new CliError(`${label} has no package-lock.json: npm ci installs exactly what a lock file names. Add one to the project (npm install on a computer), then run deps again.`, ExitCode.failure);
+  let lock: unknown;
+  try { lock = JSON.parse(fs.readFileSync(path.join(folder, lockName), "utf8")); } catch { throw new CliError(`${label}'s ${lockName} is not valid JSON.`, ExitCode.failure); }
+  const refusal = lockRefusal(lock);
+  if (refusal) throw new CliError(`Not installed: in ${label}'s ${lockName}, ${printableMessage(refusal)}. deps installs packages from registries over https only.`, ExitCode.failure);
   // The server's own npm, beside its Node; npm on PATH otherwise.
   const beside = path.join(path.dirname(process.execPath), "npm");
   const npm = fs.existsSync(beside) ? beside : "npm";
-  const cache = path.join(path.resolve(args.dataDir!), "cache", "npm");
+  const root = path.resolve(args.dataDir!);
+  const cache = path.join(root, "cache", "npm");
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
-  const npmArgs = ["ci", "--no-audit", "--no-fund", ...(request.scripts ? [] : ["--ignore-scripts"])];
-  if (!args.quiet) process.stdout.write(`Installing the dependencies of ${label}: npm ${npmArgs.join(" ")}${request.scripts ? "" : " (install scripts are not run; add --scripts to run them)"}
-`);
-  const code = await new Promise<number>((resolve, reject) => {
-    const child = spawn(npm, npmArgs, { cwd: folder, stdio: args.quiet ? "ignore" : "inherit",
-      env: { ...childProcessEnv(), npm_config_cache: cache, npm_config_update_notifier: "false", ...(fs.existsSync(beside) ? { PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}` } : {}) } });
-    child.on("error", error => reject((error as NodeJS.ErrnoException).code === "ENOENT" ? new CliError("npm is not installed on this server.", ExitCode.unavailable) : error));
-    child.on("close", status => resolve(status ?? 1));
-  });
-  if (code !== 0) throw new CliError(`npm ci failed (exit ${code}) for ${label}.`, ExitCode.failure);
+  const work = fs.mkdtempSync(path.join(root, "cache", "deps-"));
+  try {
+    for (const name of ["package.json", lockName]) fs.copyFileSync(path.join(folder, name), path.join(work, name));
+    // With --scripts the owner sees what they print as they run.
+    const npmArgs = ["ci", "--no-audit", "--no-fund", ...(request.scripts ? ["--foreground-scripts"] : ["--ignore-scripts"])];
+    if (!args.quiet) process.stdout.write(`Installing the dependencies of ${label}: npm ${npmArgs.join(" ")}${request.scripts ? " (its packages' install scripts run as this server's user)" : " (install scripts are not run; add --scripts to run them)"}\n`);
+    const code = await new Promise<number>((resolve, reject) => {
+      const child = spawn(npm, npmArgs, { cwd: work, stdio: args.quiet ? "ignore" : "inherit",
+        env: { ...childProcessEnv(), npm_config_cache: cache, npm_config_update_notifier: "false", ...(fs.existsSync(beside) ? { PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}` } : {}) } });
+      child.on("error", error => reject((error as NodeJS.ErrnoException).code === "ENOENT" ? new CliError("npm is not installed on this server.", ExitCode.unavailable) : error));
+      child.on("close", status => resolve(status ?? 1));
+    });
+    if (code !== 0) throw new CliError(`npm ci failed (exit ${code}) for ${label}.`, ExitCode.failure);
+    // The new node_modules replaces the project's (a link there is replaced, never followed).
+    const target = path.join(folder, "node_modules"), made = path.join(work, "node_modules");
+    if (!fs.existsSync(made)) fs.mkdirSync(made);
+    fs.rmSync(target, { recursive: true, force: true });
+    try { fs.renameSync(made, target); }
+    catch (error) {
+      // A shared folder on another disk: copied, links as they are.
+      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      fs.cpSync(made, target, { recursive: true, verbatimSymlinks: true });
+    }
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
   print(args, `Dependencies of ${label} installed. Agents' npm test and npm run use them; run deps again after the lock file changes.`, { project: project.id, installed: true });
   return ExitCode.ok;
 };

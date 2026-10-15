@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { parseServerArgs } from "../src/server/args";
+import { lockRefusal } from "../src/server/cli";
 import { ControlServer } from "../src/server/ControlServer";
 import { controlSocketPathFor, dataDirectories } from "../src/server/dataRoot";
 import { Logger } from "../src/utils/Logger";
@@ -31,9 +32,10 @@ test("deps installs a project's dependencies with npm ci, without install script
     return folder;
   };
   // A root lifecycle script shows whether install scripts ran, and with which environment.
-  const manifest = JSON.stringify({ name: "app", version: "1.0.0", private: true, scripts: { install: "node -e \"require('fs').writeFileSync('ran.txt', String(process.env.DEEPSEEK_API_KEY))\"" } });
+  const manifest = JSON.stringify({ name: "app", version: "1.0.0", private: true, scripts: { install: "node -e \"require('fs').writeFileSync('ran.txt', 'x'); console.log('KEY=' + process.env.DEEPSEEK_API_KEY)\"" } });
   const lock = JSON.stringify({ name: "app", version: "1.0.0", lockfileVersion: 3, requires: true, packages: { "": { name: "app", version: "1.0.0" } } });
-  const app = project("app", { "package.json": manifest, "package-lock.json": lock });
+  const app = project("app", { "package.json": manifest, "package-lock.json": lock, ".npmrc": "prefix=/tmp/elsewhere\ngit=./evil.sh\n" });
+  fs.mkdirSync(path.join(app, "node_modules")); fs.writeFileSync(path.join(app, "node_modules", "stale.txt"), "old");
   const nolock = project("nolock", { "package.json": manifest });
   const empty = project("empty", {});
   const views = [["11111111-1111-4111-8111-111111111111", "App", app], ["22222222-2222-4222-8222-222222222222", "No lock", nolock], ["33333333-3333-4333-8333-333333333333", "Empty", empty]]
@@ -47,12 +49,33 @@ test("deps installs a project's dependencies with npm ci, without install script
   assert.match(installed.stdout, /npm ci --no-audit --no-fund --ignore-scripts \(install scripts are not run/);
   assert.match(installed.stdout, /Dependencies of App .* installed/);
   assert.equal(fs.existsSync(path.join(app, "ran.txt")), false, "no install script ran");
+  assert.equal(fs.existsSync(path.join(app, "node_modules", "stale.txt")), false, "the project's node_modules is replaced");
+  assert.equal(fs.existsSync("/tmp/elsewhere/node_modules"), false, "the project's .npmrc is never read");
+  assert.equal(fs.readdirSync(path.join(root, "cache")).filter(name => name.startsWith("deps-")).length, 0, "the work folder is removed");
   assert.ok(fs.existsSync(path.join(root, "cache", "npm")), "npm's cache is the server's own, outside backups");
 
-  await run(process.execPath, [cli, "deps", app, "--scripts", "--data-dir", root], { env });
-  assert.equal(fs.readFileSync(path.join(app, "ran.txt"), "utf8"), "undefined", "with --scripts they run, without the server's keys");
+  const scripted = await run(process.execPath, [cli, "deps", app, "--scripts", "--data-dir", root], { env });
+  assert.match(scripted.stdout, /KEY=undefined/, "with --scripts they run, shown as they run, without the server's keys");
+  // Scripts run in the server's own work folder (the project's files are only copied there): what they write stays there.
+  assert.equal(fs.existsSync(path.join(app, "ran.txt")), false, "a script writes in the work folder, not the project");
 
   for (const [name, pattern] of [["No lock", /no package-lock\.json/], ["Empty", /no package\.json/], ["Nobody", /No project on this server/]] as const) {
     await assert.rejects(run(process.execPath, [cli, "deps", name, "--data-dir", root], { env }), (error: { code?: number; stderr?: string }) => error.code === 1 && pattern.test(error.stderr ?? ""), name);
   }
+});
+
+
+test("deps installs only packages from registries over https: a lock that names git, a local path, a link or a local address is refused", () => {
+  const v3 = (entry: Record<string, unknown>) => ({ lockfileVersion: 3, packages: { "": { name: "app" }, "node_modules/x": entry } });
+  assert.equal(lockRefusal(v3({ version: "1.0.0", resolved: "https://registry.npmjs.org/x/-/x-1.0.0.tgz", integrity: "sha512-x" })), undefined);
+  assert.equal(lockRefusal(v3({ version: "1.0.0", inBundle: true })), undefined, "bundled inside its parent");
+  for (const [entry, pattern] of [
+    [{ resolved: "git+ssh://git@github.com/evil/x.git#abc" }, /git\+ssh/], [{ resolved: "file:../outside" }, /not a registry|file:/],
+    [{ link: true, resolved: "../../etc" }, /link to a folder/], [{ resolved: "http://registry.npmjs.org/x.tgz" }, /http:/],
+    [{ resolved: "https://169.254.169.254/latest/meta-data" }, /on this machine or its network/], [{ resolved: "https://localhost:4873/x.tgz" }, /on this machine/],
+    [{ resolved: "https://nexus.internal/x.tgz" }, /its network/], [{ resolved: "https://[::1]/x.tgz" }, /this machine/]
+  ] as const) assert.match(lockRefusal(v3(entry as Record<string, unknown>)) ?? "", pattern, JSON.stringify(entry));
+  // Version 1 lock files name a source in version, nested.
+  assert.match(lockRefusal({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0", resolved: "https://registry.npmjs.org/a.tgz", dependencies: { b: { version: "github:evil/b" } } } } }) ?? "", /a\/b comes from/);
+  assert.equal(lockRefusal({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0" } } }), undefined);
 });
