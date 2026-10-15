@@ -634,3 +634,66 @@ test("on a server a report's citations of project files are marked but not opene
     assert.equal(asked.some(path => path.includes("project-file")), false);
   } finally { handle.unmount(); dom.window.close(); }
 });
+
+test("a modified file's diff reads as a diff: aligned lines, removed and added ones marked, what changed within a line, unchanged stretches folded", async () => {
+  const run = runEntry("diffed", "accepted");
+  const before = Array.from({ length: 24 }, (_value, index) => `const line${index + 1} = ${index + 1};`);
+  before[2] = "pop(): T | undefined { return this.items.shift(); }";
+  const after = [...before];
+  after[2] = "pop(): T | undefined { return this.items.pop(); }";
+  after.splice(20, 0, "const added = true;");
+  const ui = harness(path => {
+    if (path.endsWith('/modules')) return { modules: [moduleEntry()] };
+    if (path.endsWith('/modules/Calculator')) return moduleEntry();
+    if (path.endsWith('/runs')) return [run];
+    if (path === '/synthesis/runs/diffed') return run;
+    if (path.endsWith('/diff')) return { canApply: false, root: "app", files: [{ path: "app/src/stack.ts", before: before.join("\n"), after: after.join("\n") }] };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    await until(() => ui.text().includes('diffed activity'), 'run loaded');
+    ui.click('Changes');
+    const doc = ui.dom.window.document;
+    await until(() => Boolean(doc.querySelector('.synthesis-diff2')), 'diff shown');
+    const cells = (type: string) => [...doc.querySelectorAll(`.synthesis-diff2__code.is-${type}`)].map((item: any) => item.textContent);
+    assert.deepEqual(cells("del"), ["pop(): T | undefined { return this.items.shift(); }"]);
+    assert.deepEqual(cells("add"), ["pop(): T | undefined { return this.items.pop(); }", "const added = true;"]);
+    assert.equal(doc.querySelector('.synthesis-diff2__del')?.textContent, "shift", "what changed within the line");
+    assert.equal(doc.querySelector('.synthesis-diff2__add')?.textContent, "pop");
+    assert.equal(doc.querySelectorAll('.synthesis-diff2__code.is-empty').length, 1, "the added line has nothing beside it");
+    assert.match(doc.querySelector('.synthesis-diff2__head').textContent, /Before.*After.*\+2.*−1/);
+    const fold = doc.querySelector('.synthesis-diff2__fold') as any;
+    assert.match(fold.textContent, /⋯ 11 unchanged lines/);
+    const shown = doc.querySelectorAll('.synthesis-diff2__row').length;
+    fold.click();
+    await until(() => !doc.querySelector('.synthesis-diff2__fold') && doc.querySelectorAll('.synthesis-diff2__row').length === shown + 11, 'fold opened');
+    assert.ok(doc.querySelector('.synthesis-diff2 .hljs-keyword'), "still highlighted");
+  } finally { ui.close(); }
+});
+
+test("Cloud models is a switch; a click leaves no focus ring; the diagnostics panel slides away before it goes", async () => {
+  const ui = harness(path => {
+    if (path.endsWith("/runs")) return [];
+    if (path.endsWith("/cloud")) return { allowed: true };
+    if (path.endsWith("/modules")) return { modules: [moduleEntry()] };
+    if (path.endsWith("/modules/Calculator")) return moduleEntry();
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => Boolean(doc.querySelector(".synthesis-cloud-toggle input")), "cloud switch");
+    const box = doc.querySelector(".synthesis-cloud-toggle input") as any;
+    assert.deepEqual([box.getAttribute("role"), box.className, box.checked], ["switch", "synthesis-switch", true]);
+    const workspace = doc.querySelector(".synthesis-workspace") as any;
+    workspace.dispatchEvent(new ui.dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    assert.equal(workspace.dataset.modality, "keyboard");
+    box.dispatchEvent(new ui.dom.window.Event("pointerdown", { bubbles: true }));
+    assert.equal(workspace.dataset.modality, "pointer", "a click: no focus ring");
+    ui.click("Diagnostics");
+    await until(() => Boolean(doc.querySelector(".synthesis-layout.is-inspector-open .synthesis-inspector")), "panel in");
+    ui.click("Diagnostics");
+    await until(() => !doc.querySelector(".synthesis-layout.is-inspector-open"), "panel leaving");
+    assert.ok(doc.querySelector(".synthesis-inspector"), "still there while it slides away");
+    await until(() => !doc.querySelector(".synthesis-inspector"), "panel gone");
+  } finally { ui.close(); }
+});

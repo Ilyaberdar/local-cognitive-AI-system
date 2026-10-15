@@ -73,6 +73,21 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const snapshot = runSources?.runId === runId ? runSources : null;
   const diagnostics = diagnosticSummary(module);
   const closeDiagnostics = () => { setDiagnosticsOpen(false); diagnosticsTrigger.current?.focus(); };
+  // The inspector slides in and out (as a chat's Session setup does): it stays mounted while it leaves.
+  const [inspector, setInspector] = useState<"closed" | "entering" | "open" | "leaving">("closed");
+  useEffect(() => {
+    if (diagnosticsOpen) {
+      setInspector(current => current === "open" ? current : "entering");
+      const frame = requestAnimationFrame(() => requestAnimationFrame(() => setInspector("open")));
+      return () => cancelAnimationFrame(frame);
+    }
+    setInspector(current => current === "closed" ? current : "leaving");
+    const timer = setTimeout(() => setInspector("closed"), document.documentElement.dataset.motion === "off" ? 0 : 340);
+    return () => clearTimeout(timer);
+  }, [diagnosticsOpen]);
+  // Focus rings are for the keyboard: a click or a drag never leaves one behind.
+  const root = useRef<HTMLDivElement>(null);
+  const modality = (value: "pointer" | "keyboard") => { if (root.current && root.current.dataset.modality !== value) root.current.dataset.modality = value; };
   const visibleModules = modules.filter(item => !hiddenModules[projectId]?.includes(item.id));
   const removedModules = modules.filter(item => hiddenModules[projectId]?.includes(item.id));
   const restoreModule = (id: string) => {
@@ -228,7 +243,8 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     setNotice("Verified candidate applied to the project."); setRevision(current => current + 1);
   });
 
-  return <div className="synthesis-workspace" data-color-mode={colorMode}>
+  return <div className="synthesis-workspace" data-color-mode={colorMode} ref={root} data-modality="pointer"
+    onPointerDownCapture={() => modality("pointer")} onKeyDownCapture={event => { if (!event.metaKey && !event.ctrlKey && !event.altKey) modality("keyboard"); }}>
     <header className="synthesis-toolbar">
       <div className="synthesis-toolbar__heading"><h2>Synthesis</h2></div>
       <div className="synthesis-toolbar__actions">
@@ -242,7 +258,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     {error ? <div className="synthesis-message synthesis-message--error" role="alert">{error}<button type="button" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div> : null}
     {notice ? <div className="synthesis-message" role="status">{notice}<button type="button" aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div> : null}
     {!project ? <div className="synthesis-welcome"><span className="synthesis-welcome__symbol" aria-hidden="true">⌘</span><h2>Build from a contract</h2><p>Connect a project to discover its .lcspec and .lcflow files. Edit in your IDE, then run and follow each step here.</p>{onCreateProject ? <button type="button" onClick={onCreateProject}>Add project</button> : <p>Add a project from the sidebar to begin.</p>}</div>
-      : <div className={`synthesis-layout${diagnosticsOpen ? " is-inspector-open" : ""}`}>
+      : <div className={`synthesis-layout${inspector === "open" ? " is-inspector-open" : ""}`}>
         <aside className="synthesis-module-pane" aria-label="Synthesis modules">
           <header className="synthesis-pane-header"><strong>Modules</strong><span>{visibleModules.length}</span></header>
           <div className="synthesis-module-list">{visibleModules.map(item => <div className="synthesis-module-row" key={item.id}><button type="button" disabled={Boolean(busy)} aria-pressed={item.id === moduleId} className={`synthesis-module ${item.id === moduleId ? "is-selected" : ""}`} onClick={() => setModuleId(item.id)}>
@@ -277,9 +293,9 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
           {run && recoverableStatuses.has(run.status) ? <div className="synthesis-recovery"><span>Start a new run from this frozen snapshot. The existing run and its history stay available.</span><button type="button" disabled={Boolean(busy)} onClick={() => runAction("resume")}>{busy === "resume" ? "Restarting…" : "Restart from snapshot"}</button></div> : null}
           </SynthesisOutput>
         </main>
-        {diagnosticsOpen ? <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} onOpenSource={remote ? undefined : open} onClose={closeDiagnostics} /> : null}
+        {inspector !== "closed" ? <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} onOpenSource={remote ? undefined : open} onClose={closeDiagnostics} /> : null}
       </div>}
-    <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && remote && cloud !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server cloud-models ${cloud ? "deny" : "allow"} ${project.id}`}>Cloud models: {cloud ? "on" : "off"}</span> : null}{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
+    <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && remote && cloud !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server cloud-models ${cloud ? "deny" : "allow"} ${project.id}`}>Cloud models: {cloud ? "on" : "off"}</span> : null}{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" role="switch" className="synthesis-switch" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
     {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} request={request} /> : null}
   </div>;
 }

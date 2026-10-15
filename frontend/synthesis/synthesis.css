@@ -7,6 +7,12 @@
 .synthesis-workspace button:hover:not(:disabled) { background: var(--highlight); border-color: var(--line-strong); }
 .synthesis-workspace button:disabled { opacity: .4; cursor: not-allowed; }
 .synthesis-workspace :is(button, select, [tabindex], summary):focus-visible { outline: 2px solid var(--accent-border); outline-offset: -2px; }
+/* A click or a drag leaves no focus ring and selects no part of the screen; the keyboard keeps its rings,
+   and what is read (code, reports, an agent's steps, messages) stays selectable. */
+.synthesis-workspace[data-modality="pointer"] :focus { outline: none; }
+.synthesis-workspace { -webkit-user-select: none; user-select: none; }
+.synthesis-workspace :is(input, textarea, .synthesis-lines, .synthesis-source, .synthesis-markdown, .synthesis-json, .synthesis-diff__code, .synthesis-diff2__code,
+  .synthesis-agent-detail pre, .synthesis-agent-detail__task, .synthesis-agent-detail__error, .synthesis-event pre, .synthesis-message, .synthesis-diagnostic strong, .synthesis-provenance dd) { -webkit-user-select: text; user-select: text; }
 .synthesis-icon { width: 16px; height: 16px; flex: 0 0 16px; display: block; }
 .synthesis-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; padding: 4px 0 16px; }
 .synthesis-toolbar__heading h2 { margin: 0; font-size: calc(22px * var(--font-scale, 1)); font-weight: 550; letter-spacing: -.5px; }
@@ -164,10 +170,18 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-provenance dl { display: grid; gap: 12px; margin: 12px 0 0; }
 .synthesis-provenance dt { color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 .synthesis-provenance dd { margin: 4px 0 0; color: var(--faint); overflow-wrap: anywhere; font: calc(11px * var(--font-scale, 1))/1.6 var(--font-mono); }
+/* The inspector slides in and out, over the screen when it is narrow, beside it when there is room. */
+.synthesis-inspector { opacity: 0; transform: translateX(18px); pointer-events: none; transition: opacity 220ms ease, transform 320ms cubic-bezier(.2, .8, .2, 1); }
+.synthesis-layout.is-inspector-open .synthesis-inspector { opacity: 1; transform: none; pointer-events: auto; }
 @container synthesis (min-width: 1100px) {
-  .synthesis-layout.is-inspector-open { grid-template-columns: 176px minmax(0, 1fr) 304px; }
-  .synthesis-inspector { position: static; width: auto; box-shadow: inset 0 1px 0 var(--highlight); background: var(--surface-1); }
+  .synthesis-layout { grid-template-columns: 176px minmax(0, 1fr) 0px; column-gap: 0; transition: grid-template-columns 320ms cubic-bezier(.2, .8, .2, 1); }
+  .synthesis-layout > .synthesis-module-pane { margin-right: 16px; }
+  .synthesis-layout.is-inspector-open { grid-template-columns: 176px minmax(0, 1fr) 320px; }
+  .synthesis-inspector { position: static; width: auto; margin-left: 16px; box-shadow: inset 0 1px 0 var(--highlight); background: var(--surface-1); transform: none; }
+  /* While the column opens or closes, the panel keeps its own width and is clipped, never squeezed. */
+  .synthesis-inspector > * { min-width: 302px; }
 }
+html[data-motion="off"] :is(.synthesis-layout, .synthesis-inspector) { transition: none; }
 @media (prefers-reduced-transparency: reduce) { .synthesis-inspector { background: var(--bg-panel); backdrop-filter: none; -webkit-backdrop-filter: none; } }
 
 .synthesis-message { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 9px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: var(--text-caption); overflow-wrap: anywhere; background: var(--highlight); }
@@ -179,8 +193,15 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-workspace-footer label, .synthesis-workspace-footer > span { color: var(--muted); }
 .synthesis-workspace-footer select { width: 240px; max-width: 45%; font-size: var(--text-caption); }
 .synthesis-workspace-footer > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: calc(11px * var(--font-scale, 1)); }
-.synthesis-workspace-footer .synthesis-cloud-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
-.synthesis-cloud-toggle input { margin: 0; }
+.synthesis-workspace-footer .synthesis-cloud-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+/* The app's switch (as in Settings), at the footer's size. */
+.synthesis-workspace input.synthesis-switch { appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 auto; width: 32px; min-width: 32px; height: 19px; min-height: 19px; margin: 0; padding: 2px;
+  border: 0; border-radius: 20px; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-strong); cursor: pointer; transition: background 160ms ease, box-shadow 160ms ease; }
+.synthesis-workspace input.synthesis-switch::after { content: ""; display: block; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0003; transition: transform 160ms ease; }
+.synthesis-workspace input.synthesis-switch:checked { background: var(--accent); box-shadow: none; }
+.synthesis-workspace input.synthesis-switch:checked::after { transform: translateX(13px); }
+.synthesis-workspace input.synthesis-switch:disabled { cursor: default; opacity: .55; }
+.synthesis-workspace input.synthesis-switch:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 2px; }
 .synthesis-workspace-footer .synthesis-cloud-status { white-space: nowrap; color: var(--muted); cursor: help; }
 .synthesis-empty { padding: 14px 12px; margin: 0; color: var(--muted); font-size: var(--text-caption); line-height: 1.65; }
 .synthesis-welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px; }
@@ -197,8 +218,33 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-diff__resize:is(:hover, :focus-visible)::after, .synthesis-diff__columns[data-resizing] .synthesis-diff__resize::after { background: var(--text); }
 .synthesis-diff__columns[data-resizing] { user-select: none; }
 .synthesis-diff__code pre { font: var(--code-font-size, 12px)/1.65 var(--font-mono); padding: 10px 16px; margin: 0; overflow: auto; }
+/* A side-by-side diff: one grid, so a line and the line beside it always share a row. */
+.synthesis-diff2 { display: grid; align-content: start; font: var(--code-font-size, 12px)/1.65 var(--font-mono); padding-bottom: 16px; }
+.synthesis-diff2__head, .synthesis-diff2__row { display: contents; }
+.synthesis-diff2__head > * { position: sticky; top: 0; z-index: 1; background: var(--bg-elevated); border-bottom: 1px solid var(--line); }
+.synthesis-diff2__title { grid-column: span 2; display: flex; justify-content: space-between; gap: 10px; padding: 7px 14px; font: calc(11px * var(--font-scale, 1))/1.5 var(--font-ui); color: var(--muted); }
+.synthesis-diff2__title small { font-size: inherit; }
+.synthesis-diff2__title .is-add { color: var(--success); }
+.synthesis-diff2__title .is-del { color: var(--danger); }
+.synthesis-diff2 .synthesis-diff__resize { grid-row: span 1; }
+.synthesis-diff2__num { padding: 0 8px; text-align: right; color: var(--faint); -webkit-user-select: none; user-select: none; }
+.synthesis-diff2__code { display: block; min-width: 0; padding: 0 12px 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; background: transparent; }
+.synthesis-diff2__gutter { background: var(--surface-1); border-inline: 1px solid var(--line); }
+.synthesis-diff2 :is(.synthesis-diff2__num, .synthesis-diff2__code).is-del { background: color-mix(in srgb, var(--danger) 13%, transparent); }
+.synthesis-diff2 :is(.synthesis-diff2__num, .synthesis-diff2__code).is-add { background: color-mix(in srgb, var(--success) 13%, transparent); }
+.synthesis-diff2 .synthesis-diff2__num.is-del { color: var(--danger); }
+.synthesis-diff2 .synthesis-diff2__num.is-add { color: var(--success); }
+.synthesis-diff2 .is-empty { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--highlight) 5px 6px); }
+.synthesis-diff2__del { background: color-mix(in srgb, var(--danger) 34%, transparent); border-radius: 2px; }
+.synthesis-diff2__add { background: color-mix(in srgb, var(--success) 34%, transparent); border-radius: 2px; }
+.synthesis-workspace .synthesis-diff2__fold { grid-column: 1 / -1; justify-self: stretch; min-height: 0; margin: 2px 0; padding: 3px 14px; border: 0; border-block: 1px solid var(--line); border-radius: 0; background: var(--surface-1); color: var(--muted); text-align: left; font: calc(11px * var(--font-scale, 1))/1.6 var(--font-ui); }
+.synthesis-workspace .synthesis-diff2__fold:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.synthesis-diff2[data-resizing] { -webkit-user-select: none; user-select: none; }
 
 /* Changes: the files on the left, the chosen one on the right (diff, source with line numbers, or formatted). */
+/* Their panes scroll without bars (as Agents' do): a trackpad, the wheel or the keys move them. */
+:is(.synthesis-changes, .synthesis-agents__split), :is(.synthesis-changes, .synthesis-agents__split) * { scrollbar-width: none; }
+:is(.synthesis-changes, .synthesis-agents__split) ::-webkit-scrollbar, :is(.synthesis-changes, .synthesis-agents__split)::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .synthesis-changes-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .synthesis-changes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(170px, 26%) minmax(0, 1fr); }
 .synthesis-changes__files { margin: 0; padding: 6px 0; list-style: none; overflow: auto; border-right: 1px solid var(--line); }
