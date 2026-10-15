@@ -10,12 +10,15 @@ import { bwrapArgs, darwinProfile, platformSandbox, sandboxEnv, unsandboxed, ver
 import type { CheckFiles, CheckResult, SandboxProvider } from "../src/synthesis/checks/types";
 
 const sandbox = platformSandbox();
+/** Windows runs no contract tests (it has no sandbox, so the runner answers Unknown first), and a run's
+ * folder is emptied with /bin/sh: the runner's own tests run where it does. */
+const NO_RUNNER = process.platform === "win32" && "Windows runs no contract tests: it has no sandbox yet";
 const providers: Array<[string, SandboxProvider]> = [["sandboxed", sandbox], ["unsandboxed", unsandboxed]];
 type Files = Partial<CheckFiles> & { suite: Record<string, string> };
 
 /** Runs one check in a fresh work root and proves the run's own folder is gone afterwards. */
 async function check(t: TestContext, provider: SandboxProvider, files: Files, tests: string[], options: Partial<TestRunRequest> = {}): Promise<CheckResult | undefined> {
-  const why = await provider.unavailable();
+  const why = NO_RUNNER || await provider.unavailable();
   if (why) { t.skip(why); return undefined; }
   const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lc-checks-"));
   try {
@@ -522,7 +525,7 @@ class Namespaces(unittest.TestCase):
   else assert.equal(control?.status, "Fail");
 });
 
-test("the macOS profile denies before it allows, with resolved paths", async () => {
+test("the macOS profile denies before it allows, with resolved paths", { skip: NO_RUNNER }, async () => {
   const home = await fs.realpath(os.homedir());
   const nvm = path.join(home, ".nvm", "versions", "node", "v22.18.0", "bin");
   const profile = darwinProfile("/var/folders", [nvm, home, "/", "/Users"]);
@@ -542,7 +545,7 @@ test("the macOS profile denies before it allows, with resolved paths", async () 
   assert.match(profile, /\(allow file-read-metadata .*\(literal "[^"]*\/\.nvm"\)/);
 });
 
-test("the bubblewrap command shares only system folders, the tools' folders and the work folder", async () => {
+test("the bubblewrap command shares only system folders, the tools' folders and the work folder", { skip: NO_RUNNER }, async () => {
   const work = await fs.mkdtemp(path.join(os.tmpdir(), "lc-work-")), tool = await fs.mkdtemp(path.join(os.tmpdir(), "lc-tool-"));
   try {
     const [realWork, realTool] = [await fs.realpath(work), await fs.realpath(tool)];
@@ -596,7 +599,7 @@ test("collisions, mixed languages and a missing sandbox are Unknown, with a reas
   } finally { await fs.rm(workRoot, { recursive: true, force: true }); }
 });
 
-test("cancelling a run stops it and removes its folder", async () => {
+test("cancelling a run stops it and removes its folder", { skip: NO_RUNNER }, async () => {
   const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lc-checks-"));
   try {
     const controller = new AbortController();

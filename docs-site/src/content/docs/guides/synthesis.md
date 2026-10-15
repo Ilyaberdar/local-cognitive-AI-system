@@ -99,7 +99,7 @@ With `terminal(allow = ["node", "npm"])` among its tools, an agent can build and
 - for at most 120 s a command; `git` only reads history, and `npm` only runs `test`, `run` and `ls` (an agent never installs packages: the project's own `node_modules` is used, read-only; on a server, install it once with `sudo local-cognitive-server deps <project>`);
 - what a command writes stays in the copy: the run's files change only through the agent's file actions.
 
-Before a run gives agents a terminal, the sandbox shows that it isolates. A process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. If any of these succeeds, the run stops and says why, and contract tests are Unknown for the same reason. Windows has no sandbox yet, so a terminal is refused there.
+Before a run gives agents a terminal, the sandbox shows that it isolates. A process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. If any of these succeeds, the run stops and says why, and contract tests are Unknown for the same reason. Windows has no sandbox yet, so a terminal is refused there, and the module shows it before you run.
 
 *Checked live: three DeepSeek agents each fixed a bug, running the module's tests in their terminal until they passed. The run was accepted in about 15 s.*
 

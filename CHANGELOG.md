@@ -17,7 +17,7 @@ Synthesis with cloud models and agents in parallel: tens of agents on one task, 
 - **New module → Repository review (parallel agents):** four agents on one local model review `src/`, and the report is accepted when every file and line it cites exists.
 - **Providers that limit requests:** when one answers 429, the run sends it fewer requests at once and repeats the refused one after the pause it asks for, without spending agents' turns. An agent's request may take up to 10 minutes.
 - **The flow language** has lists and `for (item in list)`, `range(n)`, `list[i]`, `append(list, item)`, and `limit steps N` for long loops.
-- **Fixes:** an agent with a terminal but no write rights (a reviewer that only reads and runs the tests) can run its commands; `npm test` in an agent's terminal works on a Mac; a contract test that times out no longer fails now and then when its processes have already ended.
+- **Fixes:** an agent with a terminal but no write rights (a reviewer that only reads and runs the tests) can run its commands; `npm test` in an agent's terminal works on a Mac; a contract test that times out no longer fails now and then when its processes have already ended; a report the model's output limit cut off is asked for again, half as long, instead of stopping the run after its agents' work (and a report is kept under 2,500 words also when the flow gives its own instruction); on Windows, a module whose agents have a terminal says so before Run.
 
 ### Server
 

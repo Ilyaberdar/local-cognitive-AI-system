@@ -43,7 +43,7 @@ test("cloud-models: list by default, allow or deny a project named with spaces; 
   assert.throws(() => parseServerArgs(["cloud-models"], {}), /--data-dir/);
 });
 
-test("a project is found by its id, its name or its folder, never by a guess", t => {
+test("a project is found by its id, its name or its folder, never by a guess", { skip: process.platform === "win32" && "the server runs on Linux; its folders are POSIX paths" }, t => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lc-find-")));
   t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
   fs.mkdirSync(path.join(temp, "a")); fs.symlinkSync(path.join(temp, "a"), path.join(temp, "link"));

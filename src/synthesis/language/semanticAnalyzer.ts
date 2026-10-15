@@ -68,12 +68,13 @@ const POLICY_LIST = POLICIES.map((policy) => `"${policy}"`).join(", ");
 const PROVIDER_CALLS = new Set(["models.list", "models.select", "model", "agent"]);
 const FORBIDDEN_MEMBERS = new Set(["__proto__", "prototype", "constructor"]);
 
-/** The providers a flow names (provider = "..."), each with where it is named. */
-export function namedProviders(flow: FlowProgram): Array<{ provider: string; span: SourceSpan }> {
-  const found: Array<{ provider: string; span: SourceSpan }> = [];
+/** Every statement and expression of a flow, outermost first. */
+function flowNodes(flow: FlowProgram): Array<Statement | Expression> {
+  const all: Array<Statement | Expression> = [];
   const pending: Array<Statement | Expression> = [...flow.body];
   while (pending.length) {
     const node = pending.pop()!;
+    all.push(node);
     switch (node.kind) {
       case "assign": pending.push(node.value); break;
       case "expression": case "await": pending.push(node.expression); break;
@@ -86,17 +87,28 @@ export function namedProviders(flow: FlowProgram): Array<{ provider: string; spa
       case "member": pending.push(node.object); break;
       case "unary": pending.push(node.operand); break;
       case "binary": pending.push(node.left, node.right); break;
-      case "call": {
-        for (const arg of node.args) {
-          if (arg.name === "provider" && arg.value.kind === "literal" && typeof arg.value.value === "string") found.push({ provider: arg.value.value, span: arg.value.span });
-          pending.push(arg.value);
-        }
-        pending.push(node.callee);
-        break;
-      }
+      case "call": pending.push(...node.args.map(arg => arg.value), node.callee); break;
+    }
+  }
+  return all;
+}
+
+/** The providers a flow names (provider = "..."), each with where it is named. */
+export function namedProviders(flow: FlowProgram): Array<{ provider: string; span: SourceSpan }> {
+  const found: Array<{ provider: string; span: SourceSpan }> = [];
+  for (const node of flowNodes(flow)) {
+    if (node.kind !== "call") continue;
+    for (const arg of node.args) {
+      if (arg.name === "provider" && arg.value.kind === "literal" && typeof arg.value.value === "string") found.push({ provider: arg.value.value, span: arg.value.span });
     }
   }
   return found.sort((a, b) => a.span.start.offset - b.span.start.offset);
+}
+
+/** Where a flow calls a function (terminal, say), in source order. */
+export function callsOf(flow: FlowProgram, name: string): SourceSpan[] {
+  return flowNodes(flow).filter(node => node.kind === "call" && callName(node.callee) === name).map(node => node.span)
+    .sort((a, b) => a.start.offset - b.start.offset);
 }
 
 /** Resolve only named language intrinsics, never arbitrary host object methods. */

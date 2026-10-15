@@ -7,7 +7,7 @@ import { LLMService } from "../llm/LLMService";
 import { ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { compileProgram, namedProviders, SourceSpan, SpecProgram } from "./language";
+import { callsOf, compileProgram, namedProviders, SourceSpan, SpecProgram } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readText, relativePath } from "./paths";
@@ -242,6 +242,14 @@ export class SynthesisService {
         if (!descriptor) add("SYNTHESIS_PROVIDER", `No provider ${provider} is set up here. Add it in Settings → Models & Providers.`);
         else if (!descriptor.configured) add("SYNTHESIS_PROVIDER", `${descriptor.name} has no key or is turned off. Set it up in Settings → Models & Providers.`);
         else if (descriptor.capabilities?.local !== true && project.cloudModels !== true) add("SYNTHESIS_CLOUD_CONSENT", this.consentRefusal(descriptor.name, project));
+      }
+      // A terminal where this platform has no sandbox at all (Windows): Run would stop at parallel_map.
+      // Whether a sandbox that exists isolates is checked at Run, which tries it.
+      const sandbox = this.services.checks?.sandbox ?? platformSandbox();
+      const terminal = callsOf(compiled.flow, "terminal")[0];
+      if (terminal && sandbox.name === "none") {
+        diagnostics.push({severity: "error", code: "SYNTHESIS_SANDBOX", message: `Agents with a terminal need a sandbox: ${await sandbox.unavailable()} Remove terminal(...) from their tools to run here.`,
+          file: flowPath, line: terminal.start.line, column: terminal.start.column});
       }
     }
     const folder = path.posix.dirname(specPath);
@@ -556,7 +564,7 @@ export class SynthesisService {
           const sandbox = this.services.checks?.sandbox ?? platformSandbox();
           if (agents.some(agent => agent.rights.terminal?.length)) {
             const reason = await sandbox.unavailable();
-            if (reason) throw new SynthesisError(`Agents with a terminal need a sandbox, and this computer has none that works: ${reason}`);
+            if (reason) throw new SynthesisError(`Agents with a terminal need a sandbox that works: ${reason}`);
           }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});

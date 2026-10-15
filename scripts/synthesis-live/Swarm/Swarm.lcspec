@@ -1,0 +1,16 @@
+module Swarm version "1" {
+    target { language = TypeScript; }
+    description = "A review of the TypeScript sources under src/synthesis by twenty agents working at once: fourteen cloud agents and six local ones. Each agent reviews its part and leaves one note in notes/, and REPORT.md gathers every finding with a path:line reference to real code.";
+
+    // What the run may write, inside checkout("review"): the report and the agents' notes.
+    artifacts {
+        file "REPORT.md";
+        files "notes/**";
+    }
+
+    // Accepted only when both hold: the engineer's test of the report, and references that resolve.
+    evaluate "contract-v1" {
+        hard report = Tests("tests/swarm.test.ts", timeout = 30s);
+        hard grounded = Grounded("REPORT.md", min = 8);
+    }
+}

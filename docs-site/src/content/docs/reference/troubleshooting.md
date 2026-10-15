@@ -53,8 +53,11 @@ description: Common problems with models, GPUs, Remote, Synthesis and updates, a
 **"sandbox-exec does not isolate on this Mac" or "bubblewrap does not isolate here"**
 : Before running tests or an agent's terminal, the app checks that its sandbox really isolates: a process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. One of these succeeded, so nothing runs: tests are Unknown, and a terminal is refused. On Linux, run `sudo local-cognitive-server sandbox` on a server, or check that bubblewrap is installed and user namespaces are allowed. On a Mac, [report it](#reporting-a-problem) with the message.
 
-**"Agents with a terminal need a sandbox, and this computer has none that works"**
+**"Agents with a terminal need a sandbox that works"**
 : The run stops before any agent starts, and the rest of the message says why. On Windows, which has no sandbox yet, agents can't run commands: remove `terminal(...)` from their tools, or run the flow on a Mac or a Linux server. On Linux, install bubblewrap (on a server, `sudo local-cognitive-server sandbox`).
+
+**"its answer ran over its output limit, even when asked for one half as long"**
+: `synthesize` asked the model for the report twice and both answers were cut off at the model's output limit, so neither was used. Ask for a shorter file in the flow (`instruction = "... under 1,000 words"`), or use a model that writes longer answers. A report is kept under 2,500 words unless its instruction asks otherwise.
 
 **A terminal command is refused**
 : The message says why: the command isn't in the agent's `terminal(allow = [...])`; `git` only reads history; `npm` only runs `test`, `run` and `ls`; a contract with hidden tests leaves the git history out of the copy; or the files the agent may read are over 512 MB, so narrow its `files.read` patterns.

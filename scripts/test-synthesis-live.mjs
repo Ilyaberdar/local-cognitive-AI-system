@@ -10,15 +10,18 @@
 // --project: folders of this repository copied into the project (default: none), for agents to read.
 // --seed: a folder whose contents are copied to the project's root.
 // --keep: keep the temporary folder (its path is printed) to look at the run and its agents.
+// --keys: the keys file (~/.config/local-cognitive/provider-keys.env by default), or - for standard input.
 // --local: a GGUF file imported into a local llama.cpp runtime for the run (provider "llamacpp"), from
 //          this repository's resources/llama (or --runtime <folder>); local models need no keys.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+// fileURLToPath, not the URL's pathname: on Windows that is /C:/..., which resolves to no folder.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = file => path.join(root, "dist/src", file);
 if (!fs.existsSync(dist("synthesis/SynthesisService.js"))) { console.error("Build first: npm run build:server"); process.exit(2); }
 const { OpenAICompatibleProvider } = require(dist("llm/OpenAICompatibleProvider.js"));
@@ -39,12 +42,14 @@ const { defaultLocalGenerationSettings } = require(dist("local/GenerationSetting
 
 const args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(`--${name}`); return index >= 0 ? args[index + 1] : undefined; };
-const keysFile = path.resolve((option("keys") ?? "~/.config/local-cognitive/provider-keys.env").replace(/^~(?=$|\/)/, os.homedir()));
+// --keys -: the keys come on standard input (piped over ssh, say), and never touch that machine's disk.
+const fromInput = option("keys") === "-";
+const keysFile = fromInput ? "standard input" : path.resolve((option("keys") ?? "~/.config/local-cognitive/provider-keys.env").replace(/^~(?=$|\/)/, os.homedir()));
 const moduleDir = option("module") && path.resolve(option("module"));
 if (!moduleDir || !fs.existsSync(moduleDir)) { console.error("Name a module folder: --module scripts/synthesis-live/<Name>"); process.exit(2); }
-if (!fs.existsSync(keysFile)) { console.error(`No keys file at ${keysFile}.`); process.exit(2); }
-if (process.platform !== "win32" && (fs.statSync(keysFile).mode & 0o077)) { console.error(`${keysFile} is readable by others: run chmod 600 on it first.`); process.exit(2); }
-const env = Object.fromEntries(fs.readFileSync(keysFile, "utf8").split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#") && line.includes("="))
+if (!fromInput && !fs.existsSync(keysFile)) { console.error(`No keys file at ${keysFile}.`); process.exit(2); }
+if (!fromInput && process.platform !== "win32" && (fs.statSync(keysFile).mode & 0o077)) { console.error(`${keysFile} is readable by others: run chmod 600 on it first.`); process.exit(2); }
+const env = Object.fromEntries(fs.readFileSync(fromInput ? 0 : keysFile, "utf8").split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#") && line.includes("="))
   .map(line => { const at = line.indexOf("="); return [line.slice(0, at).trim(), line.slice(at + 1).trim().replace(/^(["'])(.*)\1$/, "$2")]; }));
 const secrets = Object.entries(env).filter(([name]) => /KEY/.test(name)).map(([, value]) => value).filter(value => value.length >= 6);
 const masked = text => secrets.reduce((value, secret) => value.split(secret).join("<key>"), String(text ?? ""));

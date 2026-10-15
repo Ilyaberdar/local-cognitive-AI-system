@@ -622,12 +622,20 @@ test("terminal: npm test runs the project's own test script in the sandbox, with
 test("terminal: a run refuses agents with a terminal where no sandbox isolates, before any agent starts", async (t) => {
   const f = await fixture(t, {script: writer});
   const service = f.service as unknown as {services: {checks?: {sandbox: unknown}}};
-  service.services.checks = {sandbox: {name: "none", unavailable: async () => "this platform has no sandbox yet", wrap: () => { throw new Error("never"); }}};
+  service.services.checks = {sandbox: {name: "bubblewrap", unavailable: async () => "bubblewrap does not isolate here", wrap: () => { throw new Error("never"); }}};
   const result = await f.run(`builder = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), terminal()]);
     results = await parallel_map(builder, ["x"]);`);
   assert.equal(result.status, "blocked");
-  assert.match(result.error!, /Agents with a terminal need a sandbox.*this platform has no sandbox yet/);
+  assert.match(result.error!, /Agents with a terminal need a sandbox that works: bubblewrap does not isolate here/);
   assert.equal(f.agentRequests.length, 0);
+  // Where the platform has no sandbox at all (Windows), the module says so before Run.
+  service.services.checks = {sandbox: {name: "none", unavailable: async () => "This platform has no sandbox yet.", wrap: () => { throw new Error("never"); }}};
+  const module = await f.service.module(f.project.id, "Review");
+  assert.equal(module.valid, false);
+  const refusal = module.diagnostics.find(item => item.code === "SYNTHESIS_SANDBOX");
+  assert.match(refusal?.message ?? "", /need a sandbox: This platform has no sandbox yet\. Remove terminal\(\.\.\.\)/);
+  assert.equal(refusal?.file, "Synthesis/Review/Review.lcflow");
+  assert.ok(refusal!.line > 1, "it points at terminal(...)");
   assert.ok(compileProgram(spec, flow(`t = terminal(allow = ["node"]);`).replace('policy = "agents-v1";', 'policy = "cloud-files-v1";')).diagnostics.some(item => item.code === "FLOW_POLICY_CAPABILITY"));
 });
 
@@ -739,4 +747,36 @@ test("Changes reads what a report cites: Grounded marks each place, and this com
   assert.equal((await read("src/link.ts")).status, 400, "a link leads nowhere");
   assert.equal((await read("src/bin.ts")).status, 415);
   assert.equal((await read("src/alpha.ts", { "sec-fetch-site": "cross-site" })).status, 403, "another site cannot read it");
+});
+
+test("a report cut off at the model's output limit is asked for again, half as long, and one of reasoning only again; twice, the run says what to change", async () => {
+  const { synthesizeResults } = await import("../src/synthesis/agents");
+  const model = {id: "deepseek-flash", providerId: "deepseek", displayName: "deepseek-flash"} as never;
+  const results = [{index: 0, task: "a", ok: true, output: "- src/a.ts:1 swallows an error", error: "", files: []}];
+  const prompts: string[] = [], progress: string[] = [];
+  const llm = (answers: Array<Partial<LLMResponse>>) => ({
+    generateObject: async () => { throw new Error("never"); },
+    generateText: async (request: LLMRequest) => { prompts.push(request.prompt); return {provider: "deepseek", model: "deepseek-flash", text: "", ...answers.shift()} as LLMResponse; }
+  }) as never;
+  const request = {results, file: "REPORT.md", module: "Review", description: "d", instruction: "Keep every finding.", signal: new AbortController().signal,
+    progress: async (message: string) => { progress.push(message); }, spent: () => {}};
+  const text = await synthesizeResults(llm([{text: "# Report\n- src/a.ts", error: "Model response stopped: length. No action was executed."}, {text: "# Report\n- src/a.ts:1"}]), model, request);
+  assert.equal(text, "# Report\n- src/a.ts:1", "the cut-off text is never used");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0]!, /Keep every finding\.\n\nUnless that says otherwise, keep it under 2,500 words\./, "an instruction of the flow's keeps the bound");
+  assert.match(prompts[1]!, /ran over the output limit and was cut off\. Answer again at most half as long/);
+  assert.match(progress[0]!, /deepseek-flash ran over its output limit/);
+  await assert.rejects(synthesizeResults(llm([{error: "Anthropic response stopped: max_tokens."}, {error: "Anthropic response stopped: max_tokens."}]), model, request),
+    /ran over its output limit, even when asked for one half as long\. Ask for a shorter REPORT\.md/);
+  // An answer of reasoning only is asked for again, once.
+  prompts.length = 0; progress.length = 0;
+  assert.equal(await synthesizeResults(llm([{error: "The model returned no final answer (its response may contain only reasoning)."}, {text: "# Report"}]), model, request), "# Report");
+  assert.match(prompts[1]!, /had no text, only reasoning\. Answer with the content itself\./);
+  assert.match(progress[0]!, /answered with reasoning only: asking again/);
+  await assert.rejects(synthesizeResults(llm([{error: "The model returned no final answer (its response may contain only reasoning)."}, {error: "The model returned no final answer (its response may contain only reasoning)."}]), model, request),
+    /answered with reasoning only, twice/);
+  // Any other error is not repeated.
+  prompts.length = 0;
+  await assert.rejects(synthesizeResults(llm([{error: "HTTP 401"}]), model, request), /deepseek-flash: HTTP 401/);
+  assert.equal(prompts.length, 1);
 });

@@ -37,6 +37,12 @@ function promptBudget(llm: Llm, model: ManagedModel): number {
 const LONG_REQUEST_MS = 600_000;
 /** The answer's room: thinking models spend much of it reasoning before they write. */
 const OUTPUT_TOKENS = 32_000;
+/** An answer the provider cut off at its output limit (OpenAI-compatible, Ollama, Anthropic, Gemini). */
+const CUT_OFF = /stopped: (?:length|max_tokens|MAX_TOKENS)\b|stopped at the token limit/;
+/** A thinking model that answered with its reasoning only, and no text. */
+const NO_ANSWER = /returned no final answer/;
+/** How long a report is unless its instruction says otherwise: room for findings, never for every note whole. */
+const REPORT_WORDS = 2500;
 
 /** A goal split by a model into `count` independent tasks, one per agent. */
 export async function splitGoal(llm: Llm, model: ManagedModel, request: { goal: string; count: number; module: string; description: string; context?: string; paths?: string[];
@@ -83,12 +89,28 @@ const findingsOf = (result: TaskResult) => `### Agent ${result.index + 1}${resul
 export async function synthesizeResults(llm: Llm, model: ManagedModel, request: { results: TaskResult[]; file: string; module: string; description: string; instruction?: string; feedback?: string[]; current?: string; signal: AbortSignal;
   progress?: (message: string) => Promise<void>; spent(usage?: TokenUsage): void }): Promise<string> {
   const budget = promptBudget(llm, model);
+  // A cut-off answer is never used (a report without its end), and neither is one with no text: each is asked
+  // for again once (a cut-off one half as long), so the agents' work is not lost to one answer that went wrong.
   const generate = async (systemPrompt: string, prompt: string, maxTokens: number) => {
-    request.signal.throwIfAborted();
-    const response = await llm.generateText({ usagePurpose: "synthesis", model: model.id, signal: request.signal, systemPrompt, prompt, maxTokens, localReasoningBudget: 0, timeoutMs: LONG_REQUEST_MS }, model.providerId);
-    request.spent(response.usage);
-    if (response.error) throw new SynthesisError(`${model.id}: ${response.error}`);
-    return response.text.trim();
+    let again = "";
+    for (let attempt = 0; ; attempt++) {
+      request.signal.throwIfAborted();
+      const response = await llm.generateText({ usagePurpose: "synthesis", model: model.id, signal: request.signal, systemPrompt, maxTokens, localReasoningBudget: 0, timeoutMs: LONG_REQUEST_MS,
+        prompt: again ? `${prompt}\n\n${again}` : prompt }, model.providerId);
+      request.spent(response.usage);
+      const cut = Boolean(response.error && CUT_OFF.test(response.error));
+      const empty = !cut && Boolean(response.error && NO_ANSWER.test(response.error));
+      if (attempt === 0 && (cut || empty)) {
+        again = cut ? "Your last answer to this ran over the output limit and was cut off. Answer again at most half as long: merge repeated findings, one line each, and keep each path:line reference you keep exactly."
+          : "Your last answer to this had no text, only reasoning. Answer with the content itself.";
+        await request.progress?.(cut ? `${model.id} ran over its output limit: asking for an answer half as long` : `${model.id} answered with reasoning only: asking again`);
+        continue;
+      }
+      if (cut) throw new SynthesisError(`${model.id}: its answer ran over its output limit, even when asked for one half as long. Ask for a shorter ${request.file} (instruction = "... under 1,000 words") or use a model with more output.`);
+      if (empty) throw new SynthesisError(`${model.id}: it answered with reasoning only, twice. Run again, or use another model for synthesize.`);
+      if (response.error) throw new SynthesisError(`${model.id}: ${response.error}`);
+      return response.text.trim();
+    }
   };
   let items = request.results.map(findingsOf);
   for (let round = 1; items.join("\n\n").length > budget * 0.8 && items.length > 1; round++) {
@@ -106,7 +128,9 @@ export async function synthesizeResults(llm: Llm, model: ManagedModel, request: 
   }
   const text = await generate(`You write ${request.file} for the module ${request.module} from the findings of agents that worked in parallel. Write only the file's content.`, [
     `Module ${request.module}: ${request.description}`.slice(0, 4000),
-    request.instruction ? `What ${request.file} must be: ${request.instruction}` : `Write ${request.file} as Markdown: a title, a short summary, then the findings grouped by topic, each with its path:line reference, the most important first. Merge repeated findings; say which tasks failed. Keep it under 2,500 words.`,
+    request.instruction ? `What ${request.file} must be: ${request.instruction}` : `Write ${request.file} as Markdown: a title, a short summary, then the findings grouped by topic, each with its path:line reference, the most important first. Merge repeated findings; say which tasks failed.`,
+    // Also with an instruction of the flow's: one that asks for every finding would otherwise ask for every note whole.
+    `Unless that says otherwise, keep it under ${REPORT_WORDS.toLocaleString("en-US")} words.`,
     request.feedback?.length ? `The last ${request.file} failed the contract's checks. This one must not:\n${request.feedback.map((item, index) => `${index + 1}. ${item}`).join("\n").slice(0, 6000)}` : "",
     // A repair edits the last version: rewriting it whole would lose what already held.
     request.feedback?.length && request.current ? `The last ${request.file}, to correct (change only what the problems above require, keep the rest as it is, and answer with the whole corrected file):\n\n${request.current.slice(0, Math.floor(budget / 3))}` : "",

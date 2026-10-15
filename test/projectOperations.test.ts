@@ -18,11 +18,11 @@ const code = (expected: string) => (error: unknown) => error instanceof RemoteOp
 
 function setup(t: TestContext) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "projects-ops-")));
-  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const data = path.join(base, "data"), app = path.join(data, "app"), shared = path.join(base, "shared"), elsewhere = path.join(base, "elsewhere");
   for (const dir of [app, path.join(shared, "repo"), elsewhere]) fs.mkdirSync(dir, { recursive: true });
   const host = HostDatabase.open(path.join(base, "host.db"), hostMigrations);
-  t.after(() => host.close());
+  // Closed before its folder goes: Windows removes no open file.
+  t.after(() => { host.close(); fs.rmSync(base, { recursive: true, force: true }); });
   const store = new ProjectStore(app), folders = new HostFolders(data);
   folders.ensureManaged();
   fs.mkdirSync(path.join(data, "projects", "site"));

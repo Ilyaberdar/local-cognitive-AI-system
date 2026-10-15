@@ -1,0 +1,58 @@
+implement Swarm using "contract-v1" {
+    limit iterations 4, time 60m, steps 50000;
+    policy = "agents-v1";
+
+    // The lead splits the work and writes the report. A cloud model: the project must allow cloud models.
+    lead = await model("deepseek-flash", provider = "deepseek");
+
+    // One local model answers six agents at once: six slots, each with its own 16k context.
+    installed = await models.list(provider = "llamacpp");
+    qwen = await models.load(models.select(installed, max_size = 3GiB, prefer = "qwen3.5"), slots = 6, context = 16384);
+
+    spec = freeze(Swarm.spec);
+    candidate = checkout("review");
+
+    // Fourteen tasks the lead splits from one goal, six given by hand: twenty in all, task i for agent i.
+    tasks = await lead.split("Review error handling in the TypeScript sources under src/synthesis/agents and src/synthesis/language: find places where an error is swallowed, a promise is not awaited, or an error message would mislead the user. Split by files so that every file is reviewed once.", 14,
+        paths = files.read("src/synthesis/agents/**", "src/synthesis/language/**"));
+    by_hand = ["src/synthesis/paths.ts", "src/synthesis/modules.ts", "src/synthesis/evaluators.ts", "src/synthesis/templates.ts", "src/synthesis/checks/references.ts", "src/synthesis/checks/architecture.ts"];
+    for (file in by_hand) {
+        tasks = append(tasks, "Review error handling in " + file + ": an error swallowed, a promise not awaited, a message that would mislead the user.");
+    }
+
+    // Rights, by path: everyone reads the sources; each note belongs to the agent that writes it first.
+    reading = files.read("src/**");
+    notes = files.write("review/notes/**", own = true);
+    rules = "Read the files of your task. Write your findings to one note, review/notes/<a short name for your part>.md, as a Markdown list where each item starts with path:line. If you find nothing, say so in the note.";
+
+    agents = [];
+    for (i in range(14)) {
+        agents = append(agents, agent(provider = "deepseek", model = "deepseek-flash", tools = [reading, notes], instructions = rules, steps = 16));
+    }
+    for (i in range(6)) {
+        agents = append(agents, agent(qwen, tools = [reading, notes], instructions = rules, steps = 12));
+    }
+
+    // All twenty at once. A failed agent is a result with ok == false; the others go on.
+    results = await parallel_map(agents, tasks, concurrency = 20, on_error = "collect");
+    if (results.completed < 10) {
+        return unresolved();
+    }
+
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md",
+        instruction = "Group the findings by file, keep every path:line reference exactly as the notes give it, and leave out a finding no note supports.");
+
+    // The report is checked, and written again with the exact problems until it holds.
+    while (!accepted(candidate, spec)) {
+        evidence = await evaluate(candidate, spec);
+        verdict = verify(spec, evidence);
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md", feedback = verdict.violations);
+    }
+    return unresolved();
+}

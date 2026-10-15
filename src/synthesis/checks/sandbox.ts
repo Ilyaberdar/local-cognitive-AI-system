@@ -187,10 +187,12 @@ export function bwrapArgs(executable: string, args: string[], workDir: string, r
   return [...bwrapBase(), ...(noNestedUserns ? NO_NESTED_USERNS : []), ...binds, "--bind", work, work, "--chdir", work, "--", executable, ...args];
 }
 
+/** Said for contract tests and for agents' terminals alike: neither runs code without a sandbox. */
+const NO_SANDBOX = `${process.platform === "win32" ? "Windows" : "This platform"} has no sandbox for code a model wrote yet (one is planned); contract tests and agents' terminals run only in one: sandbox-exec on macOS, bubblewrap on Linux.`;
 const unsupported: SandboxProvider = {
   name: "none",
-  unavailable: async () => "Contract tests need a sandbox, which this platform does not have yet.",
-  wrap: () => { throw new Error("Contract tests need a sandbox, which this platform does not have yet."); }
+  unavailable: async () => NO_SANDBOX,
+  wrap: () => { throw new Error(NO_SANDBOX); }
 };
 
 /** The sandbox of this platform: sandbox-exec on macOS, bubblewrap on Linux, none elsewhere. */

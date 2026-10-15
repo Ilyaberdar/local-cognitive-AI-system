@@ -6,6 +6,7 @@
 //
 //   npm run build:server
 //   node scripts/test-providers.mjs [--keys ~/.config/local-cognitive/provider-keys.env] [--only qwen,groq] [--model qwen=qwen3.8-flash]
+//   ssh other-machine 'node scripts/test-providers.mjs --keys -' < ~/.config/local-cognitive/provider-keys.env
 //
 // The keys file has one NAME=value per line: QWEN_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY,
 // GROQ_API_KEY, PERPLEXITY_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY. A region or
@@ -15,9 +16,11 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+// fileURLToPath, not the URL's pathname: on Windows that is /C:/..., which resolves to no folder.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = file => path.join(root, "dist/src", file);
 if (!fs.existsSync(dist("llm/OpenAICompatibleProvider.js"))) { console.error("Build first: npm run build:server"); process.exit(2); }
 const { OpenAICompatibleProvider } = require(dist("llm/OpenAICompatibleProvider.js"));
@@ -29,13 +32,15 @@ const { Logger } = require(dist("utils/Logger.js"));
 
 const args = process.argv.slice(2);
 const option = name => { const index = args.indexOf(`--${name}`); return index >= 0 ? args[index + 1] : undefined; };
-const keysFile = path.resolve((option("keys") ?? "~/.config/local-cognitive/provider-keys.env").replace(/^~(?=$|\/)/, os.homedir()));
+// --keys -: the keys come on standard input (piped over ssh, say), and never touch that machine's disk.
+const fromInput = option("keys") === "-";
+const keysFile = fromInput ? "standard input" : path.resolve((option("keys") ?? "~/.config/local-cognitive/provider-keys.env").replace(/^~(?=$|\/)/, os.homedir()));
 const only = option("only")?.split(",").map(item => item.trim()).filter(Boolean);
 const models = Object.fromEntries((option("model") ?? "").split(",").filter(Boolean).map(pair => pair.split("=")));
 
-if (!fs.existsSync(keysFile)) { console.error(`No keys file at ${keysFile}. Create it (chmod 600) with lines such as QWEN_API_KEY=...`); process.exit(2); }
-if (process.platform !== "win32" && (fs.statSync(keysFile).mode & 0o077)) { console.error(`${keysFile} is readable by others: run chmod 600 on it first.`); process.exit(2); }
-const env = Object.fromEntries(fs.readFileSync(keysFile, "utf8").split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#") && line.includes("="))
+if (!fromInput && !fs.existsSync(keysFile)) { console.error(`No keys file at ${keysFile}. Create it (chmod 600) with lines such as QWEN_API_KEY=...`); process.exit(2); }
+if (!fromInput && process.platform !== "win32" && (fs.statSync(keysFile).mode & 0o077)) { console.error(`${keysFile} is readable by others: run chmod 600 on it first.`); process.exit(2); }
+const env = Object.fromEntries(fs.readFileSync(fromInput ? 0 : keysFile, "utf8").split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#") && line.includes("="))
   .map(line => { const at = line.indexOf("="); return [line.slice(0, at).trim(), line.slice(at + 1).trim().replace(/^(["'])(.*)\1$/, "$2")]; }));
 const secrets = Object.entries(env).filter(([name]) => /KEY/.test(name)).map(([, value]) => value).filter(value => value.length >= 6);
 const masked = text => secrets.reduce((value, secret) => value.split(secret).join("<key>"), String(text ?? "")).replace(/\b(?:sk|gsk|pplx|xai)-[A-Za-z0-9_\-]{8,}/g, "<key>");
@@ -119,4 +124,6 @@ console.log(`\n${"provider".padEnd(w1)}  ${"check".padEnd(w2)}  ok  ${"tokens".p
 for (const row of rows) console.log(`${row.id.padEnd(w1)}  ${row.name.padEnd(w2)}  ${row.ok ? "✓ " : "✗ "}  ${row.tokens.padEnd(w3)}  ${(row.ms / 1000).toFixed(1).padStart(5)}s  ${row.detail}`);
 const failed = rows.filter(row => !row.ok).length;
 console.log(`\n${rows.length - failed} of ${rows.length} checks passed.`);
-process.exit(failed ? 1 : 0);
+// Not process.exit(): on Windows, exiting with fetch's sockets still closing trips a libuv assertion
+// (UV_HANDLE_CLOSING) and the run ends with 3221226505 instead of its own code.
+process.exitCode = failed ? 1 : 0;
