@@ -16,7 +16,9 @@ import { selectInference } from "./inference";
 import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from "../runtime/hostFolders";
 import { serverEnvironment } from "./serverEnv";
 import { printable, printableDeep, printableMessage } from "./terminalText";
-import type { CloudModelsProject, CloudModelsResult } from "./cloudModels";
+import { findProject, type CloudModelsProject, type CloudModelsResult } from "./cloudModels";
+import { spawn } from "child_process";
+import { childProcessEnv } from "../config/secrets";
 
 // Only modules that do not read the application configuration are imported above: the
 // configuration is evaluated when its module loads, after `start` has set the environment.
@@ -193,6 +195,40 @@ const cloudModels = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** A project's dependencies, installed once by the server's owner (npm ci with its lock file, as the
+ * server's user, with the network) so agents can run npm test in it: they never install, and their
+ * sandbox has no network. Install scripts run only with --scripts. The project is found as cloud-models
+ * finds it, through the running server; no key of the server reaches npm. */
+const deps = async (args: ServerArgs) => {
+  const request = args.deps!;
+  const { projects } = await remoteRequest(args, { op: "cloud-models" }) as unknown as CloudModelsResult;
+  let project: CloudModelsProject;
+  try { project = findProject(projects, request.project); }
+  catch (error) { throw new CliError(printableMessage(error instanceof Error ? error.message : String(error)), ExitCode.failure); }
+  const folder = project.rootPath, label = `${printable(project.name)} (${printable(folder)})`;
+  if (!fs.existsSync(path.join(folder, "package.json"))) throw new CliError(`${label} has no package.json: nothing to install.`, ExitCode.failure);
+  if (!fs.existsSync(path.join(folder, "package-lock.json")) && !fs.existsSync(path.join(folder, "npm-shrinkwrap.json"))) {
+    throw new CliError(`${label} has no package-lock.json: npm ci installs exactly what a lock file names. Add one to the project (npm install on a computer), then run deps again.`, ExitCode.failure);
+  }
+  // The server's own npm, beside its Node; npm on PATH otherwise.
+  const beside = path.join(path.dirname(process.execPath), "npm");
+  const npm = fs.existsSync(beside) ? beside : "npm";
+  const cache = path.join(path.resolve(args.dataDir!), "cache", "npm");
+  fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
+  const npmArgs = ["ci", "--no-audit", "--no-fund", ...(request.scripts ? [] : ["--ignore-scripts"])];
+  if (!args.quiet) process.stdout.write(`Installing the dependencies of ${label}: npm ${npmArgs.join(" ")}${request.scripts ? "" : " (install scripts are not run; add --scripts to run them)"}
+`);
+  const code = await new Promise<number>((resolve, reject) => {
+    const child = spawn(npm, npmArgs, { cwd: folder, stdio: args.quiet ? "ignore" : "inherit",
+      env: { ...childProcessEnv(), npm_config_cache: cache, npm_config_update_notifier: "false", ...(fs.existsSync(beside) ? { PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}` } : {}) } });
+    child.on("error", error => reject((error as NodeJS.ErrnoException).code === "ENOENT" ? new CliError("npm is not installed on this server.", ExitCode.unavailable) : error));
+    child.on("close", status => resolve(status ?? 1));
+  });
+  if (code !== 0) throw new CliError(`npm ci failed (exit ${code}) for ${label}.`, ExitCode.failure);
+  print(args, `Dependencies of ${label} installed. Agents' npm test and npm run use them; run deps again after the lock file changes.`, { project: project.id, installed: true });
+  return ExitCode.ok;
+};
+
 /** Backups of the server's state (not its models): taken and restored with the server stopped,
  * under the data root lock, as the server's user. */
 const backupCommand = async (args: ServerArgs) => {
@@ -300,6 +336,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "folders": return await folders(args);
       case "error-reports": return errorReports(args);
       case "cloud-models": return await cloudModels(args);
+      case "deps": return await deps(args);
       case "backup": case "backups": case "restore": return await backupCommand(args);
       case "update": case "rollback": case "adopt": return await updateCommand(args);
       case "revoke-device": {

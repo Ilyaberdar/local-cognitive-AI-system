@@ -133,6 +133,9 @@ test("the console runs status, watch and exit against a live control socket, and
   input.write("My  review\r");
   for (let attempt = 0; attempt < 250 && calls.length < 2; attempt++) await delay(20);
   assert.deepEqual(calls[1], ["cloud-models", "allow", "My  review"]);
+  input.write("deps --scripts My app\r");
+  for (let attempt = 0; attempt < 250 && calls.length < 3; attempt++) await delay(20);
+  assert.deepEqual(calls[2], ["deps", "My app", "--scripts"]);
   // Ctrl+C clears a typed line without leaving; on an empty line it asks, and the second one leaves.
   input.write("stat");
   input.write("\x03");

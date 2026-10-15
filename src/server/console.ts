@@ -90,6 +90,7 @@ export const COMMANDS: Array<[string, string]> = [
   ["update", "Install the newest release"],
   ["config", "Settings (config error-reports on|off)"],
   ["cloud-models", "Projects' cloud models (allow|deny <project>)"],
+  ["deps <project>", "Install a project's npm dependencies once"],
   ["clear", "Clear the screen"],
   ["help", "Show this list"],
   ["exit", "Leave the console; the server keeps running"]
@@ -263,7 +264,7 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
       paint(s, GREY, "Ready when you are. Type a command to get started.")]);
   };
 
-  const names = ["status", "watch", "pair", "devices", "revoke", "logs", "start", "stop", "restart", "update", "config", "cloud-models", "clear", "help", "exit"];
+  const names = ["status", "watch", "pair", "devices", "revoke", "logs", "start", "stop", "restart", "update", "config", "cloud-models", "deps", "clear", "help", "exit"];
   const following: Record<string, string[]> = { config: ["error-reports"], "error-reports": ["on", "off"], "cloud-models": ["allow", "deny"] };
   /** One Tab completes a single match (with a space); two list them. Words after the first: config's. */
   const completer = (line: string): [string[], string] => {
@@ -388,6 +389,14 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
         if (!["allow", "deny"].includes(rest[0]!) || rest.length < 2) { write([`  ${paint(s, YELLOW, "Use: cloud-models, or cloud-models allow|deny <project> (its id, name or folder)")}`]); return true; }
         // A project's name may hold spaces, kept as typed.
         await handOver(["cloud-models", rest[0]!, line.trim().replace(/^cloud-models\s+(?:allow|deny)\s+/, "")]); return true;
+      }
+      case "deps": {
+        if (!rest.length) { write([`  ${paint(s, YELLOW, "Use: deps <project> (its id, name or folder) [--scripts]")}`]); return true; }
+        // The project's name keeps its spaces; --scripts may come anywhere.
+        const scripts = /(^|\s)--scripts(?=\s|$)/.test(line);
+        const project = line.trim().replace(/^deps\s+/, "").replace(/(^|\s)--scripts(?=\s|$)/g, " ").trim();
+        if (!project) { write([`  ${paint(s, YELLOW, "Use: deps <project> (its id, name or folder) [--scripts]")}`]); return true; }
+        await handOver(["deps", project, ...(scripts ? ["--scripts"] : [])]); return true;
       }
       case "exit": case "quit": return false;
       default: {

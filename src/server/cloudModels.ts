@@ -28,9 +28,9 @@ const unknown = () => new ControlError("No project on this server has that id, n
  * - a name matches every project that has it in any letter case, so one made to look like another
  *   is refused, never preferred;
  * - a folder reached through a link is refused. */
-export function findProject(projects: Project[], query: string): Project {
+export function findProject<P extends Pick<Project, "id" | "name" | "rootPath"> & { origin?: string }>(projects: P[], query: string): P {
   if (UUID.test(query)) return projects.find(project => project.id.toLowerCase() === query.toLowerCase()) ?? (() => { throw unknown(); })();
-  let found: Project[];
+  let found: P[];
   // A relative path would be read from / (the command runs there): only an absolute one is a folder.
   if (path.isAbsolute(query)) {
     const target = path.resolve(query), real = realpath(target);

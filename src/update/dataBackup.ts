@@ -6,7 +6,7 @@ import { appVersion } from "../utils/appVersion";
 
 /** Never copied: models are large and can be downloaded again, output is the user's own folder,
  * and backups do not nest. Locks, sockets and SQLite's side files are not state. */
-const SKIPPED_TOP = new Set(["models", "output", "backups"]);
+const SKIPPED_TOP = new Set(["models", "output", "backups", "cache"]);
 const SKIPPED_FILE = /(?:\.lock|\.sock|-wal|-shm|\.tmp|-journal)$/;
 const BACKUP_NAME = /^\d{8}T\d{6}Z-[\w.+-]{1,80}$/;
 
