@@ -310,6 +310,18 @@ implement RepoReview using "contract-v1" {
 | LocalReview, 6 агентов на Qwen3.5-4B, 6 слотов, CUDA | Accepted за 132,7 с: llama.cpp с `--parallel 6`, все слои на GPU, 5,8 ГБ VRAM; `Grounded`: 13 ссылок |
 | RepoReview, 20 агентов DeepSeek | Accepted за 307 с: 20 из 20, 18 заметок; цикл исправления убрал 2 плохие ссылки из 87 |
 
+Ночь на 15 октября: fedora на тестовой сборке 0.1.7-test.2 (коммит c31e8b5, поставлена `update`; откат `sudo local-cognitive-server rollback`).
+
+- Все облачные провайдеры на сервере: из файла окружения (`DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `PERPLEXITY_API_KEY`, свои `LOCAL_COGNITIVE_PROVIDER_<ID>_BASE_URL`) и «Add provider» с компьютера (`providers.discover`, `providers.add`; адрес только серверный).
+- npm в Node сервера; `deps <project>` (npm ci в рабочей папке сервера, lock проверяется, `.npmrc` проекта не читается).
+- Найдено новыми тестами и исправлено: агент с терминалом без прав записи не мог запускать команды; `npm test` в терминале не работал на Mac; редкое падение теста зависшего процесса (EPERM); формы страниц Settings для сервера не подключались.
+
+| Проверка на fedora | Итог |
+| --- | --- |
+| Полный набор с Node из пакета (вне домашней папки) | 1225: 1196 прошли, 0 упали, 29 пропущены |
+| 10 повторов: песочница, агенты, runCommand, deps, UI Synthesis и Settings | 0 падений |
+| Под systemd через сервис: `deps`, 3 агента на Qwen3.5-4B со слотами на CUDA, `npm test` в терминале | `deps` поставил зависимости; агенты запускали `npm test` в песочнице; модель починила 1 из 5 тестов (Needs review) — это качество 4B, не система |
+
 Осталось:
 
 - Песочница для Windows (помощник AppContainer + Job Object): отдельный этап, с проверкой на Windows-машине владельца.
