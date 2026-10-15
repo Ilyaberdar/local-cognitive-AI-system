@@ -250,7 +250,8 @@ test("diagnostics separates invalid current source from passing historical evide
     ui.click("Diagnostics");
     await until(() => Boolean(ui.dom.window.document.querySelector('#synthesis-diagnostics')), "inspector opened");
     assert.equal(trigger.getAttribute("aria-expanded"), "true");
-    assert.equal(ui.dom.window.document.activeElement.id, "synthesis-diagnostics-title");
+    // Focus moves to its title once it is on screen (an effect after the panel is mounted and slides in).
+    await until(() => ui.dom.window.document.activeElement?.id === "synthesis-diagnostics-title", "focus on the inspector's title");
     assert.match(ui.dom.window.document.querySelector('.synthesis-diagnostics').textContent, /Unknown evaluator/);
     assert.match(ui.dom.window.document.querySelector('.synthesis-gates').textContent, /arithmeticPass/);
     assert.match(ui.text(), /selected run’s frozen source/);
