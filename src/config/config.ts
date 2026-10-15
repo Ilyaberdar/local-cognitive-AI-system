@@ -7,7 +7,7 @@ import { parseMcpConfiguration } from "../mcp/client/configuration";
 import { AgentLimits, readAgentLimits } from "../agents/runtime/AgentLimits";
 import { defaultLocalGenerationSettings } from "../local/GenerationSettings";
 import { hasSecretName, isSharedEnvFile } from "./secrets";
-import { PROVIDER_PRESETS } from "../llm/providerCatalog";
+import { environmentProviders } from "./environmentProviders";
 
 /** The desktop app is configured through Settings in its user data directory. A
  * repository .env is for development and headless runs and must not leak into it. */
@@ -47,6 +47,8 @@ export interface CompatibleProviderConfig extends ProviderHttpConfig {
   dialect: string;
   /** The preset it came from: its regions, models and key page. */
   preset?: string;
+  /** Set in the environment (a server's environment file): its address and key come only from there. */
+  source?: "environment";
 }
 
 export interface AppConfig {
@@ -85,6 +87,8 @@ export interface AppConfig {
   };
   /** OpenAI-compatible services that are data (Qwen built in, others added in Settings), by id. */
   compatibleProviders?: Record<string, CompatibleProviderConfig>;
+  /** Provider entries of the environment that were left out, and why (logged at start). */
+  providerProblems?: string[];
   memory: {
     adapter: MemoryAdapterName;
     baseDir: string;
@@ -319,14 +323,10 @@ export const config: AppConfig = {
       apiKey: toOptional(process.env.GEMINI_API_KEY)
     }
   },
-  compatibleProviders: Object.fromEntries(PROVIDER_PRESETS.filter(preset => preset.builtIn).map(preset => [preset.id, {
-    name: preset.name,
-    dialect: preset.dialect,
-    baseUrl: process.env[preset.env.baseUrl] ?? preset.baseUrl,
-    model: process.env[preset.env.model] ?? preset.model,
-    timeoutMs: Number(process.env[preset.env.timeoutMs] ?? defaultTimeoutMs),
-    apiKey: preset.env.apiKey.map(name => toOptional(process.env[name])).find(Boolean)
-  }])),
+  // Qwen always; DeepSeek, OpenRouter, Groq and Perplexity when their key is set; the owner's own
+  // services as LOCAL_COGNITIVE_PROVIDER_<ID>_BASE_URL (see environmentProviders.ts).
+  compatibleProviders: environmentProviders(process.env, defaultTimeoutMs).providers,
+  providerProblems: environmentProviders(process.env, defaultTimeoutMs).refused,
   memory: {
     adapter: (process.env.MEMORY_ADAPTER as MemoryAdapterName) ?? "world-partition",
     baseDir: resolveDir(process.env.MEMORY_DIR ?? "./data/memory", "./data/memory"),

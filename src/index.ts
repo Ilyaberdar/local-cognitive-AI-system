@@ -87,6 +87,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   setDiagnosticSink(diagnosticLog);
   diagnosticLog.record("app.started", { runtimeKind: options.runtimeKind ?? "server", previousShutdown: lock.previousShutdown });
   const failed = (error: unknown) => { diagnosticLog.record("startup.failed", { category: errorCategory(error) }); diagnosticLog.flush(); };
+  // A provider entry of the environment that was left out says why (never its key).
+  for (const problem of config.providerProblems ?? []) logger.warn("A provider in the environment was left out", { problem });
   const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
   // host.db: the server's durable runs, and every runtime's usage ledger.
   let database: HostDatabase | undefined;

@@ -169,6 +169,10 @@ export class AppSettingsStore {
     };
 
     for (const [providerId, providerPatch] of Object.entries(patch.providers ?? {})) {
+      // A service the environment sets is changed there: its address, key and presence.
+      if (next.providers[providerId]?.source === "environment" && (providerPatch === null || providerPatch.baseUrl !== undefined || providerPatch.apiKey !== undefined)) {
+        throw new SettingsValidationError(`${next.providers[providerId]!.name ?? providerId} is set in the server's environment file: change or remove it there.`);
+      }
       if (providerPatch === null) {
         if (next.llm.defaultProvider === providerId) throw new SettingsValidationError("This is the default provider: choose another default first.");
         delete next.providers[providerId];
@@ -283,14 +287,16 @@ export class AppSettingsStore {
           model: this.baseConfig.providers.gemini.model,
           timeoutMs: this.baseConfig.providers.gemini.timeoutMs
         },
-        // OpenAI-compatible services every installation has (Qwen): data, shaped by their dialect.
+        // OpenAI-compatible services every installation has (Qwen), and those its environment sets:
+        // data, shaped by their dialect. An environment's key is never copied here (it is read at start).
         ...Object.fromEntries(Object.entries(this.baseConfig.compatibleProviders ?? {}).map(([id, provider]) => [id, {
           kind: "openai-compatible" as const,
           dialect: provider.dialect,
           name: provider.name,
           enabled: provider.enabled !== false,
           baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey,
+          ...(provider.source === "environment" ? { source: "environment" as const } : { apiKey: provider.apiKey }),
+          ...(provider.preset ? { preset: provider.preset } : {}),
           model: provider.model,
           timeoutMs: provider.timeoutMs
         }]))
@@ -367,9 +373,18 @@ export class AppSettingsStore {
       };
     }
 
-    // A service every installation has stays that service: its kind and dialect come from here.
+    // A service every installation has stays that service: its kind and dialect come from here, and
+    // one the environment sets keeps its address from there and no saved key.
     for (const [providerId, provider] of Object.entries(defaults.providers)) {
-      if (provider.kind) settings.providers[providerId] = { ...settings.providers[providerId], kind: provider.kind, dialect: provider.dialect };
+      if (!provider.kind) continue;
+      const current = { ...settings.providers[providerId], kind: provider.kind, dialect: provider.dialect };
+      if (provider.source === "environment") { delete current.apiKey; Object.assign(current, { source: "environment" as const, baseUrl: provider.baseUrl, ...(provider.preset ? { preset: provider.preset } : {}) }); }
+      else delete current.source;
+      settings.providers[providerId] = current;
+    }
+    // One the environment no longer sets is gone: removing it there removes it here.
+    for (const [providerId, provider] of Object.entries(settings.providers)) {
+      if (provider.source === "environment" && defaults.providers[providerId]?.source !== "environment") delete settings.providers[providerId];
     }
 
     // The internal server chooses its own address and token on every launch.

@@ -17,7 +17,8 @@ export const hasSecretName = (value: string): boolean => secretName.test(value.r
  * names are case-insensitive, so matching ignores case. */
 export const childProcessEnv = (base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
   const secret = new Set<string>(SECRET_ENV_KEYS);
-  return Object.fromEntries(Object.entries(base).filter(([key]) => !secret.has(key.toUpperCase())));
+  // The owner's own services (LOCAL_COGNITIVE_PROVIDER_<ID>_API_KEY) are credentials too.
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !secret.has(key.toUpperCase()) && !/^LOCAL_COGNITIVE_PROVIDER_[A-Z0-9_]+_API_KEY$/.test(key.toUpperCase())));
 };
 
 /** True when a POSIX env file is readable or writable by the group or other users. */

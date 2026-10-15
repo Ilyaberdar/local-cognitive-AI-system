@@ -272,12 +272,14 @@ export class RuntimeManager {
         .filter(([id, provider]) => provider.kind === "openai-compatible" && !BUILT_IN_PROVIDER_IDS.includes(id))
         .map(([id, provider]) => {
           const base = this.baseConfig.compatibleProviders?.[id];
+          // One the environment sets takes its address and key from there (a key changed there counts).
+          const fromEnvironment = base?.source === "environment";
           return [id, {
             enabled: provider.enabled,
-            baseUrl: provider.baseUrl || base?.baseUrl || "",
+            baseUrl: (fromEnvironment ? base?.baseUrl : provider.baseUrl || base?.baseUrl) || "",
             model: provider.model || base?.model || "",
             timeoutMs: provider.timeoutMs ?? base?.timeoutMs ?? 300000,
-            apiKey: provider.apiKey || base?.apiKey,
+            apiKey: fromEnvironment ? base?.apiKey : provider.apiKey || base?.apiKey,
             name: provider.name || base?.name || id,
             dialect: provider.dialect || base?.dialect || "chat",
             ...(provider.preset ? { preset: provider.preset } : {})

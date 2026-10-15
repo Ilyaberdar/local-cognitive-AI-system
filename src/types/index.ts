@@ -130,6 +130,8 @@ export interface ProviderRuntimeSettings {
   dialect?: string;
   name?: string;
   preset?: string;
+  /** Set in the environment (a server's environment file): its address and key are read from there, never saved here. */
+  source?: "environment";
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";

@@ -148,6 +148,8 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
       continue;
     }
     const value = object(provider, `providers.${id}`);
+    // Where a service comes from is the installation's to say, never a setting.
+    if (value.source !== undefined) throw new SettingsValidationError(`providers.${id}.source cannot be set.`);
     check(value, `providers.${id}`, {
       enabled: "boolean", baseUrl: "string", apiKey: "string", model: "string", timeoutMs: [1000, 3600000],
       version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string", preset: "string"
