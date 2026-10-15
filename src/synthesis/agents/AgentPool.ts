@@ -88,7 +88,9 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
           if (event.phase === "preparing") { summary.steps++; summary.durationMs = Date.now() - started; options.update(summaries); }
           else if (event.phase === "tool_result" || event.phase === "tool_error") options.update(summaries);
         } };
-      const readOnly = !spec.rights.write.length && !spec.rights.delete.length;
+      // An agent that only reads may still run its terminal (a reviewer running the tests): not read-only then.
+      const changes = spec.rights.write.length > 0 || spec.rights.delete.length > 0;
+      const readOnly = !changes && !spec.rights.terminal?.length;
       const runner = new AgentLoopRunner(options.llm, tools, options.baseDir,
         { maxSteps: spec.steps, advisorMaxSteps: spec.steps, maxTotalSteps: 0, maxActiveMs: 0, maxRepairs: 3 });
       const rights = [`read ${spec.rights.read.join(", ") || "nothing"}`, spec.rights.write.length ? `write ${spec.rights.write.join(", ")}` : "",
@@ -97,7 +99,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
         tools: agentTools(spec.rights),
         toolInstructions: agentToolText(spec.rights),
         accessNote: `You are agent ${index + 1} of ${tasks.length}, working at the same time as the others on parts of one goal for the module ${options.module.name}. Your task is your part only. ` +
-          `Files: you may ${rights}. Paths are relative to the project folder. ${readOnly ? "" : "What you write goes into the run's copy; the project changes only when the engineer applies the run. "}` +
+          `Files: you may ${rights}. Paths are relative to the project folder. ${changes ? "What you write goes into the run's copy; the project changes only when the engineer applies the run. " : ""}` +
           (spec.rights.read.length ? "Read the files of your task with your tools before you answer: a finding about code you have not read is wrong, and every path:line you cite is checked. " : "") +
           "Your final answer is returned to the flow as your result: give your findings with path:line references where they apply, and name the files you wrote.",
         instructions: [`Module ${options.module.name}: ${options.module.description}`.slice(0, 4000), spec.instructions].filter(Boolean).join("\n\n") });

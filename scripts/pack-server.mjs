@@ -75,8 +75,13 @@ if (!fs.existsSync(nodeTar) || digest(nodeTar) !== expected) {
 if (digest(nodeTar) !== expected) fail("The Node download does not match nodejs.org's SHASUMS256.");
 fs.mkdirSync(path.join(stage, "node"));
 execFileSync("tar", ["-xzf", nodeTar, "-C", path.join(stage, "node"), "--strip-components=1"]);
-// Only the runtime: npm and headers are not needed to run the server.
-for (const unused of ["include", "share", "lib/node_modules", "bin/npm", "bin/npx", "bin/corepack"]) fs.rmSync(path.join(stage, "node", unused), { recursive: true, force: true });
+// The runtime and npm (agents' terminals run npm test and npm run with it); not the headers or corepack.
+for (const unused of ["include", "share", "lib/node_modules/corepack", "bin/npm", "bin/npx", "bin/corepack"]) fs.rmSync(path.join(stage, "node", unused), { recursive: true, force: true });
+// npm and npx are links in Node's tarball, and a release holds no links: small scripts start them instead.
+for (const [name, cli] of [["npm", "npm-cli.js"], ["npx", "npx-cli.js"]]) {
+  if (!fs.existsSync(path.join(stage, "node", "lib", "node_modules", "npm", "bin", cli))) fail(`Node ${nodeVersion} has no npm/bin/${cli}.`);
+  fs.writeFileSync(path.join(stage, "node", "bin", name), `#!/bin/sh\nhere=$(dirname "$0")\nexec "$here/node" "$here/../lib/node_modules/npm/bin/${cli}" "$@"\n`, { mode: 0o755 });
+}
 
 // The CPU llama.cpp runtime of the platform (the CUDA one is prepared on the host).
 if (!flag("--skip-llama")) {

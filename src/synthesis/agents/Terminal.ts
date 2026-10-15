@@ -44,6 +44,11 @@ function program(command: TerminalCommand): Promise<string | undefined> {
   if (!answer) {
     answer = (async () => {
       if (command === "node" && !process.versions.electron) return process.execPath;
+      // A server's own Node brings npm and npx beside it.
+      if ((command === "npm" || command === "npx") && !process.versions.electron) {
+        const beside = path.join(path.dirname(process.execPath), command);
+        if (await executableAt(beside)) return beside;
+      }
       const nvm = path.join(os.homedir(), ".nvm", "versions", "node");
       const newest = (await fs.readdir(nvm).catch(() => [] as string[])).filter(name => /^v\d+/.test(name)).sort().pop();
       const dirs = [...searchPath(), ...(newest && ["node", "npm", "npx"].includes(command) ? [path.join(nvm, newest, "bin")] : [])];
@@ -124,14 +129,20 @@ export class AgentTerminal {
     // The tool's folders, read-only: its own and its real place (Homebrew, nvm); their parents only
     // where they are a toolchain's (npm's own modules), never a folder of the user's; the project's
     // node_modules and git history, when the copy links them.
-    const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...this.linked];
+    // npm and npx are started by node (#!/usr/bin/env node), and so are the scripts they run (npm test,
+    // a package's own bin): node's folder goes first on their PATH, readable like the tool's own.
+    const node = command === "npm" || command === "npx" ? await program("node") : undefined;
+    const nodeDirs = node ? [...new Set([path.dirname(node), path.dirname(await fs.realpath(node).catch(() => node))])] : [];
+    const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...nodeDirs, ...this.linked];
     // The command runs under a shell that, once it ends, ends whatever it left running in its process
     // group, from inside the sandbox while the group is still its own (never a group the app guesses).
     const token = `LC_TERMINAL_DONE_${randomBytes(9).toString("hex")}`;
     const done = new RegExp(`\\n${token}:(\\d+)\\n$`);
     const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", ENDS_ITS_GROUP, "sh", String(CPU_SECONDS), token, executable, ...args], work, readable);
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
-      { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
+      // npm's scripts start under an absolute /bin/sh: looking sh up through the node_modules/.bin of every
+      // parent folder (which the macOS sandbox refuses with EPERM, ending the search) would fail them.
+      { env: { ...wrapped.env, ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
     const status = done.exec(result.stdout);
     const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
     return { exitCode: status ? Number(status[1]) : result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout.replace(done, "\n"))), stderr: clip(hide(result.stderr)) };

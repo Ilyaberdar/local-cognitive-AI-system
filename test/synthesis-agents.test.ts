@@ -600,6 +600,25 @@ test("terminal: an agent runs node in a sandboxed copy of what it may read, with
   await assert.rejects(fs.access(path.join(f.root, "src", "made-in-the-copy.ts")), {code: "ENOENT"});
 });
 
+test("terminal: npm test runs the project's own test script in the sandbox, with the npm beside this Node (a server ships it there)", { skip: !sandboxed }, async (t) => {
+  const { platformSandbox } = await import("../src/synthesis/checks/sandbox");
+  if (await platformSandbox().unavailable()) { t.skip("no working sandbox here"); return; }
+  const npm = [path.join(path.dirname(process.execPath), "npm"), ...(process.env.PATH ?? "").split(path.delimiter).map(dir => path.join(dir, "npm"))];
+  if (!(await Promise.all(npm.map(file => fs.access(file).then(() => true, () => false)))).some(Boolean)) { t.skip("no npm on this computer"); return; }
+  const f = await fixture(t, {script: steps({ tester: [tool("terminal.run", {command: "npm", args: ["test"]}), tool("terminal.run", {command: "npm", args: ["install", "left-pad"]})] })});
+  await fs.writeFile(path.join(f.root, "package.json"), JSON.stringify({ name: "app", private: true, scripts: { test: "node --test" } }));
+  await fs.mkdir(path.join(f.root, "tests"));
+  await fs.writeFile(path.join(f.root, "tests", "a.test.js"), "require('node:test')('adds', () => { require('node:assert').equal(1 + 1, 2); });\n");
+  const result = await f.run(`tester = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("package.json", "tests/**"), terminal(allow = ["npm"])], steps = 6);
+    results = await parallel_map(tester, ["tester"]);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  const agent = await f.service.agent(result.id, 0);
+  const final = agent.final ?? "";
+  assert.match(final, /# pass 1/, `${result.status} ${result.error ?? ""} ${agent.error ?? ""} ${JSON.stringify(agent.turns).slice(0, 1500)}`);
+  assert.match(final, /"exitCode":0/);
+  assert.match(final, /npm runs only npm test, npm run <script> and npm ls here/, "an install (network, package scripts) is never run");
+});
+
 test("terminal: a run refuses agents with a terminal where no sandbox isolates, before any agent starts", async (t) => {
   const f = await fixture(t, {script: writer});
   const service = f.service as unknown as {services: {checks?: {sandbox: unknown}}};
