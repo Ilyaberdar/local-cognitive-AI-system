@@ -45,8 +45,19 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | `sudo local-cognitive-server cloud-models` | The server's projects, and whether each may use cloud models in Synthesis |
 | `sudo local-cognitive-server cloud-models allow <project>` | Let the project's flows send its contract and files to the cloud providers they name; hidden tests stay on the server |
 | `sudo local-cognitive-server cloud-models deny <project>` | Back to the server's local models; a run in progress stops at its next cloud request |
+| `sudo local-cognitive-server deps <project>` | Install the project's npm dependencies once (`npm ci` with its lock file), so agents can run `npm test` in it |
+
+Agents never install packages: their terminal has no network. `deps` does it for them, as the server's user, from the project's `package-lock.json`. It runs npm in a folder of the server's, never in the project (whose `.npmrc` is ignored), installs only packages from npm's registry (or the one set as `npm_config_registry` in the environment file), and runs no install scripts unless you add `--scripts`. Run it again after the lock file changes.
 
 Name the project by its id, its name or its folder (an absolute path). Its name and folder were usually chosen on a computer, so the command never guesses: an id is looked up only among ids and a path only among folders; a name two projects share, even in different letter case, is refused with their ids to choose from, and so is a folder reached through a link. After a change it prints the project's id, folder and where it was made. A connected computer shows the project's choice at the bottom of its Synthesis screen but can't change it. The console has the same command.
+
+## Cloud providers
+
+A server's chats, agents and Synthesis can use every cloud provider the app knows:
+
+- **From your computer:** with the server selected, **Settings → Models & Providers → Add provider** adds DeepSeek, OpenRouter, Groq or Perplexity to the server. You enter the key; the server uses its own address for the service, tests it, and keeps the key (no device can read it back). Added providers can be renamed or removed there.
+- **In the server's environment file** (`/etc/local-cognitive/server.env`, then `sudo local-cognitive-server restart`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `QWEN_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY` or `PERPLEXITY_API_KEY`. A provider set there is changed there: computers see it but cannot remove it or change its key.
+- **Any other OpenAI-compatible service**, only in the environment file: `LOCAL_COGNITIVE_PROVIDER_<ID>_BASE_URL` with `_API_KEY` and `_MODEL` (and optionally `_NAME`). Its id is `<ID>` in lower case, with `-` for `_`. A service that takes no key still needs one: any value. An entry that is not valid is left out, and `sudo local-cognitive-server logs` says why.
 
 ## GPUs and removal
 

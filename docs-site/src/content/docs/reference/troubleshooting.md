@@ -59,6 +59,12 @@ description: Common problems with models, GPUs, Remote, Synthesis and updates, a
 **A terminal command is refused**
 : The message says why: the command isn't in the agent's `terminal(allow = [...])`; `git` only reads history; `npm` only runs `test`, `run` and `ls`; a contract with hidden tests leaves the git history out of the copy; or the files the agent may read are over 512 MB, so narrow its `files.read` patterns.
 
+**An agent's npm test says "Cannot find module"**
+: The project's dependencies are not installed, and agents never install them (their terminal has no network). Run `npm install` in the project on your computer, or on a server `sudo local-cognitive-server deps <project>` once (again after the lock file changes).
+
+**"npm is not installed on this computer"**
+: The terminal uses the Node.js and npm installed on your computer: install Node.js 22.18 or later (from nodejs.org, Homebrew or nvm). A server brings its own.
+
 **An agent fails with a timeout**
 : A request to its model took longer than 10 minutes, the most an agent's request may take. Some models hosted by Perplexity (Kimi, GLM) are this slow on big tasks: give agents smaller tasks or a faster model.
 

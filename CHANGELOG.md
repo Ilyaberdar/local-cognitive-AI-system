@@ -17,6 +17,13 @@ Synthesis with cloud models and agents in parallel: tens of agents on one task, 
 - **New module → Repository review (parallel agents):** four agents on one local model review `src/`, and the report is accepted when every file and line it cites exists.
 - **Providers that limit requests:** when one answers 429, the run sends it fewer requests at once and repeats the refused one after the pause it asks for, without spending agents' turns. An agent's request may take up to 10 minutes.
 - **The flow language** has lists and `for (item in list)`, `range(n)`, `list[i]`, `append(list, item)`, and `limit steps N` for long loops.
+- **Fixes:** an agent with a terminal but no write rights (a reviewer that only reads and runs the tests) can run its commands; `npm test` in an agent's terminal works on a Mac; a contract test that times out no longer fails now and then when its processes have already ended.
+
+### Server
+
+- **Every cloud provider on a server.** From your computer, with the server selected, Settings → Models & Providers → Add provider adds DeepSeek, OpenRouter, Groq or Perplexity to the server: you enter the key, the server uses its own address for the service and tests it, and no device can read the key back. They can also be set in the server's environment file (`DEEPSEEK_API_KEY` and the others), with any other OpenAI-compatible service as `LOCAL_COGNITIVE_PROVIDER_<ID>_BASE_URL`. Chats, agents and Synthesis on the server use them like any provider.
+- **npm in agents' terminals.** The server brings npm with its Node, so agents can run `npm test` and `npm run` there.
+- **`sudo local-cognitive-server deps <project>`** installs a project's npm dependencies once from its lock file, for agents' npm test (agents never install). Only packages from the registry, no install scripts unless `--scripts`, and the project's own `.npmrc` is never read.
 
 ### Remote
 

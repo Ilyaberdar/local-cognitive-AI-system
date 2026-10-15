@@ -292,18 +292,26 @@ const deps = async (args: ServerArgs) => {
     // Moved, never copied or written through: the project's old node_modules (a link too, never
     // followed) goes into the work folder, where it is removed with it, and the new one is renamed in.
     // A rename does not go through a link put in its place, and the project's folder must still be itself.
-    const target = path.join(folder, "node_modules"), made = path.join(work, "node_modules");
+    const made = path.join(work, "node_modules");
     if (!fs.existsSync(made)) fs.mkdirSync(made);
-    const same = () => { try { return fs.realpathSync(folder) === folder; } catch { return false; } };
-    if (!same()) throw new CliError(`${label}'s folder changed during the install: nothing was changed. Run deps again.`, ExitCode.failure);
+    // On Linux the project's folder is opened once, without following a link, and both renames go
+    // through that open folder (/proc/self/fd): a path swapped for a link afterwards changes nothing.
+    let handle: number | undefined;
     try {
+      let dir = folder;
+      if (process.platform === "linux") {
+        try { handle = fs.openSync(folder, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW); }
+        catch { throw new CliError(`${label}'s folder is not a folder of its own (a link?): nothing was changed.`, ExitCode.failure); }
+        dir = `/proc/self/fd/${handle}`;
+        if (fs.realpathSync(dir) !== folder) throw new CliError(`${label}'s folder changed during the install: nothing was changed. Run deps again.`, ExitCode.failure);
+      } else if (fs.realpathSync(folder) !== folder) throw new CliError(`${label}'s folder changed during the install: nothing was changed. Run deps again.`, ExitCode.failure);
+      const target = path.join(dir, "node_modules");
       if (fs.lstatSync(target, { throwIfNoEntry: false })) fs.renameSync(target, path.join(work, "node_modules.previous"));
-      if (!same()) throw new CliError(`${label}'s folder changed during the install: run deps again.`, ExitCode.failure);
       fs.renameSync(made, target);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EXDEV") throw new CliError(`${label} is on another disk than the server's data: deps cannot move its node_modules there.`, ExitCode.failure);
       throw error;
-    }
+    } finally { if (handle !== undefined) fs.closeSync(handle); }
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
   print(args, `Dependencies of ${label} installed. Agents' npm test and npm run use them; run deps again after the lock file changes.`, { project: project.id, installed: true });
   return ExitCode.ok;

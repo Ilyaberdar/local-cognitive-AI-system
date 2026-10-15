@@ -38,7 +38,7 @@ A computer of the owner's account can use almost everything on the server:
 - models: download, load, unload, delete, settings, GPUs and Rebalance;
 - tasks, schedules, workflows and Synthesis, with each run's agents and their steps;
 - projects in the server's shared folders;
-- the server's settings: provider keys can be replaced but never read back;
+- the server's settings: provider keys can be replaced but never read back, and cloud providers added from the server's presets (see [Cloud providers](/server/commands/#cloud-providers));
 - usage and error-report settings.
 
 ## What stays on the server
@@ -52,7 +52,7 @@ Some things can only be set up on the server itself, because they reach its whol
 
 From a computer you can delete, cancel or pause such work, but not start, continue or edit it.
 
-Cloud models for a Synthesis project on the server are allowed on the server, with `sudo local-cognitive-server cloud-models allow <project>` (see [Server commands](/server/commands/#synthesis)). A computer shows the choice at the bottom of its Synthesis screen, **Cloud models: on** or **off**, but can't change it. The cloud providers are the server's own: the ones with a key in its environment file, or a key set from a computer in Settings. Agents, their terminal and contract tests run on the server, in its bubblewrap sandbox, and work only in the project's folder there.
+Cloud models for a Synthesis project on the server are allowed on the server, with `sudo local-cognitive-server cloud-models allow <project>` (see [Server commands](/server/commands/#synthesis)). A computer shows the choice at the bottom of its Synthesis screen, **Cloud models: on** or **off**, but can't change it. The cloud providers are the server's own: added from a computer in Settings, or set in its environment file. Agents, their terminal and contract tests run on the server, in its bubblewrap sandbox, and work only in the project's folder there.
 
 ## When the app is closed
 
