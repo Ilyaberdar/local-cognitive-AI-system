@@ -133,7 +133,9 @@ export class AgentTerminal {
     // a package's own bin): node's folder goes first on their PATH, readable like the tool's own.
     const node = command === "npm" || command === "npx" ? await program("node") : undefined;
     const nodeDirs = node ? [...new Set([path.dirname(node), path.dirname(await fs.realpath(node).catch(() => node))])] : [];
-    const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...nodeDirs, ...this.linked];
+    // The npm beside this app's own Node (a server's) reads its modules from that Node's folder, wherever it is.
+    const ownRuntime = !process.versions.electron && path.dirname(executable) === path.dirname(process.execPath) ? [path.dirname(path.dirname(process.execPath))] : [];
+    const readable = [path.dirname(executable), path.dirname(real), ...[path.dirname(path.dirname(real)), path.dirname(path.dirname(executable))].filter(toolchainPrefix), ...nodeDirs, ...ownRuntime, ...this.linked];
     // The command runs under a shell that, once it ends, ends whatever it left running in its process
     // group, from inside the sandbox while the group is still its own (never a group the app guesses).
     const token = `LC_TERMINAL_DONE_${randomBytes(9).toString("hex")}`;

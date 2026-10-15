@@ -195,10 +195,17 @@ const cloudModels = async (args: ServerArgs) => {
   return ExitCode.ok;
 };
 
+/** The registries a lock file's packages may come from: npm's (and Yarn's mirror of it), and the one
+ * the server's owner sets in its environment (npm_config_registry). */
+const registryHosts = (): string[] => {
+  const hosts = ["registry.npmjs.org", "registry.yarnpkg.com"];
+  try { const own = process.env.npm_config_registry || process.env.NPM_CONFIG_REGISTRY; if (own) hosts.push(new URL(own).hostname.toLowerCase()); } catch { /* Not an address. */ }
+  return hosts;
+};
 /** Why a lock file is not installed, or undefined: every package it names comes from a registry over
  * https, never git, a local path, a link, an IP address or this machine. A project's files are a
  * device's, so its lock file must not make the server clone, read or call what it names. */
-export function lockRefusal(lock: unknown): string | undefined {
+export function lockRefusal(lock: unknown, registries: string[] = registryHosts()): string | undefined {
   const entries: Array<[string, Record<string, unknown>]> = [];
   const value = lock && typeof lock === "object" ? lock as Record<string, unknown> : {};
   if (value.packages && typeof value.packages === "object") {
@@ -223,6 +230,8 @@ export function lockRefusal(lock: unknown): string | undefined {
     if (url.protocol !== "https:") return `${name} comes from ${url.protocol} (only https registries)`;
     const host = url.hostname.toLowerCase();
     if (host === "localhost" || /^[\d.]+$/.test(host) || host.includes(":") || host.startsWith("[") || /\.(local|internal|localhost|lan|home)$/.test(host)) return `${name} comes from ${host}, an address on this machine or its network`;
+    // Only the registries this server uses: any other name could lead anywhere (its DNS is not ours).
+    if (!registries.includes(host)) return `${name} comes from ${host}, not a registry this server uses (${registries.join(", ")})`;
   }
   return undefined;
 }
@@ -240,12 +249,23 @@ const deps = async (args: ServerArgs) => {
   try { project = findProject(projects, request.project); }
   catch (error) { throw new CliError(printableMessage(error instanceof Error ? error.message : String(error)), ExitCode.failure); }
   const folder = project.rootPath, label = `${printable(project.name)} (${printable(folder)})`;
-  const regular = (file: string) => { try { return fs.lstatSync(file).isFile(); } catch { return false; } };
-  if (!regular(path.join(folder, "package.json"))) throw new CliError(`${label} has no package.json: nothing to install.`, ExitCode.failure);
-  const lockName = ["package-lock.json", "npm-shrinkwrap.json"].find(name => regular(path.join(folder, name)));
-  if (!lockName) throw new CliError(`${label} has no package-lock.json: npm ci installs exactly what a lock file names. Add one to the project (npm install on a computer), then run deps again.`, ExitCode.failure);
+  // Each file is read once, without following a link, and the bytes checked are the bytes installed:
+  // a device changing the project meanwhile changes nothing of this install.
+  const readRegular = (name: string): Buffer | undefined => {
+    let handle: number | undefined;
+    try {
+      handle = fs.openSync(path.join(folder, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      const stat = fs.fstatSync(handle);
+      return stat.isFile() && stat.size <= 64 * 1024 * 1024 ? fs.readFileSync(handle) : undefined;
+    } catch { return undefined; } finally { if (handle !== undefined) fs.closeSync(handle); }
+  };
+  const manifest = readRegular("package.json");
+  if (!manifest) throw new CliError(`${label} has no package.json: nothing to install.`, ExitCode.failure);
+  const lockName = ["package-lock.json", "npm-shrinkwrap.json"].find(name => fs.existsSync(path.join(folder, name)));
+  const lockBytes = lockName ? readRegular(lockName) : undefined;
+  if (!lockName || !lockBytes) throw new CliError(`${label} has no package-lock.json: npm ci installs exactly what a lock file names. Add one to the project (npm install on a computer), then run deps again.`, ExitCode.failure);
   let lock: unknown;
-  try { lock = JSON.parse(fs.readFileSync(path.join(folder, lockName), "utf8")); } catch { throw new CliError(`${label}'s ${lockName} is not valid JSON.`, ExitCode.failure); }
+  try { lock = JSON.parse(lockBytes.toString("utf8")); } catch { throw new CliError(`${label}'s ${lockName} is not valid JSON.`, ExitCode.failure); }
   const refusal = lockRefusal(lock);
   if (refusal) throw new CliError(`Not installed: in ${label}'s ${lockName}, ${printableMessage(refusal)}. deps installs packages from registries over https only.`, ExitCode.failure);
   // The server's own npm, beside its Node; npm on PATH otherwise.
@@ -256,7 +276,8 @@ const deps = async (args: ServerArgs) => {
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
   const work = fs.mkdtempSync(path.join(root, "cache", "deps-"));
   try {
-    for (const name of ["package.json", lockName]) fs.copyFileSync(path.join(folder, name), path.join(work, name));
+    fs.writeFileSync(path.join(work, "package.json"), manifest, { mode: 0o600 });
+    fs.writeFileSync(path.join(work, lockName), lockBytes, { mode: 0o600 });
     // With --scripts the owner sees what they print as they run.
     const npmArgs = ["ci", "--no-audit", "--no-fund", ...(request.scripts ? ["--foreground-scripts"] : ["--ignore-scripts"])];
     if (!args.quiet) process.stdout.write(`Installing the dependencies of ${label}: npm ${npmArgs.join(" ")}${request.scripts ? " (its packages' install scripts run as this server's user)" : " (install scripts are not run; add --scripts to run them)"}\n`);
@@ -268,14 +289,20 @@ const deps = async (args: ServerArgs) => {
     });
     if (code !== 0) throw new CliError(`npm ci failed (exit ${code}) for ${label}.`, ExitCode.failure);
     // The new node_modules replaces the project's (a link there is replaced, never followed).
+    // Moved, never copied or written through: the project's old node_modules (a link too, never
+    // followed) goes into the work folder, where it is removed with it, and the new one is renamed in.
+    // A rename does not go through a link put in its place, and the project's folder must still be itself.
     const target = path.join(folder, "node_modules"), made = path.join(work, "node_modules");
     if (!fs.existsSync(made)) fs.mkdirSync(made);
-    fs.rmSync(target, { recursive: true, force: true });
-    try { fs.renameSync(made, target); }
-    catch (error) {
-      // A shared folder on another disk: copied, links as they are.
-      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-      fs.cpSync(made, target, { recursive: true, verbatimSymlinks: true });
+    const same = () => { try { return fs.realpathSync(folder) === folder; } catch { return false; } };
+    if (!same()) throw new CliError(`${label}'s folder changed during the install: nothing was changed. Run deps again.`, ExitCode.failure);
+    try {
+      if (fs.lstatSync(target, { throwIfNoEntry: false })) fs.renameSync(target, path.join(work, "node_modules.previous"));
+      if (!same()) throw new CliError(`${label}'s folder changed during the install: run deps again.`, ExitCode.failure);
+      fs.renameSync(made, target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EXDEV") throw new CliError(`${label} is on another disk than the server's data: deps cannot move its node_modules there.`, ExitCode.failure);
+      throw error;
     }
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
   print(args, `Dependencies of ${label} installed. Agents' npm test and npm run use them; run deps again after the lock file changes.`, { project: project.id, installed: true });

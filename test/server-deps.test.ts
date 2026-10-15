@@ -35,7 +35,9 @@ test("deps installs a project's dependencies with npm ci, without install script
   const manifest = JSON.stringify({ name: "app", version: "1.0.0", private: true, scripts: { install: "node -e \"require('fs').writeFileSync('ran.txt', 'x'); console.log('KEY=' + process.env.DEEPSEEK_API_KEY)\"" } });
   const lock = JSON.stringify({ name: "app", version: "1.0.0", lockfileVersion: 3, requires: true, packages: { "": { name: "app", version: "1.0.0" } } });
   const app = project("app", { "package.json": manifest, "package-lock.json": lock, ".npmrc": "prefix=/tmp/elsewhere\ngit=./evil.sh\n" });
-  fs.mkdirSync(path.join(app, "node_modules")); fs.writeFileSync(path.join(app, "node_modules", "stale.txt"), "old");
+  // The project's node_modules is a link to a folder of the server's: it is replaced, never written through.
+  const elsewhere = path.join(base, "server-folder"); fs.mkdirSync(elsewhere); fs.writeFileSync(path.join(elsewhere, "keep.txt"), "server's");
+  fs.symlinkSync(elsewhere, path.join(app, "node_modules"));
   const nolock = project("nolock", { "package.json": manifest });
   const empty = project("empty", {});
   const views = [["11111111-1111-4111-8111-111111111111", "App", app], ["22222222-2222-4222-8222-222222222222", "No lock", nolock], ["33333333-3333-4333-8333-333333333333", "Empty", empty]]
@@ -49,7 +51,8 @@ test("deps installs a project's dependencies with npm ci, without install script
   assert.match(installed.stdout, /npm ci --no-audit --no-fund --ignore-scripts \(install scripts are not run/);
   assert.match(installed.stdout, /Dependencies of App .* installed/);
   assert.equal(fs.existsSync(path.join(app, "ran.txt")), false, "no install script ran");
-  assert.equal(fs.existsSync(path.join(app, "node_modules", "stale.txt")), false, "the project's node_modules is replaced");
+  assert.equal(fs.lstatSync(path.join(app, "node_modules")).isSymbolicLink(), false, "the link is replaced by a real folder");
+  assert.deepEqual(fs.readdirSync(elsewhere), ["keep.txt"], "nothing was written or removed through the link");
   assert.equal(fs.existsSync("/tmp/elsewhere/node_modules"), false, "the project's .npmrc is never read");
   assert.equal(fs.readdirSync(path.join(root, "cache")).filter(name => name.startsWith("deps-")).length, 0, "the work folder is removed");
   assert.ok(fs.existsSync(path.join(root, "cache", "npm")), "npm's cache is the server's own, outside backups");
@@ -73,9 +76,11 @@ test("deps installs only packages from registries over https: a lock that names 
     [{ resolved: "git+ssh://git@github.com/evil/x.git#abc" }, /git\+ssh/], [{ resolved: "file:../outside" }, /not a registry|file:/],
     [{ link: true, resolved: "../../etc" }, /link to a folder/], [{ resolved: "http://registry.npmjs.org/x.tgz" }, /http:/],
     [{ resolved: "https://169.254.169.254/latest/meta-data" }, /on this machine or its network/], [{ resolved: "https://localhost:4873/x.tgz" }, /on this machine/],
-    [{ resolved: "https://nexus.internal/x.tgz" }, /its network/], [{ resolved: "https://[::1]/x.tgz" }, /this machine/]
+    [{ resolved: "https://nexus.internal/x.tgz" }, /its network/], [{ resolved: "https://[::1]/x.tgz" }, /this machine/],
+    [{ resolved: "https://evil.example.com/x.tgz" }, /not a registry this server uses/]
   ] as const) assert.match(lockRefusal(v3(entry as Record<string, unknown>)) ?? "", pattern, JSON.stringify(entry));
   // Version 1 lock files name a source in version, nested.
   assert.match(lockRefusal({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0", resolved: "https://registry.npmjs.org/a.tgz", dependencies: { b: { version: "github:evil/b" } } } } }) ?? "", /a\/b comes from/);
   assert.equal(lockRefusal({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0" } } }), undefined);
+  assert.equal(lockRefusal(v3({ resolved: "https://npm.company.example/x.tgz" }), ["registry.npmjs.org", "npm.company.example"]), undefined, "the registry the owner sets");
 });
