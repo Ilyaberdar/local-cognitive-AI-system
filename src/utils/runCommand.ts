@@ -54,7 +54,9 @@ export const runCommand = (
         if (grouped && child.pid) process.kill(-child.pid, kind);
         else child.kill(kind);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        // The group already ended: ESRCH, or on macOS EPERM when its leader is gone and the group with it
+        // (a race with the command's own exit). Either way there is nothing of the command's to signal.
+        if (!["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
       }
     };
     const terminate = (): void => {
