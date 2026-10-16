@@ -131,7 +131,11 @@ test("a path a model ran on into prose is refused with a short reason, before th
 
 // DeepSeek left "tool" out now and then, and was answered with zod's JSON list of issues.
 test("a malformed action is refused as field: problem, in a sentence a model can act on", () => {
-  assert.throws(() => parseAgentAction({ arguments: { path: "src" } }), (error: Error) => error.message === "tool: Invalid input: expected string, received undefined. No action was executed.");
+  assert.throws(() => parseAgentAction({ tool: 5, arguments: { path: "src" } }), (error: Error) => error.message === "tool: Invalid input: expected string, received number. No action was executed.");
+  // A call without its tool's name hears which tools its arguments fit; none of them runs.
+  assert.throws(() => parseAgentAction({ tool: undefined, arguments: { path: "notes/a.md", content: "- a.ts:1", expectedVersion: "missing" } }),
+    (error: Error) => /^Your tool_call names no "tool".*These arguments fit file\.write.*"tool":"file\.write".*No action was executed\.$/.test(error.message));
+  assert.throws(() => parseAgentAction({ arguments: { nonsense: 1 } }), (error: Error) => error.message === 'Your tool_call names no "tool": send it again with the tool\'s name beside "arguments". No action was executed.');
   assert.throws(() => parseAgentAction({ tool: "file.read", arguments: { path: 5 } }), /Error: arguments\.path: .*received number\. No action was executed\.$/);
 });
 

@@ -41,6 +41,14 @@ function checked<T>(schema: z.ZodType<T>, value: unknown, prefix?: string): T {
 }
 
 export function parseAgentAction(value: unknown): AgentAction {
+  // A tool_call without its tool's name (DeepSeek sends {"type":"tool_call","arguments":{…}} now and then, and
+  // sent the same again after "tool: expected string"): refused with the tools those arguments fit. Never guessed.
+  const named = value && typeof value === "object" ? value as { tool?: unknown; arguments?: unknown } : undefined;
+  if (named && named.tool === undefined && named.arguments && typeof named.arguments === "object") {
+    const fits = Object.entries(agentToolSchemas).filter(([, schema]) => schema.safeParse(named.arguments).success).map(([name]) => name);
+    throw new Error(`Your tool_call names no "tool": send it again with the tool's name beside "arguments"${fits.length
+      ? `. These arguments fit ${fits.slice(0, 3).join(" or ")}: {"type":"tool_call","tool":"${fits[0]}","arguments":{…}}` : ""}. No action was executed.`);
+  }
   const shape = checked(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) }).strict(), value);
   if (!Object.hasOwn(agentToolSchemas, shape.tool)) throw new Error(`Unknown tool: ${shape.tool}`);
   const tool = shape.tool as AgentToolName;
