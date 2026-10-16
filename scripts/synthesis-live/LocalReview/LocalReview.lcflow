@@ -18,7 +18,7 @@ implement LocalReview using "contract-v1" {
             instructions = "Read your file with file.read. Then write your findings to one note, review/notes/<the file's name>.md, as a Markdown list where each item starts with path:line. Then answer with the same list.",
             steps = 12));
     }
-    results = await parallel_map(agents, tasks, concurrency = 6);
+    results = await parallel_map(agents, tasks, concurrency = 6, answer_file = "review/notes/agent-{n}.md");
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
     // The report is checked, and written again with the exact problems until it holds.

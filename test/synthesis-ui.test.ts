@@ -505,7 +505,7 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     models: [{ id: "deepseek-flash", providerId: "deepseek", providerName: "DeepSeek" }, { id: "gguf-64771eda", providerId: "llamacpp", providerName: "Local models", displayName: "Qwen2.5-0.5B-Instruct-GGUF", sizeBytes: 491_400_032 }],
     usage: { calls: 3, inputTokens: 12_300, outputTokens: 920 } };
   const items = [
-    { index: 0, call: 1, task: "Review src/a.ts", providerId: "deepseek", model: "deepseek-flash", status: "done", steps: 3, inputTokens: 12000, outputTokens: 900, durationMs: 4200, files: ["review/notes/a.md"] },
+    { index: 0, call: 1, task: "Review src/a.ts", providerId: "deepseek", model: "deepseek-flash", status: "done", steps: 3, inputTokens: 12000, outputTokens: 900, durationMs: 4200, files: ["review/notes/a.md"], answerFile: "review/notes/a.md" },
     { index: 1, call: 1, task: "Review src/b.ts", providerId: "llamacpp", model: "gguf-64771eda", status: "failed", steps: 16, inputTokens: 300, outputTokens: 20, durationMs: 900, files: [], error: "Agent reached its step limit (16)" }
   ];
   const requested: string[] = [];
@@ -534,7 +534,7 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     const doc = ui.dom.window.document;
     assert.match(doc.querySelector('.synthesis-agents__counts').textContent, /2 agents.*1 done.*1 failed/);
     const [first, second] = [...doc.querySelectorAll('.synthesis-agents__row')] as any[];
-    assert.match(first.textContent, /deepseek-flash.*Done.*Review src\/a\.ts.*3 steps · 12k \/ 900 · 4\.2 s.*review\/notes\/a\.md/);
+    assert.match(first.textContent, /deepseek-flash.*Done.*Review src\/a\.ts.*3 steps · 12k \/ 900 · 4\.2 s.*review\/notes\/a\.md \(its answer\)/);
     assert.match(second.textContent, /Qwen2\.5-0\.5B-Instruct-GGUF.*Local models.*Failed.*step limit/, "a local model by its name, not its gguf id");
     // Beside the list: the first that failed, until one is chosen.
     await until(() => /Agent 2/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'failed agent shown first');
@@ -545,6 +545,7 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     await until(() => /Agent 1/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'agent steps');
     assert.equal(first.getAttribute('aria-selected'), 'true');
     assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /Agent 1.*DeepSeek · deepseek-flash · Done · json actions.*Action.*file\.read.*Result.*Answer.*src\/a\.ts:12/s);
+    assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /It wrote no file itself: its answer was saved as review\/notes\/a\.md\./);
     ui.click('Changes');
     await until(() => Boolean(doc.querySelector('.synthesis-changes')), 'changes loaded');
     assert.match(doc.querySelector('.synthesis-changes__files [role="option"]').textContent, /review\/notes\/old\.md.*Deleted/);

@@ -302,6 +302,25 @@ export class SynthesisFileTools extends OperationExecutor {
         : this.result(tool.slice(5), target, `Saved ${target} in the run's copy (the project changes only on Apply).`, {version: hash(after), bytes: Buffer.byteLength(after)});
     });
   }
+  /** parallel_map's answer_file: the agent's answer saved as its file when it wrote none itself (a model that
+   * answers in text instead of calling file.write). Saved as this agent, as its own file.write would be: its
+   * write rights, a checkout when the map requires one, and the others' checkouts and owned files all apply.
+   * A file the project holds that this run has not changed (one an earlier Apply wrote) is replaced; one this
+   * run changed is never. Nothing when the agent wrote files; never throws. */
+  async saveAnswer(raw: string, content: string): Promise<{saved?: string; refused?: string}> {
+    if (this.touched.size || this.pending.size) return {};
+    try {
+      const target = this.path(raw);
+      const relative = this.mayWrite(target, "write");
+      // Another agent's checkout or file is named as such; a required checkout is taken (or refused) here.
+      if (this.team?.checkouts.required) await this.checkout([target], 0);
+      else this.mayChange(await this.key(target), target);
+      if (Object.hasOwn(this.candidates.baseline, relative)) throw new Error(`${target} was already written in this run.`);
+      const before = await this.content(target);
+      await this.change("file.write", target, {content, expectedVersion: before === null ? "missing" : hash(before)});
+      return {saved: target};
+    } catch (error) { return {refused: error instanceof Error ? error.message : String(error)}; }
+  }
   /** Puts a change into the candidate (null deletes the file), recording what the project held before it. */
   private async commit(relative: string, target: string, key: string, after: string | null): Promise<void> {
     if (!Object.hasOwn(this.candidates.baseline, relative)) {

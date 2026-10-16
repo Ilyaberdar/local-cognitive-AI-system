@@ -393,7 +393,7 @@ test("New module → Repository review makes a valid agents module: notes, a rep
   assert.match(created.specSource!, /files "notes\/\*\*";/);
   assert.match(created.specSource!, /Grounded\("REPORT\.md", min = 3\)/);
   assert.match(created.flowSource!, /slots = 4/);
-  assert.match(created.flowSource!, /parallel_map\(agents, tasks, concurrency = 4\)/);
+  assert.match(created.flowSource!, /parallel_map\(agents, tasks, concurrency = 4, answer_file = "review\/notes\/agent-\{n\}\.md"\)/, "a local model's answer in text still becomes a note");
 });
 
 test("races: two agents creating twin names at once leave one file; every agent reads one version of a project file, as Grounded does", async (t) => {
@@ -535,6 +535,86 @@ test("checkout: a failed agent's pending changes are dropped, a finished one's s
   const diff = (await f.service.diff(result.id)).files.map(file => file.path);
   assert.ok(!diff.includes("review/notes/f.md") && diff.includes("review/notes/g.md") && !diff.includes("review/notes/h.md"), diff.join(" "));
   assert.match((await f.service.agent(result.id, 2)).final!, /Check review\/notes\/h\.md out before changing it/);
+});
+
+// Small local models, and DeepSeek now and then, answer in text instead of calling file.write: a swarm
+// whose test counts notes failed on fedora with nine of the twelve. answer_file saves such an answer.
+test("answer_file: the answer of an agent that wrote no file is saved as its own file; one that wrote, failed or answered nothing gets none", async (t) => {
+  const f = await fixture(t, {script: steps({
+    answers: [final("- src/alpha.ts:1 swallows an error")],
+    writes: [tool("file.write", {path: "review/notes/mine.md", content: "its own note", expectedVersion: "missing"})],
+    fenced: [final("```markdown\n# Beta\n\n- src/beta.ts:2 misleads\n```")],
+    fails: [{error: "model unavailable"} as unknown as Action]
+  })});
+  const result = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), files.write("review/notes/**", own = true)], steps = 4);
+    results = await parallel_map(team, ["answers", "writes", "fenced", "fails"], concurrency = 4, answer_file = "review/notes/agent-{n}.md");
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.equal(result.status, "accepted", result.error);
+  const files = new Map((await f.service.diff(result.id)).files.map(file => [file.path, file.after]));
+  assert.equal(files.get("review/notes/agent-1.md"), "- src/alpha.ts:1 swallows an error\n");
+  assert.equal(files.get("review/notes/mine.md"), "its own note");
+  assert.equal(files.has("review/notes/agent-2.md"), false, "an agent that wrote its own file gets no answer file");
+  assert.equal(files.get("review/notes/agent-3.md"), "# Beta\n\n- src/beta.ts:2 misleads\n", "an answer in one fence is the fence's text");
+  assert.equal(files.has("review/notes/agent-4.md"), false, "a failed agent's error is not an answer");
+  const items = (await f.service.agents(result.id)).items;
+  assert.equal(items[0].answerFile, "review/notes/agent-1.md");
+  assert.deepEqual(items[0].files, ["review/notes/agent-1.md"]);
+  assert.equal(items[1].answerFile, undefined);
+  assert.equal(items[3].status, "failed");
+  // Told before it answers, so that its findings go into the answer, not a claim that it wrote a file.
+  const told = f.agentRequests.find(request => /USER TASK:\nanswers\n/.test(request.prompt))!;
+  assert.match(`${told.systemPrompt}\n${told.prompt}`, /If you write no file yourself, your final answer is saved for you as review\/notes\/agent-1\.md/);
+});
+
+test("answer_file: saved as the agent, so its rights, another agent's file and a required checkout apply; a note an earlier Apply left is replaced", async (t) => {
+  const f = await fixture(t, {script: steps({
+    squatter: [tool("file.write", {path: "review/notes/agent-2.md", content: "the squatter's", expectedVersion: "missing"})],
+    late: [final("- src/gamma.ts:1 the late agent's finding")],
+    stale: [final("- src/alpha.ts:2 a fresh finding")]
+  }), delay: task => new Promise(resolve => setTimeout(resolve, task === "late" ? 40 : 1))});
+  // What an earlier Apply left in the project: replaced, since this run has not written it.
+  await fs.mkdir(path.join(f.root, "review", "notes"), {recursive: true});
+  await fs.writeFile(path.join(f.root, "review", "notes", "agent-3.md"), "a note from the last run\n");
+  const result = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**", "review/**"), files.write("review/notes/**", own = true)], steps = 4);
+    reader = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**")], steps = 4);
+    results = await parallel_map(team, ["squatter", "late", "stale"], concurrency = 3, answer_file = "review/notes/agent-{n}.md");
+    others = await parallel_map(reader, ["late"], answer_file = "review/notes/reader-{call}-{n}.md");
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.equal(result.status, "accepted", result.error);
+  const diff = new Map((await f.service.diff(result.id)).files.map(file => [file.path, file]));
+  assert.equal(diff.get("review/notes/agent-2.md")?.after, "the squatter's", "another agent's file is never taken");
+  assert.equal(diff.get("review/notes/agent-3.md")?.before, "a note from the last run\n");
+  assert.equal(diff.get("review/notes/agent-3.md")?.after, "- src/alpha.ts:2 a fresh finding\n");
+  assert.equal(diff.has("review/notes/reader-2-1.md"), false, "an agent without the right writes nothing");
+  const items = (await f.service.agents(result.id)).items;
+  assert.equal(items[1].status, "done", "a refused save never fails the agent");
+  assert.match(items[1].answerRefused!, /belongs to agent 1, which created it/);
+  assert.equal(items[2].answerFile, "review/notes/agent-3.md");
+  assert.match(items[3].answerRefused!, /may not write review\/notes\/reader-2-1\.md/);
+
+  // A map that requires checkouts: the save checks the file out and is submitted with the agent's work.
+  const required = await f.run(`team = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), files.write("review/notes/**")], steps = 4);
+    results = await parallel_map(team, ["late"], checkout = "required", answer_file = "review/notes/agent-{n}.md");
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.equal(required.status, "accepted", required.error);
+  assert.equal((await f.service.agents(required.id)).items[0].answerFile, "review/notes/agent-1.md");
+  assert.equal((await f.service.diff(required.id)).files.find(file => file.path === "review/notes/agent-1.md")?.after, "- src/gamma.ts:1 the late agent's finding\n");
+});
+
+test("answer_file is a file path with {n}, checked as written and again when the flow runs: inside the candidate, never a pattern", async (t) => {
+  const codes = (value: string) => compileProgram(spec, flow(`a = agent(provider = "deepseek", model = "x", tools = [files.write("review/notes/**")]);
+    results = await parallel_map(a, ["t"], answer_file = ${value});`)).diagnostics.map(item => item.code);
+  assert.deepEqual(codes('"review/notes/agent-{n}.md"'), []);
+  assert.deepEqual(codes('"review/notes/map-{call}/agent-{n}.md"'), []);
+  for (const value of ['"review/notes/agent.md"', '"../agent-{n}.md"', '"review/.hidden/agent-{n}.md"', '"review/notes/*-{n}.md"', '"review/notes/{task}-{n}.md"', '"/tmp/agent-{n}.md"']) {
+    assert.deepEqual(codes(value), ["FLOW_ANSWER_FILE"], value);
+  }
+  assert.ok(codes('lead').includes("FLOW_TYPE"));
+  const f = await fixture(t, {script: () => final("an answer")});
+  const outside = await f.run(`a = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**")], steps = 2);
+    results = await parallel_map(a, ["t"], answer_file = "notes/agent-{n}.md");`);
+  assert.equal(outside.status, "blocked");
+  assert.match(outside.error!, /answer_file "notes\/agent-\{n\}\.md" is outside the candidate folder review/);
 });
 
 test("checkout: an agent holding files never waits for others, so two agents cannot wait on each other; one holding nothing may wait", async (t) => {

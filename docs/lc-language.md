@@ -697,13 +697,15 @@ evaluate "contract-v1" {
 | `agent(provider = "deepseek", model = "deepseek-flash", tools = [...], instructions = "...", steps = 16)` | An agent: a description, not a process. `agent(role, tools = [...])` uses a loaded role instead (a local model with slots, for example). `steps` (1–60, 16 by default) bounds its turns. |
 | `terminal(allow = ["node", "npm"])` | A terminal: the agent runs these commands (of `node`, `npm`, `npx`, `python3`, `git`, `rg`, `ls`, `cat`; all of them without `allow`) in a sandbox, in a copy of the files it may read with its current changes. See [Agents' terminal](#agents-terminal). |
 | `files.write("notes/**", own = true)` | Writing, where each file belongs to the agent that first creates or changes it, for the rest of the `parallel_map`: the others read it and change nothing of it. |
-| `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect", checkout = "required")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. |
+| `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect", checkout = "required", answer_file = "review/notes/agent-{n}.md")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. With `answer_file`, the answer of an agent that wrote no file itself is saved as that file (see below). |
 | `await lead.split(goal, n [, context], paths = files.read(...), instruction = "...")` | A model splits a goal into `n` independent tasks; `paths` lists the files the agents can read (up to 400) for it. |
 | `await lead.synthesize(candidate, spec, results, file = "REPORT.md", instruction = "...", feedback = verdict.violations)` | A model writes one candidate file from the results. Results too many for its prompt are merged in groups first. The file is kept under 2,500 words unless `instruction` asks for another length; an answer the model's output limit cuts off is never used, and is asked for again once, half as long. With `feedback`, it writes the file again knowing exactly which checks the last one failed: the repair loop for a report. |
 
 Each result has `.ok`, `.output` (the agent's answer, at most 8,000 characters), `.error`, `.task`, `.files` (what it wrote) and `.index`; the list has `.completed` and `.failed`. With `on_error = "collect"` (the default) a failed agent is a result with `ok == false`; with `"fail"` the first failure stops the others and the run ends Blocked.
 
 A run starts at most 1,000 agent tasks in all, and its candidate holds at most 300 files.
+
+`answer_file` is for models that answer in text instead of writing their file, as small local models often do: a module whose tests count the agents' notes would fail on them. When an agent finishes with an answer and wrote no file itself, its answer is saved as `answer_file`, with `{n}` its number (as in the Agents tab) and `{call}`, if given, which `parallel_map` of the run this is. The agent is told so before it answers. It is saved as that agent: inside its write rights and the candidate folder, a checkout taken when `checkout = "required"`, never over another agent's file or one this run already wrote, and over a file an earlier Apply left. An answer in one fenced block is saved as the block's text. A save that is refused leaves the agent finished, with the reason on its row; a failed agent's error is never saved. The file is in the agent's `.files`, marked "its answer" in the Agents tab.
 
 What agents may touch:
 
@@ -805,6 +807,7 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `FLOW_POLICY_CAPABILITY` | Agents (`agent`, `files.*`, `parallel_map`, `split`, `synthesize`) need `policy = "agents-v1"`. |
 | `FLOW_AGENT_MODEL` | Name an agent's model once: a loaded role, or `provider` and `model`. |
 | `FLOW_FILE_PATTERN` | Rights take project-relative patterns such as `"src/**"`, without hidden folders or `..`. |
+| `FLOW_ANSWER_FILE` | `answer_file` is a string path with `{n}`, such as `"review/notes/agent-{n}.md"` (and `{call}` if wanted), without wildcards, hidden folders or `..`. |
 | `FLOW_FOR_VARIABLE` | Give the loop variable a new name; it exists only inside the loop. |
 | `FLOW_INDEX` | Index a list with a whole number: `list[0]`. |
 | `FLOW_UNDEFINED_NAME` | Assign the variable before use on every path; initialize loop feedback before the loop. |

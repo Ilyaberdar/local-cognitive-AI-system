@@ -24,7 +24,7 @@ implement MixedReview using "contract-v1" {
         paths = files.read("src/synthesis/**"));
 
     // Twenty tasks round the ten models: each model reviews two parts.
-    results = await parallel_map(models, tasks, concurrency = 20);
+    results = await parallel_map(models, tasks, concurrency = 20, answer_file = "review/notes/agent-{n}.md");
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
     // The report is checked, and written again with the exact problems until it holds.

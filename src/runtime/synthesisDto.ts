@@ -41,7 +41,8 @@ export const runSummary = (run: SynthesisRun, scrub: Scrubber) => ({
 
 /** A run's agents: what a row shows, errors shortened like events' (files are project-relative). */
 export const safeAgents = (agents: AgentSummary[], scrub: Scrubber) => agents.map(({ loopId, ...agent }) => scrub({
-  ...agent, task: withoutPaths(agent.task), ...(agent.error ? { error: failure(agent.error) } : {})
+  ...agent, task: withoutPaths(agent.task), ...(agent.error ? { error: failure(agent.error) } : {}),
+  ...(agent.answerRefused ? { answerRefused: withoutPaths(agent.answerRefused) } : {})
 }));
 /** One agent with its steps, bounded to fit a frame: the oldest steps go first. */
 export const safeAgent = (agent: AgentSummary & { final?: string; protocol?: string; turns: Array<{ type: string; content: string }> }, scrub: Scrubber) => {
@@ -49,6 +50,7 @@ export const safeAgent = (agent: AgentSummary & { final?: string; protocol?: str
   let turns = scrub(agent.turns).map(turn => ({ type: turn.type, content: withoutPaths(turn.content) }));
   while (turns.length > 1 && bytes(turns) > MAX_EVENT_BYTES) turns = turns.slice(Math.ceil(turns.length / 4));
   return { ...scrub({ ...rest, task: withoutPaths(rest.task), ...(rest.error ? { error: failure(rest.error) } : {}),
+    ...(rest.answerRefused ? { answerRefused: withoutPaths(rest.answerRefused) } : {}),
     ...(rest.final !== undefined ? { final: withoutPaths(rest.final.slice(0, 20_000)) } : {}) }), turns };
 };
 /** A run with its evidence, models, usage and its events after `after` (newest kept when many). */

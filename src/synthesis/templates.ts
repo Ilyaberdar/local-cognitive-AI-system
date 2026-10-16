@@ -155,7 +155,8 @@ export function repositoryReviewTemplate(name = "RepositoryReview"): ModuleFiles
             instructions = "Read the files of your task. Write your findings to one note, review/notes/<a short name for your part>.md, as a Markdown list where each item starts with path:line.",
             steps = 12));
     }
-    results = await parallel_map(agents, tasks, concurrency = 4);
+    // An agent that answers in text instead of writing its note has its answer saved as one.
+    results = await parallel_map(agents, tasks, concurrency = 4, answer_file = "review/notes/agent-{n}.md");
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
     // The report is checked, and written again with the exact problems until it holds.

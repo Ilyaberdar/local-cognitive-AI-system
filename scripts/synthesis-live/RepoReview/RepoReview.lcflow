@@ -17,7 +17,7 @@ implement RepoReview using "contract-v1" {
             steps = 16));
     }
 
-    results = await parallel_map(agents, tasks, concurrency = 20);
+    results = await parallel_map(agents, tasks, concurrency = 20, answer_file = "review/notes/agent-{n}.md");
     candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");
 
     // The report is checked, and written again with the exact problems until it holds.

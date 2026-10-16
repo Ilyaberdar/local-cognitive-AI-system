@@ -39,6 +39,10 @@ export interface GroundedReference { path: string; start?: number; end?: number;
 export interface AgentItem {
   index: number; call: number; task: string; providerId: string; model: string; status: "queued" | "running" | "done" | "failed" | "cancelled";
   steps: number; inputTokens: number; outputTokens: number; durationMs: number; files: string[]; error?: string;
+  /** Changes it left checked out when it failed or was stopped: dropped. */
+  reverted?: string[];
+  /** parallel_map's answer_file: the file its answer was saved as, since it wrote none itself, or why not. */
+  answerFile?: string; answerRefused?: string;
 }
 export interface AgentDetail extends AgentItem { final?: string; protocol?: string; turns: { type: "tool" | "result" | "format_error"; content: string; ok?: boolean }[] }
 export interface RunSources { specSource: string; flowSource: string; specHash: string }

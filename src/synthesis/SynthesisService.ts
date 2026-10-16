@@ -7,7 +7,7 @@ import { LLMService } from "../llm/LLMService";
 import { ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { callsOf, compileProgram, namedProviders, SourceSpan, SpecProgram } from "./language";
+import { answerFileProblem, callsOf, compileProgram, namedProviders, SourceSpan, SpecProgram } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readText, relativePath } from "./paths";
@@ -556,6 +556,13 @@ export class SynthesisService {
           const concurrency = named.concurrency ?? Math.min(16, tasks.length);
           if (named.checkout !== undefined && named.checkout !== "optional" && named.checkout !== "required") throw new SynthesisError('checkout is "optional" or "required".');
           if (!Number.isInteger(concurrency) || (concurrency as number) < 1 || (concurrency as number) > MAX_CONCURRENCY) throw new SynthesisError(`concurrency is 1 to ${MAX_CONCURRENCY}.`);
+          const answerFile = named.answer_file;
+          if (answerFile !== undefined) {
+            const problem = typeof answerFile === "string" ? answerFileProblem(answerFile) : "answer_file is a string.";
+            if (problem) throw new SynthesisError(problem);
+            if (!record.outputPath) throw new SynthesisError("Check out the candidate before parallel_map saves answers: they go into it.");
+            if (!(answerFile as string).startsWith(`${record.outputPath}/`)) throw new SynthesisError(`answer_file "${answerFile}" is outside the candidate folder ${record.outputPath}: answers are saved only there.`);
+          }
           for (const agent of agents) for (const pattern of [...agent.rights.write, ...agent.rights.delete]) {
             if (!record.outputPath) throw new SynthesisError("Check out the candidate before giving agents write access: they write into it.");
             if (!pattern.startsWith(`${record.outputPath}/`)) throw new SynthesisError(`files.write("${pattern}") is outside the candidate folder ${record.outputPath}: agents write only there.`);
@@ -577,6 +584,7 @@ export class SynthesisService {
           const {results, summaries} = await runAgents({llm, baseDir: path.join(this.directory, "..", "agents", record.id), runId: record.id, call,
             module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
             failFast: named.on_error === "fail", checkoutRequired: named.checkout === "required", signal,
+            ...(typeof answerFile === "string" ? {answerFile} : {}),
             // History is out of the copies when the contract has hidden tests: it could hold them.
             terminal: {sandbox, workRoot: path.join(this.directory, "..", "agents", record.id, "terminal", `map-${call}`),
               git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden)},

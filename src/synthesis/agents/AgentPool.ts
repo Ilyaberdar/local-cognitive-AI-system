@@ -17,10 +17,16 @@ export interface AgentSummary {
   steps: number; inputTokens: number; outputTokens: number; durationMs: number; files: string[]; error?: string;
   /** Changes it left checked out when it failed or was stopped: dropped, as in Perforce. */
   reverted?: string[];
+  /** parallel_map's answer_file: the file its answer was saved as, since it wrote none itself. */
+  answerFile?: string;
+  /** Why its answer was not saved there (another agent's file, outside its rights…). */
+  answerRefused?: string;
   /** The agent loop's own record, for its steps. */
   loopId: string;
 }
 export const MAX_AGENT_OUTPUT = 8000;
+/** An answer as a file: a whole answer in one fence is the fence's text. */
+const answerText = (text: string) => { const trimmed = text.trim(); return `${/^```(?:markdown|md)?[ \t]*\n([\s\S]*?)\n```$/.exec(trimmed)?.[1] ?? trimmed}\n`; };
 
 export interface PoolOptions {
   llm: LLMService;
@@ -39,6 +45,9 @@ export interface PoolOptions {
   checkoutRequired?: boolean;
   /** Where agents with a terminal run their commands. */
   terminal?: import("./Terminal").TerminalHost;
+  /** parallel_map's answer_file ({n}: the agent's number, {call}: this map's): where the answer of an agent
+   * that wrote no file is saved, as that agent. */
+  answerFile?: string;
   signal: AbortSignal;
   /** Checked before each agent starts: its provider may still be used. */
   admit(spec: AgentSpec): Promise<void>;
@@ -73,6 +82,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
   const runOne = async (index: number) => {
     const spec = agents[index % agents.length], summary = summaries[index], task = tasks[index];
     const started = Date.now();
+    const answerPath = options.answerFile?.replace(/\{n\}/g, String(index + 1)).replace(/\{call\}/g, String(options.call));
     summary.status = "running"; options.update(summaries);
     const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights, { checkouts, me: { agent: index, task }, ...(options.terminal ? { terminal: options.terminal } : {}) });
     let finished = false;
@@ -101,7 +111,8 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
         accessNote: `You are agent ${index + 1} of ${tasks.length}, working at the same time as the others on parts of one goal for the module ${options.module.name}. Your task is your part only. ` +
           `Files: you may ${rights}. Paths are relative to the project folder. ${changes ? "What you write goes into the run's copy; the project changes only when the engineer applies the run. " : ""}` +
           (spec.rights.read.length ? "Read the files of your task with your tools before you answer: a finding about code you have not read is wrong, and every path:line you cite is checked. " : "") +
-          "Your final answer is returned to the flow as your result: give your findings with path:line references where they apply, and name the files you wrote.",
+          "Your final answer is returned to the flow as your result: give your findings with path:line references where they apply, and name the files you wrote." +
+          (answerPath ? ` If you write no file yourself, your final answer is saved for you as ${answerPath}: put your findings in it, not a claim that you wrote a file.` : ""),
         instructions: [`Module ${options.module.name}: ${options.module.description}`.slice(0, 4000), spec.instructions].filter(Boolean).join("\n\n") });
       // Bookkeeping only: a record that cannot be read leaves the step count at 0, not the agent failed.
       const saved = await runner.store.get(summary.loopId).catch(() => undefined);
@@ -109,6 +120,12 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
       summary.inputTokens = result.usage.inputTokens ?? 0; summary.outputTokens = result.usage.outputTokens ?? 0;
       summary.files = [...tools.touched].sort();
       finished = !result.error;
+      // Saved before its checkouts are submitted, so that a checkout the map requires is submitted with it.
+      if (finished && answerPath && result.text.trim()) {
+        const outcome = await tools.saveAnswer(answerPath, answerText(result.text));
+        if (outcome.saved) summary.answerFile = outcome.saved;
+        else if (outcome.refused) summary.answerRefused = outcome.refused.slice(0, 300);
+      }
       // What it left checked out: submitted when it finished, dropped when it did not.
       const reverted = await tools.finish(finished);
       if (reverted.length) summary.reverted = reverted;

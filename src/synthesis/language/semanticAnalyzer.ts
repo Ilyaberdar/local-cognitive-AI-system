@@ -46,7 +46,7 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   "files.delete": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
   terminal: { returns: "permission", required: 0, max: 0, named: { allow: ["array:string"] } },
   agent: { returns: "agent", required: 0, max: 1, parameters: [["model"]], named: { provider: ["string"], model: ["string"], tools: ["array:permission"], instructions: ["string"], steps: ["number"] } },
-  parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"], checkout: ["string"] }, async: true }
+  parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"], checkout: ["string"], answer_file: ["string"] }, async: true }
 };
 /** What only agents-v1 may use. */
 const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "terminal", "agent", "parallel_map"]);
@@ -195,6 +195,16 @@ export function analyzeSpec(spec: SpecProgram, options: CompileOptions = {}): Di
   }
 }
 
+/** parallel_map's answer_file: a project-relative file path with {n}, the agent's number, so that each agent
+ * has its own file, and if wanted {call}, which parallel_map of the run it is; nothing else in braces. The
+ * problem, or undefined. The same rule is checked when the flow runs. */
+export function answerFileProblem(value: string): string | undefined {
+  if (!value.includes("{n}")) return 'answer_file needs {n}, the agent\'s number, so that each agent has its own file: "review/notes/agent-{n}.md".';
+  const file = value.replace(/\{n\}/g, "1").replace(/\{call\}/g, "1");
+  if (/[{}*]/.test(file) || !filePattern(file)) return `'${value}' is not a project-relative file path: use a form such as "review/notes/agent-{n}.md", with {n} (and {call} if wanted), without wildcards, hidden folders or "..".`;
+  return undefined;
+}
+
 /** A project-relative path pattern: segments of letters, digits, _ - . and the wildcards * and **. */
 export function filePattern(pattern: string): boolean {
   return !!pattern && pattern.length <= 240 && pattern.split("/").every((part) => part === "**" || (/^[A-Za-z0-9_*-][A-Za-z0-9_.*-]*$/.test(part) && part !== "node_modules" && !part.includes("**")));
@@ -331,6 +341,12 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
       if (onError && !(onError.kind === "literal" && (onError.value === "collect" || onError.value === "fail"))) error("FLOW_TYPE", "on_error is \"collect\" (every task runs; failures are results) or \"fail\" (the first failure stops the others).", onError.span);
       const checkout = call.args.find((arg) => arg.name === "checkout")?.value;
       if (checkout && !(checkout.kind === "literal" && (checkout.value === "optional" || checkout.value === "required"))) error("FLOW_TYPE", "checkout is \"optional\" (agents may check files out) or \"required\" (every change needs a checkout first, as in Perforce).", checkout.span);
+      const answerFile = call.args.find((arg) => arg.name === "answer_file")?.value;
+      if (answerFile) {
+        const problem = answerFile.kind === "literal" && typeof answerFile.value === "string" ? answerFileProblem(answerFile.value)
+          : 'answer_file is a string, such as "review/notes/agent-{n}.md": the flow shows where answers go before it runs.';
+        if (problem) error("FLOW_ANSWER_FILE", problem, answerFile.span);
+      }
     }
     if (signature?.async && !awaited) error("FLOW_AWAIT_REQUIRED", `Action '${name}' requires await.`, call.span);
     if (["accept", "needs_review", "unresolved"].includes(name ?? "") && !terminalReturn) error("FLOW_TERMINAL_RETURN", `Terminal action '${name}' must be the direct expression of a return statement.`, call.span);

@@ -71,7 +71,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
             <span className="synthesis-agents__status">{statusText[item.status]}</span></span>
           <span className="synthesis-agents__task" title={item.task}>{item.task}</span>
           <span className="synthesis-agents__meta">{[item.steps ? `${item.steps} steps` : "", item.inputTokens ? `${tokens(item.inputTokens)} / ${tokens(item.outputTokens)}` : "", seconds(item.durationMs)].filter(Boolean).join(" · ")}
-            {item.files.length ? <small>{item.files.join(", ")}</small> : null}</span>
+            {item.files.length ? <small>{item.files.map(file => file === item.answerFile ? `${file} (its answer)` : file).join(", ")}</small> : null}</span>
           {item.error ? <span className="synthesis-agents__error status-fail">{item.error}</span> : null}
         </button></li>)}
       </ul>
@@ -79,6 +79,8 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
         <header><strong>Agent {view.index + 1}</strong><span>{named(view).provider} · {named(view).model} · {statusText[view.status]}{view.protocol ? ` · ${view.protocol} actions` : ""}</span></header>
         <p className="synthesis-agent-detail__task">{view.task}</p>
         {view.error ? <p className="synthesis-agent-detail__error status-fail">{view.error}</p> : null}
+        {view.answerFile ? <p className="synthesis-agent-detail__task">It wrote no file itself: its answer was saved as {view.answerFile}.</p>
+          : view.answerRefused ? <p className="synthesis-agent-detail__task">Its answer was not saved: {view.answerRefused}</p> : null}
         <ol>{view.turns.map((turn, index) => <li key={index} className={`synthesis-agent-turn is-${turn.type}${turn.ok === false ? " is-refused" : ""}`}><span>{turn.type === "tool" ? "Action" : turn.type === "result" ? turn.ok === false ? "Refused" : "Result" : "Correction"}</span><pre>{turn.content}</pre></li>)}</ol>
         {view.final ? <div className="synthesis-agent-detail__final"><span>Answer</span><pre>{view.final}</pre></div> : null}
         {!view.turns.length && !view.final ? <p className="synthesis-agent-detail__task">{view.status === "queued" ? "Waiting for its turn." : view.status === "running" ? "No steps yet." : "No action ran."}</p> : null}

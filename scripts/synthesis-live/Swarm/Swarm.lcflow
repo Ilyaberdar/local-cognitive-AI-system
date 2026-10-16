@@ -34,7 +34,8 @@ implement Swarm using "contract-v1" {
     }
 
     // All twenty at once. A failed agent is a result with ok == false; the others go on.
-    results = await parallel_map(agents, tasks, concurrency = 20, on_error = "collect");
+    // An agent that answers in text instead of writing its note (small local models do) has its answer saved as one.
+    results = await parallel_map(agents, tasks, concurrency = 20, on_error = "collect", answer_file = "review/notes/agent-{n}.md");
     if (results.completed < 10) {
         return unresolved();
     }
