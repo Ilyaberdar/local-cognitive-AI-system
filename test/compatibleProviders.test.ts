@@ -10,7 +10,7 @@ import { validateSettingsPatch } from "../src/app/settingsValidation";
 import { config } from "../src/config/config";
 import { childProcessEnv, SECRET_ENV_KEYS } from "../src/config/secrets";
 import { OpenAICompatibleProvider } from "../src/llm/OpenAICompatibleProvider";
-import { CHAT_DIALECT, QWEN_DIALECT, compatibleDialect } from "../src/llm/ProviderDialect";
+import { CHAT_DIALECT, QWEN_DIALECT, compatibleDialect, dialectFor } from "../src/llm/ProviderDialect";
 import { BUILT_IN_PROVIDER_IDS, PROVIDER_PRESETS, providerPreset } from "../src/llm/providerCatalog";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
 import { createSettingsOperations } from "../src/runtime/settingsOperations";
@@ -110,6 +110,26 @@ test("Qwen lists its chat models, and its known models when the list cannot be r
   await assert.rejects(qwen(missing.fetchImpl).listModels({ strict: true }), /status 404/, "adding a provider never mistakes a wrong address for its models");
   const empty = service(() => Response.json({ data: [] }));
   assert.equal((await qwen(empty.fetchImpl).listModels()).length, QWEN_DIALECT.models!.fallback.length);
+});
+
+// From a live run of twenty DeepSeek agents: one lost its task to "terminated", its answer cut off
+// midway; another's action was refused for the reasoning DeepSeek had put before it.
+test("a cloud answer the connection cuts off midway is asked for again, and reasoning before DeepSeek's end-of-thinking marker is not the answer", async () => {
+  const cut = () => new Response(new ReadableStream({ start: controller => { controller.enqueue(new TextEncoder().encode('{"choices":[{"mess')); controller.error(new TypeError("terminated")); } }),
+    { status: 200, headers: { "content-type": "application/json" } });
+  const answer = '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}';
+  const { calls, fetchImpl } = service((_call, index) => index === 0 ? cut()
+    : Response.json({ choices: [{ message: { content: `${answer}\n\nWait, only the JSON object.<｜end▁of▁thinking｜>${answer}` }, finish_reason: "stop" }] }));
+  const provider = new OpenAICompatibleProvider({ id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-flash", timeoutMs: 5000, apiKey: "sk-ds", dialect: compatibleDialect("deepseek") }, new Logger(), fetchImpl);
+  const response = await provider.generateText({ prompt: "Read a.ts", outputPurpose: "agent-action", responseFormat: { type: "json_object" } });
+  assert.equal(response.error, undefined);
+  assert.equal(calls.length, 2, "asked once more");
+  assert.equal(response.text, answer);
+  // A local server is not asked twice: its answer is its own.
+  const local = service(() => cut());
+  const llama = new OpenAICompatibleProvider({ id: "lmstudio", name: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", model: "m", timeoutMs: 5000, dialect: dialectFor("lmstudio") }, new Logger(), local.fetchImpl);
+  assert.match((await llama.generateText({ prompt: "Hi" })).error ?? "", /terminated/);
+  assert.equal(local.calls.length, 1);
 });
 
 test("any other OpenAI-compatible service sends prose to chat completions with its key, and nothing Qwen-specific", async () => {

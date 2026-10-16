@@ -32,8 +32,16 @@ export const agentToolSchemas = {
 };
 export type AgentToolName = keyof typeof agentToolSchemas;
 export interface AgentAction { tool: AgentToolName; arguments: Record<string, unknown> }
+/** The value, or a refusal a model can act on: each problem as "field: what is wrong", not zod's JSON list. */
+function checked<T>(schema: z.ZodType<T>, value: unknown, prefix?: string): T {
+  const result = schema.safeParse(value);
+  if (result.success) return result.data;
+  const problems = result.error.issues.map(issue => `${[prefix, ...issue.path.map(String)].filter(Boolean).join(".") || "the action"}: ${issue.message}`);
+  throw new Error(`${problems.join("; ")}. No action was executed.`);
+}
+
 export function parseAgentAction(value: unknown): AgentAction {
-  const shape = z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) }).strict().parse(value);
+  const shape = checked(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) }).strict(), value);
   if (!Object.hasOwn(agentToolSchemas, shape.tool)) throw new Error(`Unknown tool: ${shape.tool}`);
   const tool = shape.tool as AgentToolName;
   if (["file.write", "file.replace", "file.append", "file.delete"].includes(tool) && typeof shape.arguments.expectedVersion !== "string") {
@@ -41,7 +49,7 @@ export function parseAgentAction(value: unknown): AgentAction {
   }
   const args = { ...shape.arguments };
   for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) if (args[key] === null && field.isOptional()) delete args[key];
-  return { tool, arguments: agentToolSchemas[tool].parse(args) };
+  return { tool, arguments: checked(agentToolSchemas[tool] as z.ZodType<Record<string, unknown>>, args, "arguments") };
 }
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.
 export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call", "mcp.search"].includes(tool);

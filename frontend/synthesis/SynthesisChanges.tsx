@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { encode, errorMessage } from "./api";
 import { DiffColumns } from "./SynthesisDiff";
 import { JsonView, MarkdownView, SourceLines, type Cited, type Citations } from "./fileViews";
+import { revealIn } from "./scroll";
 import type { CandidateDiff, GroundedReference, SynthesisRun } from "./types";
 
 type ChangedFile = CandidateDiff["files"][number];
@@ -75,7 +76,7 @@ export function SynthesisChanges({ diff, loading, gates, runId, request, remote 
   const list = useRef<HTMLUListElement>(null);
   const option = (path: string) => [...(list.current?.querySelectorAll<HTMLElement>("[data-path]") ?? [])].find(item => item.dataset.path === path);
   // The chosen file stays in view in its list (also when a citation chose it).
-  useEffect(() => { if (file) option(file.path)?.scrollIntoView?.({ block: "nearest" }); }, [file?.path]);
+  useEffect(() => { if (file) revealIn(option(file.path)); }, [file?.path]);
 
   if (loading) return <div className="synthesis-empty">Loading candidate changes…</div>;
   if (!files.length || !file) return <div className="synthesis-empty">No candidate changes to display yet.</div>;

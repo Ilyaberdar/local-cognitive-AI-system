@@ -15,6 +15,7 @@ import {
   resolveAbortSignal,
   resolveRequestTimeoutMs,
   readUsage,
+  fetchWholeWithRetries,
   fetchWithRetries,
   countedFetch
 } from "./provider-utils";
@@ -115,7 +116,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
       // A cloud service is retried on overload and rate limits as its SDK does; a local server is not.
       const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
-      const send = (init: RequestInit) => dialect.retries ? fetchWithRetries(fetchImpl, url, init) : fetchImpl(url, init);
+      // An answer that is not streamed is read whole, and asked for again when the connection cuts it off.
+      const send = (init: RequestInit) => !dialect.retries ? fetchImpl(url, init) : stream ? fetchWithRetries(fetchImpl, url, init) : fetchWholeWithRetries(fetchImpl, url, init);
       // Thinking on from a medium effort up, as the service's own thinking models default to; off for
       // low, and when no effort is asked (a helper call).
       const thinking = dialect.thinking === "enable_thinking" ? Boolean(effort && effort !== "low") : undefined;

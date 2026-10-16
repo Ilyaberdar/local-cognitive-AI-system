@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, type MouseEvent, type ReactNode } from "react";
 import { renderCodeLines, renderMarkdown } from "../markdown/index.js";
 import { references, type Reference } from "../../src/synthesis/checks/references";
+import { revealIn } from "./scroll";
 import type { GroundedReference } from "./types";
 
 /** A place a file cites: where it leads, and what Grounded found there ("unchecked" when it did not look). */
@@ -26,7 +27,7 @@ export const SourceLines = memo(function SourceLines({ source, path, focus, labe
   useEffect(() => {
     if (first === undefined) return;
     const row = box.current?.querySelector(`[data-line="${first}"]`) as HTMLElement | null;
-    row?.scrollIntoView?.({ block: "center" });
+    revealIn(row, "center");
   }, [first, last, source]);
   return <div className="synthesis-lines" ref={box} role="region" aria-label={label} tabIndex={0}>
     {lines.map((html, index) => {

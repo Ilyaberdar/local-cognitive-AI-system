@@ -54,7 +54,8 @@ export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose 
       {run?.models?.length ? <details className="synthesis-inspector-disclosure" open>
         <summary><span>Models</span><small>{run.models.length}</small><SynthesisIcon name="chevron" /></summary>
         <div className="synthesis-models">{run.models.map(item => <div key={`${item.providerId}:${item.id}`}><strong>{item.displayName || item.id}</strong><small>{item.providerName ?? item.providerId}{item.sizeBytes ? ` · ${(item.sizeBytes / 1024 ** 3).toFixed(1)} GiB` : item.providerId === "llamacpp" ? "" : " · cloud"}</small></div>)}</div>
-        {run.usage?.calls ? <p className="synthesis-section-note">{run.usage.calls} model calls · {run.usage.inputTokens.toLocaleString()} tokens in, {run.usage.outputTokens.toLocaleString()} out</p> : null}
+        {/* The run's total: under two models it read as the second one's. */}
+        {run.usage?.calls ? <p className="synthesis-section-note">{run.models.length > 1 ? "All models: " : ""}{run.usage.calls} model {run.usage.calls === 1 ? "call" : "calls"} · {run.usage.inputTokens.toLocaleString()} tokens in, {run.usage.outputTokens.toLocaleString()} out</p> : null}
       </details> : null}
       {evidence ? <details className="synthesis-inspector-disclosure synthesis-provenance"><summary><span>Evidence identity</span><SynthesisIcon name="chevron" /></summary>
         <dl><div><dt>Candidate</dt><dd>{evidence.candidateHash}</dd></div><div><dt>Contract</dt><dd>{evidence.specHash}</dd></div></dl>

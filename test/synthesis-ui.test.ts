@@ -491,11 +491,22 @@ test("on a server Cloud models is shown, not switched: the server's owner sets i
   } finally { handle.unmount(); dom.window.close(); }
 });
 
+test("a server's Synthesis screen fills the route as this computer's does, so its lists and files scroll inside it", () => {
+  // Without a height the server's host grew with its content (10,000 px of agents) inside a route that
+  // clips: nothing scrolled, and the report's end could not be reached.
+  const css = require("node:fs").readFileSync("frontend/synthesis/synthesis.css", "utf8");
+  const rule = /([^{}]*)\{\s*height: 100%; min-height: 0; \}/.exec(css.slice(0, css.indexOf(".synthesis-workspace {")));
+  assert.ok(rule, "the hosts' rule");
+  assert.deepEqual(rule![1]!.split("\n").pop()!.split(",").map(item => item.trim()).sort(), ["#server-synthesis-workspace", "#synthesis-workspace"]);
+});
+
 test("Agents lists a run's agents with their model, status and files, and shows one agent's steps; Changes marks deleted files", async () => {
-  const run = { ...runEntry("swarm", "accepted"), agents: { total: 2, queued: 0, running: 0, done: 1, failed: 1, cancelled: 0 } };
+  const run = { ...runEntry("swarm", "accepted"), agents: { total: 2, queued: 0, running: 0, done: 1, failed: 1, cancelled: 0 },
+    models: [{ id: "deepseek-flash", providerId: "deepseek", providerName: "DeepSeek" }, { id: "gguf-64771eda", providerId: "llamacpp", providerName: "Local models", displayName: "Qwen2.5-0.5B-Instruct-GGUF", sizeBytes: 491_400_032 }],
+    usage: { calls: 3, inputTokens: 12_300, outputTokens: 920 } };
   const items = [
     { index: 0, call: 1, task: "Review src/a.ts", providerId: "deepseek", model: "deepseek-flash", status: "done", steps: 3, inputTokens: 12000, outputTokens: 900, durationMs: 4200, files: ["review/notes/a.md"] },
-    { index: 1, call: 1, task: "Review src/b.ts", providerId: "perplexity", model: "openai/gpt-5-mini", status: "failed", steps: 16, inputTokens: 300, outputTokens: 20, durationMs: 900, files: [], error: "Agent reached its step limit (16)" }
+    { index: 1, call: 1, task: "Review src/b.ts", providerId: "llamacpp", model: "gguf-64771eda", status: "failed", steps: 16, inputTokens: 300, outputTokens: 20, durationMs: 900, files: [], error: "Agent reached its step limit (16)" }
   ];
   const requested: string[] = [];
   const ui = harness(path => {
@@ -511,27 +522,34 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     if (path.endsWith('/diff')) return { canApply: true, files: [{ path: 'review/notes/old.md', before: 'stale', after: null }] };
     throw new Error(`Unexpected request ${path}`);
   });
+  // A row chosen below the list's fold scrolls that list alone: scrollIntoView moved the whole screen.
+  let scrolledAround = 0;
+  ui.dom.window.HTMLElement.prototype.scrollIntoView = () => { scrolledAround++; };
   try {
     await until(() => ui.text().includes('swarm activity'), 'run loaded');
+    ui.click('Diagnostics');
+    await until(() => /All models: 3 model calls · 12,300 tokens in, 920 out/.test(ui.text()), "the total is the run's, not the last model's");
     ui.click('Agents · 2');
     await until(() => ui.dom.window.document.querySelectorAll('.synthesis-agents__row').length === 2, 'agents listed');
     const doc = ui.dom.window.document;
     assert.match(doc.querySelector('.synthesis-agents__counts').textContent, /2 agents.*1 done.*1 failed/);
     const [first, second] = [...doc.querySelectorAll('.synthesis-agents__row')] as any[];
     assert.match(first.textContent, /deepseek-flash.*Done.*Review src\/a\.ts.*3 steps · 12k \/ 900 · 4\.2 s.*review\/notes\/a\.md/);
-    assert.match(second.textContent, /openai\/gpt-5-mini.*Failed.*step limit/);
+    assert.match(second.textContent, /Qwen2\.5-0\.5B-Instruct-GGUF.*Local models.*Failed.*step limit/, "a local model by its name, not its gguf id");
     // Beside the list: the first that failed, until one is chosen.
     await until(() => /Agent 2/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'failed agent shown first');
+    assert.match(doc.querySelector('.synthesis-agent-detail header').textContent, /Agent 2Local models · Qwen2\.5-0\.5B-Instruct-GGUF · Failed/);
     assert.equal(second.getAttribute('aria-selected'), 'true');
     first.click();
     await until(() => /Agent 1/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'agent steps');
     assert.equal(first.getAttribute('aria-selected'), 'true');
-    assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /Agent 1.*deepseek\/deepseek-flash · Done · json actions.*Action.*file\.read.*Result.*Answer.*src\/a\.ts:12/s);
+    assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /Agent 1.*DeepSeek · deepseek-flash · Done · json actions.*Action.*file\.read.*Result.*Answer.*src\/a\.ts:12/s);
     ui.click('Changes');
     await until(() => Boolean(doc.querySelector('.synthesis-changes')), 'changes loaded');
     assert.match(doc.querySelector('.synthesis-changes__files [role="option"]').textContent, /review\/notes\/old\.md.*Deleted/);
     await until(() => doc.querySelector('.synthesis-changes__body .synthesis-markdown')?.textContent.trim() === 'stale', "a deleted note shows what it held");
     assert.ok(requested.includes('/synthesis/runs/swarm/agents/0'));
+    assert.equal(scrolledAround, 0, "no list scrolls the boxes around it");
   } finally { ui.close(); }
 });
 

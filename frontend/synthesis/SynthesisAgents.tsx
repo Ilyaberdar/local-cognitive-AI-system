@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { encode, errorMessage } from "./api";
+import { revealIn } from "./scroll";
 import type { AgentDetail, AgentItem, SynthesisRun } from "./types";
 
 const statusText: Record<AgentItem["status"], string> = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled" };
@@ -34,7 +35,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
     return () => { current = false; };
   }, [run.id, shown, chosen?.status, chosen?.steps]);
   useEffect(() => {
-    (list.current?.querySelector('[aria-selected="true"]') as HTMLElement | null)?.scrollIntoView?.({ block: "nearest" });
+    revealIn(list.current?.querySelector('[aria-selected="true"]') as HTMLElement | null);
   }, [shown, items.length]);
   const move = (event: KeyboardEvent<HTMLUListElement>) => {
     if (!["ArrowDown", "ArrowUp"].includes(event.key) || !items.length) return;
@@ -45,6 +46,11 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
     (event.currentTarget.querySelector(`[data-agent="${next.index}"]`) as HTMLElement | null)?.focus();
   };
   const counts = run.agents;
+  // A local model's id (gguf-…) is not what Models calls it: its name and its provider's, as the run lists them.
+  const named = (item: AgentItem) => {
+    const model = run.models?.find(entry => entry.id === item.model && entry.providerId === item.providerId);
+    return { model: model?.displayName || item.model, provider: model?.providerName ?? item.providerId };
+  };
   const view = detail && detail.index === shown ? detail : null;
   return <div className="synthesis-agents">
     {counts ? <div className="synthesis-agents__counts" aria-label="Agents">
@@ -61,7 +67,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
         {items.map(item => <li key={`${item.call}:${item.index}`}><button type="button" role="option" data-agent={item.index} aria-selected={item.index === shown}
           tabIndex={item.index === shown ? 0 : -1} className={`synthesis-agents__row status-${item.status}`} onClick={() => setSelected(item.index)}>
           <span className="synthesis-agents__top"><span className="synthesis-agents__number">{item.index + 1}</span>
-            <span className="synthesis-agents__model" title={`${item.providerId}/${item.model}`}>{item.model}<small>{item.providerId}</small></span>
+            <span className="synthesis-agents__model" title={`${item.providerId}/${item.model}`}>{named(item).model}<small>{named(item).provider}</small></span>
             <span className="synthesis-agents__status">{statusText[item.status]}</span></span>
           <span className="synthesis-agents__task" title={item.task}>{item.task}</span>
           <span className="synthesis-agents__meta">{[item.steps ? `${item.steps} steps` : "", item.inputTokens ? `${tokens(item.inputTokens)} / ${tokens(item.outputTokens)}` : "", seconds(item.durationMs)].filter(Boolean).join(" · ")}
@@ -70,7 +76,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
         </button></li>)}
       </ul>
       {view ? <section className="synthesis-agent-detail" aria-label={`Agent ${view.index + 1}`}>
-        <header><strong>Agent {view.index + 1}</strong><span>{view.providerId}/{view.model} · {statusText[view.status]}{view.protocol ? ` · ${view.protocol} actions` : ""}</span></header>
+        <header><strong>Agent {view.index + 1}</strong><span>{named(view).provider} · {named(view).model} · {statusText[view.status]}{view.protocol ? ` · ${view.protocol} actions` : ""}</span></header>
         <p className="synthesis-agent-detail__task">{view.task}</p>
         {view.error ? <p className="synthesis-agent-detail__error status-fail">{view.error}</p> : null}
         <ol>{view.turns.map((turn, index) => <li key={index} className={`synthesis-agent-turn is-${turn.type}${turn.ok === false ? " is-refused" : ""}`}><span>{turn.type === "tool" ? "Action" : turn.type === "result" ? turn.ok === false ? "Refused" : "Result" : "Correction"}</span><pre>{turn.content}</pre></li>)}</ol>

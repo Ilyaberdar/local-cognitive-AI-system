@@ -1,6 +1,7 @@
 /* Synthesis uses the shared desktop palette, typography and compact controls. */
 .route--synthesis.active { overflow: hidden; container: synthesis / inline-size; }
-#synthesis-workspace { height: 100%; min-height: 0; }
+/* This computer's screen and a server's: either one fills the route, so its panes scroll on their own. */
+#synthesis-workspace, #server-synthesis-workspace { height: 100%; min-height: 0; }
 .synthesis-workspace { display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; color: var(--text); font: var(--text-caption)/1.5 var(--font-ui); }
 .synthesis-workspace button, .synthesis-workspace select { color: var(--text); background: var(--control-bg); border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; font: inherit; min-height: 34px; }
 .synthesis-workspace button { cursor: pointer; transition: background 160ms, border-color 160ms; }

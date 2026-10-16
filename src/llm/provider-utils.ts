@@ -78,6 +78,11 @@ export const readRateLimit = (headers: Headers): ProviderRateLimit | undefined =
   };
 };
 
+// DeepSeek now and then sends its reasoning in the answer, ended by its chat template's marker: the
+// answer is what follows the marker (an agent's action was refused as JSON with text around it).
+const THINKING_END = "<｜end▁of▁thinking｜>";
+const afterThinking = (text: string) => { const at = text.lastIndexOf(THINKING_END); return at < 0 ? text : text.slice(at + THINKING_END.length); };
+
 export const readResponseText = (payload: unknown): string => {
   if (!payload || typeof payload !== "object") {
     return "";
@@ -87,7 +92,7 @@ export const readResponseText = (payload: unknown): string => {
 
   if (Array.isArray(record.choices)) {
     const content = record.choices[0]?.message?.content;
-    if (typeof content === "string") return content.trim();
+    if (typeof content === "string") return afterThinking(content).trim();
     if (Array.isArray(content)) return content.filter(part => part?.type === "text").map(part => part.text ?? "").join("\n").trim();
   }
 
@@ -227,6 +232,21 @@ const pause = (ms: number, signal?: AbortSignal | null) => new Promise<void>((re
  * a server error, a timeout status, a dropped connection, or a rate limit that says when to try
  * again (a 429 without that is usually a spending limit, which waiting does not fix). Waits
  * follow retry-after (at most 30 s) and end when the request is cancelled or times out. */
+/** As fetchWithRetries, with the answer read before it returns, so that one the connection cut off midway
+ * (undici's TypeError "terminated") is asked for again as a refused connection is. Not for a stream. */
+export async function fetchWholeWithRetries(fetchImpl: typeof fetch, url: string, init: RequestInit, retries = 2): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetchWithRetries(fetchImpl, url, init, retries);
+    try {
+      const body = await response.arrayBuffer();
+      return new Response([101, 204, 205, 304].includes(response.status) ? null : body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch (error) {
+      if (init.signal?.aborted || attempt >= retries || !(error instanceof TypeError)) throw error;
+      await pause(500 * 2 ** attempt, init.signal);
+    }
+  }
+}
+
 export async function fetchWithRetries(fetchImpl: typeof fetch, url: string, init: RequestInit, retries = 2): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     let response: Response;

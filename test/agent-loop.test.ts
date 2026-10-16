@@ -9,6 +9,7 @@ import { OperationExecutor } from "../src/tools/OperationExecutor";
 import { ExecutionContext, LLMRequest, ProcessProgressEvent } from "../src/types";
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
 import { LLMService } from "../src/llm/LLMService";
+import { jsonObjectSequence } from "../src/llm/StructuredOutput";
 import { LLMRegistry } from "../src/llm/LLMRegistry";
 import { OutputSanitizer } from "../src/llm/OutputSanitizer";
 import { Logger } from "../src/utils/Logger";
@@ -186,6 +187,10 @@ test("agent actions embedded in prose are rejected by both the service and execu
   assert.equal(result.tools.length, 0);
   assert.equal(requests.length, 3);
   assert.match(requests[1], /FORMAT_ERROR/);
+  // Each refusal says what to send instead, not what JSON.parse said.
+  assert.match(requests[1], /text before its JSON object, so nothing ran/);
+  assert.match(requests[2], /text before its JSON object, so nothing ran/);
+  assert.match(result.error!, /went on after its JSON object, so nothing ran/);
   await assert.rejects(fs.stat(path.join(f.work, "must-not-execute.txt")), { code: "ENOENT" });
 });
 
@@ -504,6 +509,45 @@ test("local agent inference has a finite thinking/output budget and preserves an
   assert.equal((await runner.run({ ...request, id: "explicit-local" })).error, undefined);
   assert.equal(requests[1].localReasoningBudget, 0);
   assert.equal(requests[1].maxTokens, undefined);
+});
+
+test("several JSON objects one after another are told apart from anything else", () => {
+  assert.deepEqual(jsonObjectSequence('{"a":"}{"}\n\n{"b":[1,{"c":2}]}'), [{ a: "}{" }, { b: [1, { c: 2 }] }]);
+  assert.deepEqual(jsonObjectSequence('```json\n{"a":1}{"b":"\\"}"}\n```'), [{ a: 1 }, { b: '"}' }]);
+  for (const text of ['{"a":1}', '{"a":1} and more', 'note {"a":1}{"b":2}', '{"a":1}{"b":', '{"a":1}[2]', '{"a":1}{b:2}']) assert.equal(jsonObjectSequence(text), undefined, text);
+});
+
+// DeepSeek sends a file.write and its final answer in one reply; three corrections that only quoted
+// JSON.parse ("Unexpected non-whitespace character after JSON") lost the agent its note.
+test("a reply with several actions at once runs the first, tells the model why the others did not, and goes on", async t => {
+  const f = await fixture(t);
+  const prompts: string[] = [];
+  t.mock.method(f.llm, "generateObject", async (request: LLMRequest) => {
+    prompts.push(request.prompt);
+    const final = JSON.stringify({ type: "final", text: "Wrote note.md." });
+    const text = prompts.length === 1 ? `${JSON.stringify(action("file.write", { path: "note.md", content: "- a.ts:1 swallows an error\n", expectedVersion: "missing" }))}\n\n${final}` : final;
+    return { data: null, response: { provider: "fixture", model: "test", text } };
+  });
+  const result = await f.run("several");
+  assert.equal(result.error, undefined);
+  assert.equal(result.text, "Wrote note.md.");
+  assert.equal(await fs.readFile(path.join(f.work, "note.md"), "utf8"), "- a.ts:1 swallows an error\n");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1]!, /held 2 JSON objects; only the first was taken/);
+  const run = (await new AgentLoopRunner(f.llm, f.operations, f.root).store.get("several"))!;
+  assert.equal(run.repairs, 0, "not counted as a correction of a malformed reply");
+});
+
+test("an action without its type is a tool call when it names a tool, and nothing else is guessed", async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.work, "a.txt"), "alpha");
+  f.set([{ tool: "file.read", arguments: { path: "a.txt" } }, prompt => { assert.match(prompt, /alpha/); return { type: "final", text: "Read alpha." }; }]);
+  const result = await f.run("untyped");
+  assert.equal(result.error, undefined);
+  assert.equal(result.tools.length, 1);
+  assert.equal(result.text, "Read alpha.");
+  f.set([{ type: "tool.list", arguments: { path: "." } }, prompt => { assert.match(prompt, /Expected type tool_call/); return { type: "final", text: "Done." }; }]);
+  assert.equal((await f.run("wrong-type")).tools.length, 0, "a type that is not tool_call is still refused");
 });
 
 test("repeated malformed actions after successful work get one final-only recovery turn", async t => {

@@ -129,6 +129,12 @@ test("a path a model ran on into prose is refused with a short reason, before th
   assert.equal(parseAgentAction({ tool: "file.read", arguments: { path: "notes/README.md" } }).arguments.path, "notes/README.md");
 });
 
+// DeepSeek left "tool" out now and then, and was answered with zod's JSON list of issues.
+test("a malformed action is refused as field: problem, in a sentence a model can act on", () => {
+  assert.throws(() => parseAgentAction({ arguments: { path: "src" } }), (error: Error) => error.message === "tool: Invalid input: expected string, received undefined. No action was executed.");
+  assert.throws(() => parseAgentAction({ tool: "file.read", arguments: { path: 5 } }), /Error: arguments\.path: .*received number\. No action was executed\.$/);
+});
+
 test("a model's include pattern full of wildcards is matched in linear time, not by a backtracking regex", async t => {
   const search = await fixture(t, { [`src/${"a".repeat(200)}.ts`]: "plugin" });
   const started = Date.now();

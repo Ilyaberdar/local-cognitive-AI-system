@@ -5,7 +5,7 @@ import { currentInferenceImages } from "../../llm/InferenceImages";
 import { localThinkingBudgetForEffort } from "../../llm/ReasoningEffort";
 import { MCP_MEDIA_DIR, type McpResultImage } from "../../mcp/client/ExternalMcpExecutor";
 import { LLMService } from "../../llm/LLMService";
-import { parseJsonDocument } from "../../llm/StructuredOutput";
+import { firstJsonDocument } from "../../llm/StructuredOutput";
 import { ExecutionContext, LLMImage, LLMRequest, LLMResponse, PendingApproval, ProviderTarget, TokenUsage, ToolExecutionResult } from "../../types";
 import { OperationExecutor } from "../../tools/OperationExecutor";
 import { agentActionFormat,agentFunctionTools,agentToolInstructions,parseAgentAction,readTool } from "../../tools/AgentTool";
@@ -209,7 +209,8 @@ export class AgentLoopRunner {
       }
       try{
         if(response.protocolError)throw new Error(response.protocolError);
-        const parsed=response.agentAction??parseJsonDocument(response.text) as Record<string,unknown>;
+        const first=response.agentAction?{value:response.agentAction,more:0}:firstJsonDocument(response.text);
+        const parsed=first.value as Record<string,unknown>;
         const data=parsed&&typeof parsed==="object"&&Object.keys(parsed).length===1&&"action" in parsed?parsed.action as Record<string,unknown>:parsed;
         if(!data||typeof data!=="object")throw new Error("Return one JSON object with type tool_call or final.");
         if(data.type==="final"){
@@ -218,6 +219,8 @@ export class AgentLoopRunner {
         }
         retract();
         if(finalOnly)throw new Error("The final turn is reserved for an answer. No further tool action was executed.");
+        // {"tool":…,"arguments":…} without its type is a tool call all the same (DeepSeek leaves the type out now and then).
+        if(data.type===undefined&&typeof data.tool==="string")data.type="tool_call";
         if(data.type!=="tool_call"||Object.keys(data).some(key=>!["type","tool","arguments"].includes(key)))throw new Error("Expected type tool_call, tool and arguments, or type final and text.");
         const action=parseAgentAction({tool:data.tool,arguments:data.arguments});
         if (!allowedTools.has(action.tool)) throw new Error("This tool is not available in this context.");
@@ -231,6 +234,8 @@ export class AgentLoopRunner {
         if(repeats>=2)throw new Error("Repeated identical action. Use the previous results, choose a different action, or finish.");
         run.consecutiveRepairs=0;
         run.pending={action,id:randomUUID(),callId:response.toolCallId,outputItems:response.outputItems};
+        // Several actions in one reply: the first runs, as it would have alone, and the model hears why the others did not.
+        if(first.more)run.turns.push({type:"format_error",content:`Your reply held ${first.more+1} JSON objects; only the first was taken, and it runs now. Send exactly one per turn: its TOOL RESULT comes back before your next.`});
         run.turns.push({type:"tool",content:serialized});
         await this.store.save(run);
       }catch(error){
