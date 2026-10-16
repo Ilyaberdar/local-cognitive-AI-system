@@ -45,6 +45,8 @@ export interface PoolOptions {
   checkoutRequired?: boolean;
   /** Where agents with a terminal run their commands. */
   terminal?: import("./Terminal").TerminalHost;
+  /** Performs the HTTP requests of agents with the http right, against their allowlist. */
+  http?: import("./AgentHttp").HttpHost;
   /** parallel_map's answer_file ({n}: the agent's number, {call}: this map's): where the answer of an agent
    * that wrote no file is saved, as that agent. */
   answerFile?: string;
@@ -84,7 +86,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
     const started = Date.now();
     const answerPath = options.answerFile?.replace(/\{n\}/g, String(index + 1)).replace(/\{call\}/g, String(options.call));
     summary.status = "running"; options.update(summaries);
-    const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights, { checkouts, me: { agent: index, task }, ...(options.terminal ? { terminal: options.terminal } : {}) });
+    const tools = new SynthesisFileTools(options.baseDir, options.store, spec.rights, { checkouts, me: { agent: index, task }, ...(options.terminal ? { terminal: options.terminal } : {}), ...(options.http ? { http: options.http } : {}) });
     let finished = false;
     try {
       await options.admit(spec);
@@ -100,7 +102,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
         } };
       // An agent that only reads may still run its terminal (a reviewer running the tests): not read-only then.
       const changes = spec.rights.write.length > 0 || spec.rights.delete.length > 0;
-      const readOnly = !changes && !spec.rights.terminal?.length;
+      const readOnly = !changes && !spec.rights.terminal?.length && !spec.rights.http?.length;
       const runner = new AgentLoopRunner(options.llm, tools, options.baseDir,
         { maxSteps: spec.steps, advisorMaxSteps: spec.steps, maxTotalSteps: 0, maxActiveMs: 0, maxRepairs: 3 });
       const rights = [`read ${spec.rights.read.join(", ") || "nothing"}`, spec.rights.write.length ? `write ${spec.rights.write.join(", ")}` : "",
@@ -110,6 +112,7 @@ export async function runAgents(options: PoolOptions): Promise<{ results: TaskRe
         toolInstructions: agentToolText(spec.rights),
         accessNote: `You are agent ${index + 1} of ${tasks.length}, working at the same time as the others on parts of one goal for the module ${options.module.name}. Your task is your part only. ` +
           `Files: you may ${rights}. Paths are relative to the project folder. ${changes ? "What you write goes into the run's copy; the project changes only when the engineer applies the run. " : ""}` +
+          (spec.rights.http?.length ? `You may make web requests to ${spec.rights.http.join(", ")} and nowhere else, for authorized testing of these services. ` : "") +
           (spec.rights.read.length ? "Read the files of your task with your tools before you answer: a finding about code you have not read is wrong, and every path:line you cite is checked. " : "") +
           "Your final answer is returned to the flow as your result: give your findings with path:line references where they apply, and name the files you wrote." +
           (answerPath ? ` If you write no file yourself, your final answer is saved for you as ${answerPath}: put your findings in it, not a claim that you wrote a file.` : ""),

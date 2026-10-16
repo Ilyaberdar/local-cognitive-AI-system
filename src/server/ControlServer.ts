@@ -3,6 +3,7 @@ import net from "net";
 import path from "path";
 import type { Logger } from "../utils/Logger";
 import type { CloudModelsRequest } from "./cloudModels";
+import type { WebTargetsRequest } from "./webTargets";
 
 export class ControlError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 export type RemoteControlOp = "connect-key" | "invitation" | "devices" | "revoke-device" | "reset-owner";
@@ -19,6 +20,7 @@ export interface ControlHandlers {
   mcp?(socket: net.Socket): void;
   /** The server's Synthesis projects, and the owner's choice whether each may use cloud models. */
   cloudModels?(request: CloudModelsRequest): Promise<unknown>;
+  webTargets?(request: WebTargetsRequest): Promise<unknown>;
 }
 
 const MAX_LINE = 64 * 1024;
@@ -55,7 +57,7 @@ export class ControlServer {
       if (end < 0) return;
       clearTimeout(timer);
       socket.off("data", onData);
-      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string; project?: unknown; allowed?: unknown };
+      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string; project?: unknown; allowed?: unknown; targets?: unknown };
       try { request = JSON.parse(buffer.slice(0, end)); } catch { fail("bad_request", "Invalid JSON."); return; }
       if (request.v !== 1) { fail("unsupported_version", "Unsupported control protocol version."); return; }
       if (request.op === "status") { send({ v: 1, ok: true, result: handlers.status() }); socket.end(); return; }
@@ -94,6 +96,17 @@ export class ControlServer {
         if (project !== undefined && (typeof project !== "string" || !project.trim() || project.length > 4096 || project.includes("\0"))) { fail("bad_request", "Name a project by its id, name or folder."); return; }
         if (project !== undefined && typeof request.allowed !== "boolean") { fail("bad_request", "Say whether cloud models are allowed."); return; }
         void handlers.cloudModels({ ...(project !== undefined ? { project, allowed: request.allowed as boolean } : {}) }).then(
+          result => { send({ v: 1, ok: true, result }); socket.end(); },
+          (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
+        return;
+      }
+      if (request.op === "web-targets") {
+        if (!handlers.webTargets) { fail("unknown_op", "This server cannot change web targets: restart it after updating."); return; }
+        const project = request.project;
+        if (project !== undefined && (typeof project !== "string" || !project.trim() || project.length > 4096 || project.includes("\0"))) { fail("bad_request", "Name a project by its id, name or folder."); return; }
+        const targets = request.targets;
+        if (project !== undefined && targets !== undefined && (!Array.isArray(targets) || targets.length > 20 || targets.some(item => typeof item !== "string" || item.length > 2048))) { fail("bad_request", "Give up to 20 web addresses."); return; }
+        void handlers.webTargets({ ...(project !== undefined ? { project, targets: (targets as string[]) ?? [] } : {}) }).then(
           result => { send({ v: 1, ok: true, result }); socket.end(); },
           (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
         return;

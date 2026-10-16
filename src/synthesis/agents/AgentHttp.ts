@@ -54,7 +54,7 @@ export function isBlockedAddress(address: string): boolean {
 
 /** A declared target: its scheme, host, port and, when the pattern has a path, the path it must start
  * with. "https://api.example.com/v1" allows that host's /v1…; "https://staging.example.com" all of it. */
-interface Target { scheme: string; host: string; port: number; prefix: string }
+export interface Target { scheme: string; host: string; port: number; prefix: string }
 export function parseTarget(pattern: string): Target {
   const url = new URL(pattern);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`${pattern}: a target is an https:// (or http://) address.`);
@@ -63,6 +63,15 @@ export function parseTarget(pattern: string): Target {
   const path = url.pathname.replace(/\/+$/, "");
   return { scheme: url.protocol, host: url.hostname.toLowerCase(), port, prefix: path === "/" ? "" : path };
 }
+/** Whether one declared target is within another: the same scheme, host and port, and a path at least
+ * as specific. Used to check an agent's allowlist is within what the project allows. */
+export function targetWithin(inner: Target, outer: Target[]): boolean {
+  return outer.some(o => o.scheme === inner.scheme && o.host === inner.host && o.port === inner.port &&
+    (!o.prefix || inner.prefix === o.prefix || inner.prefix.startsWith(`${o.prefix}/`)));
+}
+/** A target as it reads, for a message or to store. */
+export function targetLabel(t: Target): string { return `${t.scheme}//${t.host}${t.port === (t.scheme === "https:" ? 443 : 80) ? "" : `:${t.port}`}${t.prefix}`; }
+
 /** Whether a URL is one the allowlist permits: same scheme, host and port, and the path under the
  * target's prefix. A target without a path allows the whole host. */
 function allowed(url: URL, targets: Target[]): boolean {

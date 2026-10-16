@@ -60,6 +60,14 @@ export class ProjectStore {
         if (typeof patch.cloudModels !== "boolean") throw new ProjectError(400, "Field 'cloudModels' must be a boolean.");
         if (patch.cloudModels) project.cloudModels = true; else delete project.cloudModels;
       }
+      if (patch.webTargets !== undefined) {
+        // Validated and normalised by the caller (SynthesisService.setWebTargets); stored as given, or cleared.
+        if (patch.webTargets === null || !patch.webTargets.length) delete project.webTargets;
+        else {
+          if (!Array.isArray(patch.webTargets) || patch.webTargets.length > 50 || patch.webTargets.some(item => typeof item !== "string" || item.length > 2048)) throw new ProjectError(400, "Field 'webTargets' must be up to 50 target strings.");
+          project.webTargets = [...patch.webTargets];
+        }
+      }
       project.updatedAt = new Date().toISOString();
       await writeJsonAtomically(this.filePath, record);
       return project;

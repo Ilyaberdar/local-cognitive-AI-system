@@ -50,6 +50,7 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "synthesis.modules.list": { kind: "request", timeoutMs: 30_000 },
   "synthesis.modules.get": { kind: "request", timeoutMs: 15_000 },
   "synthesis.cloud.get": { kind: "request", timeoutMs: 15_000 },
+  "synthesis.web.get": { kind: "request", timeoutMs: 15_000 },
   "synthesis.folders.list": { kind: "request", timeoutMs: 15_000 },
   "synthesis.modules.create": { kind: "command", timeoutMs: 30_000 },
   "synthesis.runs.list": { kind: "request", timeoutMs: 30_000 },

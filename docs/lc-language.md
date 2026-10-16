@@ -696,6 +696,7 @@ evaluate "contract-v1" {
 | `files.read("src/**", ...)`, `files.write(...)`, `files.delete(...)` | Rights: 1–12 project-relative patterns (`*` within a folder, `**` across folders). Reading gives `file.list`, `file.search` and `file.read`; writing `file.write`, `file.replace` and `file.append`; deleting `file.delete`. |
 | `agent(provider = "deepseek", model = "deepseek-flash", tools = [...], instructions = "...", steps = 16)` | An agent: a description, not a process. `agent(role, tools = [...])` uses a loaded role instead (a local model with slots, for example). `steps` (1–60, 16 by default) bounds its turns. |
 | `terminal(allow = ["node", "npm"])` | A terminal: the agent runs these commands (of `node`, `npm`, `npx`, `python3`, `git`, `rg`, `ls`, `cat`; all of them without `allow`) in a sandbox, in a copy of the files it may read with its current changes. See [Agents' terminal](#agents-terminal). |
+| `http(allow = ["https://staging.example.com", "https://api.example.com/v1"])` | A web request: the agent gets `http.request {method,url,headers?,body?}`, which the engine makes only to these origins, for authorized testing of the owner's own services. See [Agents reaching a web service](#agents-web). The project must allow the targets. |
 | `files.write("notes/**", own = true)` | Writing, where each file belongs to the agent that first creates or changes it, for the rest of the `parallel_map`: the others read it and change nothing of it. |
 | `await parallel_map(agents, tasks, concurrency = 8, on_error = "collect", checkout = "required", answer_file = "review/notes/agent-{n}.md")` | Runs every task (a list of texts) with an agent: task `i` with agent `i`, round the list (or one agent for all). At most `concurrency` (1–64) run at once. Results come back in task order. With `answer_file`, the answer of an agent that wrote no file itself is saved as that file (see below). |
 | `await lead.split(goal, n [, context], paths = files.read(...), instruction = "...")` | A model splits a goal into `n` independent tasks; `paths` lists the files the agents can read (up to 400) for it. |
@@ -729,6 +730,18 @@ for (i in range(6)) {
 }
 results = await parallel_map(agents, tasks, concurrency = 6);
 ```
+
+<a id="agents-web"></a>
+### Agents reaching a web service
+
+`http(allow = [...])` gives an agent one tool, `http.request {method, url, headers?, body?}`, for authorized testing of the owner's own web services — checking headers, authentication, how an endpoint answers malformed input, and the like. The **engine** makes the request, never code in a sandbox, and only within strict limits:
+
+- **An allowlist the owner declares.** A request reaches only an origin the agent's `http(allow = [...])` names (a scheme, host and port, with an optional path prefix), and that origin must be one the **project** allows. On this computer the project's allowlist is a setting; on a server its owner sets it with `sudo local-cognitive-server web-targets allow <project> <url>…`. The flow's targets must be within the project's, or Run is refused (`SYNTHESIS_WEB_CONSENT`).
+- **No reaching in.** The address a name resolves to is checked and pinned for the connection, so a name cannot answer with an allowed address and then a private one; this machine, private networks, link-local, carrier-NAT and cloud-metadata addresses are always refused. A redirect is followed only within the allowlist.
+- **Bounded.** The response body is capped, each request times out, and the whole run has a budget of requests.
+- **No borrowed identity.** The request carries none of the app's own credentials. Put any token the service needs in `headers` yourself; a header that holds a secret (`Authorization`, `Cookie`) is recorded on the run's Agents tab as `set`, never its value, as are secret response headers.
+
+An agent with only the `http` right (no write, delete or terminal) still acts, not just reads: it makes requests. Each request and its response status is a step on the Agents tab.
 
 Cloud agents are limited by their provider: when one answers that it is overloaded or rate-limited (HTTP 429), the run sends it fewer requests at once and repeats the refused one after a pause, without spending the agent's turn. An agent's request, and `split` and `synthesize`, may take up to 10 minutes, so a slow model's long answer is not cut off (a chat gives an added provider 60 s).
 
@@ -808,6 +821,8 @@ Saved changes are read on Refresh and compiled again on Run. Starting a run free
 | `FLOW_AGENT_MODEL` | Name an agent's model once: a loaded role, or `provider` and `model`. |
 | `FLOW_FILE_PATTERN` | Rights take project-relative patterns such as `"src/**"`, without hidden folders or `..`. |
 | `FLOW_ANSWER_FILE` | `answer_file` is a string path with `{n}`, such as `"review/notes/agent-{n}.md"` (and `{call}` if wanted), without wildcards, hidden folders or `..`. |
+| `FLOW_HTTP_TARGET` | `http(allow = [...])` names web addresses such as `"https://staging.example.com"` or `"https://api.example.com/v1"`: an https:// (or http://) host and optional path, without credentials, a query or a fragment. |
+| `SYNTHESIS_WEB_CONSENT` | An agent's `http` targets must be ones the project allows (its owner sets them; on a server, `sudo local-cognitive-server web-targets allow <project> <url>…`). |
 | `FLOW_FOR_VARIABLE` | Give the loop variable a new name; it exists only inside the loop. |
 | `FLOW_INDEX` | Index a list with a whole number: `list[0]`. |
 | `FLOW_UNDEFINED_NAME` | Assign the variable before use on every path; initialize loop feedback before the loop. |

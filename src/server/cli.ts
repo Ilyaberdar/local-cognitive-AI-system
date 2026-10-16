@@ -17,6 +17,7 @@ import { addAdminFolder, FolderError, listAdminFolders, removeAdminFolder } from
 import { serverEnvironment } from "./serverEnv";
 import { printable, printableDeep, printableMessage } from "./terminalText";
 import { findProject, type CloudModelsProject, type CloudModelsResult } from "./cloudModels";
+import type { WebTargetsProject, WebTargetsResult } from "./webTargets";
 import { spawn } from "child_process";
 import { childProcessEnv } from "../config/secrets";
 
@@ -191,6 +192,25 @@ const cloudModels = async (args: ServerArgs) => {
   }
   print(args, result.projects.length ? [...result.projects.map(project => `${project.allowed ? "allowed   " : "local only"}  ${printable(project.name)}  ${project.id}  ${printable(project.rootPath)}${project.archived ? "  (archived)" : ""}`),
     "", "Change one: sudo local-cognitive-server cloud-models allow|deny <project> (its id, name or folder)"].join("\n")
+    : "No projects on this server yet. A computer makes one in Synthesis (+ Project), in a shared folder.", result);
+  return ExitCode.ok;
+};
+
+/** The web origins a Synthesis project's agents may reach, for authorized testing of the owner's own
+ * services: the owner's choice, made on this server; computers can only see it. */
+const webTargets = async (args: ServerArgs) => {
+  const request = args.webTargets!;
+  const result = await remoteRequest(args, { op: "web-targets", ...(request.action === "list" ? {} : { project: request.project, targets: request.action === "allow" ? request.targets : [] }) }) as unknown as WebTargetsResult;
+  const label = (project: WebTargetsProject) => `${printable(project.name)} (${project.id}, ${printable(project.rootPath)}, ${project.origin === "device" ? "made from a computer" : "set up on this server"})`;
+  if (request.action !== "list") {
+    const changed = result.changed;
+    print(args, !changed ? "Changed." : changed.targets.length
+      ? `${label(changed)} may reach: ${changed.targets.join(", ")}. Its Synthesis agents can make web requests only to these, for authorized testing; no other address, and none of the app's credentials. A run in progress uses the new list at its next request.`
+      : `${label(changed)} reaches no web targets. Its agents can make no web requests.`, result);
+    return ExitCode.ok;
+  }
+  print(args, result.projects.length ? [...result.projects.map(project => `${project.targets.length ? "allowed   " : "none      "}  ${printable(project.name)}  ${project.id}  ${project.targets.join(", ") || "(no web targets)"}${project.archived ? "  (archived)" : ""}`),
+    "", "Change one: sudo local-cognitive-server web-targets allow <project> <url> [<url>...]  |  web-targets deny <project>"].join("\n")
     : "No projects on this server yet. A computer makes one in Synthesis (+ Project), in a shared folder.", result);
   return ExitCode.ok;
 };
@@ -424,6 +444,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "folders": return await folders(args);
       case "error-reports": return errorReports(args);
       case "cloud-models": return await cloudModels(args);
+      case "web-targets": return await webTargets(args);
       case "deps": return await deps(args);
       case "backup": case "backups": case "restore": return await backupCommand(args);
       case "update": case "rollback": case "adopt": return await updateCommand(args);

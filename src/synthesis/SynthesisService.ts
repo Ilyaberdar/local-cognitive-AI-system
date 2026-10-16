@@ -7,7 +7,7 @@ import { LLMService } from "../llm/LLMService";
 import { ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { answerFileProblem, callsOf, compileProgram, namedProviders, SourceSpan, SpecProgram } from "./language";
+import { answerFileProblem, callsOf, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, readOptional, readText, relativePath } from "./paths";
@@ -16,7 +16,8 @@ import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSour
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./evaluators";
 import { CheckOptions, contractChecksVersion, references, runCheck } from "./checks";
 import { matchesGlob } from "./checks/architecture";
-import { AgentSpec, AgentSummary, CandidateStore, checkedLlm, gatedLlm, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
+import { AgentSpec, AgentSummary, CandidateStore, checkedLlm, gatedLlm, httpPermission, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
+import { AgentHttpClient, parseTarget, targetLabel, targetWithin } from "./agents/AgentHttp";
 import { platformSandbox } from "./checks/sandbox";
 import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
@@ -31,7 +32,7 @@ interface Services {
   catalog?: {listAll(providerId?: string): Promise<ProviderModel[]>};
   providers?: () => ProviderDescriptor[];
   /** The model service agents run on (agents-v1): their loops call it directly. */
-  agents?: {llm: LLMService};
+  agents?: {llm: LLMService; httpClient?: (budget: number) => import("./agents/AgentHttp").HttpHost};
   /** Where Tests gates run (a sandbox and a work folder); tests of this service replace them. */
   checks?: Omit<CheckOptions, "signal">;
 }
@@ -44,6 +45,8 @@ const MAX_SUITE_FILES = 24, MAX_SUITE_BYTES = 512 * 1024;
 const MAX_STEPS = 1_000_000;
 /** The most agent tasks one run may start, and agents at once in one parallel_map. */
 const MAX_AGENT_TASKS = 1000, MAX_CONCURRENCY = 64;
+/** A run's budget of agent HTTP requests, across all its agents and maps. */
+const MAX_HTTP_REQUESTS = 2000;
 /** The most files a candidate holds, declared ones and those agents create. */
 const MAX_CANDIDATE_FILES = 300;
 /** How much of the project a run keeps as its agents first read it. */
@@ -157,6 +160,7 @@ export class SynthesisService {
   guardIntervalMs = 5_000;
   /** How a project's owner allows cloud models here: the workspace's switch, or on a server its command. */
   cloudConsentHint: (project: {id: string; name: string}) => string = () => "Allow cloud models for the project first.";
+  webConsentHint: (project: {id: string; name: string}, targets: string[]) => string = () => "Allow the web targets for the project first.";
   private accepting = true;
   private readonly pendingStarts = new Set<Promise<SynthesisRun>>();
   private reservations = 0;
@@ -203,6 +207,25 @@ export class SynthesisService {
     const saved = await this.services.projects.update(projectId, {cloudModels: allowed});
     return {allowed: saved?.cloudModels === true};
   }
+  /** The web origins this project's agents may reach (http(...)). Set only on this computer. */
+  async webTargets(projectId: string): Promise<{targets: string[]}> { return {targets: (await this.project(projectId)).webTargets ?? []}; }
+  async setWebTargets(projectId: string, targets: unknown): Promise<{targets: string[]}> {
+    if (!Array.isArray(targets)) throw new SynthesisError("targets is a list of web addresses, such as [\"https://staging.example.com\"].");
+    if (targets.length > 20) throw new SynthesisError("A project allows up to 20 web targets.");
+    const normalized: string[] = [];
+    for (const target of targets) {
+      if (typeof target !== "string") throw new SynthesisError("A web target is a string, such as \"https://api.example.com/v1\".");
+      try { const value = targetLabel(parseTarget(target)); if (!normalized.includes(value)) normalized.push(value); }
+      catch (error) { throw new SynthesisError(error instanceof Error ? error.message : String(error)); }
+    }
+    if (!normalized.length) { if (!await this.services.projects.get(projectId)) throw new SynthesisError("Select an existing project.", 404); }
+    else await this.project(projectId);
+    const saved = await this.services.projects.update(projectId, {webTargets: normalized.length ? normalized : null});
+    return {targets: saved?.webTargets ?? []};
+  }
+  private webConsentRefusal(project: {id: string; name: string}, want: string[]): string {
+    return `This project does not allow these web targets: ${want.join(", ")}. An agent may reach a web service only where the project allows it. ${this.webConsentHint(project, want)}`;
+  }
   private consentRefusal(providerName: string, project: {id: string; name: string}): string {
     return `This project does not allow cloud models: the contract and project files would be sent to ${providerName}. ${this.cloudConsentHint(project)}`;
   }
@@ -242,6 +265,13 @@ export class SynthesisService {
         if (!descriptor) add("SYNTHESIS_PROVIDER", `No provider ${provider} is set up here. Add it in Settings → Models & Providers.`);
         else if (!descriptor.configured) add("SYNTHESIS_PROVIDER", `${descriptor.name} has no key or is turned off. Set it up in Settings → Models & Providers.`);
         else if (descriptor.capabilities?.local !== true && project.cloudModels !== true) add("SYNTHESIS_CLOUD_CONSENT", this.consentRefusal(descriptor.name, project));
+      }
+      // What Run would refuse about http targets: ones the project does not allow.
+      const allowList = (project.webTargets ?? []).map(parseTarget);
+      for (const {target, span} of httpTargetsOf(compiled.flow)) {
+        let within = false;
+        try { within = targetWithin(parseTarget(target), allowList); } catch { within = false; }
+        if (!within) diagnostics.push({severity: "error", code: "SYNTHESIS_WEB_CONSENT", message: this.webConsentRefusal(project, [target]), file: flowPath, line: span.start.line, column: span.start.column});
       }
       // A terminal where this platform has no sandbox at all (Windows): Run would stop at parallel_map.
       // Whether a sandbox that exists isolates is checked at Run, which tries it.
@@ -408,7 +438,7 @@ export class SynthesisService {
     const roles = new Set<object>();
     // What only this run made: rights, agents' descriptions and parallel_map's results.
     const permissions = new WeakSet<object>(), agentSpecs = new WeakSet<object>(), resultLists = new WeakSet<object>();
-    let mapCalls = 0;
+    let mapCalls = 0, httpClient: import("./agents/AgentHttp").HttpHost | undefined;
     let pendingSave: NodeJS.Timeout | undefined;
     const saveSoon = () => { pendingSave ??= setTimeout(() => { pendingSave = undefined; void this.save(record).catch(() => undefined); }, 1000); pendingSave.unref(); };
     const evaluationSignatures: string[] = [];
@@ -525,6 +555,7 @@ export class SynthesisService {
           break;
         }
         case "terminal": value = terminalPermission(named.allow); permissions.add(value as object); break;
+        case "http": value = httpPermission(named.allow); permissions.add(value as object); break;
         case "files.read": case "files.write": case "files.delete": {
           value = permission(name.slice(6) as Permission["access"], args, named.own); permissions.add(value as object); break;
         }
@@ -536,7 +567,7 @@ export class SynthesisService {
           } else model = (await role(await resolveModel(String(named.provider), named.model))).model;
           const tools = named.tools ?? [];
           if (!Array.isArray(tools) || tools.some(item => !item || typeof item !== "object" || !permissions.has(item))) throw new SynthesisError("tools is a list of files.read(...), files.write(...) and files.delete(...).");
-          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[], own: [] as string[], terminal: [] as string[]};
+          const rights = {read: [] as string[], write: [] as string[], delete: [] as string[], own: [] as string[], terminal: [] as string[], http: [] as string[]};
           for (const item of tools as Permission[]) { rights[item.access].push(...item.patterns); if (item.own) rights.own.push(...item.patterns); }
           const instructions = named.instructions ?? "";
           if (typeof instructions !== "string" || instructions.length > 6000) throw new SynthesisError("An agent's instructions are at most 6,000 characters.");
@@ -573,6 +604,15 @@ export class SynthesisService {
             const reason = await sandbox.unavailable();
             if (reason) throw new SynthesisError(`Agents with a terminal need a sandbox that works: ${reason}`);
           }
+          // Agents with the http right may reach only web targets the project allows (its owner sets them).
+          const wanted = [...new Set(agents.flatMap(agent => agent.rights.http ?? []))];
+          if (wanted.length) {
+            const project = await this.project(record.projectId);
+            const allowList = (project.webTargets ?? []).map(parseTarget);
+            const refused = wanted.filter(target => !targetWithin(parseTarget(target), allowList)).map(target => targetLabel(parseTarget(target)));
+            if (refused.length) throw new SynthesisError(this.webConsentRefusal(project, refused));
+            httpClient ??= this.services.agents.httpClient?.(MAX_HTTP_REQUESTS) ?? new AgentHttpClient(MAX_HTTP_REQUESTS);
+          }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
           // A provider that asks to slow down gets fewer requests at once; the run says so, at most every 30 s.
@@ -585,6 +625,7 @@ export class SynthesisService {
             module: {name: record.spec.module, description: record.spec.description}, store, agents, tasks: tasks as string[], concurrency: concurrency as number,
             failFast: named.on_error === "fail", checkoutRequired: named.checkout === "required", signal,
             ...(typeof answerFile === "string" ? {answerFile} : {}),
+            ...(wanted.length && httpClient ? {http: httpClient} : {}),
             // History is out of the copies when the contract has hidden tests: it could hold them.
             terminal: {sandbox, workRoot: path.join(this.directory, "..", "agents", record.id, "terminal", `map-${call}`),
               git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden)},

@@ -4,6 +4,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
+import { AddressInfo } from "node:net";
+import { AgentHttpClient } from "../src/synthesis/agents/AgentHttp";
 import express from "express";
 import { localApiOriginGuard } from "../src/api/integrationControllers";
 import { createSynthesisRouter } from "../src/api/synthesisControllers";
@@ -44,7 +46,7 @@ const flow = (body: string, limits = "iterations 2, time 5m, steps 20000") => `i
     return needs_review(evidence);
 }`;
 
-async function fixture(t: TestContext, options: {script: Script; delay?: (task: string) => Promise<void>; window?: number; report?: (prompt: string) => string}) {
+async function fixture(t: TestContext, options: {script: Script; delay?: (task: string) => Promise<void>; window?: number; report?: (prompt: string) => string; httpHooks?: object}) {
   const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-synthesis-agents-")));
   const root = path.join(temp, "project"), data = path.join(temp, "app");
   await fs.mkdir(path.join(root, "src"), {recursive: true}); await fs.mkdir(data);
@@ -88,7 +90,8 @@ async function fixture(t: TestContext, options: {script: Script; delay?: (task: 
     }
   } as unknown as LLMService;
   const service = new SynthesisService(data, {projects, models: {listAllModels: async () => []}, loadModel: async () => undefined, llm,
-    providers: () => [descriptor("deepseek")], catalog: {listAll: async () => []}, agents: {llm: agentLlm}});
+    providers: () => [descriptor("deepseek")], catalog: {listAll: async () => []},
+    agents: {llm: agentLlm, ...(options.httpHooks ? {httpClient: (budget: number) => new AgentHttpClient(budget, options.httpHooks)} : {})}});
   await service.init();
   await fs.mkdir(path.join(root, "Synthesis", "Review"), {recursive: true});
   await fs.writeFile(path.join(root, "Synthesis", "Review", "Review.lcspec"), spec);
@@ -539,6 +542,70 @@ test("checkout: a failed agent's pending changes are dropped, a finished one's s
 
 // Small local models, and DeepSeek now and then, answer in text instead of calling file.write: a swarm
 // whose test counts notes failed on fedora with nine of the twelve. answer_file saves such an answer.
+const toLoopback = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
+
+test("an agent with the http right reaches only the project's allowed targets; the request is recorded with its secret header hidden; a request elsewhere is refused", async (t) => {
+  const seen: { url?: string; auth?: string; method?: string } = {};
+  const srv = http.createServer((req, res) => { seen.url = req.url; seen.auth = req.headers.authorization; seen.method = req.method;
+    res.setHeader("content-type", "application/json"); res.end('{"missing_header":"x-frame-options"}'); });
+  await new Promise<void>(resolve => srv.listen(0, "127.0.0.1", resolve));
+  const port = (srv.address() as AddressInfo).port, origin = `http://scan.test:${port}`;
+  t.after(() => new Promise<void>(resolve => srv.close(() => resolve())));
+  const f = await fixture(t, { httpHooks: toLoopback, script: steps({
+    probe: [tool("http.request", { method: "GET", url: `${origin}/headers`, headers: { Authorization: "Bearer secret-token" } }),
+      results => tool("file.write", { path: "review/notes/probe.md", content: `- ${origin}/headers: ${/missing_header/.test(results[0]) ? "no X-Frame-Options" : "ok"}`, expectedVersion: "missing" })],
+    escape: [tool("http.request", { method: "GET", url: `http://evil.test:${port}/` }), results => final(results[0])]
+  })});
+  await f.service.setWebTargets(f.project.id, [origin]);
+  const result = await f.run(`checker = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), files.write("review/notes/**"), http(allow = ["${origin}"])], steps = 4);
+    results = await parallel_map(checker, ["probe", "escape"], concurrency = 2);
+    candidate = await lead.synthesize(candidate, spec, results, file = "REPORT.md");`);
+  assert.equal(result.status, "accepted", result.error);
+  assert.equal(seen.url, "/headers"); assert.equal(seen.method, "GET");
+  assert.equal(seen.auth, "Bearer secret-token", "the agent's own token reaches the service");
+  assert.equal((await f.service.diff(result.id)).files.find(file => file.path === "review/notes/probe.md")?.after, `- ${origin}/headers: no X-Frame-Options`);
+  const probe = await f.service.agent(result.id, 0);
+  const request = probe.turns.find(turn => turn.type === "tool" && /http\.request/.test(turn.content));
+  assert.ok(request, "the request is a recorded step");
+  const result0 = probe.turns.find(turn => turn.type === "result" && turn.content.includes("missing_header"))!;
+  assert.ok(result0, "the response is a recorded step");
+  assert.ok(result0.content.includes("200"), "its status is recorded");
+  assert.ok(result0.content.includes("set") && !result0.content.includes("secret-token"), "a secret header is recorded without its value");
+  // The agent that tried another host got a refusal, not a request.
+  const escape = await f.service.agent(result.id, 1);
+  assert.match(escape.final ?? "", /not in this agent's allowed targets/);
+});
+
+test("http targets must be within what the project allows: Run is refused before it starts, and the module says so with SYNTHESIS_WEB_CONSENT", async (t) => {
+  const f = await fixture(t, { httpHooks: toLoopback, script: () => final("done") });
+  const flowBody = `checker = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), http(allow = ["https://api.example.com"])], steps = 2);
+    results = await parallel_map(checker, ["t"]);`;
+  // No targets allowed yet: the module is invalid with the consent diagnostic.
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcflow"), flow(flowBody));
+  let module = await f.service.module(f.project.id, "Review");
+  assert.equal(module.valid, false);
+  assert.ok(module.diagnostics.some(item => item.code === "SYNTHESIS_WEB_CONSENT" && /api\.example\.com/.test(item.message)), JSON.stringify(module.diagnostics));
+  // Allow a wider target that covers it: the module becomes valid and Run is not refused for this.
+  await f.service.setWebTargets(f.project.id, ["https://api.example.com/"]);
+  module = await f.service.module(f.project.id, "Review");
+  assert.equal(module.diagnostics.some(item => item.code === "SYNTHESIS_WEB_CONSENT"), false, JSON.stringify(module.diagnostics));
+  // A host the allowlist does not cover is still refused.
+  await f.service.setWebTargets(f.project.id, ["https://other.example.com"]);
+  assert.ok((await f.service.module(f.project.id, "Review")).diagnostics.some(item => item.code === "SYNTHESIS_WEB_CONSENT"));
+});
+
+test("http(allow=[...]) checks its targets, and the web-targets setter normalizes and refuses bad ones", async (t) => {
+  const codes = (value: string) => compileProgram(spec, flow(`a = agent(provider = "deepseek", model = "x", tools = [http(allow = [${value}])]);
+    results = await parallel_map(a, ["t"]);`)).diagnostics.map(item => item.code);
+  assert.deepEqual(codes('"https://staging.example.com"'), []);
+  assert.deepEqual(codes('"https://api.example.com/v1"'), []);
+  for (const bad of ['"ftp://example.com"', '"https://user:pass@example.com"', '"https://example.com/?q=1"', '"not a url"']) assert.deepEqual(codes(bad), ["FLOW_HTTP_TARGET"], bad);
+  const f = await fixture(t, { script: () => final("done") });
+  assert.deepEqual((await f.service.setWebTargets(f.project.id, ["https://API.Example.com:443/v1/", "https://api.example.com/v1"])).targets, ["https://api.example.com/v1"], "normalized and deduped");
+  await assert.rejects(f.service.setWebTargets(f.project.id, ["https://user:pass@x.com"]), /no credentials/);
+  assert.deepEqual((await f.service.setWebTargets(f.project.id, [])).targets, []);
+});
+
 test("answer_file: the answer of an agent that wrote no file is saved as its own file; one that wrote, failed or answered nothing gets none", async (t) => {
   const f = await fixture(t, {script: steps({
     answers: [final("- src/alpha.ts:1 swallows an error")],

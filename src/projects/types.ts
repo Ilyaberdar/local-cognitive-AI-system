@@ -13,12 +13,15 @@ export interface Project {
   origin?: "device";
   /** Synthesis may send this project's contract and files to cloud models. Only the host sets it. */
   cloudModels?: boolean;
+  /** Web origins this project's agents may reach (http(...)), for authorized testing of these services.
+   * Only the host sets it; an agent's allowlist must be within it. */
+  webTargets?: string[];
 }
 
 export interface CreateProjectInput { name: string; rootPath: string; color?: ProjectColor | null; origin?: "device";
   /** The folder as checked by the caller: refused if the path now resolves elsewhere. */
   expectedRoot?: string; }
-export interface UpdateProjectInput { name?: string; rootPath?: string; archived?: boolean; color?: ProjectColor | null; cloudModels?: boolean; }
+export interface UpdateProjectInput { name?: string; rootPath?: string; archived?: boolean; color?: ProjectColor | null; cloudModels?: boolean; webTargets?: string[] | null; }
 
 export class ProjectError extends Error {
   constructor(public readonly statusCode: number, message: string) { super(message); }

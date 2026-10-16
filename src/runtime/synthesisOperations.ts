@@ -126,6 +126,15 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
         return service().cloudModels(projectId);
       });
     },
+    /** The web origins the project's agents may reach: shown on the device, set only on the server
+     * (sudo local-cognitive-server web-targets). There is no operation that changes it. */
+    "synthesis.web.get": payload => {
+      const { projectId } = parse(schemas.project, payload);
+      return known(projectId, async () => {
+        await requireProject(projectId, false);
+        return service().webTargets(projectId);
+      });
+    },
     "synthesis.folders.list": payload => {
       const { projectId, directory } = parse(schemas.folders, payload);
       return known(projectId, async () => {

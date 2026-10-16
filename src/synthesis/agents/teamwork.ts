@@ -4,9 +4,10 @@ import { filePattern } from "../language/semanticAnalyzer";
 import { SynthesisError } from "../types";
 import type { TaskResult } from "./AgentPool";
 import { TERMINAL_COMMANDS } from "./Terminal";
+import { parseTarget } from "./AgentHttp";
 
 type Llm = Pick<LLMService, "generateObject" | "generateText"> & Partial<Pick<LLMService, "getContextWindow">>;
-export interface Permission { kind: "permission"; access: "read" | "write" | "delete" | "terminal"; patterns: string[]; own?: boolean }
+export interface Permission { kind: "permission"; access: "read" | "write" | "delete" | "terminal" | "http"; patterns: string[]; own?: boolean }
 export const MAX_TASK_CHARS = 8000;
 
 /** files.read(...), files.write(...), files.delete(...): project-relative patterns. */
@@ -26,6 +27,17 @@ export function terminalPermission(allow?: unknown): Permission {
     throw new SynthesisError(`terminal(allow = [...]) names commands of ${TERMINAL_COMMANDS.join(", ")}.`);
   }
   return Object.freeze({ kind: "permission", access: "terminal", patterns: Object.freeze([...new Set(commands as string[])]) as string[] });
+}
+
+/** http(allow = [...]): the web origins an agent may reach, for authorized testing of the owner's own
+ * services. Each is a scheme, host and port, with an optional path prefix. The project must allow them. */
+export function httpPermission(allow?: unknown): Permission {
+  if (!Array.isArray(allow) || !allow.length || allow.length > 20) throw new SynthesisError("http(allow = [...]) names 1 to 20 web targets, such as http(allow = [\"https://staging.example.com\"]).");
+  for (const target of allow) {
+    if (typeof target !== "string") throw new SynthesisError("http targets are strings, such as \"https://api.example.com/v1\".");
+    try { parseTarget(target); } catch (error) { throw new SynthesisError(error instanceof Error ? error.message : String(error)); }
+  }
+  return Object.freeze({ kind: "permission", access: "http", patterns: Object.freeze([...allow as string[]]) as string[] });
 }
 /** How many characters of prompt a model takes, leaving room for its answer (and its thinking). A cloud
  * model whose window is not known is taken to have the 128k tokens current ones have; a local one 8k. */

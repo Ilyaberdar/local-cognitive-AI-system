@@ -5,7 +5,7 @@ import { CompiledProgram, CompileOptions } from "./types";
 export * from "./types";
 export { lex } from "./Lexer";
 export { parseFlow, parseSpec } from "./Parser";
-export { analyzeFlow, analyzeSpec, answerFileProblem, callName, callsOf, namedProviders, POLICIES, testRunner } from "./semanticAnalyzer";
+export { analyzeFlow, analyzeSpec, answerFileProblem, callName, callsOf, httpTargetsOf, namedProviders, POLICIES, testRunner, webTargetProblem } from "./semanticAnalyzer";
 
 /** Compile authored source into a typed, source-mapped interpreter program. */
 export function compileProgram(specSource: string, flowSource: string, options: CompileOptions = {}): CompiledProgram {

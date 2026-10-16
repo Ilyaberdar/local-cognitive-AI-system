@@ -28,7 +28,9 @@ export const agentToolSchemas = {
   "file.submit": z.object({ paths: z.array(filePath).min(1).max(24).optional() }).strict(),
   "file.revert": z.object({ paths: z.array(filePath).min(1).max(24).optional() }).strict(),
   "terminal.run": z.object({ command: z.string().min(1).max(20), args: z.array(z.string().max(4000)).max(64).default([]), cwd: filePath.default("."), timeoutSeconds: z.number().min(1).default(60) }).strict(),
-  "command.run": z.object({ executable: z.string().trim().min(1).max(4096), args: z.array(z.string().max(32_000)).max(200), cwd: filePath.default("."), timeoutMs: z.number().int().min(1000).max(120_000).default(30_000) }).strict()
+  "command.run": z.object({ executable: z.string().trim().min(1).max(4096), args: z.array(z.string().max(32_000)).max(200), cwd: filePath.default("."), timeoutMs: z.number().int().min(1000).max(120_000).default(30_000) }).strict(),
+  // A Synthesis agent's HTTP request, performed by the engine against the agent's allowlist.
+  "http.request": z.object({ method: z.string().min(1).max(10).default("GET"), url: z.string().min(1).max(4096), headers: z.record(z.string().max(128), z.string().max(4096)).optional(), body: z.string().max(1_000_000).optional() }).strict()
 };
 export type AgentToolName = keyof typeof agentToolSchemas;
 export interface AgentAction { tool: AgentToolName; arguments: Record<string, unknown> }
@@ -62,7 +64,7 @@ export function parseAgentAction(value: unknown): AgentAction {
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.
 export const readTool = (tool: string): boolean => ["file.read", "file.list", "file.search", "plugins.search", "plugins.call", "mcp.search"].includes(tool);
 /** Tools only an agent that names them gets (a Synthesis agent's checkouts); never a chat's. */
-const NAMED_ONLY = new Set(["file.checkout", "file.submit", "file.revert", "terminal.run"]);
+const NAMED_ONLY = new Set(["file.checkout", "file.submit", "file.revert", "terminal.run", "http.request"]);
 export interface AgentToolOptions { plugins?: boolean; mcp?: boolean; pluginOnly?: boolean;
   /** Only these tools (a Synthesis agent's rights); undefined offers every tool the rest allows. */
   only?: string[]; }

@@ -45,6 +45,9 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | `sudo local-cognitive-server cloud-models` | The server's projects, and whether each may use cloud models in Synthesis |
 | `sudo local-cognitive-server cloud-models allow <project>` | Let the project's flows send its contract and files to the cloud providers they name; hidden tests stay on the server |
 | `sudo local-cognitive-server cloud-models deny <project>` | Back to the server's local models; a run in progress stops at its next cloud request |
+| `sudo local-cognitive-server web-targets` | The server's projects, and the web origins each project's Synthesis agents may reach |
+| `sudo local-cognitive-server web-targets allow <project> <url> [<url>…]` | Let the project's agents make web requests to these origins (replacing its list), for authorized testing of your own services |
+| `sudo local-cognitive-server web-targets deny <project>` | Clear the list: the project's agents can make no web requests |
 | `sudo local-cognitive-server deps <project>` | Install the project's npm dependencies once (`npm ci` with its lock file), so agents can run `npm test` in it |
 
 Agents never install packages: their terminal has no network. `deps` does it for them, as the server's user, from the project's `package-lock.json`. It runs npm in a folder of the server's, never in the project (whose `.npmrc` is ignored), installs only packages from npm's registry (or the one set as `npm_config_registry` in the environment file), and runs no install scripts unless you add `--scripts`. Run it again after the lock file changes.

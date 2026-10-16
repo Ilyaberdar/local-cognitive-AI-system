@@ -11,15 +11,18 @@ export { globMatches } from "../../tools/searchGlob";
 import { SynthesisError } from "../types";
 import { Checkouts, Holder } from "./Checkouts";
 import { AgentTerminal, TerminalHost } from "./Terminal";
+import { HttpHost } from "./AgentHttp";
 
 /** What an agent may touch, by project-relative patterns. `own`: of the write patterns, those whose
  * files belong to the agent that first creates or changes them. */
 export interface FilePermissions { read: string[]; write: string[]; delete: string[]; own?: string[];
   /** The commands its terminal may run (terminal(...)); none without one. */
-  terminal?: string[] }
+  terminal?: string[];
+  /** The web origins it may reach (http(...)); none without the right. */
+  http?: string[] }
 /** The agents of one parallel_map: their checkouts and owned files, which of them this one is, and
  * where their terminals run. */
-export interface Team { checkouts: Checkouts; me: Holder; terminal?: TerminalHost }
+export interface Team { checkouts: Checkouts; me: Holder; terminal?: TerminalHost; http?: HttpHost }
 
 /** The run's copy of the files it may change: the files of the candidate and what the project holds. */
 export interface CandidateStore {
@@ -77,6 +80,7 @@ export class SynthesisFileTools extends OperationExecutor {
     const args = action.arguments;
     input.signal?.throwIfAborted();
     if (action.tool === "terminal.run") return {result: await this.runCommand(String(args.command), (args.args as string[]) ?? [], String(args.cwd ?? "."), Number(args.timeoutSeconds ?? 60), input.signal)};
+    if (action.tool === "http.request") return {result: await this.httpRequest(args, input.signal)};
     if (!action.tool.startsWith("file.")) throw new Error(`${action.tool} is not one of this agent's tools.`);
     if (action.tool === "file.checkout") return {result: await this.checkout((args.paths as string[]).map(item => this.path(item)), Number(args.waitSeconds ?? 0), input.signal)};
     if (action.tool === "file.submit" || action.tool === "file.revert") {
@@ -404,6 +408,18 @@ export class SynthesisFileTools extends OperationExecutor {
     return {tool: "terminal", ok: result.exitCode === 0 && !result.timedOut, output: JSON.stringify(result),
       metadata: {operation: "run", filePath: [command, ...args].join(" ").slice(0, 200), exitCode: result.exitCode}};
   }
+  /** The engine performs one HTTP request for the agent, only to its allowlisted targets. A secret the
+   * agent set in a header is recorded as "set"; the body is capped and the run has a request budget. */
+  private async httpRequest(args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    if (!this.rights.http?.length || !this.team?.http) throw new Error("This agent has no http right.");
+    const result = await this.team.http.request({ method: String(args.method ?? "GET"), url: String(args.url ?? ""),
+      headers: (args.headers as Record<string, unknown>) ?? undefined, body: args.body === undefined ? undefined : String(args.body) }, this.rights.http, signal);
+    const body = result.contentType && !/^(text\/|application\/(json|xml|xhtml))/.test(result.contentType) ? `[${result.contentType || "binary"}, ${result.body.length} bytes not shown]` : result.body;
+    return {tool: "http", ok: result.status > 0 && result.status < 400,
+      output: JSON.stringify({ request: result.request, status: result.status, statusText: result.statusText, url: result.url,
+        ...(result.redirects.length ? { redirects: result.redirects } : {}), headers: result.headers, body, ...(result.truncated ? { truncated: true } : {}) }),
+      metadata: {operation: "request", filePath: `${result.request.method} ${result.url}`, status: result.status}};
+  }
   /** At the end of the agent's task: a finished agent submits what it left pending, any other reverts it. */
   async finish(finished: boolean): Promise<string[]> {
     await this.shell?.dispose();
@@ -429,7 +445,7 @@ export class SynthesisFileTools extends OperationExecutor {
 export function agentTools(rights: FilePermissions): string[] {
   const changes = rights.write.length > 0 || rights.delete.length > 0;
   return [...rights.read.length ? ["file.list", "file.search", "file.read"] : [], ...rights.write.length ? ["file.write", "file.replace", "file.append", "file.mkdir"] : [],
-    ...rights.delete.length ? ["file.delete"] : [], ...changes ? ["file.checkout", "file.submit", "file.revert"] : [], ...rights.terminal?.length ? ["terminal.run"] : []];
+    ...rights.delete.length ? ["file.delete"] : [], ...changes ? ["file.checkout", "file.submit", "file.revert"] : [], ...rights.terminal?.length ? ["terminal.run"] : [], ...rights.http?.length ? ["http.request"] : []];
 }
 export function agentToolText(rights: FilePermissions): string {
   return [
@@ -440,6 +456,7 @@ export function agentToolText(rights: FilePermissions): string {
     rights.write.length || rights.delete.length ? 'file.checkout {paths:["a.md","src/b.ts"],waitSeconds?:0} (wait up to 600 s for files another agent holds) takes files for your work, like a checkout in Perforce: the other agents read their last submitted version and change nothing of them until you file.submit {paths?} (your changes become visible) or file.revert {paths?} (they are dropped). Check out together every file your change depends on, including ones you only read. When you finish, what you left checked out is submitted.' : "",
     rights.write.length ? "Other agents work at the same time: when a write reports a version conflict, read the file again and redo your change; when a file is checked out by or belongs to another agent, work on other files." : "",
     rights.own?.length ? `Files you create or change under ${rights.own.join(", ")} are yours: no other agent may change them.` : "",
-    rights.terminal?.length ? `terminal.run {command:"${rights.terminal[0]}",args:["..."],cwd?:".",timeoutSeconds?:60} runs ${rights.terminal.join(", ")} in a sandbox: a copy of the files you may read with your current changes, no network, at most 120 s. What it writes stays in the copy; change files with the file tools. Run the tests or a build before you answer, and fix what fails.` : ""
+    rights.terminal?.length ? `terminal.run {command:"${rights.terminal[0]}",args:["..."],cwd?:".",timeoutSeconds?:60} runs ${rights.terminal.join(", ")} in a sandbox: a copy of the files you may read with your current changes, no network, at most 120 s. What it writes stays in the copy; change files with the file tools. Run the tests or a build before you answer, and fix what fails.` : "",
+    rights.http?.length ? `http.request {method:"GET",url:"${rights.http[0].replace(/\/+$/, "")}/...",headers?:{},body?:"..."} makes one web request, only to ${rights.http.join(", ")}. The engine makes it: redirects stay within those targets, the response body is capped, and there is a limit on requests. Put any token you need in headers yourself; the request carries none of the app's own credentials, and a secret header is recorded without its value.` : ""
   ].filter(Boolean).join("\n");
 }

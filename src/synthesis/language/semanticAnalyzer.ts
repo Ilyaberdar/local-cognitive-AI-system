@@ -45,11 +45,12 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   "files.write": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]), named: { own: ["boolean"] } },
   "files.delete": { returns: "permission", required: 1, max: 12, parameters: Array(12).fill(["string"]) },
   terminal: { returns: "permission", required: 0, max: 0, named: { allow: ["array:string"] } },
+  http: { returns: "permission", required: 0, max: 0, named: { allow: ["array:string"] } },
   agent: { returns: "agent", required: 0, max: 1, parameters: [["model"]], named: { provider: ["string"], model: ["string"], tools: ["array:permission"], instructions: ["string"], steps: ["number"] } },
   parallel_map: { returns: "array:taskResult", required: 2, max: 2, parameters: [["agent", "array:agent"], ["array:string"]], named: { concurrency: ["number"], on_error: ["string"], checkout: ["string"], answer_file: ["string"] }, async: true }
 };
 /** What only agents-v1 may use. */
-const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "terminal", "agent", "parallel_map"]);
+const AGENT_CALLS = new Set(["files.read", "files.write", "files.delete", "terminal", "http", "agent", "parallel_map"]);
 const AGENT_METHODS = new Set(["split", "synthesize"]);
 const METHODS: Record<string, FunctionDefinition> = {
   revise: { returns: "candidate", required: 2, max: 4, parameters: [["candidate"], ["frozenSpec"]], named: { file: ["string"], format: ["string"], instruction: ["string"] }, async: true },
@@ -101,6 +102,17 @@ export function namedProviders(flow: FlowProgram): Array<{ provider: string; spa
     for (const arg of node.args) {
       if (arg.name === "provider" && arg.value.kind === "literal" && typeof arg.value.value === "string") found.push({ provider: arg.value.value, span: arg.value.span });
     }
+  }
+  return found.sort((a, b) => a.span.start.offset - b.span.start.offset);
+}
+
+/** The web targets every http(allow = [...]) in the flow names, with where each is. */
+export function httpTargetsOf(flow: FlowProgram): Array<{ target: string; span: SourceSpan }> {
+  const found: Array<{ target: string; span: SourceSpan }> = [];
+  for (const node of flowNodes(flow)) {
+    if (node.kind !== "call" || callName(node.callee) !== "http") continue;
+    const allow = node.args.find(arg => arg.name === "allow")?.value;
+    if (allow?.kind === "array") for (const item of allow.items) if (item.kind === "literal" && typeof item.value === "string") found.push({ target: item.value, span: item.span });
   }
   return found.sort((a, b) => a.span.start.offset - b.span.start.offset);
 }
@@ -202,6 +214,17 @@ export function answerFileProblem(value: string): string | undefined {
   if (!value.includes("{n}")) return 'answer_file needs {n}, the agent\'s number, so that each agent has its own file: "review/notes/agent-{n}.md".';
   const file = value.replace(/\{n\}/g, "1").replace(/\{call\}/g, "1");
   if (/[{}*]/.test(file) || !filePattern(file)) return `'${value}' is not a project-relative file path: use a form such as "review/notes/agent-{n}.md", with {n} (and {call} if wanted), without wildcards, hidden folders or "..".`;
+  return undefined;
+}
+
+/** http(allow = [...]): one web target — an https:// (or http://) scheme, host and port, with an optional
+ * path prefix, and no credentials, query or fragment. The problem, or undefined. */
+export function webTargetProblem(value: string): string | undefined {
+  let url: URL;
+  try { url = new URL(value); } catch { return `'${value}' is not a web address such as "https://staging.example.com".`; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return `'${value}': a web target is an https:// or http:// address.`;
+  if (url.username || url.password) return `'${value}': a web target has no credentials in it.`;
+  if (url.search || url.hash) return `'${value}': a web target is a host and optional path, without a query or fragment.`;
   return undefined;
 }
 
@@ -331,6 +354,15 @@ export function analyzeFlow(flow: FlowProgram, spec: SpecProgram | undefined, op
     if (agentCall && policy !== "agents-v1") error("FLOW_POLICY_CAPABILITY", `'${name}' needs policy = "agents-v1".`, call.span);
     if (name?.startsWith("files.")) for (const arg of call.args) {
       if (arg.value.kind === "literal" && typeof arg.value.value === "string" && !filePattern(arg.value.value)) error("FLOW_FILE_PATTERN", `'${arg.value.value}' is not a project-relative pattern: use forms such as "src/**", "docs/*.md" or "review/notes/**", without hidden folders or "..".`, arg.value.span);
+    }
+    if (name === "http") {
+      const allow = call.args.find((arg) => arg.name === "allow")?.value;
+      if (allow?.kind === "array") for (const element of allow.items) {
+        if (element.kind === "literal" && typeof element.value === "string") {
+          const problem = webTargetProblem(element.value);
+          if (problem) error("FLOW_HTTP_TARGET", problem, element.span);
+        }
+      }
     }
     if (name === "agent") {
       const role = call.args.some((arg) => !arg.name), provider = call.args.some((arg) => arg.name === "provider"), model = call.args.some((arg) => arg.name === "model");

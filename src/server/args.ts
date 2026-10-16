@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -28,6 +28,8 @@ export interface ServerArgs {
   errorReports?: "show" | "on" | "off";
   /** cloud-models: list the Synthesis projects, or allow or deny cloud models for one (id, name or absolute folder). */
   cloudModels?: { action: "list" } | { action: "allow" | "deny"; project: string };
+  /** web-targets: list projects, allow a project the given web origins (replacing its list), or clear them. */
+  webTargets?: { action: "list" } | { action: "allow"; project: string; targets: string[] } | { action: "deny"; project: string };
   /** deps: install a project's dependencies once (npm ci), for agents' npm test; `scripts` runs install scripts too. */
   deps?: { project: string; scripts: boolean };
   /** backup: a name part for the backup; restore: the backup's name (from `backups`). */
@@ -41,7 +43,7 @@ export interface ServerArgs {
   ascii?: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -62,6 +64,7 @@ Commands:
   folders add <path>     Share a folder with connected computers (--label, --allow-create)
   folders remove <id>    Stop sharing a folder
   error-reports [on|off] Show, or turn on or off, sending this server's error reports to the developer
+  web-targets            Web origins a Synthesis project's agents may reach, for authorized testing; allow <project> <url...>|deny <project>
   cloud-models           Synthesis projects, and whether each may send its contract and files to cloud models
                          (allow <project> or deny <project>: its id, name or folder)
   deps <project>         Install a project's dependencies once (npm ci), so agents can run npm test in it
@@ -123,7 +126,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const command = values.help ? "help" : values.version ? "version" : (positionals[0] ?? "help") as ServerCommand;
   if (!commands.includes(command)) throw new CliError(`Unknown command: ${command}`, ExitCode.usage);
   // A project's name may hold spaces: cloud-models takes the rest of the line as it.
-  const extra = command === "revoke-device" || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "deps" ? Infinity : 1;
+  const extra = command === "revoke-device" || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" ? Infinity : 1;
   if (positionals.length > extra) throw new CliError(`Unexpected argument: ${positionals[extra]}`, ExitCode.usage);
   const deviceId = command === "revoke-device" ? positionals[1] : undefined;
   if (command === "revoke-device" && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError("revoke-device needs a device id (see `devices`).", ExitCode.usage);
@@ -147,6 +150,14 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     else if ((action === "allow" || action === "deny") && project) cloudModels = { action, project };
     else throw new CliError("Use: cloud-models, cloud-models allow <project>, or cloud-models deny <project> (its id, name or folder).", ExitCode.usage);
   }
+  let webTargets: ServerArgs["webTargets"];
+  if (command === "web-targets") {
+    const [action = "list", project, ...urls] = positionals.slice(1);
+    if (action === "list" && !project) webTargets = { action };
+    else if (action === "allow" && project && urls.length) webTargets = { action, project, targets: urls };
+    else if (action === "deny" && project) webTargets = { action, project };
+    else throw new CliError("Use: web-targets, web-targets allow <project> <url> [<url>...], or web-targets deny <project> (the project by its id, name or folder).", ExitCode.usage);
+  }
   let deps: ServerArgs["deps"];
   if (command === "deps") {
     const project = positionals.slice(1).join(" ").trim();
@@ -162,14 +173,14 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,
     init: Boolean(values.init), envFile: values["env-file"], llamaRuntimeDir: values["llama-runtime-dir"],
     drainTimeoutSec: integer(values["drain-timeout"] ?? values.timeout, values.timeout !== undefined ? "timeout" : "drain-timeout", 0, 86_400),
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
-    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}), ...(cloudModels ? { cloudModels } : {}), ...(deps ? { deps } : {}),
+    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}), ...(cloudModels ? { cloudModels } : {}), ...(webTargets ? { webTargets } : {}), ...(deps ? { deps } : {}),
     ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {}),
     ...(values["no-color"] ? { noColor: true } : {}), ...(values.ascii ? { ascii: true } : {}),
     ...(["update", "rollback", "adopt"].includes(command) ? { update: { check: Boolean(values.check), wait: Boolean(values.wait),
