@@ -518,7 +518,7 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     if (path === '/synthesis/runs/swarm/agents') return { counts: run.agents, items };
     if (path === '/synthesis/runs/swarm/agents/0') return { ...items[0], protocol: "json", final: "Wrote review/notes/a.md: src/a.ts:12", turns: [
       { type: "tool", content: '{"tool":"file.read","arguments":{"path":"src/a.ts"}}' }, { type: "result", content: "file.read: succeeded" }] };
-    if (path === '/synthesis/runs/swarm/agents/1') return { ...items[1], protocol: "json", turns: [{ type: "tool", content: '{"tool":"file.list","arguments":{}}' }] };
+    if (path === '/synthesis/runs/swarm/agents/1') return { ...items[1], protocol: "json", turns: [] };
     if (path.endsWith('/diff')) return { canApply: true, files: [{ path: 'review/notes/old.md', before: 'stale', after: null }] };
     throw new Error(`Unexpected request ${path}`);
   });
@@ -539,6 +539,7 @@ test("Agents lists a run's agents with their model, status and files, and shows 
     // Beside the list: the first that failed, until one is chosen.
     await until(() => /Agent 2/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'failed agent shown first');
     assert.match(doc.querySelector('.synthesis-agent-detail header').textContent, /Agent 2Local models · Qwen2\.5-0\.5B-Instruct-GGUF · Failed/);
+    assert.match(doc.querySelector('.synthesis-agent-detail').textContent, /No action ran\./, "a failed agent's empty log is not 'No steps yet'");
     assert.equal(second.getAttribute('aria-selected'), 'true');
     first.click();
     await until(() => /Agent 1/.test(doc.querySelector('.synthesis-agent-detail header')?.textContent ?? ''), 'agent steps');

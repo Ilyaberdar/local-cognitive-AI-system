@@ -81,7 +81,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
         {view.error ? <p className="synthesis-agent-detail__error status-fail">{view.error}</p> : null}
         <ol>{view.turns.map((turn, index) => <li key={index} className={`synthesis-agent-turn is-${turn.type}${turn.ok === false ? " is-refused" : ""}`}><span>{turn.type === "tool" ? "Action" : turn.type === "result" ? turn.ok === false ? "Refused" : "Result" : "Correction"}</span><pre>{turn.content}</pre></li>)}</ol>
         {view.final ? <div className="synthesis-agent-detail__final"><span>Answer</span><pre>{view.final}</pre></div> : null}
-        {!view.turns.length && !view.final ? <p className="synthesis-agent-detail__task">{view.status === "queued" ? "Waiting for its turn." : "No steps yet."}</p> : null}
+        {!view.turns.length && !view.final ? <p className="synthesis-agent-detail__task">{view.status === "queued" ? "Waiting for its turn." : view.status === "running" ? "No steps yet." : "No action ran."}</p> : null}
       </section> : <div className="synthesis-agent-detail synthesis-empty">Loading the agent's steps…</div>}
     </div> : !error ? <div className="synthesis-empty">{live ? "Agents appear here as the flow starts them." : "This run started no agents."}</div> : null}
   </div>;
