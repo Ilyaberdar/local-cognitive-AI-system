@@ -611,7 +611,13 @@ export class SynthesisService {
             const allowList = (project.webTargets ?? []).map(parseTarget);
             const refused = wanted.filter(target => !targetWithin(parseTarget(target), allowList)).map(target => targetLabel(parseTarget(target)));
             if (refused.length) throw new SynthesisError(this.webConsentRefusal(project, refused));
-            httpClient ??= this.services.agents.httpClient?.(MAX_HTTP_REQUESTS) ?? new AgentHttpClient(MAX_HTTP_REQUESTS);
+            // Re-checked before each request: if the owner turns web access off mid-run, it stops at once.
+            const consent = async (want: readonly string[]) => {
+              const current = ((await this.project(record.projectId)).webTargets ?? []).map(parseTarget);
+              const gone = want.filter(target => { try { return !targetWithin(parseTarget(target), current); } catch { return true; } });
+              if (gone.length) throw new Error(`Web access is no longer allowed for ${gone.map(target => { try { return targetLabel(parseTarget(target)); } catch { return target; } }).join(", ")}: the project's owner changed its web targets.`);
+            };
+            httpClient ??= this.services.agents.httpClient?.(MAX_HTTP_REQUESTS) ?? new AgentHttpClient(MAX_HTTP_REQUESTS, undefined, consent);
           }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});

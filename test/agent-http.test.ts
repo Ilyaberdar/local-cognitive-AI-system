@@ -5,7 +5,9 @@ import { AddressInfo } from "node:net";
 import { AgentHttpClient, isBlockedAddress, parseTarget } from "../src/synthesis/agents/AgentHttp";
 
 test("the address guard refuses this machine, private networks, link-local and metadata; a public address passes", () => {
-  for (const address of ["127.0.0.1", "0.0.0.0", "10.1.2.3", "172.16.5.6", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fe80::1", "fc00::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"]) {
+  for (const address of ["127.0.0.1", "0.0.0.0", "10.1.2.3", "172.16.5.6", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fe80::1", "fc00::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1",
+    // IPv4-mapped/compatible in hex and 6to4 embed an IPv4 the OS would reach: blocked too.
+    "::ffff:7f00:1", "::7f00:1", "2002:7f00:1::", "2002:a9fe:a9fe::", "64:ff9b::7f00:1"]) {
     assert.equal(isBlockedAddress(address), true, address);
   }
   for (const address of ["1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"]) assert.equal(isBlockedAddress(address), false, address);
@@ -77,6 +79,18 @@ test("a redirect is followed only within the allowlist; one that leaves it stops
     assert.equal(ok.body, "arrived");
     assert.deepEqual(ok.redirects, [`${srv.origin}/v1/next`]);
     await assert.rejects(client.request({ method: "GET", url: `${srv.origin}/v1/out` }, allow), /redirect left the allowed targets/);
+  } finally { await srv.close(); }
+});
+
+test("a per-request consent check stops in-flight requests the moment web access is turned off", async () => {
+  const srv = await server((_req, res) => res.end("ok"));
+  try {
+    let allowed = true;
+    const client = new AgentHttpClient(10, toLoopback, async () => { if (!allowed) throw new Error("Web access is no longer allowed for this target: the project's owner changed its web targets."); });
+    const list = [srv.origin];
+    assert.equal((await client.request({ method: "GET", url: `${srv.origin}/` }, list)).body, "ok");
+    allowed = false;
+    await assert.rejects(client.request({ method: "GET", url: `${srv.origin}/` }, list), /no longer allowed/);
   } finally { await srv.close(); }
 });
 

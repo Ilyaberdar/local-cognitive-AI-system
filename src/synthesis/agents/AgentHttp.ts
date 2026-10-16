@@ -39,17 +39,42 @@ const DROPPED_HEADER = /^(host|content-length|connection|transfer-encoding|keep-
 const blocked = new net.BlockList();
 for (const [net4, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
   ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4]] as [string, number][]) blocked.addSubnet(net4, bits, "ipv4");
-for (const [net6, bits] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32], ["64:ff9b::", 96]] as [string, number][]) blocked.addSubnet(net6, bits, "ipv6");
+for (const [net6, bits] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32]] as [string, number][]) blocked.addSubnet(net6, bits, "ipv6");
+// IPv4-mapped (::ffff:0:0/96) is not added as a subnet: net.BlockList.check cross-matches every IPv4 input
+// against it, which would block all IPv4. Embedded-IPv4 forms are decoded and checked as IPv4 instead.
 
-/** An IPv4-mapped IPv6 address (::ffff:a.b.c.d) as its IPv4; otherwise the address unchanged. */
-function unmap(address: string): { address: string; family: 4 | 6 } {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
-  if (mapped) return { address: mapped[1]!, family: 4 };
-  return { address, family: net.isIPv6(address) ? 6 : 4 };
+/** The IPv4 an IPv6 address embeds, if any — IPv4-mapped (::ffff:a.b.c.d / ::ffff:HHHH:HHHH), -compatible
+ * (::a.b.c.d), 6to4 (2002:V4::) and NAT64 (64:ff9b::V4, 64:ff9b:1::V4) — as dotted decimal. These route
+ * to the embedded IPv4, so a hex form such as ::ffff:7f00:1 (127.0.0.1) must be checked as that IPv4. */
+function embeddedIpv4(address: string): string | undefined {
+  if (!net.isIPv6(address)) return undefined;
+  const parts = address.split("%")[0]!.split("::");
+  if (parts.length > 2) return undefined;
+  const head = parts[0] ? parts[0].split(":") : [], tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
+  // A trailing a.b.c.d counts as two hextets; expand :: to eight groups in all.
+  const expand = (groups: string[]): number[] => groups.flatMap(group => {
+    const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(group);
+    if (dotted) { const b = dotted.slice(1).map(Number); return [(b[0]! << 8) | b[1]!, (b[2]! << 8) | b[3]!]; }
+    return [parseInt(group, 16)];
+  });
+  let h: number[];
+  try { const h0 = expand(head), h1 = expand(tail); h = parts.length === 2 ? [...h0, ...Array(8 - h0.length - h1.length).fill(0), ...h1] : h0; }
+  catch { return undefined; }
+  if (h.length !== 8 || h.some(group => !Number.isInteger(group) || group < 0 || group > 0xffff)) return undefined;
+  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && (h[5] === 0xffff || h[5] === 0)) {
+    if (h[6] === 0 && (h[7] === 0 || h[7] === 1)) return undefined; // :: and ::1 are plain IPv6, handled above.
+    return v4(h[6]!, h[7]!);
+  }
+  if (h[0] === 0x2002) return v4(h[1]!, h[2]!); // 6to4
+  if (h[0] === 0x64 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && ((h[4] === 0 && h[5] === 0) || true)) return v4(h[6]!, h[7]!); // NAT64 64:ff9b::/96 and 64:ff9b:1::/48
+  return undefined;
 }
 export function isBlockedAddress(address: string): boolean {
-  const { address: ip, family } = unmap(address);
-  return !net.isIP(ip) || blocked.check(ip, family === 4 ? "ipv4" : "ipv6");
+  if (!net.isIP(address)) return true;
+  const v4 = net.isIPv6(address) ? embeddedIpv4(address) : address;
+  if (v4 && net.isIPv4(v4)) return blocked.check(v4, "ipv4");
+  return net.isIPv6(address) ? blocked.check(address, "ipv6") : blocked.check(address, "ipv4");
 }
 
 /** A declared target: its scheme, host, port and, when the pattern has a path, the path it must start
@@ -128,9 +153,15 @@ function headersOf(raw: http.IncomingHttpHeaders): Record<string, string> {
 export class AgentHttpClient implements HttpHost {
   private left: number;
   private readonly hooks: Hooks;
-  constructor(budget: number, hooks?: Partial<Hooks>) { this.left = budget; this.hooks = { ...defaultHooks, ...hooks }; }
+  /** Re-checks, before each request, that the project still allows the agent's targets: turning web
+   * access off takes effect at once, instead of in-flight agents keeping it. Throws when it is gone. */
+  private readonly consent?: (allow: readonly string[]) => Promise<void>;
+  constructor(budget: number, hooks?: Partial<Hooks>, consent?: (allow: readonly string[]) => Promise<void>) {
+    this.left = budget; this.hooks = { ...defaultHooks, ...hooks }; this.consent = consent;
+  }
   async request(input: HttpInput, allow: readonly string[], signal?: AbortSignal): Promise<HttpResult> {
     if (this.left <= 0) throw new Error("This run has used its budget of agent HTTP requests.");
+    await this.consent?.(allow);
     const method = String(input.method ?? "GET").toUpperCase();
     if (!METHODS.has(method)) throw new Error(`method is one of ${[...METHODS].join(", ")}.`);
     const targets = allow.map(parseTarget);

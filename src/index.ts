@@ -15,6 +15,7 @@ import { Logger } from "./utils/Logger";
 import { formatStartupSummary } from "./utils/startupSummary";
 import { DataRootLock, RuntimeKind } from "./runtime/db/DataRootLock";
 import { appVersion } from "./utils/appVersion";
+import { shellQuoteArg } from "./utils/shellQuote";
 import { createDrainGate } from "./api/drainGate";
 import { processRunRegistry } from "./api/ProcessRunRegistry";
 import { WorkflowRunner } from "./workflows/WorkflowRunner";
@@ -114,7 +115,9 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     // A server has no Cloud models switch: its owner allows them with a command (the same Synthesis
     // service lives through runtime rebuilds, so this is set once).
     runtime.synthesis.cloudConsentHint = project => `Allow them on the server: sudo local-cognitive-server cloud-models allow ${project.id}`;
-    runtime.synthesis.webConsentHint = (project, targets) => `Allow them on the server: sudo local-cognitive-server web-targets allow ${project.id} ${targets.join(" ")}`;
+    // A target's path may hold characters a shell would act on; each is shell-quoted so the suggested
+    // command is safe to paste (a project id is a UUID, so it needs none).
+    runtime.synthesis.webConsentHint = (project, targets) => `Allow them on the server: sudo local-cognitive-server web-targets allow ${project.id} ${targets.map(shellQuoteArg).join(" ")}`;
     try { host = openHostServices(database!, config, runtimeManager, sessionIndexStore); }
     catch (error) { failed(error); await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   }
