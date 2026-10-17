@@ -91,7 +91,7 @@ async function fixture(t: TestContext, options: {script: Script; delay?: (task: 
   } as unknown as LLMService;
   const service = new SynthesisService(data, {projects, models: {listAllModels: async () => []}, loadModel: async () => undefined, llm,
     providers: () => [descriptor("deepseek")], catalog: {listAll: async () => []},
-    agents: {llm: agentLlm, ...(options.httpHooks ? {httpClient: (budget: number) => new AgentHttpClient(budget, options.httpHooks)} : {})}});
+    agents: {llm: agentLlm, ...(options.httpHooks ? {httpClient: budget => new AgentHttpClient(budget, options.httpHooks)} : {})}});
   await service.init();
   await fs.mkdir(path.join(root, "Synthesis", "Review"), {recursive: true});
   await fs.writeFile(path.join(root, "Synthesis", "Review", "Review.lcspec"), spec);

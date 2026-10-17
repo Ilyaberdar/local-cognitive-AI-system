@@ -33,7 +33,7 @@ interface Services {
   catalog?: {listAll(providerId?: string): Promise<ProviderModel[]>};
   providers?: () => ProviderDescriptor[];
   /** The model service agents run on (agents-v1): their loops call it directly. */
-  agents?: {llm: LLMService; httpClient?: (budget: number) => import("./agents/AgentHttp").HttpHost};
+  agents?: {llm: LLMService; httpClient?: (budget: RequestBudget) => import("./agents/AgentHttp").HttpHost};
   /** Where Tests gates run (a sandbox and a work folder); tests of this service replace them. */
   checks?: Omit<CheckOptions, "signal">;
 }
@@ -622,7 +622,8 @@ export class SynthesisService {
             };
             // One budget for the whole run, drawn down by http.request and the terminal's egress alike.
             httpBudget ??= new RequestBudget(MAX_HTTP_REQUESTS);
-            httpClient ??= this.services.agents.httpClient?.(MAX_HTTP_REQUESTS) ?? new AgentHttpClient(httpBudget, undefined, consent);
+            // The injected client (a test seam) gets the SAME run budget, so it and the egress proxy share one count.
+            httpClient ??= this.services.agents.httpClient?.(httpBudget) ?? new AgentHttpClient(httpBudget, undefined, consent);
           }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
