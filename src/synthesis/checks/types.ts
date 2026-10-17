@@ -39,10 +39,18 @@ export interface CheckFiles {
   suite: Record<string, string>;
 }
 
+/** A single loopback endpoint a sandboxed command may be let out to (an egress proxy): the sandbox's
+ * only way to the network, so the proxy, not the tool, enforces where it may go. */
+export interface EgressEndpoint { host: string; port: number }
+
 /** Runs a command in a sandbox: no network, writes only inside the work folder, nothing from the
- * user's home or the app's data. `unavailable` says why it cannot run here (the check is then Unknown). */
+ * user's home or the app's data. `unavailable` says why it cannot run here (the check is then Unknown).
+ * `egress`, when given, is a loopback proxy the command may reach and nothing else on the network. */
 export interface SandboxProvider {
   name: string;
   unavailable(): Promise<string | undefined>;
-  wrap(executable: string, args: string[], workDir: string, readable: string[]): { executable: string; args: string[]; env: NodeJS.ProcessEnv };
+  wrap(executable: string, args: string[], workDir: string, readable: string[], egress?: EgressEndpoint): { executable: string; args: string[]; env: NodeJS.ProcessEnv };
+  /** Whether a sandboxed command can be let out to one loopback proxy (and nothing else) on this
+   * platform. When absent or false, a terminal runs with no network, as before, even with the http right. */
+  egressSupported?: boolean;
 }

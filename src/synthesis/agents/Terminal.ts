@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { SandboxProvider } from "../checks/types";
+import type { EgressProxy } from "./AgentHttpProxy";
 import { runCommand } from "../../utils/runCommand";
 
 /** What an agent's terminal may run: build and test tools, read-only git, search and listing. */
@@ -32,7 +33,18 @@ export interface TerminalHost {
   workRoot: string;
   /** Whether the copy may see the project's git history: not when the contract has hidden tests, which history could hold. */
   git: boolean;
+  /** Starts a loopback egress proxy for an agent whose http right names web targets, so its terminal may
+   * reach only those (the same allowlist, owner consent and run budget as http.request). Set only when the
+   * project allows web access; a terminal has no network without it, as before. */
+  egress?(allow: readonly string[]): Promise<EgressProxy>;
 }
+
+/** The proxy env a sandboxed tool reads to send its web requests through the egress proxy and nowhere
+ * else (curl, git and python honour different casings; nothing is exempted). */
+const proxyEnv = (endpoint: { host: string; port: number }): Record<string, string> => {
+  const url = `http://${endpoint.host}:${endpoint.port}`;
+  return { HTTP_PROXY: url, HTTPS_PROXY: url, ALL_PROXY: url, http_proxy: url, https_proxy: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
+};
 
 const searchPath = () => [...new Set([...(process.env.PATH ?? "").split(path.delimiter).filter(dir => path.isAbsolute(dir)), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])];
 const executableAt = async (file: string) => { try { await fs.access(file, constants.X_OK); return (await fs.stat(file)).isFile(); } catch { return false; } };
@@ -99,7 +111,16 @@ export class AgentTerminal {
   private linked: string[] = [];
   /** How many copies the agent has had: a broken one is replaced by a new folder, never reused. */
   private generation = 0;
-  constructor(private readonly host: TerminalHost, private readonly view: TerminalView, private readonly name: string, private readonly allowed: string[]) {}
+  /** The agent's egress proxy, started once when it first runs a command and the project allows the web. */
+  private proxy?: Promise<EgressProxy>;
+  constructor(private readonly host: TerminalHost, private readonly view: TerminalView, private readonly name: string, private readonly allowed: string[], private readonly httpTargets: readonly string[] = []) {}
+
+  /** The loopback egress proxy this agent's commands go out through, or undefined when it has no web
+   * targets or the platform's sandbox cannot route to one (the terminal then runs with no network). */
+  private egress(): Promise<EgressProxy> | undefined {
+    if (!this.host.egress || !this.host.sandbox.egressSupported || !this.httpTargets.length) return undefined;
+    return (this.proxy ??= this.host.egress(this.httpTargets));
+  }
 
   async run(command: string, args: string[], cwd: string, timeoutSeconds: number, signal?: AbortSignal): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> {
     if (!(TERMINAL_COMMANDS as readonly string[]).includes(command) || !this.allowed.includes(command)) {
@@ -142,11 +163,13 @@ export class AgentTerminal {
     // group, from inside the sandbox while the group is still its own (never a group the app guesses).
     const token = `LC_TERMINAL_DONE_${randomBytes(9).toString("hex")}`;
     const done = new RegExp(`\\n${token}:(\\d+)\\n$`);
-    const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", ENDS_ITS_GROUP, "sh", String(CPU_SECONDS), token, executable, ...args], work, readable);
+    // When the project allows the web, the command goes out only through this agent's egress proxy.
+    const proxy = await this.egress();
+    const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", ENDS_ITS_GROUP, "sh", String(CPU_SECONDS), token, executable, ...args], work, readable, proxy?.endpoint);
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
       // npm's scripts start under an absolute /bin/sh: looking sh up through the node_modules/.bin of every
       // parent folder (which the macOS sandbox refuses with EPERM, ending the search) would fail them.
-      { env: { ...wrapped.env, ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
+      { env: { ...wrapped.env, ...(proxy ? proxyEnv(proxy.endpoint) : {}), ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
     const status = done.exec(result.stdout);
     const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
     return { exitCode: status ? Number(status[1]) : result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout.replace(done, "\n"))), stderr: clip(hide(result.stderr)) };
@@ -158,6 +181,8 @@ export class AgentTerminal {
   async dispose(): Promise<void> {
     const copy = await this.copy?.catch(() => undefined);
     if (copy) await removeInSandbox(this.host.sandbox, copy);
+    const proxy = await this.proxy?.catch(() => undefined);
+    if (proxy) await proxy.close().catch(() => undefined);
   }
 
   /** The copy, made once: the files the agent may read as the run sees them (one version for all its

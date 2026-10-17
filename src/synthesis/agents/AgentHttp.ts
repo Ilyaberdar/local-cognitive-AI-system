@@ -99,7 +99,7 @@ export function targetLabel(t: Target): string { return `${t.scheme}//${t.host}$
 
 /** Whether a URL is one the allowlist permits: same scheme, host and port, and the path under the
  * target's prefix. A target without a path allows the whole host. */
-function allowed(url: URL, targets: Target[]): boolean {
+export function allowed(url: URL, targets: Target[]): boolean {
   const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
   const host = url.hostname.toLowerCase(), path = url.pathname;
   return targets.some(target => target.scheme === url.protocol && target.host === host && target.port === port &&
@@ -108,26 +108,36 @@ function allowed(url: URL, targets: Target[]): boolean {
 
 /** One request, with the address resolved and pinned so that the socket connects to exactly the address
  * this check passed: a name cannot resolve to an allowed address here and a blocked one at connect time. */
-interface Hooks { resolve(host: string): Promise<{ address: string; family: number }[]>; blocked(address: string): boolean }
-const defaultHooks: Hooks = { resolve: host => dns.lookup(host, { all: true }), blocked: isBlockedAddress };
+export interface Hooks { resolve(host: string): Promise<{ address: string; family: number }[]>; blocked(address: string): boolean }
+export const defaultHooks: Hooks = { resolve: host => dns.lookup(host, { all: true }), blocked: isBlockedAddress };
 
-async function once(url: URL, method: string, headers: Record<string, string>, body: string | undefined, signal: AbortSignal, hooks: Hooks): Promise<{ status: number; statusText: string; location?: string; headers: Record<string, string>; body: string; truncated: boolean; contentType: string }> {
-  const family = net.isIP(url.hostname);
-  const records = family ? [{ address: url.hostname, family: family as 4 | 6 }] : await hooks.resolve(url.hostname);
-  if (!records.length) throw new Error(`${url.hostname} did not resolve.`);
+/** A name resolved to the one address a connection is pinned to, with a `lookup` that always returns it:
+ * every address the name gives must pass the block check, and the first is pinned, so the socket connects
+ * to exactly what was checked. Shared by the engine's client and the terminal's egress proxy. */
+export interface Pinned { address: string; family: 4 | 6; lookup: (hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => void }
+export async function resolveAndPin(hostname: string, hooks: Hooks): Promise<Pinned> {
+  const family = net.isIP(hostname);
+  const records = family ? [{ address: hostname, family: family as 4 | 6 }] : await hooks.resolve(hostname);
+  if (!records.length) throw new Error(`${hostname} did not resolve.`);
   // Every address a name gives must be allowed: one blocked address among them is refused, so a name
   // cannot mix an allowed and a blocked answer.
-  for (const record of records) if (hooks.blocked(record.address)) throw new Error(`${url.hostname} resolves to ${record.address}, a private, loopback, link-local or metadata address agents may not reach.`);
+  for (const record of records) if (hooks.blocked(record.address)) throw new Error(`${hostname} resolves to ${record.address}, a private, loopback, link-local or metadata address agents may not reach.`);
   const pinned = records[0]!; const pinnedFamily = pinned.family === 6 || net.isIPv6(pinned.address) ? 6 : 4;
-  // The socket connects to the one address this check passed; a name cannot re-resolve mid-request.
   const lookup = (_hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
     if (options && typeof options === "object" && options.all) callback(null, [{ address: pinned.address, family: pinnedFamily }]);
     else callback(null, pinned.address, pinnedFamily);
   };
+  return { address: pinned.address, family: pinnedFamily, lookup };
+}
+
+async function once(url: URL, method: string, headers: Record<string, string>, body: string | undefined, signal: AbortSignal, hooks: Hooks): Promise<{ status: number; statusText: string; location?: string; headers: Record<string, string>; body: string; truncated: boolean; contentType: string }> {
+  const literal = net.isIP(url.hostname);
+  // The socket connects to the one address this check passed; a name cannot re-resolve mid-request.
+  const { lookup } = await resolveAndPin(url.hostname, hooks);
   const agent = new (url.protocol === "https:" ? https : http).Agent({ lookup: lookup as unknown as typeof dnsLookup });
   const client = url.protocol === "https:" ? https : http;
   return await new Promise((resolve, reject) => {
-    const request = client.request(url, { method, headers, agent, signal, servername: family ? undefined : url.hostname }, response => {
+    const request = client.request(url, { method, headers, agent, signal, servername: literal ? undefined : url.hostname }, response => {
       const status = response.statusCode ?? 0, location = response.headers.location;
       const contentType = String(response.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
       if ([301, 302, 303, 307, 308].includes(status)) { response.resume(); resolve({ status, statusText: response.statusMessage ?? "", location: typeof location === "string" ? location : undefined, headers: {}, body: "", truncated: false, contentType }); return; }
@@ -148,19 +158,27 @@ function headersOf(raw: http.IncomingHttpHeaders): Record<string, string> {
   return out;
 }
 
+/** The web requests left for a whole run. One budget is shared by the engine's client (http.request) and
+ * the terminal's egress proxy, so a run draws down one count whichever way it reaches the web. */
+export class RequestBudget {
+  constructor(private left: number) {}
+  get remaining(): number { return this.left; }
+  take(): boolean { if (this.left <= 0) return false; this.left--; return true; }
+}
+
 /** The engine's HTTP for an agent, with a budget for the whole run: each request is checked against the
  * agent's own allowlist (a subset of what the project allows), resolved, pinned and bounded. */
 export class AgentHttpClient implements HttpHost {
-  private left: number;
+  private readonly budget: RequestBudget;
   private readonly hooks: Hooks;
   /** Re-checks, before each request, that the project still allows the agent's targets: turning web
    * access off takes effect at once, instead of in-flight agents keeping it. Throws when it is gone. */
   private readonly consent?: (allow: readonly string[]) => Promise<void>;
-  constructor(budget: number, hooks?: Partial<Hooks>, consent?: (allow: readonly string[]) => Promise<void>) {
-    this.left = budget; this.hooks = { ...defaultHooks, ...hooks }; this.consent = consent;
+  constructor(budget: number | RequestBudget, hooks?: Partial<Hooks>, consent?: (allow: readonly string[]) => Promise<void>) {
+    this.budget = typeof budget === "number" ? new RequestBudget(budget) : budget; this.hooks = { ...defaultHooks, ...hooks }; this.consent = consent;
   }
   async request(input: HttpInput, allow: readonly string[], signal?: AbortSignal): Promise<HttpResult> {
-    if (this.left <= 0) throw new Error("This run has used its budget of agent HTTP requests.");
+    if (this.budget.remaining <= 0) throw new Error("This run has used its budget of agent HTTP requests.");
     await this.consent?.(allow);
     const method = String(input.method ?? "GET").toUpperCase();
     if (!METHODS.has(method)) throw new Error(`method is one of ${[...METHODS].join(", ")}.`);
@@ -174,7 +192,7 @@ export class AgentHttpClient implements HttpHost {
     const { headers, secret } = cleanHeaders(input.headers);
     const shownHeaders: Record<string, string> = {};
     for (const [name, value] of Object.entries(headers)) shownHeaders[name] = secret.includes(name) ? "set" : value;
-    this.left--;
+    this.budget.take();
     const started = Date.now();
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS * (MAX_REDIRECTS + 1));
     const merged = signal ? AbortSignal.any([signal, timeout]) : timeout;

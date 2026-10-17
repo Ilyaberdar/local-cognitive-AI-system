@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { SandboxProvider } from "./types";
+import type { EgressEndpoint, SandboxProvider } from "./types";
 
 /** The whole environment of a sandboxed command: nothing from the app's own (keys, tokens, PATH). */
 export function sandboxEnv(executable: string, workDir: string): NodeJS.ProcessEnv {
@@ -35,7 +35,7 @@ const ancestors = (file: string) => {
 /** The macOS profile. The sandbox matches resolved paths (/var is /private/var), so every path is a
  * realpath. Unfiltered rules are per-operation defaults; filtered ones are last-match-wins, so the
  * exceptions for the work folder and the tools follow the deny of the home folder. */
-export function darwinProfile(workDir: string, readable: string[]): string {
+export function darwinProfile(workDir: string, readable: string[], egress?: EgressEndpoint): string {
   const work = real(workDir), home = real(os.homedir());
   const reads = [...new Set([work, ...readable.map(real).filter(openable)])];
   const hidden = [home, "/Users", "/private/var/folders", "/private/tmp", "/private/var/tmp", "/Volumes"];
@@ -46,6 +46,9 @@ export function darwinProfile(workDir: string, readable: string[]): string {
     "(version 1)",
     "(allow default)",
     "(deny network*)",
+    // The terminal's egress, when the project allows it, goes out only through a loopback proxy on this one
+    // port (which enforces the same allowlist as http.request); every other network connection stays denied.
+    ...(egress ? [`(allow network-outbound (remote ip "localhost:${egress.port}"))`] : []),
     // No way out through other processes: no system services (LaunchServices would start an app outside
     // the sandbox, as `open` does), no Apple Events (`osascript` driving Terminal), no signals to others.
     "(deny mach-lookup)",
@@ -114,11 +117,13 @@ const darwin: SandboxProvider = {
     const reason = await isolated("sandbox-exec", darwin);
     return reason ? `sandbox-exec does not isolate on this Mac: ${reason}. Nothing runs without a sandbox.` : undefined;
   },
-  wrap: (executable, args, workDir, readable) => ({
+  wrap: (executable, args, workDir, readable, egress) => ({
     executable: "/usr/bin/sandbox-exec",
-    args: ["-p", darwinProfile(workDir, readable), executable, ...args],
+    args: ["-p", darwinProfile(workDir, readable, egress), executable, ...args],
     env: sandboxEnv(executable, workDir)
-  })
+  }),
+  // sandbox-exec filters by rule rather than a namespace, so a single loopback port can be opened precisely.
+  egressSupported: true
 };
 
 const onPath = (name: string) => [...(process.env.PATH ?? "").split(path.delimiter), "/usr/bin", "/bin"]

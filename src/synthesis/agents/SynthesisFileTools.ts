@@ -403,7 +403,7 @@ export class SynthesisFileTools extends OperationExecutor {
         for (const file of Object.keys(files)) if (!this.mayRead(file)) delete files[file];
         return {files, removed: removed.filter(file => this.mayRead(file))};
       }
-    }, `agent-${this.team.me.agent}`, this.rights.terminal);
+    }, `agent-${this.team.me.agent}`, this.rights.terminal, this.rights.http ?? []);
     const result = await this.shell.run(command, args, cwd === "." ? "" : this.path(cwd), timeoutSeconds, signal);
     return {tool: "terminal", ok: result.exitCode === 0 && !result.timedOut, output: JSON.stringify(result),
       metadata: {operation: "run", filePath: [command, ...args].join(" ").slice(0, 200), exitCode: result.exitCode}};

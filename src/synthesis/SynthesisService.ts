@@ -17,7 +17,8 @@ import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "./eva
 import { CheckOptions, contractChecksVersion, references, runCheck } from "./checks";
 import { matchesGlob } from "./checks/architecture";
 import { AgentSpec, AgentSummary, CandidateStore, checkedLlm, gatedLlm, httpPermission, MAX_TASK_CHARS, Permission, permission, runAgents, SynthesisFileTools, splitGoal, synthesizeResults, TaskResult, terminalPermission } from "./agents";
-import { AgentHttpClient, parseTarget, targetLabel, targetWithin } from "./agents/AgentHttp";
+import { AgentHttpClient, parseTarget, RequestBudget, targetLabel, targetWithin } from "./agents/AgentHttp";
+import { createEgressProxy } from "./agents/AgentHttpProxy";
 import { platformSandbox } from "./checks/sandbox";
 import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
@@ -438,7 +439,7 @@ export class SynthesisService {
     const roles = new Set<object>();
     // What only this run made: rights, agents' descriptions and parallel_map's results.
     const permissions = new WeakSet<object>(), agentSpecs = new WeakSet<object>(), resultLists = new WeakSet<object>();
-    let mapCalls = 0, httpClient: import("./agents/AgentHttp").HttpHost | undefined;
+    let mapCalls = 0, httpClient: import("./agents/AgentHttp").HttpHost | undefined, httpBudget: RequestBudget | undefined;
     let pendingSave: NodeJS.Timeout | undefined;
     const saveSoon = () => { pendingSave ??= setTimeout(() => { pendingSave = undefined; void this.save(record).catch(() => undefined); }, 1000); pendingSave.unref(); };
     const evaluationSignatures: string[] = [];
@@ -606,18 +607,22 @@ export class SynthesisService {
           }
           // Agents with the http right may reach only web targets the project allows (its owner sets them).
           const wanted = [...new Set(agents.flatMap(agent => agent.rights.http ?? []))];
+          // Re-checked before each web request, by http.request and the terminal's egress proxy alike: if
+          // the owner turns web access off mid-run, it stops at once instead of in-flight agents keeping it.
+          let consent: ((want: readonly string[]) => Promise<void>) | undefined;
           if (wanted.length) {
             const project = await this.project(record.projectId);
             const allowList = (project.webTargets ?? []).map(parseTarget);
             const refused = wanted.filter(target => !targetWithin(parseTarget(target), allowList)).map(target => targetLabel(parseTarget(target)));
             if (refused.length) throw new SynthesisError(this.webConsentRefusal(project, refused));
-            // Re-checked before each request: if the owner turns web access off mid-run, it stops at once.
-            const consent = async (want: readonly string[]) => {
+            consent = async (want: readonly string[]) => {
               const current = ((await this.project(record.projectId)).webTargets ?? []).map(parseTarget);
               const gone = want.filter(target => { try { return !targetWithin(parseTarget(target), current); } catch { return true; } });
               if (gone.length) throw new Error(`Web access is no longer allowed for ${gone.map(target => { try { return targetLabel(parseTarget(target)); } catch { return target; } }).join(", ")}: the project's owner changed its web targets.`);
             };
-            httpClient ??= this.services.agents.httpClient?.(MAX_HTTP_REQUESTS) ?? new AgentHttpClient(MAX_HTTP_REQUESTS, undefined, consent);
+            // One budget for the whole run, drawn down by http.request and the terminal's egress alike.
+            httpBudget ??= new RequestBudget(MAX_HTTP_REQUESTS);
+            httpClient ??= this.services.agents.httpClient?.(MAX_HTTP_REQUESTS) ?? new AgentHttpClient(httpBudget, undefined, consent);
           }
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
@@ -634,7 +639,11 @@ export class SynthesisService {
             ...(wanted.length && httpClient ? {http: httpClient} : {}),
             // History is out of the copies when the contract has hidden tests: it could hold them.
             terminal: {sandbox, workRoot: path.join(this.directory, "..", "agents", record.id, "terminal", `map-${call}`),
-              git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden)},
+              git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden),
+              // An agent with both a terminal and the http right reaches its web targets through a loopback
+              // proxy, when the sandbox can route to one; it enforces the same allowlist, consent and budget.
+              ...(wanted.length && sandbox.egressSupported && httpBudget && consent
+                ? {egress: (allow: readonly string[]) => createEgressProxy({allow, budget: httpBudget!, consent: consent!})} : {})},
             admit: async spec => { await this.provider(record, spec.model.providerId); },
             update: current => { record.agentRuns = [...earlier, ...current]; record.agents = counts(record.agentRuns); saveSoon(); }});
           for (const summary of summaries) { record.usage.calls += summary.steps; record.usage.inputTokens += summary.inputTokens; record.usage.outputTokens += summary.outputTokens; }
