@@ -11,11 +11,11 @@ import { createEgressProxy, EgressOptions } from "../src/synthesis/agents/AgentH
 const toLoopback = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
 
 /** An upstream HTTP server on loopback; it records the last request so passthrough can be checked. */
-async function upstream(): Promise<{ port: number; last: { url?: string; method?: string; auth?: string; body?: string }; close: () => Promise<void> }> {
-  const last: { url?: string; method?: string; auth?: string; body?: string } = {};
+async function upstream(): Promise<{ port: number; last: { url?: string; method?: string; auth?: string; host?: string; body?: string }; close: () => Promise<void> }> {
+  const last: { url?: string; method?: string; auth?: string; host?: string; body?: string } = {};
   const srv = http.createServer((req, res) => {
     const chunks: Buffer[] = []; req.on("data", c => chunks.push(c)); req.on("end", () => {
-      last.url = req.url; last.method = req.method; last.auth = req.headers.authorization; last.body = Buffer.concat(chunks).toString();
+      last.url = req.url; last.method = req.method; last.auth = req.headers.authorization; last.host = req.headers.host; last.body = Buffer.concat(chunks).toString();
       res.end("ARRIVED");
     });
   });
@@ -72,6 +72,16 @@ test("a plain request is forwarded only to an allowlisted origin and path; the t
   } finally { await p.close(); await up.close(); }
 });
 
+test("the forwarded Host is pinned to the allowlisted authority, not a tool's forged Host (a shared front-end routes by Host)", async () => {
+  const up = await upstream();
+  const p = await proxy({ allow: [`http://local.test:${up.port}`] });
+  try {
+    const ok = await proxied(p.endpoint.port, { url: `http://local.test:${up.port}/`, headers: { host: "admin.internal" } });
+    assert.equal(ok.status, 200);
+    assert.equal(up.last.host, `local.test:${up.port}`, "the target's own Host reaches it, never the forged one");
+  } finally { await p.close(); await up.close(); }
+});
+
 test("a name that resolves to a private address is refused, so DNS rebinding cannot reach this machine through the proxy", async () => {
   const up = await upstream();
   // The default guard (no blocked hook): local.test resolves to 127.0.0.1, which is blocked.
@@ -102,6 +112,23 @@ test("a CONNECT whose host resolves to a private address is refused (rebinding),
   try {
     assert.notEqual((await connect(p.endpoint.port, "local.test:8443")).status, 200);
   } finally { await p.close(); }
+});
+
+test("an open CONNECT tunnel is torn down soon after the owner revokes its target (consent cannot be re-checked per request inside TLS)", async () => {
+  const echo = net.createServer(socket => socket.on("data", () => socket.write("pong")));
+  await new Promise<void>(resolve => echo.listen(0, "127.0.0.1", resolve));
+  const port = (echo.address() as AddressInfo).port;
+  let on = true;
+  const p = await proxy({ allow: [`https://local.test:${port}`], consent: async () => { if (!on) throw new Error("the owner revoked this target"); }, recheckMs: 40 });
+  try {
+    const c = await connect(p.endpoint.port, `local.test:${port}`);
+    assert.equal(c.status, 200);
+    c.socket!.write("ping");
+    assert.match(await new Promise<string>(resolve => c.socket!.once("data", d => resolve(d.toString()))), /pong/, "the tunnel carries data while consent holds");
+    on = false;
+    const closed = await Promise.race([new Promise<boolean>(resolve => c.socket!.once("close", () => resolve(true))), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2000))]);
+    assert.equal(closed, true, "the tunnel closed once consent was revoked");
+  } finally { await p.close(); await new Promise<void>(resolve => echo.close(() => resolve())); }
 });
 
 test("the shared run budget and the per-request consent both stop the proxy, as they stop http.request", async () => {

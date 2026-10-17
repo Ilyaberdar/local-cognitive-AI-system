@@ -19,12 +19,17 @@ export interface EgressOptions {
   consent?: (allow: readonly string[]) => Promise<void>;
   /** Test seam: resolve a name and decide a blocked address, as for the engine's client. */
   hooks?: Partial<Hooks>;
+  /** How often an open tunnel re-asks consent (default 15 s); a test seam to exercise the teardown. */
+  recheckMs?: number;
 }
 
 /** Headers the proxy never forwards: the hop's own, and any that would carry proxy credentials onward. */
 const HOP_BY_HOP = /^(proxy-connection|connection|keep-alive|transfer-encoding|te|trailer|upgrade|proxy-authorization|proxy-authenticate)$/i;
 const CONNECT_TIMEOUT_MS = 30_000;
 const IDLE_TIMEOUT_MS = 120_000;
+/** How often an open CONNECT tunnel re-asks consent: the proxy cannot see inside TLS, so it cannot
+ * re-check each request; instead it tears the tunnel down this soon after the owner revokes a target. */
+const CONSENT_RECHECK_MS = 15_000;
 
 export async function createEgressProxy(options: EgressOptions): Promise<EgressProxy> {
   const targets: Target[] = options.allow.map(parseTarget);
@@ -50,16 +55,24 @@ export async function createEgressProxy(options: EgressOptions): Promise<EgressP
     try { ({ lookup } = await resolveAndPin(url.hostname, hooks)); } catch (error) { deny(502, error instanceof Error ? error.message : String(error)); return; }
     const headers: Record<string, string | string[]> = {};
     for (const [name, value] of Object.entries(req.headers)) if (value !== undefined && !HOP_BY_HOP.test(name)) headers[name] = value;
+    // The Host header is pinned to the allowlisted authority, never the tool's: a shared front-end IP
+    // routes by Host, so a forged Host could otherwise reach a vhost off the allowlist on an allowed IP.
+    headers.host = url.host;
     const upstream = http.request({ host: url.hostname, port: url.port ? Number(url.port) : 80, method: req.method, path: url.pathname + url.search, headers, lookup: lookup as never }, response => {
       res.writeHead(response.statusCode ?? 502, response.headers);
       response.pipe(res);
     });
     upstream.setTimeout(IDLE_TIMEOUT_MS, () => upstream.destroy(new Error("No response in time.")));
     upstream.on("error", () => { if (res.headersSent) res.destroy(); else deny(502, "The upstream request failed."); });
+    // A client that drops mid-request must not throw past this handler and end the engine's process.
+    req.on("error", () => upstream.destroy());
+    res.on("error", () => upstream.destroy());
     req.pipe(upstream);
   }
 
   async function handleConnect(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
+    // Attached before any await: a reset while the gate or resolve runs must not throw past this handler.
+    socket.on("error", () => socket.destroy());
     const end = (line: string) => { try { socket.write(`HTTP/1.1 ${line}\r\n\r\n`); } catch { /* the client is gone */ } socket.destroy(); };
     const match = /^([^:]+):(\d+)$/.exec(req.url ?? "");
     const host = match?.[1], port = Number(match?.[2]);
@@ -76,13 +89,22 @@ export async function createEgressProxy(options: EgressOptions): Promise<EgressP
       upstream.pipe(socket); socket.pipe(upstream);
     });
     upstream.setTimeout(CONNECT_TIMEOUT_MS, () => upstream.destroy());
-    upstream.on("error", () => end("502 Bad Gateway"));
-    socket.on("error", () => upstream.destroy());
+    // A tunnel is opaque, so consent cannot be re-checked per request; instead it is re-asked on a timer
+    // and the tunnel is torn down when the owner has revoked the target (or the socket closes either way).
+    let recheck: ReturnType<typeof setInterval> | undefined;
+    const teardown = () => { if (recheck) { clearInterval(recheck); recheck = undefined; } upstream.destroy(); socket.destroy(); };
+    recheck = consent ? setInterval(() => void consent(allow).catch(teardown), options.recheckMs ?? CONSENT_RECHECK_MS) : undefined;
+    recheck?.unref?.();
+    upstream.on("error", () => teardown());
+    upstream.on("close", () => teardown());
+    socket.on("close", () => teardown());
   }
 
   const server = http.createServer();
   server.on("request", (req, res) => void handleRequest(req, res));
   server.on("connect", (req, socket, head) => void handleConnect(req, socket as net.Socket, head));
+  // A malformed request from a tool closes its own socket, never the engine's process.
+  server.on("clientError", (_error, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const port = (server.address() as net.AddressInfo).port;
   return {
