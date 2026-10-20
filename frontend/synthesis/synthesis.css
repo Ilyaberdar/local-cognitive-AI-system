@@ -204,6 +204,11 @@ html[data-motion="off"] :is(.synthesis-layout, .synthesis-inspector) { transitio
 .synthesis-workspace input.synthesis-switch:disabled { cursor: default; opacity: .55; }
 .synthesis-workspace input.synthesis-switch:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 2px; }
 .synthesis-workspace-footer .synthesis-cloud-status { white-space: nowrap; color: var(--muted); cursor: help; }
+.synthesis-workspace-footer .synthesis-web-targets { white-space: nowrap; padding: 2px 8px; font-size: var(--text-caption); color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.synthesis-workspace-footer .synthesis-web-targets:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.synthesis-web-input { width: 100%; min-height: 108px; resize: vertical; font-family: var(--mono, ui-monospace, monospace); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.55; }
+.synthesis-web-preview { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 0; }
+.synthesis-web-preview code { font-size: calc(12px * var(--font-scale, 1)); color: var(--muted); overflow-wrap: anywhere; }
 .synthesis-empty { padding: 14px 12px; margin: 0; color: var(--muted); font-size: var(--text-caption); line-height: 1.65; }
 .synthesis-welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px; }
 .synthesis-welcome h2 { font-size: calc(22px * var(--font-scale, 1)); font-weight: 500; margin: 12px 0 0; }

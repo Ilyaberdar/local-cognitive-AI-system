@@ -6,6 +6,7 @@ import { SynthesisAgents } from "./SynthesisAgents";
 import { diagnosticSummary, SynthesisDiagnostics } from "./SynthesisDiagnostics";
 import { SynthesisIcon } from "./SynthesisIcon";
 import { NewModuleDialog } from "./NewModuleDialog";
+import { WebTargetsDialog } from "./WebTargetsDialog";
 import type { CandidateDiff, RunSources, SynthesisModule, SynthesisRun, SynthesisWorkspaceProps } from "./types";
 
 const activeStatuses = new Set(["running", "queued"]);
@@ -60,6 +61,9 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const [creatingModule, setCreatingModule] = useState(false);
   /** Whether this project's files may go to cloud models: shown and set only on the computer that owns it. */
   const [cloud, setCloud] = useState<boolean | undefined>(undefined);
+  /** Web origins this project's agents may reach with the http right: shown everywhere, set only on the owner. */
+  const [webTargets, setWebTargets] = useState<string[] | undefined>(undefined);
+  const [editingWebTargets, setEditingWebTargets] = useState(false);
   const newModuleTrigger = useRef<HTMLButtonElement>(null);
   const diagnosticsTrigger = useRef<HTMLButtonElement>(null);
   const selection = useRef({ projectId, moduleId, runId });
@@ -114,7 +118,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   useEffect(() => {
     try { if (projectId) localStorage.setItem(projectKey(storageKey), projectId); } catch { /* Storage may be unavailable. */ }
     setModules([]); setModuleId(""); setModule(null); setRuns([]); setRunId(""); setRun(null); setDiff(null); setError(""); setNotice("");
-    setCreatingModule(false);
+    setCreatingModule(false); setEditingWebTargets(false);
   }, [projectId]);
   useEffect(() => {
     if (!active || !projectId) return;
@@ -237,6 +241,20 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     setCloud(result?.allowed === true); setRevision(current => current + 1);
     setNotice(result?.allowed === true ? "Cloud models may now read this project's contract and files." : "This project now runs local models only.");
   });
+  // A device only reads the list (no route changes it); the owner edits it in the dialog. An older
+  // host answers neither, so the affordance is not shown. Refresh reads it again.
+  useEffect(() => { setWebTargets(undefined); }, [projectId, remote]);
+  useEffect(() => {
+    if (!projectId) return;
+    let current = true;
+    request<{ targets?: unknown } | null>(`/projects/${encode(projectId)}/web-targets`).then(result => { if (current) setWebTargets(Array.isArray(result?.targets) ? result!.targets.filter((item): item is string => typeof item === "string") : undefined); }, () => { if (current) setWebTargets(undefined); });
+    return () => { current = false; };
+  }, [projectId, remote, revision]);
+  const webTargetsSaved = (next: string[]) => {
+    if (selection.current.projectId !== projectId) return;
+    setWebTargets(next); setEditingWebTargets(false); setRevision(current => current + 1);
+    setNotice(next.length ? `This project's agents may reach ${next.length} web ${next.length === 1 ? "target" : "targets"} with the http right.` : "This project has no web targets. The http right is refused until you add one.");
+  };
   const apply = () => void perform("apply", async () => {
     await request(`/runs/${encode(runId)}/apply`, { method: "POST" });
     if (selection.current.runId !== runId) return;
@@ -295,7 +313,8 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
         </main>
         {inspector !== "closed" ? <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} onOpenSource={remote ? undefined : open} onClose={closeDiagnostics} /> : null}
       </div>}
-    <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && remote && cloud !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server cloud-models ${cloud ? "deny" : "allow"} ${project.id}`}>Cloud models: {cloud ? "on" : "off"}</span> : null}{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" role="switch" className="synthesis-switch" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
+    <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && remote && cloud !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server cloud-models ${cloud ? "deny" : "allow"} ${project.id}`}>Cloud models: {cloud ? "on" : "off"}</span> : null}{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" role="switch" className="synthesis-switch" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{project && remote && webTargets !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server web-targets ${webTargets.length ? `allow ${project.id} ${webTargets.join(" ")}` : `allow ${project.id} <url>`}`}>Web targets: {webTargets.length}</span> : null}{project && !remote && webTargets !== undefined ? <button type="button" className="synthesis-web-targets" disabled={Boolean(busy)} title="Web origins this project's agents may reach with the http right" onClick={() => setEditingWebTargets(true)}>Web targets: {webTargets.length}</button> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
     {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} request={request} /> : null}
+    {editingWebTargets && project && !remote && webTargets !== undefined ? <WebTargetsDialog key={projectId} project={project} targets={webTargets} onClose={() => setEditingWebTargets(false)} onSaved={webTargetsSaved} request={request} /> : null}
   </div>;
 }

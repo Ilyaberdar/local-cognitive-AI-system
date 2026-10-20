@@ -75,3 +75,16 @@ test("a device reads a project's Cloud models from the server and has no route t
   await assert.rejects(transport.request("/projects/p1/cloud", { method: "PUT", body: JSON.stringify({ allowed: true }) }));
   assert.equal(f.calls.length, before, "nothing is sent to the server");
 });
+
+test("a device reads a project's web targets from the server and has no route to change them", async () => {
+  const { SYNTHESIS_ROUTES } = await importModule(pathToFileURL(path.resolve("public/assets/runtime-routes.js")).href);
+  const routes = SYNTHESIS_ROUTES.filter((item: any) => item.pattern.test("/projects/p1/web-targets"));
+  assert.deepEqual(routes.map((item: any) => [item.method, item.op]), [["GET", "synthesis.web.get"]]);
+  assert.deepEqual(routes[0].payload(routes[0].pattern.exec("/projects/p1/web-targets"), new URLSearchParams()), { projectId: "p1" });
+  const { createServerSynthesis } = await importModule(pathToFileURL(path.resolve("public/assets/server-synthesis.js")).href);
+  const f = server();
+  const transport = createServerSynthesis({ target: f.target, bridge: { runtime: f.runtime } }).transport();
+  const before = f.calls.length;
+  await assert.rejects(transport.request("/projects/p1/web-targets", { method: "PUT", body: JSON.stringify({ targets: ["https://staging.example.com"] }) }));
+  assert.equal(f.calls.length, before, "nothing is sent to the server");
+});

@@ -47,6 +47,12 @@ function input(ui: ReturnType<typeof harness>, id: string, value: string) {
   element.dispatchEvent(new ui.dom.window.Event("input", {bubbles: true}));
 }
 
+function textarea(ui: ReturnType<typeof harness>, id: string, value: string) {
+  const element = ui.dom.window.document.getElementById(id);
+  Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(element, value);
+  element.dispatchEvent(new ui.dom.window.Event("input", {bubbles: true}));
+}
+
 test("New module validates names and collisions, previews paths and sends the selected template", async () => {
   const existing = {...moduleEntry(), specPath: "Synthesis/Calculator/Calculator.lcspec"};
   const created = {...moduleEntry("AbilitySystem"), id: "file:contracts/AbilitySystem/AbilitySystem", specPath: "contracts/AbilitySystem/AbilitySystem.lcspec"};
@@ -717,4 +723,69 @@ test("Cloud models is a switch; a click leaves no focus ring; the diagnostics pa
     assert.ok(doc.querySelector(".synthesis-inspector"), "still there while it slides away");
     await until(() => !doc.querySelector(".synthesis-inspector"), "panel gone");
   } finally { ui.close(); }
+});
+
+test("Web targets is the host's editor for the selected project: it shows the list, validates and saves", async () => {
+  const sent: Array<{ path: string; body?: unknown }> = [];
+  let targets: string[] = [];
+  const ui = harness((path, options) => {
+    if (path.endsWith("/runs")) return [];
+    if (path.endsWith("/cloud")) return {};
+    if (path.endsWith("/web-targets")) {
+      if (options.method === "PUT") { const body = JSON.parse(String(options.body)); sent.push({ path, body }); targets = (body as { targets: string[] }).targets; return { targets }; }
+      return { targets };
+    }
+    if (path.endsWith("/modules")) return { modules: [moduleEntry()] };
+    if (path.endsWith("/modules/Calculator")) return moduleEntry();
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    const button = () => [...doc.querySelectorAll("button")].find((item: any) => item.textContent?.startsWith("Web targets:")) as any;
+    await until(() => Boolean(button()), "web targets button");
+    assert.equal(button().textContent, "Web targets: 0");
+    button().click();
+    await until(() => Boolean(doc.querySelector("dialog[open]")), "web targets dialog");
+    assert.equal(doc.activeElement.id, "synthesis-web-targets");
+    const submit = () => doc.querySelector('dialog button[type="submit"]') as any;
+    textarea(ui, "synthesis-web-targets", "not a url");
+    await until(() => ui.text().includes("enter a full https://"), "invalid hint");
+    assert.equal(submit().disabled, true);
+    assert.equal(sent.length, 0);
+    textarea(ui, "synthesis-web-targets", "https://staging.example.com\nhttps://api.example.com/v1/\nhttps://staging.example.com");
+    await until(() => Boolean([...doc.querySelectorAll(".synthesis-web-preview code")].length === 2), "normalized preview, de-duplicated");
+    assert.deepEqual([...doc.querySelectorAll(".synthesis-web-preview code")].map((c: any) => c.textContent), ["https://staging.example.com", "https://api.example.com/v1"]);
+    assert.equal(submit().disabled, false);
+    submit().click();
+    await until(() => sent.length === 1, "saved");
+    assert.deepEqual(sent, [{ path: "/synthesis/projects/p1/web-targets", body: { targets: ["https://staging.example.com", "https://api.example.com/v1"] } }]);
+    await until(() => /may reach 2 web targets/.test(ui.text()), "notice");
+    await until(() => button()?.textContent === "Web targets: 2", "count updated");
+  } finally { ui.close(); }
+});
+
+test("on a server Web targets are shown, not edited: the server's owner sets them with a command", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.fetch = async () => { throw new Error("this computer's API is not asked"); };
+  dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
+  const asked: string[] = [];
+  const transport = { remote: { hostName: "fedora" }, request: async (path: string, options: RequestInit = {}) => {
+    asked.push(`${options.method ?? "GET"} ${path}`);
+    if (path.endsWith("/web-targets")) return { targets: ["https://local-cognitive.com"] };
+    if (path.endsWith("/cloud")) return {};
+    if (path.endsWith("/modules")) return { modules: [] };
+    if (path.endsWith("/runs")) return [];
+    return {};
+  } };
+  const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"),
+    { projects: [{ id: "p1", name: "Calc", rootPath: "fedora › Projects › calc" }], active: true, transport, storageKey: "host-1" });
+  try {
+    const chip = () => [...dom.window.document.querySelectorAll("span")].find((item: any) => item.textContent?.startsWith("Web targets:")) as HTMLElement | undefined;
+    await until(() => Boolean(chip()), "web targets chip");
+    assert.equal(chip()!.textContent, "Web targets: 1");
+    assert.equal(chip()!.getAttribute("title"), "Set on fedora: sudo local-cognitive-server web-targets allow p1 https://local-cognitive.com");
+    assert.equal(dom.window.document.querySelector(".synthesis-web-targets"), null, "no editor on a device");
+    assert.ok(asked.includes("GET /projects/p1/web-targets"));
+    assert.equal(asked.some(line => line.startsWith("PUT")), false, "nothing is changed from here");
+  } finally { handle.unmount(); dom.window.close(); }
 });
