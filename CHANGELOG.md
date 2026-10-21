@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.7 — 2026-10-21
 
 Synthesis with cloud models and agents in parallel: tens of agents on one task, with file rights set in the flow, checkouts as in Perforce, and a terminal in a sandbox.
 
