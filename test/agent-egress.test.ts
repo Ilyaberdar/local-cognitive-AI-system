@@ -17,7 +17,14 @@ import { platformSandbox } from "../src/synthesis/checks/sandbox";
 // where the sandbox works and says it can route to the proxy.
 const supported = process.platform === "darwin" || process.platform === "linux";
 const unix = () => platformSandbox().egressTransport === "unix";
-const ready = async () => !await platformSandbox().unavailable() && platformSandbox().egressSupported === true;
+// LC_EXPECT_EGRESS=1 (the Linux server's own run) makes a sandbox without web access a failure, not a skip.
+const ready = async () => {
+  const sandbox = platformSandbox();
+  const reason = await sandbox.unavailable() ?? await sandbox.checkEgress?.();
+  const works = !reason && sandbox.egressSupported === true;
+  if (!works && process.env.LC_EXPECT_EGRESS === "1") assert.fail(`terminal egress is expected here: ${reason ?? "not supported"}`);
+  return works;
+};
 const haveCurl = fsSync.existsSync("/usr/bin/curl");
 const hooks = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
 

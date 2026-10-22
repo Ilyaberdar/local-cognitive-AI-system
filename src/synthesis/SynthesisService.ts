@@ -726,6 +726,10 @@ export class SynthesisService {
             // The injected client (a test seam) gets the SAME run budget, so it and the egress proxy share one count.
             httpClient ??= this.services.agents.httpClient?.(httpBudget) ?? new AgentHttpClient(httpBudget, undefined, consent);
           }
+          // Whether a terminal may reach its web targets on this platform: checked once an agent needs it.
+          const terminalWeb = wanted.length && agents.some(agent => agent.rights.terminal?.length && agent.rights.http?.length)
+            ? await sandbox.checkEgress?.() : undefined;
+          if (terminalWeb) await this.event(record, "agents", `Agents' terminals have no web access here (${terminalWeb}); http.request still reaches the allowed targets.`, "warning", {line: span.start.line});
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
           // A provider that asks to slow down gets fewer requests at once; the run says so, at most every 30 s.
@@ -742,8 +746,8 @@ export class SynthesisService {
             // History is out of the copies when the contract has hidden tests: it could hold them.
             terminal: {sandbox, workRoot: path.join(this.directory, "..", "agents", record.id, "terminal", `map-${call}`),
               git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden),
-              // An agent with both a terminal and the http right reaches its web targets through a loopback
-              // proxy, when the sandbox can route to one; it enforces the same allowlist, consent and budget.
+              // An agent with both a terminal and the http right reaches its web targets through the egress
+              // proxy, when the sandbox can route to it alone; it enforces the same allowlist, consent and budget.
               ...(wanted.length && sandbox.egressSupported && httpBudget && consent
                 ? {egress: (allow: readonly string[]) => createEgressProxy({allow, budget: httpBudget!, consent: consent!, unix: sandbox.egressTransport === "unix"})} : {})},
             admit: async spec => { await this.provider(record, spec.model.providerId); },

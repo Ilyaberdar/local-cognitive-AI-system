@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Synthesis
+
+- **Agents' terminals reach their web targets on a Linux server too**, as on macOS: a real tool (curl, git, `python3`) goes through the same proxy as `http.request`, with its allowlist, consent and budget. The sandbox keeps a network of its own with only its loopback, and its one way out is the proxy's UNIX socket, which it cannot replace. Before an agent's terminal gets the web, the server checks that the proxy is the only way out: other local ports (IPv4 and IPv6), this machine's addresses, its resolvers, abstract sockets and vsock stay unreachable, and there is no route but loopback. Otherwise the run says so and the terminal runs without network, as before; `http.request` still works. No extra package is needed; the Linux desktop window gives its terminals no web access.
+
 ## 0.1.8 — 2026-10-22
 
 A fix for Models & Providers: it now says which providers work.

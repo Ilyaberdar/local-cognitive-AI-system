@@ -47,7 +47,7 @@ export interface EgressEndpoint { host: string; port: number; socketPath?: strin
 
 /** Runs a command in a sandbox: no network, writes only inside the work folder, nothing from the
  * user's home or the app's data. `unavailable` says why it cannot run here (the check is then Unknown).
- * `egress`, when given, is a loopback proxy the command may reach and nothing else on the network. */
+ * `egress`, when given, is the proxy the command may reach, and nothing else on the network. */
 export interface SandboxProvider {
   name: string;
   unavailable(): Promise<string | undefined>;
@@ -58,4 +58,8 @@ export interface SandboxProvider {
   egressSupported?: boolean;
   /** How the proxy is reached: a loopback port (macOS) or a UNIX socket (Linux). */
   egressTransport?: "tcp" | "unix";
+  /** Checks, where the platform needs it, that a sandbox reaches the proxy and nothing else (Linux):
+   * undefined when it does (then egressSupported is true), else why not (a terminal then runs without
+   * network). Asked when an agent first needs it, never for contract tests. */
+  checkEgress?(): Promise<string | undefined>;
 }

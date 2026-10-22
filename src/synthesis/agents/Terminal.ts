@@ -114,11 +114,12 @@ export class AgentTerminal {
   private proxy?: Promise<EgressProxy>;
   constructor(private readonly host: TerminalHost, private readonly view: TerminalView, private readonly name: string, private readonly allowed: string[], private readonly httpTargets: readonly string[] = []) {}
 
-  /** The loopback egress proxy this agent's commands go out through, or undefined when it has no web
+  /** The egress proxy this agent's commands go out through, or undefined when it has no web
    * targets or the platform's sandbox cannot route to one (the terminal then runs with no network). */
   private egress(): Promise<EgressProxy> | undefined {
     if (!this.host.egress || !this.host.sandbox.egressSupported || !this.httpTargets.length) return undefined;
-    return (this.proxy ??= this.host.egress(this.httpTargets));
+    // A failed start is tried again by the next command, not kept for the agent's whole run.
+    return (this.proxy ??= this.host.egress(this.httpTargets).catch(error => { this.proxy = undefined; throw error; }));
   }
 
   async run(command: string, args: string[], cwd: string, timeoutSeconds: number, signal?: AbortSignal): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> {

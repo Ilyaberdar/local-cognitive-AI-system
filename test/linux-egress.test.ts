@@ -39,14 +39,41 @@ test("Linux web access keeps bubblewrap's own network: the proxy's socket is bou
   }
 });
 
-test("Linux web access is never wired without the proxy's socket and the server's Node", () => {
-  assert.throws(() => linuxEgress({}, "/opt/node/bin/node"), /needs the egress proxy's socket/);
-  assert.throws(() => linuxEgress({ socketPath: "/tmp/lce-x/other.sock" }, "/opt/node/bin/node"), /needs the egress proxy's socket/);
-  assert.throws(() => linuxEgress({ socketPath: `/tmp/${"x".repeat(100)}/proxy.sock` }, "/opt/node/bin/node"), /too long/);
-  assert.throws(() => linuxEgress({ socketPath: "/tmp/lce-x/proxy.sock" }, null), /server's own Node/);
-  const wired = linuxEgress({ socketPath: "/tmp/lce-x/proxy.sock" }, "/opt/node/bin/node");
-  assert.deepEqual(wired, { socketDir: "/tmp/lce-x", runtime: "/opt/node/bin/node", env: { LC_EGRESS_NODE: "/opt/node/bin/node", LC_EGRESS_FORWARDER: EGRESS_FORWARDER } });
-  new Function(EGRESS_FORWARDER);
+test("Linux web access is wired only with the proxy's own socket, alone in its own folder, and the server's Node", { skip: process.platform === "win32" }, async () => {
+  const proxy = await createEgressProxy({ allow: ["http://local.test:9"], budget: new RequestBudget(1), hooks, unix: true });
+  const socketPath = proxy.endpoint.socketPath!, socketDir = path.dirname(socketPath);
+  const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "lce-"));
+  try {
+    assert.throws(() => linuxEgress({}, "/opt/node/bin/node"), /needs the egress proxy's socket/);
+    assert.throws(() => linuxEgress({ socketPath: path.join(socketDir, "other.sock") }, "/opt/node/bin/node"), /needs the egress proxy's socket/);
+    assert.throws(() => linuxEgress({ socketPath: `/tmp/${"x".repeat(100)}/proxy.sock` }, "/opt/node/bin/node"), /too long/);
+    assert.throws(() => linuxEgress({ socketPath: "/proxy.sock" }, "/opt/node/bin/node"), /folder of its own/, "never the root folder");
+    assert.throws(() => linuxEgress({ socketPath: "/srv/app/runtime/proxy.sock" }, "/opt/node/bin/node"), /folder of its own/, "never a folder with other sockets in it");
+    await fs.chmod(elsewhere, 0o755);
+    assert.throws(() => linuxEgress({ socketPath: path.join(elsewhere, "proxy.sock") }, "/opt/node/bin/node"), /this user's alone/);
+    await fs.chmod(elsewhere, 0o700);
+    assert.throws(() => linuxEgress({ socketPath: path.join(elsewhere, "proxy.sock") }, "/opt/node/bin/node"), /alone in its folder/, "a folder without the socket");
+    await fs.writeFile(path.join(socketDir, "control.sock"), "");
+    assert.throws(() => linuxEgress({ socketPath }, "/opt/node/bin/node"), /alone in its folder/, "another file beside the socket");
+    await fs.rm(path.join(socketDir, "control.sock"));
+    assert.throws(() => linuxEgress({ socketPath }, null), /server's own Node/);
+    assert.deepEqual(linuxEgress({ socketPath }, "/opt/node/bin/node"), { socketDir, runtime: "/opt/node/bin/node", env: { LC_EGRESS_NODE: "/opt/node/bin/node", LC_EGRESS_FORWARDER: EGRESS_FORWARDER } });
+    new Function(EGRESS_FORWARDER);
+  } finally { await proxy.close(); await fs.rm(elsewhere, { recursive: true, force: true }); }
+});
+
+test("the egress proxy closes a silent connection and asks no consent once the budget is spent", { skip: process.platform === "win32" }, async () => {
+  let asked = 0;
+  const budget = new RequestBudget(0);
+  const proxy = await createEgressProxy({ allow: ["http://local.test:9"], budget, hooks, unix: true, silentMs: 200, consent: async () => { asked++; } });
+  try {
+    const net = await import("node:net");
+    const closed = await new Promise<number>(resolve => { const started = Date.now(); const socket = net.connect(proxy.endpoint.socketPath!); socket.on("close", () => resolve(Date.now() - started)); socket.on("error", () => undefined); });
+    assert.ok(closed < 5000, `a connection that sends nothing is closed (${closed} ms)`);
+    const refused = await new Promise<number>(resolve => http.get({ socketPath: proxy.endpoint.socketPath, path: "http://local.test:9/", headers: { host: "local.test:9" } }, response => { response.resume(); resolve(response.statusCode ?? 0); }));
+    assert.equal(refused, 403);
+    assert.equal(asked, 0, "a spent budget answers without asking the project");
+  } finally { await proxy.close(); }
 });
 
 test("the egress proxy on a UNIX socket enforces the allowlist, is its user's alone, and leaves nothing when closed", { skip: process.platform === "win32" }, async () => {

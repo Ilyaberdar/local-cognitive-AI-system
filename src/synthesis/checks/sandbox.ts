@@ -23,8 +23,10 @@ export function sandboxEnv(executable: string, workDir: string): NodeJS.ProcessE
 const real = (file: string) => { try { return fs.realpathSync(file); } catch { return path.resolve(file); } };
 const inside = (file: string, folder: string) => file === folder || file.startsWith(`${folder}/`);
 /** A tool's folder may be opened up; never the home folder or a parent of it (/, /Users), nor system state. */
+/** Runtime folders are never opened up either: a socket in any bound folder can be connected to from
+ * inside, whatever its network (session buses, systemd, container engines). */
 const openable = (dir: string) => dir.split("/").filter(Boolean).length >= 2 && !inside(real(os.homedir()), dir) &&
-  !["/etc", "/private/etc", "/root", "/var/lib"].some(root => inside(dir, root));
+  !["/etc", "/private/etc", "/root", "/var/lib", "/run", "/var/run", "/dev", "/proc", "/sys", ...(process.env.XDG_RUNTIME_DIR ? [real(process.env.XDG_RUNTIME_DIR)] : [])].some(root => inside(dir, root));
 const quote = (value: string) => `"${value.replace(/[\\"]/g, "\\$&")}"`;
 const ancestors = (file: string) => {
   const found: string[] = [];
@@ -170,10 +172,10 @@ async function probeBwrap(): Promise<string | undefined> {
   return `bubblewrap cannot create a sandbox here (${error}): ${fix("allow unprivileged user namespaces (on Ubuntu 24.04 and later, with the AppArmor profile bwrap-userns-restrict from apparmor-profiles)")}.`;
 }
 let bwrapProbe: Promise<string | undefined> | undefined;
-/** The terminal's web access on Linux: whether it works here, checked once it isolates. A failure is
- * asked again after a while (an administrator may fix it); until then terminals run without network. */
+/** The terminal's web access on Linux: checked the first time an agent needs it, then again every hour
+ * (a failure after ten minutes), so a change on the server is noticed. */
 let egressCheck: { result: Promise<string | undefined>; at: number } | undefined;
-const EGRESS_RECHECK_MS = 10 * 60_000;
+const EGRESS_RECHECK_MS = 60 * 60_000, EGRESS_RETRY_MS = 10 * 60_000;
 const linux: SandboxProvider = {
   name: "bubblewrap",
   unavailable: async () => {
@@ -181,11 +183,22 @@ const linux: SandboxProvider = {
     // Only success is kept: an administrator may install bubblewrap without restarting the server.
     if (reason) { bwrapProbe = undefined; return reason; }
     const leak = await isolated("bubblewrap", linux);
-    if (leak) return `bubblewrap does not isolate here: ${leak}. Nothing runs without a sandbox.`;
-    // Web access is offered only once its own check passes; the sandbox itself does not depend on it.
-    if (!egressCheck || (Date.now() - egressCheck.at > EGRESS_RECHECK_MS && !linux.egressSupported)) egressCheck = { result: verifyEgress(linux), at: Date.now() };
-    linux.egressSupported = !await egressCheck.result;
-    return undefined;
+    return leak ? `bubblewrap does not isolate here: ${leak}. Nothing runs without a sandbox.` : undefined;
+  },
+  checkEgress: async () => {
+    const unavailable = await linux.unavailable();
+    if (unavailable) { linux.egressSupported = false; return unavailable; }
+    if (!egressCheck || Date.now() - egressCheck.at > (linux.egressSupported ? EGRESS_RECHECK_MS : EGRESS_RETRY_MS)) {
+      egressCheck = { at: Date.now(), result: (async () => {
+        // An older bubblewrap lets the command make namespaces of its own, with capabilities in them over
+        // networks of its own: the kernel then answers more than the proxy alone, so no web access.
+        if (!nestedUsernsBlocked) return "this bubblewrap cannot keep commands from making user namespaces of their own (it needs 0.8 or later)";
+        return verifyEgress(linux).catch(error => `it could not be checked (${error instanceof Error ? error.message : String(error)})`);
+      })() };
+    }
+    const reason = await egressCheck.result;
+    linux.egressSupported = !reason;
+    return reason;
   },
   wrap: (executable, args, workDir, readable, egress) => {
     if (nestedUsernsBlocked === undefined) throw new Error("bubblewrap has not been checked on this machine yet.");
@@ -200,34 +213,47 @@ const linux: SandboxProvider = {
 /** Inside a Linux sandbox: where the proxy's socket folder is seen (read-only), and the loopback port the
  * forwarder listens on for the command's tools. */
 const EGRESS_DIR = "/run/lc-egress", EGRESS_PORT = 3128, EGRESS_URL = `http://127.0.0.1:${EGRESS_PORT}`;
-/** The forwarder: trusted code beside the command, a byte pipe from the sandbox's 127.0.0.1:3128 to the
- * proxy's socket. It parses nothing (the proxy decides everything), says "ready" once it listens, and never
- * closes its stdout (a reused descriptor would reset connections). */
+/** The forwarder: a byte pipe from the sandbox's 127.0.0.1:3128 to the proxy's socket, so proxy-aware
+ * tools find the proxy at a usual address. It runs beside the command (same user, same namespaces) and
+ * is no boundary: the command may stop it or connect to the socket itself, and still reaches only the
+ * proxy, which decides everything. It parses nothing, says "ready" once it listens, and never closes its
+ * stdout (a reused descriptor would reset connections). */
 export const EGRESS_FORWARDER = 'const net=require("net"),fs=require("fs");const [sock,port]=process.argv.slice(1);'
   + 'const srv=net.createServer(c=>{const u=net.connect(sock);c.pipe(u);u.pipe(c);const end=()=>{c.destroy();u.destroy();};u.on("error",end);c.on("error",end);u.on("close",()=>c.end());c.on("close",()=>u.destroy());});'
   + 'srv.on("error",e=>{process.stderr.write("lc-egress: "+e.message+"\\n");process.exit(70);});'
   + 'srv.listen(Number(port),"127.0.0.1",()=>fs.writeSync(1,"ready\\n"));';
 /** Starts the forwarder and runs the command only once it listens: if it cannot start, the command does
- * not run (exit 70). The FIFO is in the sandbox's own /tmp, never the copy's TMPDIR. */
-const EGRESS_BOOT = `f=/tmp/.lc-egress-ready; mkfifo -m 600 "$f" || exit 70
+ * not run (exit 70). The FIFO is in the sandbox's own /tmp, never the copy's TMPDIR. Descriptors are
+ * bounded first, for the forwarder and the command alike. */
+const EGRESS_BOOT = `ulimit -n 4096 2>/dev/null
+f=/tmp/.lc-egress-ready; mkfifo -m 600 "$f" || exit 70
 "$LC_EGRESS_NODE" -e "$LC_EGRESS_FORWARDER" ${EGRESS_DIR}/proxy.sock ${EGRESS_PORT} > "$f" 2>/dev/null &
 read -r ok < "$f"; rm -f "$f"; [ "$ok" = ready ] || { echo "the terminal's web access could not start" >&2; exit 70; }
 unset LC_EGRESS_NODE LC_EGRESS_FORWARDER; exec "$@"`;
 
-/** The forwarder's runtime: the server's own Node (never Electron, which a Linux desktop window runs). */
+/** The forwarder's runtime: the server's own Node. Never Electron: a Linux desktop window gives its
+ * terminals no web access. */
 const egressRuntime = (): string | undefined => {
   if (process.versions.electron) return undefined;
   const node = real(process.execPath);
   return openable(path.dirname(node)) ? node : undefined;
 };
 interface LinuxEgress { socketDir: string; runtime: string; env: NodeJS.ProcessEnv }
-/** What a sandbox needs for web access: the proxy's socket folder and the forwarder's runtime. Never a way
- * that falls back to a shared network: without them the command is not wrapped at all. */
-export function linuxEgress(egress: { socketPath?: string }, runtime: string | null | undefined = egressRuntime()): LinuxEgress {
-  if (!egress.socketPath || path.basename(egress.socketPath) !== "proxy.sock") throw new Error("The terminal's web access on Linux needs the egress proxy's socket.");
-  if (Buffer.byteLength(egress.socketPath) >= 100) throw new Error("The egress proxy's socket path is too long.");
+/** What a sandbox needs for web access: the proxy's socket and the forwarder's runtime. The socket must be
+ * alone in a folder of its own that the proxy made (lce-XXXXXX in the temporary folder, this user's, 0700):
+ * that folder is bound into the sandbox, so no other socket may be in it. Without them nothing is wrapped:
+ * never a fall back to a shared network. */
+export function linuxEgress(egress: { socketPath?: string }, runtime: string | null | undefined = egressRuntime(), tmp = os.tmpdir()): LinuxEgress {
+  const socketPath = egress.socketPath;
+  if (!socketPath || path.basename(socketPath) !== "proxy.sock") throw new Error("The terminal's web access on Linux needs the egress proxy's socket.");
+  if (Buffer.byteLength(socketPath) >= 100) throw new Error("The egress proxy's socket path is too long.");
+  const socketDir = path.dirname(socketPath);
+  if (path.dirname(socketDir) !== tmp || !/^lce-[A-Za-z0-9]{6}$/.test(path.basename(socketDir))) throw new Error("The egress proxy's socket must be in a folder of its own in the temporary folder.");
+  const stat = fs.lstatSync(socketDir);
+  if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (process.getuid && stat.uid !== process.getuid())) throw new Error("The egress proxy's socket folder must be this user's alone.");
+  if (fs.readdirSync(socketDir).join("/") !== "proxy.sock") throw new Error("The egress proxy's socket must be alone in its folder.");
   if (!runtime) throw new Error("The terminal's web access on Linux needs the server's own Node.");
-  return { socketDir: path.dirname(egress.socketPath), runtime, env: { LC_EGRESS_NODE: runtime, LC_EGRESS_FORWARDER: EGRESS_FORWARDER } };
+  return { socketDir, runtime, env: { LC_EGRESS_NODE: runtime, LC_EGRESS_FORWARDER: EGRESS_FORWARDER } };
 }
 
 /** The bubblewrap command line: the system folders, the tools' folders read-only, the work folder writable.
@@ -245,54 +271,99 @@ export function bwrapArgs(executable: string, args: string[], workDir: string, r
   return [...bwrapBase(), ...(noNestedUserns ? NO_NESTED_USERNS : []), ...binds, ...web, "--bind", work, work, "--chdir", work, "--", ...command];
 }
 
-/** Whether a sandbox's web access goes to the proxy and nowhere else, run through the provider as a
- * terminal's command is: the proxy answers through the forwarder; another loopback port, this machine's
- * own addresses and DNS stay unreachable; the sandbox has only lo, a network that is not the server's;
- * and the proxy's socket cannot be replaced. Any other answer means no web access (never a sandbox
- * without one: the terminal then runs with no network). */
-export async function verifyEgress(provider: Pick<SandboxProvider, "wrap">, runtime: string | null | undefined = egressRuntime()): Promise<string | undefined> {
-  if (!runtime) return "the server's own Node is needed for it";
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "lce-"));
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "lc-egress-probe-"));
-  const socketPath = path.join(folder, "proxy.sock"), token = randomBytes(12).toString("hex");
-  const hits = { proxy: 0, other: 0, host: 0 };
-  const proxy = net.createServer(socket => { hits.proxy++; socket.end(token); });
-  const other = net.createServer(socket => { hits.other++; socket.destroy(); });
-  const host = net.createServer(socket => { hits.host++; socket.destroy(); });
-  const listen = (server: net.Server, ...at: [string] | [number, string]) => new Promise<void>((resolve, reject) => { server.once("error", reject); (server.listen as (...args: unknown[]) => void)(...at, resolve); });
-  try {
-    await listen(proxy, socketPath);
-    await listen(other, 0, "127.0.0.1");
-    await listen(host, 0, "0.0.0.0");
-    const addresses = Object.values(os.networkInterfaces()).flat().filter(item => item && !item.internal && item.family === "IPv4").map(item => item!.address);
-    const probe = `const net=require("net"),fs=require("fs"),dns=require("dns");const [token,other,hostPort,...addrs]=process.argv.slice(1);
+/** What the probe inside the sandbox tries; each line is `NAME=answer`. */
+const EGRESS_PROBE = `const net=require("net"),fs=require("fs"),dns=require("dns"),dgram=require("dgram");
+const [token,other4,other6,hostPort,abstract,ns,...addrs]=process.argv.slice(1);
 const out=s=>process.stdout.write(s+"\\n");
-const tcp=(h,p)=>new Promise(r=>{const c=net.connect({host:h,port:Number(p),timeout:2000});let d="";c.on("data",x=>d+=x);c.on("connect",()=>setTimeout(()=>{c.destroy();r("open:"+d);},300));c.on("error",e=>r("closed:"+e.code));c.on("timeout",()=>{c.destroy();r("closed:timeout");});});
-(async()=>{out("PROXY="+(await tcp("127.0.0.1",${EGRESS_PORT})));out("OTHER="+(await tcp("127.0.0.1",other)));
-for(const a of addrs)out("HOST="+(await tcp(a,hostPort)));
+const tcp=o=>new Promise(r=>{const c=net.connect({...o,timeout:2000});let d="";c.on("data",x=>d+=x);c.on("connect",()=>setTimeout(()=>{c.destroy();r("open:"+d);},300));c.on("error",e=>r("closed:"+e.code));c.on("timeout",()=>{c.destroy();r("closed:timeout");});});
+const udp=h=>new Promise(r=>{const s=dgram.createSocket(h.includes(":")?"udp6":"udp4");s.on("error",e=>{try{s.close();}catch{}r("closed:"+e.code);});s.send(Buffer.from([0]),53,h,e=>{try{s.close();}catch{}r(e?"closed:"+e.code:"sent");});});
+(async()=>{
+out("PROXY="+(await tcp({host:"127.0.0.1",port:${EGRESS_PORT}})));
+out("OTHER="+(await tcp({host:"127.0.0.1",port:Number(other4)})));
+if(Number(other6))out("OTHER="+(await tcp({host:"::1",port:Number(other6)})));
+for(const a of addrs)out("HOST="+(await tcp({host:a,port:Number(hostPort)})));
+if(abstract)out("ABSTRACT="+(await tcp({path:"\\0"+abstract})));
+for(const h of ns.split(",").filter(Boolean))out("UDP="+(await udp(h)));
 out("DNS="+await new Promise(r=>dns.lookup("example.com",e=>r(e?"fail":"ok"))));
-out("IFACES="+fs.readFileSync("/proc/net/dev","utf8").split("\\n").slice(2).map(l=>l.split(":")[0].trim()).filter(Boolean).join(","));
+const r4=fs.readFileSync("/proc/net/route","utf8").split("\\n").slice(1).map(l=>l.trim().split(/\\s+/)[0]).filter(Boolean);
+const r6=fs.readFileSync("/proc/net/ipv6_route","utf8").split("\\n").map(l=>l.trim().split(/\\s+/)[9]).filter(Boolean);
+out("ROUTES="+([...r4,...r6].filter(i=>i!=="lo").join(",")||"none"));
 out("NETNS="+fs.readlinkSync("/proc/self/ns/net"));
 try{fs.unlinkSync("${EGRESS_DIR}/proxy.sock");out("UNLINK=done");}catch(e){out("UNLINK="+e.code);}
 out("LC_EGRESS_END");})();`;
-    const wrapped = provider.wrap(runtime, ["-e", probe, token, String((other.address() as net.AddressInfo).port), String((host.address() as net.AddressInfo).port), ...addresses], work, [], { host: "127.0.0.1", port: 0, socketPath });
-    const stdout = await new Promise<string>(resolve => execFile(wrapped.executable, wrapped.args, { cwd: work, env: wrapped.env, timeout: 30_000 }, (_error, out) => resolve(String(out))));
-    const line = (name: string) => stdout.split("\n").filter(item => item.startsWith(`${name}=`)).map(item => item.slice(name.length + 1));
+/** Whether the sandbox can open a vsock (to the host or a hypervisor): a network namespace does not
+ * confine that family, only the server's unit (RestrictAddressFamilies) or the kernel does. */
+const VSOCK_PROBE = `import socket
+try:
+    socket.socket(getattr(socket, "AF_VSOCK", 40), socket.SOCK_STREAM)
+    print("VSOCK=open")
+except OSError:
+    print("VSOCK=blocked")`;
+
+/** Whether a sandbox's web access goes to the proxy and nowhere else, run through the provider as a
+ * terminal's command is. The proxy must answer through the forwarder. These must stay unreachable:
+ * another loopback port (IPv4 and IPv6), this machine's own addresses, an abstract socket, the resolvers
+ * and DNS, and vsock. The sandbox must have no route but lo's, a network that is not the server's, and
+ * the proxy's socket must not be replaceable. Any other answer means no web access (never a sandbox
+ * without one: the terminal then runs with no network). The probe binds no tool folders of a real command. */
+export async function verifyEgress(provider: Pick<SandboxProvider, "wrap">, runtime: string | null | undefined = egressRuntime()): Promise<string | undefined> {
+  if (!runtime) return "the server's own Node is needed for it";
+  const python = ["/usr/bin/python3", "/bin/python3"].find(file => fs.existsSync(file));
+  if (!python) return "python3 is needed to check that a sandbox has no other way out";
+  const token = randomBytes(12).toString("hex");
+  const hits = { proxy: 0, other: 0, host: 0, abstract: 0 };
+  const interfaces = Object.values(os.networkInterfaces()).flat().filter((item): item is os.NetworkInterfaceInfo => Boolean(item) && !item!.internal);
+  const addresses = interfaces.filter(item => item.family === "IPv4" || !item.address.toLowerCase().startsWith("fe80")).map(item => item.address);
+  // Only connections from this machine count: a scanner elsewhere reaching the listener says nothing.
+  const own = new Set([...interfaces.map(item => item.address), "127.0.0.1", "::1"]);
+  const servers: net.Server[] = [];
+  const serve = (handler: (socket: net.Socket) => void) => { const server = net.createServer(handler); servers.push(server); return server; };
+  const listen = (server: net.Server, ...at: [string] | [number, string]) => new Promise<void>((resolve, reject) => { server.once("error", reject); (server.listen as (...args: unknown[]) => void)(...at, resolve); });
+  const portOf = (server: net.Server) => (server.address() as net.AddressInfo).port;
+  let folder: string | undefined, work: string | undefined;
+  try {
+    folder = fs.mkdtempSync(path.join(os.tmpdir(), "lce-"));
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "lc-egress-probe-"));
+    const socketPath = path.join(folder, "proxy.sock");
+    await listen(serve(socket => { hits.proxy++; socket.end(token); }), socketPath);
+    const other4 = serve(socket => { hits.other++; socket.destroy(); });
+    await listen(other4, 0, "127.0.0.1");
+    const other6 = serve(socket => { hits.other++; socket.destroy(); });
+    const has6 = await listen(other6, 0, "::1").then(() => true, () => false);
+    const host = serve(socket => { if (own.has((socket.remoteAddress ?? "").replace(/^::ffff:/, ""))) hits.host++; socket.destroy(); });
+    await listen(host, 0, "::").catch(() => listen(host, 0, "0.0.0.0"));
+    // Abstract sockets are Linux's own (the check runs there; elsewhere only in tests).
+    const abstract = process.platform === "linux" ? `lc-egress-${token}` : "";
+    if (abstract) await listen(serve(socket => { hits.abstract++; socket.destroy(); }), `\0${abstract}`);
+    // A resolver on loopback (127.0.0.53) answers nothing in the sandbox's own network either: not asked.
+    const resolvers = (fs.existsSync("/etc/resolv.conf") ? fs.readFileSync("/etc/resolv.conf", "utf8") : "").split("\n")
+      .map(line => /^\s*nameserver\s+(\S+)/.exec(line)?.[1]).filter((item): item is string => Boolean(item) && !/^(127\.|::1$)/.test(item!)).slice(0, 3);
+    const endpoint = { host: "127.0.0.1", port: 0, socketPath };
+    const run = (executable: string, args: string[]) => {
+      const wrapped = provider.wrap(executable, args, work!, [], endpoint);
+      return new Promise<string>(resolve => execFile(wrapped.executable, wrapped.args, { cwd: work, env: wrapped.env, timeout: 30_000 }, (_error, out) => resolve(String(out))));
+    };
+    const stdout = await run(runtime, ["-e", EGRESS_PROBE, token, String(portOf(other4)), String(has6 ? portOf(other6) : 0), String(portOf(host)), abstract, resolvers.join(","), ...addresses]);
+    const lines = (name: string, text = stdout) => text.split("\n").filter(item => item.startsWith(`${name}=`)).map(item => item.slice(name.length + 1));
     if (!stdout.includes("LC_EGRESS_END")) return "the check did not run to its end";
-    if (line("PROXY")[0] !== `open:${token}` || hits.proxy < 1) return "the proxy did not answer through the sandbox";
-    if (!line("OTHER")[0]?.startsWith("closed") || hits.other > 0) return "a sandboxed process reached another port on this machine";
-    if (line("HOST").some(item => !item.startsWith("closed")) || hits.host > 0) return "a sandboxed process reached this machine's own address";
-    if (line("DNS")[0] !== "fail") return "a sandboxed process resolved a name";
-    if (line("IFACES")[0] !== "lo") return "the sandbox has a network interface besides lo";
-    let own = ""; try { own = fs.readlinkSync("/proc/self/ns/net"); } catch { /* not Linux */ }
-    if (!line("NETNS")[0] || line("NETNS")[0] === own) return "the sandbox shares the server's network";
-    if (line("UNLINK")[0] === "done" || !fs.existsSync(socketPath)) return "a sandboxed process could replace the proxy's socket";
+    if (lines("PROXY")[0] !== `open:${token}` || hits.proxy < 1) return "the proxy did not answer through the sandbox";
+    if (lines("OTHER").some(item => !item.startsWith("closed")) || hits.other > 0) return "a sandboxed process reached another port on this machine";
+    if (lines("HOST").some(item => !item.startsWith("closed")) || hits.host > 0) return "a sandboxed process reached this machine's own address";
+    if ((abstract && !lines("ABSTRACT")[0]?.startsWith("closed")) || hits.abstract > 0) return "a sandboxed process reached an abstract socket of this machine";
+    if (lines("UDP").some(item => item === "sent")) return "a sandboxed process could send to this machine's resolver";
+    if (lines("DNS")[0] !== "fail") return "a sandboxed process resolved a name";
+    if (lines("ROUTES")[0] !== "none") return `the sandbox has a route besides lo (${lines("ROUTES")[0]})`;
+    let ours = ""; try { ours = fs.readlinkSync("/proc/self/ns/net"); } catch { /* not Linux */ }
+    if (!lines("NETNS")[0] || lines("NETNS")[0] === ours) return "the sandbox shares the server's network";
+    if (lines("UNLINK")[0] === "done" || !fs.existsSync(socketPath)) return "a sandboxed process could replace the proxy's socket";
+    const vsock = lines("VSOCK", await run(python, ["-I", "-c", VSOCK_PROBE]))[0];
+    if (vsock !== "blocked") return vsock === "open" ? "a sandboxed process could open a vsock to the host (run the server with its systemd unit)" : "the vsock check did not run";
     return undefined;
   } catch (error) {
     return `it could not be checked (${error instanceof Error ? error.message : String(error)})`;
   } finally {
-    for (const server of [proxy, other, host]) server.close();
-    for (const dir of [folder, work]) fs.rmSync(dir, { recursive: true, force: true });
+    for (const server of servers) server.close();
+    for (const dir of [folder, work]) if (dir) fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 

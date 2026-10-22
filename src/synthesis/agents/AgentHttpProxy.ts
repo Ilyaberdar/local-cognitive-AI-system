@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { allowed, defaultHooks, parseTarget, resolveAndPin, type Hooks, type RequestBudget, type Target } from "./AgentHttp";
 
-/** A loopback HTTP(S) proxy a sandboxed terminal is pointed at, so a real tool (curl, a scanner) reaches
+/** An HTTP(S) proxy a sandboxed terminal is pointed at (a loopback port, or on Linux a UNIX socket), so a real tool (curl, a scanner) reaches
  * only the web targets the agent's allowlist permits — the same allowlist, owner consent and run budget
  * as http.request, enforced here because the sandbox's one way out is this proxy. A plain HTTP request is
  * checked in full (scheme, host, port and path prefix); an HTTPS request arrives as CONNECT, whose path
@@ -15,6 +15,9 @@ import { allowed, defaultHooks, parseTarget, resolveAndPin, type Hooks, type Req
 export interface EgressProxy { url: string; endpoint: { host: string; port: number; socketPath?: string }; close(): Promise<void> }
 /** The longest UNIX socket path every platform takes (sun_path is 104 or 108 bytes). */
 const MAX_SOCKET_PATH = 100;
+/** A command could otherwise open connections without end (each a descriptor in the engine's process)
+ * and starve every run: a few at once, and one that sends nothing is closed soon. */
+const MAX_CONNECTIONS = 64, SILENT_MS = 10_000;
 export interface EgressOptions {
   /** The agent's web targets (a subset of what the project allows). */
   allow: readonly string[];
@@ -28,8 +31,11 @@ export interface EgressOptions {
   recheckMs?: number;
   /** Listen on a UNIX socket (proxy.sock, alone in a new folder only this user may open) instead of a
    * loopback port: a Linux sandbox has a network of its own with nothing in it, and reaches the proxy
-   * only through this socket, bound into it read-only. */
+   * only through this socket. Its folder is bound into the sandbox read-only, so the socket cannot be
+   * replaced; a command may still connect to it directly, which reaches the same proxy. */
   unix?: boolean;
+  /** How long a connection may stay silent before its request (default 10 s); a test seam. */
+  silentMs?: number;
 }
 
 /** Headers the proxy never forwards: the hop's own, and any that would carry proxy credentials onward. */
@@ -48,11 +54,14 @@ export async function createEgressProxy(options: EgressOptions): Promise<EgressP
   /** Shared by plain requests and CONNECT: the owner still consents, and the run has budget left.
    * Returns a reason to refuse, or undefined to let it through. Budget is spent only on an allowed hop. */
   const gate = async (): Promise<string | undefined> => {
+    // A spent budget answers at once, without asking the project again.
+    if (budget.remaining <= 0) return "This run has used its budget of agent HTTP requests.";
     try { await consent?.(allow); } catch (error) { return error instanceof Error ? error.message : String(error); }
     return budget.take() ? undefined : "This run has used its budget of agent HTTP requests.";
   };
 
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    req.socket.setTimeout(0);
     const deny = (status: number, message: string) => { res.writeHead(status, { "content-type": "text/plain" }); res.end(message); };
     let url: URL;
     try { url = new URL(req.url ?? ""); } catch { deny(400, "A proxied request uses an absolute URL."); return; }
@@ -82,6 +91,7 @@ export async function createEgressProxy(options: EgressOptions): Promise<EgressP
   async function handleConnect(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
     // Attached before any await: a reset while the gate or resolve runs must not throw past this handler.
     socket.on("error", () => socket.destroy());
+    socket.setTimeout(0);
     const end = (line: string) => { try { socket.write(`HTTP/1.1 ${line}\r\n\r\n`); } catch { /* the client is gone */ } socket.destroy(); };
     const match = /^([^:]+):(\d+)$/.exec(req.url ?? "");
     const host = match?.[1], port = Number(match?.[2]);
@@ -114,6 +124,11 @@ export async function createEgressProxy(options: EgressOptions): Promise<EgressP
   server.on("connect", (req, socket, head) => void handleConnect(req, socket as net.Socket, head));
   // A malformed request from a tool closes its own socket, never the engine's process.
   server.on("clientError", (_error, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
+  server.maxConnections = MAX_CONNECTIONS;
+  server.headersTimeout = Math.max(options.silentMs ?? SILENT_MS, 1000);
+  server.keepAliveTimeout = 5_000;
+  // Until its request (or CONNECT) begins; the handlers then clear it and the upstream's own timeouts apply.
+  server.on("connection", socket => socket.setTimeout(options.silentMs ?? SILENT_MS, () => socket.destroy()));
   if (options.unix) {
     // mkdtemp makes the folder 0700: only this user (the server's) may connect to the socket in it.
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), "lce-"));
