@@ -88,7 +88,7 @@ export class AgentLoopRunner {
     if(run&&(run.fingerprint!==fingerprint||(run.budgetId&&run.budgetId!==budgetId)))throw new Error("Agent run parameters changed. Start a new run.");
     if(!run){run={id:input.id,fingerprint,input:input.input,instructions:input.instructions,status:"running",turns:[],tools:[],steps:0,repairs:0,activeMs:0,usage:{}};await this.store.save(run);}
     if(run.status==="completed"||run.status==="failed")return this.result(run);
-    run.protocol??=this.llm.supportsNativeTools?.(input.target.providerId)?"native":this.llm.supportsStructuredOutputs?.(input.target.providerId)?"schema":"json";
+    run.protocol??=this.llm.supportsNativeTools?.(input.target.providerId,input.target.model)?"native":this.llm.supportsStructuredOutputs?.(input.target.providerId)?"schema":"json";
     run.budgetId=budgetId;run.limits=restrictAgentLimits(run.limits,this.limits);
     const ceiling=input.readOnly?run.limits.advisorMaxSteps:run.limits.maxSteps;
     const requested=Number.isFinite(input.maxSteps)?Math.max(0,Math.floor(input.maxSteps!)):ceiling;

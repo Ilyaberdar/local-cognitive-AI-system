@@ -16,6 +16,11 @@ import { RemoteOperationError, type OperationContext } from "../src/remote/host/
 import { createSettingsOperations } from "../src/runtime/settingsOperations";
 import type { AppSettingsPatch, LLMRequest } from "../src/types";
 import { Logger } from "../src/utils/Logger";
+import { LLMRegistry } from "../src/llm/LLMRegistry";
+import { LLMService } from "../src/llm/LLMService";
+import { OutputSanitizer } from "../src/llm/OutputSanitizer";
+import { unsupportedFeature } from "../src/llm/provider-utils";
+import { agentFunctionTools } from "../src/tools/AgentTool";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { JSDOM } = require("jsdom");
@@ -97,7 +102,7 @@ test("Qwen: retried on an overload that says when, not configured without a key,
   const response = await qwen(wrongRegion.fetchImpl).generateText({ prompt: "Say hi" });
   assert.match(response.error!, /HTTP 401.*Incorrect API key provided/);
   const descriptor = qwen(overloaded.fetchImpl).getDescriptor();
-  assert.deepEqual(descriptor.capabilities, { local: false, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: false, reasoning: true, vision: true });
+  assert.deepEqual(descriptor.capabilities, { local: false, managed: false, jsonMode: true, nativeTools: true, structuredOutputs: false, reasoning: true, vision: true });
 });
 
 test("Qwen lists its chat models, and its known models when the list cannot be read", async () => {
@@ -290,6 +295,151 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
     assert.match(preset.baseUrl, /^https:\/\//);
     assert.equal(compatibleDialect(preset.dialect).id, preset.dialect, preset.id);
   }
+});
+
+const agentTools = agentFunctionTools(false, { only: ["file.read", "file.write"] });
+const presetProvider = (id: string, fetchImpl: typeof fetch, model?: string) => {
+  const preset = providerPreset(id)!;
+  return new OpenAICompatibleProvider({ id, name: preset.name, baseUrl: preset.id === "qwen" ? SINGAPORE : preset.baseUrl, model: model ?? preset.model, timeoutMs: 1000, apiKey: "sk-test-1234", dialect: compatibleDialect(preset.dialect) }, new Logger(), fetchImpl);
+};
+const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } });
+const chatCalls = (...calls: unknown[]) => Response.json({ id: "chat-1", choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: calls } }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } });
+const agentRequest = (extra: Partial<LLMRequest> = {}): LLMRequest => ({ prompt: "Read a.ts", systemPrompt: "You are an agent.", outputPurpose: "agent-action", tools: agentTools, ...extra });
+
+// From live runs of Synthesis agents: in JSON, gpt-5.4-nano through Perplexity had 24% of its steps refused
+// and DeepSeek 21%; through the services' own function calls, none.
+test("agents act through each service's own function calls: chat tool calls for DeepSeek, Groq, OpenRouter and Qwen, function tools for Perplexity", async () => {
+  for (const id of ["deepseek", "groq", "openrouter"]) {
+    const { calls, fetchImpl } = service(() => chatCalls(toolCall("call_1", "file_read", { path: "a.ts", startLine: null, endLine: null })));
+    const provider = presetProvider(id, fetchImpl);
+    assert.equal(provider.getDescriptor().capabilities?.nativeTools, true, id);
+    assert.equal(compatibleDialect(id).nativeTools, "chat", id);
+    const response = await provider.generateText(agentRequest());
+    assert.match(calls[0].url, /\/chat\/completions$/, id);
+    const body = calls[0].body;
+    assert.deepEqual(body.tools.map((tool: any) => tool.function.name), ["file_read", "file_write"], id);
+    assert.equal(body.tools[0].type, "function");
+    assert.equal(body.tools[0].function.strict, undefined, `${id}: no strict field on chat tools`);
+    assert.doesNotMatch(JSON.stringify(body.tools), /minLength|maxLength/, id);
+    assert.equal(body.tool_choice, "auto", id);
+    assert.equal(body.parallel_tool_calls, false, id);
+    assert.equal(body.response_format, undefined, `${id}: no JSON mode beside tools`);
+    assert.deepEqual(response.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts" } }, id);
+    assert.equal(response.toolCallId, "call_1");
+    assert.equal(response.outputItems, undefined, `${id}: stateless, nothing kept for a continuation`);
+    assert.equal(response.protocolError, undefined);
+    assert.equal(response.error, undefined);
+    // The last turn asks for an answer in text.
+    await provider.generateText(agentRequest({ toolChoice: "none" }));
+    assert.equal(calls[1].body.tool_choice, "none", id);
+    // A prose request has no tools.
+    await provider.generateText({ prompt: "Say hi" });
+    assert.equal(calls[2].body.tools, undefined, id);
+  }
+  // A reply in text is the final answer; several calls at once (DeepSeek's chat sends them whatever
+  // parallel_tool_calls says): the first runs and the others are named.
+  const replies = [
+    Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "## Findings\n\n- a.ts:1 swallows an error" } }] }),
+    chatCalls(toolCall("call_1", "file_read", { path: "a.ts", startLine: 1, endLine: null }), toolCall("call_2", "file_read", { path: "b.ts", startLine: null, endLine: null })),
+    Response.json({ choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: "", tool_calls: [{ id: "call_3", type: "function", function: { name: "file_list", arguments: "{}" } }] } }] }),
+    Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}' } }] })
+  ];
+  const deepseek = presetProvider("deepseek", service((_call, index) => replies[index]!).fetchImpl);
+  assert.deepEqual((await deepseek.generateText(agentRequest())).agentAction, { type: "final", text: "## Findings\n\n- a.ts:1 swallows an error" });
+  const several = await deepseek.generateText(agentRequest());
+  assert.deepEqual(several.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts", startLine: 1 } });
+  assert.deepEqual(several.extraCalls, { count: 1, callIds: ["call_2"] });
+  assert.match((await deepseek.generateText(agentRequest())).protocolError!, /Unknown function: file_list/, "a tool it was not given never runs");
+  const written = await deepseek.generateText(agentRequest());
+  assert.equal(written.agentAction, undefined, "a tool call written as text never runs");
+  assert.match(written.protocolError!, /wrote a tool call as text, so nothing ran.*call the function itself/);
+
+  // Qwen streams its tool calls: the id and name once, the arguments in pieces.
+  const qwenStream = service(() => sse(
+    { choices: [{ index: 0, delta: { reasoning_content: "I should read it." } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_q", type: "function", function: { name: "file_read", arguments: "" } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "{\"path\":" } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\"a.ts\",\"startLine\":null,\"endLine\":null}" } }] }, finish_reason: "tool_calls" }] },
+    { choices: [], usage: { prompt_tokens: 20, completion_tokens: 9, total_tokens: 29 } }));
+  const qwenReply = await presetProvider("qwen", qwenStream.fetchImpl).generateText(agentRequest({ reasoningEffort: "medium" }));
+  assert.equal(qwenStream.calls[0].body.stream, true);
+  assert.equal(qwenStream.calls[0].body.tool_choice, "auto");
+  assert.equal(qwenStream.calls[0].body.messages[0].content, "You are an agent.", "no JSON word beside tools");
+  assert.deepEqual(qwenReply.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts" } });
+  assert.equal(qwenReply.toolCallId, "call_q");
+
+  // Perplexity's Agent API: function tools on the Responses API, strict, never web search beside them.
+  const perplexity = service(() => Response.json({ id: "resp_p", status: "completed", model: "openai/gpt-5.4-nano",
+    output: [{ type: "function_call", call_id: "call_p", name: "file_read", arguments: "{\"path\":\"a.ts\",\"startLine\":null,\"endLine\":null}", status: "completed" }] }));
+  const sonar = presetProvider("perplexity", perplexity.fetchImpl);
+  assert.equal(sonar.getDescriptor().capabilities?.nativeTools, true);
+  assert.equal(sonar.getDescriptor().capabilities?.structuredOutputs, false, "its JSON schema reorders the keys");
+  const action = await sonar.generateText(agentRequest());
+  await sonar.generateText(agentRequest({ model: "openai/gpt-5.4-nano", toolChoice: "none" }));
+  assert.equal(perplexity.calls[0].url, "https://api.perplexity.ai/v1/responses");
+  assert.equal(perplexity.calls[0].body.preset, "fast");
+  assert.deepEqual(perplexity.calls[0].body.tools.map((tool: any) => [tool.type, tool.name, tool.strict]), [["function", "file_read", true], ["function", "file_write", true]]);
+  assert.equal(perplexity.calls[0].body.parallel_tool_calls, false);
+  assert.equal(perplexity.calls[0].body.tool_choice, undefined);
+  assert.equal(perplexity.calls[1].body.model, "openai/gpt-5.4-nano");
+  assert.ok(perplexity.calls[1].body.tools.every((tool: any) => tool.type === "function"), "a hosted model gets no web search beside its tools");
+  assert.equal(perplexity.calls[1].body.tool_choice, "none");
+  assert.deepEqual(action.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts" } });
+  assert.equal(action.toolCallId, "call_p");
+  assert.ok(action.outputItems?.length, "the Responses API continues with its own items");
+
+  // A service added as Other acts in JSON: nothing here says it reads tool calls.
+  const other = service(() => Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "{}" } }] }));
+  const custom = new OpenAICompatibleProvider({ id: "custom", name: "Custom", baseUrl: "https://llm.example/v1", model: "m", timeoutMs: 1000, apiKey: "k", dialect: CHAT_DIALECT }, new Logger(), other.fetchImpl);
+  await custom.generateText(agentRequest());
+  assert.equal(custom.getDescriptor().capabilities?.nativeTools, false);
+  assert.equal(other.calls[0].body.tools, undefined);
+  // The app's own runtimes never get chat tools.
+  for (const id of ["llamacpp", "lmstudio"]) assert.equal(dialectFor(id).nativeTools, undefined, id);
+});
+
+test("a model that refuses tools acts in JSON from then on, and Groq's unreadable tool call costs a correction, not the run", async () => {
+  // OpenRouter: a model no endpoint serves with tools.
+  const refusal = { error: { message: "No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing", code: 404 } };
+  const openrouter = service(call => call.body.model === "meta/no-tools" ? Response.json(refusal, { status: 404 }) : chatCalls(toolCall("call_1", "file_read", { path: "a.ts", startLine: null, endLine: null })));
+  const provider = presetProvider("openrouter", openrouter.fetchImpl, "meta/no-tools");
+  const refused = await provider.generateText(agentRequest());
+  assert.equal(refused.unsupportedFeature, "tools");
+  assert.match(refused.error!, /No endpoints found that support tool use/);
+  assert.equal(provider.toolsRefused("meta/no-tools"), true);
+  assert.equal(provider.toolsRefused("openai/gpt-5-mini"), false);
+  const again = await provider.generateText(agentRequest());
+  assert.equal(again.unsupportedFeature, "tools");
+  assert.equal(openrouter.calls.length, 1, "not asked again with tools");
+  assert.equal((await provider.generateText(agentRequest({ model: "openai/gpt-5-mini" }))).agentAction?.type, "tool_call", "another model keeps its tools");
+  const registry = new LLMRegistry(); registry.register(provider);
+  const llm = new LLMService(registry, "openrouter", new Logger(), new OutputSanitizer());
+  assert.equal(llm.supportsNativeTools("openrouter", "meta/no-tools"), false);
+  assert.equal(llm.supportsNativeTools("openrouter", "openai/gpt-5-mini"), true);
+  assert.equal(llm.supportsNativeTools("openrouter"), false, "the provider's own model is meta/no-tools");
+  // vLLM without its tool parser, and OpenRouter's words, fall back; a refused key never does.
+  const tools = agentRequest();
+  assert.equal(unsupportedFeature(400, "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set", tools), "tools");
+  assert.equal(unsupportedFeature(404, "No endpoints found that support tool use.", tools), "tools");
+  assert.equal(unsupportedFeature(401, "No endpoints found that support tool use.", tools), undefined);
+  assert.equal(unsupportedFeature(400, "Invalid API key", tools), undefined);
+
+  // Groq refuses a tool call it could not read, with what the model wrote.
+  const failed = { error: { message: "Failed to call a function. Please adjust your prompt. See 'failed_generation' for more details.", type: "invalid_request_error", code: "tool_use_failed",
+    failed_generation: "<function=file_read>{\"path\": \"a.ts\"}</function>" } };
+  const groq = service(() => Response.json(failed, { status: 400 }));
+  const reply = await presetProvider("groq", groq.fetchImpl).generateText(agentRequest());
+  assert.equal(reply.error, undefined);
+  assert.equal(reply.agentAction, undefined);
+  assert.match(reply.protocolError!, /function call could not be read, so nothing ran/);
+  assert.equal(reply.text, failed.error.failed_generation);
+  const json = { error: { message: "Failed to generate JSON.", type: "invalid_request_error", code: "json_validate_failed", failed_generation: "{\"type\":\"tool_call\"," } };
+  const jsonMode = await presetProvider("groq", service(() => Response.json(json, { status: 400 })).fetchImpl).generateText({ prompt: "Next action", outputPurpose: "agent-action", responseFormat: { type: "json_object" } });
+  assert.match(jsonMode.protocolError!, /not valid JSON, so nothing ran/);
+  // Anything else than an agent's action stays an error.
+  const chat = await presetProvider("groq", service(() => Response.json(json, { status: 400 })).fetchImpl).generateText({ prompt: "Classify", responseFormat: { type: "json_object" } });
+  assert.match(chat.error!, /HTTP 400.*Failed to generate JSON/);
+  assert.equal(chat.protocolError, undefined);
 });
 
 test("an added provider is saved, registered with its preset's catalog, and removed; the built-ins and the default stay", async t => {

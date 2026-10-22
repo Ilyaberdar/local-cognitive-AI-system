@@ -38,3 +38,20 @@ test("streaming is local plain-text only and is never enabled for executable age
   await provider.generateText({prompt:"act",outputPurpose:"agent-action",onTextDelta:()=>{}});
   assert.equal(bodies[0].stream,true); assert.equal(bodies[1].stream,undefined);
 });
+
+test("streamed tool calls are put together by index: the id and name once, the arguments in pieces", async () => {
+  const source = [
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", type: "function", function: { name: "file_read", arguments: "" } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "{\"path\":" } }, { index: 1, id: "call_b", function: { name: "file_list", arguments: "{}" } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "file_read", arguments: "\"a.ts\"}" } }] }, finish_reason: "tool_calls" }] }
+  ].map(x => `data: ${JSON.stringify(x)}\n\n`).join("") + "data: [DONE]\n\n";
+  const shown: string[] = [];
+  const result: any = await readLocalChatStream(streamResponse(source), text => shown.push(text));
+  assert.deepEqual(shown, [], "a tool call is never shown as text");
+  assert.deepEqual(result.choices[0].message.tool_calls, [
+    { id: "call_a", type: "function", function: { name: "file_read", arguments: "{\"path\":\"a.ts\"}" } },
+    { id: "call_b", type: "function", function: { name: "file_list", arguments: "{}" } }]);
+  assert.equal(result.choices[0].finish_reason, "tool_calls");
+  const prose: any = await readLocalChatStream(streamResponse('data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), () => {});
+  assert.equal(prose.choices[0].message.tool_calls, undefined);
+});

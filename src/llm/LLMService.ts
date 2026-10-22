@@ -33,8 +33,10 @@ export class LLMService {
     return this.registry.get(providerId).getContextWindow?.(modelId);
   }
 
-  supportsNativeTools(providerId: string): boolean {
-    return this.registry.get(providerId).getDescriptor().capabilities?.nativeTools === true;
+  /** With a model: false also for one that refused function tools earlier (its agents act in JSON). */
+  supportsNativeTools(providerId: string, model?: string): boolean {
+    const provider = this.registry.get(providerId);
+    return provider.getDescriptor().capabilities?.nativeTools === true && !provider.toolsRefused?.(model);
   }
 
   supportsStructuredOutputs(providerId: string): boolean {

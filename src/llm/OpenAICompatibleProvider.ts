@@ -6,6 +6,7 @@ import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { validateImages } from "./InferenceImages";
 import { readLocalChatStream } from "./LocalChatStream";
 import { readNativeAgentResponse, responseMessages } from "./ResponseItems";
+import { chatAgentResponse } from "./NativeToolTransport";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -30,6 +31,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly effortCap = new Set<string>();
   /** Models that refused encrypted reasoning items (not reasoning models). */
   private readonly withoutEncrypted = new Set<string>();
+  /** Models that refused function tools (an OpenRouter model no endpoint serves with tools): their
+   * agents act in JSON from then on, and a request with tools is answered as refused without sending it. */
+  private readonly withoutTools = new Map<string, string>();
   readonly id: string;
   readonly name: string;
   readonly defaultModel: string;
@@ -48,6 +52,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   isConfigured(): boolean {
     return this.options.enabled !== false && Boolean(this.options.baseUrl && this.options.model && (!this.dialect.requiresKey || this.options.apiKey));
+  }
+
+  /** Whether this model refused function tools in this session. */
+  toolsRefused(model?: string): boolean {
+    return this.withoutTools.has(model ?? this.options.model);
   }
 
   getDescriptor(): ProviderDescriptor {
@@ -113,7 +122,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const useChat = Boolean(dialect.chatOnly) || stream || (images.length > 0 && !dialect.allOnResponses) || localBudget !== undefined ||
         Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
         (!dialect.allOnResponses && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
-      const nativeTools = dialect.nativeTools === "responses" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
+      const nativeTools = dialect.nativeTools && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
+      const refusedTools = nativeTools ? this.withoutTools.get(model) : undefined;
+      if (refusedTools !== undefined) return { provider: this.id, model, text: "", error: refusedTools, unsupportedFeature: "tools" };
       const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
       // A cloud service is retried on overload and rate limits as its SDK does; a local server is not.
       const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
@@ -159,7 +170,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(dialect.thinking === "reasoning" && effort ? { reasoning: { effort } } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
-          ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
+          // Chat tool calls, one a turn (DeepSeek may send several anyway: the first runs).
+          ...(nativeTools ? { tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters: strictSchema(parameters) } })),
+            tool_choice: request.toolChoice ?? "auto", parallel_tool_calls: false } : {}),
+          ...(!nativeTools && request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
             ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
             : request.responseFormat } : {})
         } : {
@@ -213,7 +227,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
           this.withoutEncrypted.add(model);
           return this.generateText(request);
         }
+        // Groq reads the tool call (or the JSON) a model wrote and refuses one that does not parse, with what it
+        // wrote: a malformed reply that costs the agent a correction, not its run.
+        const failed = request.outputPurpose === "agent-action" && response.status === 400 ? failedGeneration(body) : undefined;
+        if (failed) return { provider: this.id, model, text: failed.text, protocolError: failed.reason };
         const unsupported = unsupportedFeature(response.status, detail, request);
+        if (unsupported === "tools" && nativeTools) this.withoutTools.set(model, detail);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         // The app's own llama.cpp server has no key a person enters.
         const refused = this.id === "llamacpp" ? undefined : refusalMessage(this.name, response.status, body.slice(0, 1500));
@@ -242,7 +261,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         : (await response.json()) as Record<string, unknown>;
       if (streamPhase === "thinking") emitNote();
       const text = readResponseText(payload);
-      const action = nativeTools ? readNativeAgentResponse(payload, nativeTools) : undefined;
+      const action = nativeTools ? useChat ? chatAgentResponse(payload, nativeTools) : readNativeAgentResponse(payload, nativeTools) : undefined;
       const ambiguousJson = !nativeTools && request.responseFormat && responseMessages(payload).length > 1
         ? "The provider returned multiple final messages for one JSON response; they were not concatenated." : undefined;
       // A bounded prose answer is usable; truncated JSON/tool actions must still fail closed.
@@ -286,6 +305,18 @@ function strictSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(strictSchema);
   if (!schema || typeof schema !== "object") return schema;
   return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== "minLength" && key !== "maxLength").map(([key, value]) => [key, strictSchema(value)]));
+}
+
+/** Groq's refusal of a tool call or JSON the model wrote that did not parse (400 tool_use_failed or
+ * json_validate_failed): what the model wrote, and what to send instead. */
+function failedGeneration(body: string): { text: string; reason: string } | undefined {
+  let error: Record<string, unknown> | undefined;
+  try { error = JSON.parse(body)?.error; } catch { return undefined; }
+  if (!error || typeof error !== "object" || !["tool_use_failed", "json_validate_failed"].includes(String(error.code))) return undefined;
+  const text = typeof error.failed_generation === "string" ? error.failed_generation : "";
+  return { text, reason: error.code === "tool_use_failed"
+    ? "Your function call could not be read, so nothing ran. Call one function, with its arguments as one JSON object."
+    : "Your reply was not valid JSON, so nothing ran. Send only the one JSON object." };
 }
 
 /** Why an answer has no text: only reasoning, or the model stopped at once. The words before the colon

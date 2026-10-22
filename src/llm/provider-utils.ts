@@ -28,9 +28,11 @@ export const createDescriptor = (
 export const buildComposedPrompt = (request: LLMRequest): string =>
   request.systemPrompt ? `${request.systemPrompt}\n\n${request.prompt}` : request.prompt;
 
-/** Downgrade only an explicitly unsupported protocol, never auth, quota, timeout or execution failures. */
+/** Downgrade only an explicitly unsupported protocol, never auth, quota, timeout or execution failures.
+ * OpenRouter answers a model that has no endpoint with tools 404 "No endpoints found that support tool use";
+ * vLLM without its tool parser says '"auto" tool choice requires --enable-auto-tool-choice'. */
 export function unsupportedFeature(status: number, detail: string, request: LLMRequest): LLMResponse["unsupportedFeature"] {
-  if (![400, 404, 422, 501].includes(status) || !/not support|unsupported|not available|not implemented|not permitted|unknown (?:field|parameter|name)|unrecognized|extra inputs|invalid json payload/i.test(detail)) return;
+  if (![400, 404, 422, 501].includes(status) || !/not support|unsupported|not available|not implemented|not permitted|unknown (?:field|parameter|name)|unrecognized|extra inputs|invalid json payload|no endpoints found that support|enable-auto-tool-choice|tool.?choice.*requires/i.test(detail)) return;
   if (request.tools?.length && /tool|function/i.test(detail)) return "tools";
   if (request.responseFormat && /schema|format|structured|json|grammar/i.test(detail)) return request.responseFormat.type === "json_schema" ? "schema" : "json";
 }
