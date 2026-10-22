@@ -23,6 +23,7 @@ import { PROVIDER_PRESETS } from "../llm/providerCatalog";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { compatibleDialect, isProviderDialect } from "../llm/ProviderDialect";
 import { Logger } from "../utils/Logger";
+import { checkProvider, currentStatuses, ProviderStatus, ProviderStatusStore, statusFingerprint } from "../llm/providerStatus";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -681,6 +682,12 @@ export const createProviderTestController =
 
       const failed = response.error || !response.text.trim() ||
         response.text.startsWith(`Mock response from ${providerId}`);
+      // The test is a check too: the list shows its result (a refused key, a working one).
+      const refused = /refused the (?:API key|request) \(HTTP (\d{3})/.exec(response.error ?? "");
+      if (!failed || refused) await new ProviderStatusStore(runtimeManager.dataDir()).write({ [providerId]: {
+        checkedAt: new Date().toISOString(), fingerprint: statusFingerprint(providerSettings),
+        ...(failed ? { state: "rejected" as const, httpStatus: Number(refused![1]), message: `Key refused (HTTP ${refused![1]})` } : { state: "connected" as const, message: `Answered with ${response.model}` })
+      } }, Object.keys(settings.providers)).catch(() => undefined);
 
       if (failed) {
         res.status(200).json({
@@ -705,6 +712,32 @@ export const createProviderTestController =
     }
   };
 
+
+/** The last check of each provider (never a key), for the providers' current key and address. */
+export const createProviderStatusController = (runtimeManager: RuntimeManager) =>
+  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const settings = await runtimeManager.getSettings();
+      res.json({ providers: currentStatuses(await new ProviderStatusStore(runtimeManager.dataDir()).read(), settings.providers) });
+    } catch (error) { next(error); }
+  };
+
+/** Checks enabled providers now (all, or `ids`): each lists its models with its saved key, which
+ * costs nothing, at most 10 s each. A cloud provider without a key is not asked. */
+export const createProviderCheckController = (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const settings = await runtimeManager.getSettings();
+      const runtime = runtimeManager.getRuntime();
+      const wanted = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).filter((id): id is string => typeof id === "string") : undefined;
+      const ids = Object.entries(settings.providers).filter(([id, provider]) => id !== "llamacpp" && provider.enabled !== false && (!wanted || wanted.includes(id))
+        && runtime.providerDescriptors.find(descriptor => descriptor.id === id)?.configured === true).map(([id]) => id);
+      const results: Record<string, ProviderStatus> = Object.fromEntries(await Promise.all(ids.map(async id =>
+        [id, await checkProvider(() => runtime.modelCatalog.probe(id), settings.providers[id]!)] as const)));
+      const saved = await new ProviderStatusStore(runtimeManager.dataDir()).write(results, Object.keys(settings.providers));
+      res.json({ providers: currentStatuses(saved, settings.providers) });
+    } catch (error) { next(error); }
+  };
 
 const isObject = (
   value: unknown

@@ -49,6 +49,9 @@ export class RuntimeManager {
   /** Secrets of external MCP servers (env, headers, bearer tokens), in the vault. */
   readonly mcpSecrets: VaultMcpCredentialProvider;
 
+  /** Where the app keeps its data (settings, provider checks). */
+  dataDir(): string { return this.baseConfig.appDataDir; }
+
   getPluginManager() { if (!this.plugins) throw new Error("Plugins are not initialized."); return this.plugins; }
   getConnectionService() { if (!this.direct) throw new Error("Connections are not initialized."); return this.direct.oauth; }
 

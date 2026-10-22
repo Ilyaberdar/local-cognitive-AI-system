@@ -626,7 +626,7 @@
   "provider": "openai",
   "model": "openai-model",
   "text": "",
-  "error": "openai request failed (HTTP 401): Invalid API key"
+  "error": "openai refused the API key (HTTP 401, Invalid API key). The key is not valid: it was mistyped, expired or revoked. Enter a new one in Settings → Models & Providers."
  },
  "lmstudio · prose": {
   "calls": [
@@ -1134,7 +1134,7 @@
   "provider": "lmstudio",
   "model": "lmstudio-model",
   "text": "",
-  "error": "lmstudio request failed (HTTP 401): Invalid API key"
+  "error": "lmstudio refused the API key (HTTP 401, Invalid API key). The key is not valid: it was mistyped, expired or revoked. Enter a new one in Settings → Models & Providers."
  },
  "llamacpp · prose": {
   "calls": [

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.8 — 2026-10-22
+
+A fix for Models & Providers: it now says which providers work.
+
+### Models & Providers
+
+- **Each provider shows its state.** The list said "Enabled · connection not checked" for every provider, so a cloud key the service had stopped accepting looked like providers lost after an update. Now each row says Connected (with its models), Key refused (with the service's status), No API key, or Not running for Ollama and LM Studio that aren't open, with the time of the check, and a line above the list counts them. The page checks the providers when it opens by listing their models, which costs nothing, and remembers the results (never a key). A changed key is checked again at once, and **Save & test provider** updates the state too.
+- **A refused key reads plainly in a chat:** "Anthropic refused the API key (HTTP 401, authentication_error: invalid x-api-key). The key is not valid: it was mistyped, expired or revoked. Enter a new one in Settings → Models & Providers." It showed the service's raw JSON before. The same goes for OpenAI, Gemini and added providers.
+
 ## 0.1.7 — 2026-10-21
 
 Synthesis with cloud models and agents in parallel: tens of agents on one task, with file rights set in the flow, checkouts as in Perforce, and a terminal in a sandbox.

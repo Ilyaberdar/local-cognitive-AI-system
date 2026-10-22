@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { ProviderHttpError } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
 import {
   buildComposedPrompt,
@@ -50,7 +51,7 @@ export class OllamaProvider implements LLMProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama tags request failed with status ${response.status}`);
+      throw new ProviderHttpError(`Ollama tags request failed with status ${response.status}`, response.status);
     }
 
     const payload = (await response.json()) as {

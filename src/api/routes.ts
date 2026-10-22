@@ -33,6 +33,8 @@ import {
   createProcessController,
   createListProcessRunsController,
   createProviderTestController,
+  createProviderStatusController,
+  createProviderCheckController,
   createProviderDiscoverController,
   createProcessRunStatusController,
   createReviewProcessRunController,
@@ -138,6 +140,8 @@ export const createApiRouter = (
   router.get("/app/settings", createGetAppSettingsController(runtimeManager));
   router.put("/app/settings", createUpdateAppSettingsController(runtimeManager));
   router.post("/providers/discover", createProviderDiscoverController());
+  router.get("/providers/status", createProviderStatusController(runtimeManager));
+  router.post("/providers/status", createProviderCheckController(runtimeManager));
   router.post("/providers/:providerId/test", createProviderTestController(runtimeManager));
   router.post("/runtime/reload", createRuntimeReloadController(runtimeManager));
 

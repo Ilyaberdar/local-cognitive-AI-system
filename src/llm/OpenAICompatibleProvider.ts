@@ -2,6 +2,7 @@ import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../t
 import { answerStream, finalAnswerSoFar } from "./AnswerStream";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { validateImages } from "./InferenceImages";
 import { readLocalChatStream } from "./LocalChatStream";
 import { readNativeAgentResponse, responseMessages } from "./ResponseItems";
@@ -74,7 +75,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (!response.ok) {
       // A service that lists no models (or not on this path) still offers its known chat models.
       if (known && !options.strict) return known.fallback.map(id => ({ id, providerId: this.id, providerName: this.name }));
-      throw new Error(`${this.id} models request failed with status ${response.status}`);
+      throw new ProviderHttpError(`${this.id} models request failed with status ${response.status}`, response.status);
     }
 
     const payload = (await response.json()) as {
@@ -213,6 +214,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
         }
         const unsupported = unsupportedFeature(response.status, detail, request);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
+        // The app's own llama.cpp server has no key a person enters.
+        const refused = this.id === "llamacpp" ? undefined : refusalMessage(this.name, response.status, body.slice(0, 1500));
+        if (refused) throw new ProviderHttpError(refused, response.status);
         throw new Error(`${this.id} request failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);
       }
 

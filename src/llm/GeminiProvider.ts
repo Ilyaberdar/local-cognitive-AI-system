@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { geminiAgentResponse, geminiContinuation } from "./NativeToolTransport";
 import { countedFetch, fetchWithRetries, unsupportedFeature } from "./provider-utils";
@@ -60,7 +61,9 @@ export class GeminiProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`Gemini models request failed with status ${response.status}`);
+        // Gemini answers a key it does not take with 400 and says so in the body.
+        const reason = (await response.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+        throw new ProviderHttpError(`Gemini models request failed with status ${response.status}${reason ? `: ${reason}` : ""}`, response.status);
       }
 
       const payload = (await response.json()) as {
@@ -145,6 +148,8 @@ export class GeminiProvider implements LLMProvider {
         const detail = (await response.text()).slice(0, 1500);
         const unsupported = unsupportedFeature(response.status, detail, request);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
+        const refused = refusalMessage(this.name, response.status, detail);
+        if (refused) throw new ProviderHttpError(refused, response.status);
         throw new Error(`Gemini request failed with status ${response.status}: ${detail}`);
       }
 

@@ -1,6 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
+import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { anthropicAgentResponse, anthropicContinuation } from "./NativeToolTransport";
 import { countedFetch, fetchWithRetries, unsupportedFeature } from "./provider-utils";
@@ -68,7 +69,7 @@ export class AnthropicProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`Anthropic models request failed with status ${response.status}`);
+        throw new ProviderHttpError(`Anthropic models request failed with status ${response.status}`, response.status);
       }
 
       const payload = (await response.json()) as {
@@ -139,6 +140,8 @@ export class AnthropicProvider implements LLMProvider {
         }
         const unsupported = unsupportedFeature(response.status, detail, request);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
+        const refused = refusalMessage(this.name, response.status, detail);
+        if (refused) throw new ProviderHttpError(refused, response.status);
         throw new Error(`Anthropic request failed with status ${response.status}: ${detail}`);
       }
 

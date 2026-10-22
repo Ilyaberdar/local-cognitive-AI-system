@@ -85,6 +85,69 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   /** A provider the user added (an OpenAI-compatible service that is not one every installation has). */
   const isAddedProvider = (id, entry) => entry?.kind === 'openai-compatible' && entry?.source !== 'environment' && !(context().providerPresets || []).some(preset => preset.id === id && preset.builtIn);
   let addProviderStatus;
+  // Each provider's last check on this computer: its model list with the saved key, which costs
+  // nothing. The list shows the last results at once and checks again when it opens (all of them at
+  // most once a minute, at once those it has no result for, such as one whose key just changed).
+  // A server's list says only whether a key is saved there.
+  const providerChecks = { statuses: {}, checking: false, at: 0, asked: new Map() };
+  const isLocalProvider = id => ['llamacpp', 'ollama', 'lmstudio'].includes(id) || (context().providers || []).find(item => item.id === id)?.capabilities?.local === true;
+  const checkedTime = at => {
+    const date = new Date(at);
+    return date.toDateString() === new Date().toDateString() ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
+  const hasKey = (provider, server) => server ? ['set', 'environment'].includes(provider?.apiKeyState) : Boolean(provider?.apiKey?.trim()) || provider?.source === 'environment';
+  /** [text, tone] of a provider: off, no key, or how its last check went. */
+  function providerState(id, provider, server) {
+    if (!provider?.enabled) return ['Disabled', 'off'];
+    if (id === 'llamacpp') return ['Built-in · load its models in Models', 'neutral'];
+    const local = isLocalProvider(id);
+    if (!local && !hasKey(provider, server)) return ['No API key', 'warn'];
+    if (server) return [provider.apiKeyState === 'environment' ? "Key from the server's environment file" : 'Key saved', 'neutral'];
+    const status = providerChecks.statuses[id];
+    if (!status) return [providerChecks.checking ? 'Checking…' : local ? 'Enabled · not checked yet' : 'Key saved · not checked yet', 'pending'];
+    const when = ` · checked ${checkedTime(status.checkedAt)}`;
+    if (status.state === 'connected') return [`Connected · ${status.message}${when}`, 'ok'];
+    if (status.state === 'rejected') return [`${status.message}: enter a new key${when}`, 'error'];
+    if (status.state === 'unreachable') return [local ? `Not running${when}` : `${status.message}${when}`, local ? 'off' : 'error'];
+    return [`${status.message}${when}`, 'error'];
+  }
+  const providerStateLine = (id, provider, server, tag = 'small', attribute = 'data-provider-state') => {
+    const [text, tone] = providerState(id, provider, server);
+    return `<${tag} class="settings-provider-state is-${tone}" ${attribute}><span aria-hidden="true"></span>${escape(text)}</${tag}>`;
+  };
+  const providerRow = (id, provider, server) => `<a class="settings-list-row" href="#/settings/providers/${escape(id)}" data-provider-row="${escape(id)}"><span><strong>${escape(providerLabel(id, provider))}</strong>${providerStateLine(id, provider, server)}</span>${icon('chevronRight')}</a>`;
+  /** One line over the list: how many providers work, need attention or have no key. */
+  function providerSummary(entries, server) {
+    const tones = entries.map(([id, provider]) => providerState(id, provider, server)[1]);
+    const parts = [['ok', 'connected'], ['error', 'need attention'], ['warn', 'without a key']].map(([tone, label]) => [tones.filter(item => item === tone).length, label]).filter(([count]) => count);
+    return `<p class="settings-description settings-provider-summary" data-provider-summary ${parts.length ? '' : 'hidden'}>${escape(parts.map(([count, label]) => `${count} ${label}`).join(' · '))}</p>`;
+  }
+  function updateProviderStates() {
+    const [name, id] = page.split('/');
+    if (!active || name !== 'providers' || serverFor(page)) return;
+    const list = settings().providers || {};
+    const swap = (element, html) => { if (element) element.outerHTML = html; };
+    root.querySelectorAll('[data-provider-row]').forEach(row => swap(row.querySelector('[data-provider-state]'), providerStateLine(row.dataset.providerRow, list[row.dataset.providerRow])));
+    swap(root.querySelector('[data-provider-summary]'), providerSummary(Object.entries(list)));
+    if (id && list[id]) swap(root.querySelector('[data-provider-detail-state]'), providerStateLine(id, list[id], undefined, 'p', 'data-provider-detail-state'));
+  }
+  async function loadProviderChecks(checkAll) {
+    if (typeof data.providerStatus !== 'function') return;
+    try { providerChecks.statuses = (await data.providerStatus())?.providers ?? {}; } catch { /* Shown as not checked. */ }
+    const list = settings().providers || {};
+    // One the app cannot check (it has no such provider running) is not asked again within the minute.
+    const missing = Object.entries(list).filter(([id, provider]) => id !== 'llamacpp' && provider.enabled && (isLocalProvider(id) || hasKey(provider)) && !providerChecks.statuses[id]
+      && Date.now() - (providerChecks.asked.get(id) ?? 0) > 60_000).map(([id]) => id);
+    const all = checkAll && Date.now() - providerChecks.at > 60_000;
+    if (providerChecks.checking || (!all && !missing.length)) { updateProviderStates(); return; }
+    providerChecks.checking = true;
+    if (all) providerChecks.at = Date.now();
+    updateProviderStates();
+    for (const id of all ? Object.keys(list) : missing) providerChecks.asked.set(id, Date.now());
+    try { providerChecks.statuses = (await data.checkProviders(all ? undefined : missing))?.providers ?? providerChecks.statuses; }
+    catch { /* The last results stay. */ }
+    finally { providerChecks.checking = false; updateProviderStates(); }
+  }
   const clientSettings = () => context().appSettings || {};
   /** The selected server, for the pages it owns; this device's pages never see it. */
   const serverFor = route => {
@@ -714,8 +777,8 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'plugins') return '<div data-integrations-page></div>';
     if (name === 'providers' && id === 'new') return server ? server.supports?.('providers.add') && server.presets().length ? addProviderPage(server)
       : note(`Update Local Cognitive on ${server.hostName()}`, `The version on ${server.hostName()} cannot add providers from here yet. Its owner can set one in ${server.hostName()}'s environment file.`) : addProviderPage();
-    if (name === 'providers' && !id) return form(specs) + `<div class="settings-section-actions"><a class="primary-button mcp-add-button" href="#/settings/providers/new">${icon('plus')}<span>Add provider</span></a></div><div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => link(`providers/${key}`, providerLabel(key, provider), provider.enabled ? 'Enabled · connection not checked' : 'Disabled')).join('')}</div>`;
-    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button>${(server ? settings().providers?.[id]?.removable === true : isAddedProvider(id, settings().providers?.[id])) ? '<button type="button" class="ghost-button danger-button" data-remove-provider>Remove provider</button>' : ''}</div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
+    if (name === 'providers' && !id) return form(specs) + `<div class="settings-section-actions"><a class="primary-button mcp-add-button" href="#/settings/providers/new">${icon('plus')}<span>Add provider</span></a></div>${providerSummary(Object.entries(settings().providers || {}), server)}<div class="settings-list">${Object.entries(settings().providers || {}).map(([key, provider]) => providerRow(key, provider, server)).join('')}</div>`;
+    if (name === 'providers' && id) return specs.length ? `<p class="settings-description">${id === 'llamacpp' ? server ? `Built-in inference on ${escape(server.hostName())}. Load and use its models from Models.` : 'Built-in inference on this device. No API key or server address is required.' : 'Configure this provider and explicitly test its selected model.'}${providerCatalog(id)?.keyUrl ? ` <a href="${escape(providerCatalog(id).keyUrl)}" target="_blank" rel="noopener noreferrer">Get an API key ↗</a>` : ''}</p>` + (id === 'llamacpp' || !settings().providers?.[id] ? '' : providerStateLine(id, settings().providers[id], server, 'p', 'data-provider-detail-state')) + form(specs) + (server && id === 'llamacpp' ? '' : `<div class="settings-test-actions"><button type="button" class="ghost-button" data-test="provider" ${statuses.get(placeOf(page).key)?.busy ? 'disabled' : ''}>Save & test provider</button>${(server ? settings().providers?.[id]?.removable === true : isAddedProvider(id, settings().providers?.[id])) ? '<button type="button" class="ghost-button danger-button" data-remove-provider>Remove provider</button>' : ''}</div>`) + testResult + (id === 'llamacpp' ? link('runtime', 'Local Runtime', 'Storage, context and timeouts') : '') : note('Provider not found', 'Return to Models & Providers.');
     if (name === 'runtime') {
       const generation = specs.find(spec => spec.type === 'local-generation');
       const runtimeSpecs = specs.filter(spec => spec !== generation);
@@ -824,6 +887,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'report-bug') disposeReport = mountReportBugPage(root.querySelector('[data-report-bug-page]'), { mode: context().server ? 'remote' : 'local' });
     if (name === 'shortcuts') bindShortcutsPage();
     if (name === 'providers' && id === 'new') bindAddProvider();
+    if (name === 'providers' && id !== 'new') void loadProviderChecks(!id);
     root.querySelectorAll('[data-region-for]').forEach(select => select.addEventListener('change', () => {
       const input = root.querySelector(`[name="${select.dataset.regionFor}"]`);
       if (!input || !select.value) { input?.focus(); return; }

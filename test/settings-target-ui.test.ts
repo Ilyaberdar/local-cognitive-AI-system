@@ -106,8 +106,9 @@ const LOCAL_SETTINGS_TRACE = [
   "--- general",
   "--- language", 'PUT /app/settings {"ui":{"language":"en"}}',
   "--- appearance theme", 'PUT /app/settings {"ui":{"theme":"light"}}',
-  "--- openai key", 'PUT /app/settings {"providers":{"openai":{"apiKey":"sk-test-key-123"}}}',
-  "--- openai test", 'POST /providers/openai/test {"model":"gpt-4o-mini"}',
+  // A provider's page reads its last check, and checks one it has none for (this test's API keeps none).
+  "--- openai key", "GET /providers/status", 'POST /providers/status {"ids":["ollama"]}', 'PUT /app/settings {"providers":{"openai":{"apiKey":"sk-test-key-123"}}}',
+  "--- openai test", 'POST /providers/openai/test {"model":"gpt-4o-mini"}', "GET /providers/status", 'POST /providers/status {"ids":["openai"]}',
   "--- remove key", 'PUT /app/settings {"providers":{"openai":{"apiKey":""}}}',
   "--- runtime context", 'PUT /app/settings {"localModels":{"contextSize":8192}}',
   "--- agents", 'PUT /app/settings {"agentLimits":{"maxSteps":40}}',
@@ -445,4 +446,36 @@ test("an older fedora without Add provider says so", async t => {
   open(app, "providers/new"); await settle();
   assert.match(text(app, ".settings-content"), /Update Local Cognitive on fedora/);
   assert.equal(app.document.querySelector("#settings-root #add-provider-form"), null);
+});
+
+test("Models & Providers says which providers work: a refused key, a connected one, one without a key; it checks when it opens", async t => {
+  const local = localSettings();
+  local.settings.providers.openai.apiKey = "sk-saved";
+  local.settings.providers.anthropic = { enabled: true, baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-saved", model: "claude-sonnet-4-5", timeoutMs: 60000 };
+  local.settings.providers.gemini = { enabled: true, baseUrl: "https://generativelanguage.googleapis.com", apiKey: "", model: "gemini-2.5-flash", timeoutMs: 60000 };
+  const checkedAt = new Date().toISOString();
+  const cached = { anthropic: { state: "rejected", httpStatus: 401, message: "Key refused (HTTP 401)", checkedAt, fingerprint: "a" } };
+  const checked = { ...cached, openai: { state: "connected", models: 42, message: "42 models", checkedAt, fingerprint: "b" }, ollama: { state: "unreachable", message: "Not reachable", checkedAt, fingerprint: "c" } };
+  let checks = 0;
+  const app = await bootApp({ ...local, route: (method, url, body) => {
+    if (url === "/providers/status" && method === "POST") { checks++; return { providers: checked }; }
+    if (url === "/providers/status") return { providers: checks ? checked : cached };
+    return local.route(method, url, body);
+  } });
+  t.after(() => app.close());
+  open(app, "providers"); await settle();
+  const state = (id: string) => app.document.querySelector(`#settings-root [data-provider-row="${id}"] [data-provider-state]`) as any;
+  assert.equal(checks, 1, "the list checks the providers when it opens");
+  assert.match(state("anthropic").textContent, /^Key refused \(HTTP 401\): enter a new key · checked /);
+  assert.ok(state("anthropic").classList.contains("is-error"));
+  assert.match(state("openai").textContent, /^Connected · 42 models · checked /);
+  assert.ok(state("openai").classList.contains("is-ok"));
+  assert.equal(state("gemini").textContent, "No API key");
+  assert.match(state("ollama").textContent, /^Not running · checked /, "a local service that is not open is not an error");
+  assert.equal(text(app, "[data-provider-summary]"), "1 connected · 1 need attention · 1 without a key");
+  assert.doesNotMatch(text(app, ".settings-content"), /connection not checked/);
+  open(app, "providers/anthropic"); await settle();
+  assert.match(text(app, "[data-provider-detail-state]"), /^Key refused \(HTTP 401\): enter a new key/);
+  open(app, "providers"); await settle();
+  assert.equal(checks, 1, "not all again within a minute");
 });
