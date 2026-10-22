@@ -152,10 +152,10 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     if (value.source !== undefined) throw new SettingsValidationError(`providers.${id}.source cannot be set.`);
     check(value, `providers.${id}`, {
       enabled: "boolean", baseUrl: "string", apiKey: "string", model: "string", timeoutMs: [1000, 3600000],
-      version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string", preset: "string"
+      version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string", preset: "string", nativeTools: ["chat"]
     });
     // An OpenAI-compatible service is data: a safe id, a known dialect, a short name and a web address.
-    const compatible = value.kind !== undefined || value.dialect !== undefined || value.name !== undefined || value.preset !== undefined;
+    const compatible = value.kind !== undefined || value.dialect !== undefined || value.name !== undefined || value.preset !== undefined || value.nativeTools !== undefined;
     if (value.preset !== undefined && !providerPreset(String(value.preset))) throw new SettingsValidationError(`Invalid providers.${id}.preset.`);
     if (compatible && BUILT_IN_PROVIDER_IDS.includes(id)) throw new SettingsValidationError(`providers.${id} is built in.`);
     if (compatible && !/^[a-z][a-z0-9-]{1,63}$/.test(id)) throw new SettingsValidationError("Invalid provider id.");

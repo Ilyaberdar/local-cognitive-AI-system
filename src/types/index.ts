@@ -132,6 +132,8 @@ export interface ProviderRuntimeSettings {
   preset?: string;
   /** Set in the environment (a server's environment file): its address and key are read from there, never saved here. */
   source?: "environment";
+  /** A service added as Other that answered a tool call when it was added: its agents act through chat tool calls. */
+  nativeTools?: "chat";
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";

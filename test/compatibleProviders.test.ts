@@ -172,6 +172,7 @@ test("every installation has Qwen as an OpenAI-compatible provider in Singapore,
 test("a provider that is data is validated: a safe id, a known dialect, a short name, a web address", () => {
   validateSettingsPatch({ providers: { qwen: { apiKey: "sk-x", model: "qwen3.8-max", baseUrl: "https://dashscope-us.aliyuncs.com/compatible-mode/v1" } } });
   validateSettingsPatch({ providers: { "my-groq": { kind: "openai-compatible", dialect: "chat", name: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "m", enabled: true } } });
+  validateSettingsPatch({ providers: { "my-vllm": { kind: "openai-compatible", dialect: "chat", name: "vLLM", baseUrl: "https://llm.example/v1", model: "m", enabled: true, nativeTools: "chat" } } });
   const refused: Array<[unknown, RegExp]> = [
     [{ openai: { kind: "openai-compatible" } }, /built in/],
     [{ "Bad Id": { kind: "openai-compatible", dialect: "chat" } }, /provider id/],
@@ -181,7 +182,9 @@ test("a provider that is data is validated: a safe id, a known dialect, a short 
     [{ custom: { kind: "openai-compatible", name: "x".repeat(81) } }, /name/],
     [{ qwen: { baseUrl: "ftp://dashscope.example/v1" } }, /baseUrl/],
     [{ qwen: { baseUrl: "https://user:secret@dashscope.example/v1" } }, /baseUrl/],
-    [{ custom: { kind: "openai-compatible", baseUrl: "not a url" } }, /baseUrl/]
+    [{ custom: { kind: "openai-compatible", baseUrl: "not a url" } }, /baseUrl/],
+    [{ custom: { kind: "openai-compatible", nativeTools: "responses" } }, /nativeTools/],
+    [{ openai: { nativeTools: "chat" } }, /built in/]
   ];
   for (const [providers, message] of refused) assert.throws(() => validateSettingsPatch({ providers } as AppSettingsPatch), message, JSON.stringify(providers));
 });
@@ -467,6 +470,17 @@ test("an added provider is saved, registered with its preset's catalog, and remo
   await assert.rejects(manager.updateSettings({ providers: { qwen: null } }), /cannot be removed/);
   await assert.rejects(manager.updateSettings({ providers: { openai: null } }), /cannot be removed/);
   await assert.rejects(manager.updateSettings({ providers: { other: { ...added, preset: "nonsense" } } }), /preset/);
+  // A service added as Other acts through tool calls only when it answered one when it was added, and
+  // only at that address.
+  const other = { kind: "openai-compatible" as const, dialect: "chat", name: "My vLLM", baseUrl: "https://llm.example/v1", apiKey: "k-other-123", model: "m", enabled: true, timeoutMs: 300000 };
+  const plain = await manager.updateSettings({ providers: { "my-vllm": other, "my-tools": { ...other, name: "Tools", nativeTools: "chat" } } });
+  assert.equal(plain.runtime.providerDescriptors.find(item => item.id === "my-vllm")?.capabilities?.nativeTools, false);
+  assert.equal(plain.runtime.providerDescriptors.find(item => item.id === "my-tools")?.capabilities?.nativeTools, true);
+  const renamed = await manager.updateSettings({ providers: { "my-tools": { name: "Tools (renamed)", baseUrl: "https://llm.example/v1" } } });
+  assert.equal(renamed.settings.providers["my-tools"]?.nativeTools, "chat", "the same address keeps it");
+  const moved = await manager.updateSettings({ providers: { "my-tools": { baseUrl: "https://other.example/v1" } } });
+  assert.equal(moved.settings.providers["my-tools"]?.nativeTools, undefined);
+  assert.equal(moved.runtime.providerDescriptors.find(item => item.id === "my-tools")?.capabilities?.nativeTools, false);
   const removed = await manager.updateSettings({ providers: { "deepseek-2": null } });
   assert.equal(removed.settings.providers["deepseek-2"], undefined);
   assert.equal(removed.runtime.providerDescriptors.some(item => item.id === "deepseek-2"), false);
@@ -489,7 +503,7 @@ function settingsPage(t: TestContext, providers: Record<string, unknown>) {
     testProvider: async (...args: unknown[]) => { tests.push(args); return { ok: true, message: "Provider replied: ok", model: args[1] }; },
     discoverModels: async (body: Record<string, string>) => { discovered.push(body);
       if (body.apiKey.includes("wrong")) throw new Error("The service refused this key.");
-      return { models: body.dialect === "perplexity" ? ["fast", "low", "openai/gpt-6-luna"] : ["model-b", "model-a"] }; } };
+      return { models: body.dialect === "perplexity" ? ["fast", "low", "openai/gpt-6-luna"] : ["model-b", "model-a"], ...(body.baseUrl?.includes("tools") ? { nativeTools: "chat" } : {}) }; } };
   dom.window.confirm = () => true;
   const shell = dom.window.SettingsShell.createSettingsShell({ app: dom.window.document.getElementById("root"), getContext: () => ({ appSettings, providers: descriptors(), providerPresets }),
     data, renderModelControl: () => "<select></select>", applyPreferences() {}, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
@@ -547,6 +561,14 @@ test("Add provider: a preset fills its fields, the provider is saved and tested,
   ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
   for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/my-vllm"); i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.deepEqual(ui.saves[2], { providers: { "my-vllm": { kind: "openai-compatible", dialect: "chat", name: "My vLLM", baseUrl: "https://llm.example.com/v1", apiKey: "right-key-123456", model: "model-b", enabled: true, timeoutMs: 300000 } } });
+  // One that answered a tool call while it was checked is saved as such.
+  ui.shell.route("#/settings/providers/new");
+  ui.content().querySelector("[data-add-provider-preset]").value = "";
+  ui.content().querySelector("[data-add-provider-preset]").dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
+  field("name").value = "Tool server"; field("baseUrl").value = "https://tools.example.com/v1"; field("apiKey").value = "right-key-654321";
+  ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/tool-server"); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(ui.saves[3].providers["tool-server"].nativeTools, "chat");
 });
 
 test("an added provider can be removed from its page; a built-in one cannot; a region fills Qwen's address", async t => {
@@ -591,4 +613,50 @@ test("adding a provider first reads the models the service lists for that addres
   assert.equal((await call({ baseUrl: "https://user:pw@x.example/v1", apiKey: "k" })).status, 400);
   assert.equal((await call({ baseUrl: base, apiKey: " " })).status, 400);
   assert.equal((await call({ baseUrl: base, apiKey: "good-key-123", dialect: "anthropic" })).status, 400);
+});
+
+test("adding a service as Other asks it for one tool call, and marks it only when it answers one properly", async t => {
+  const { createProviderDiscoverController } = await import("../src/api/controller");
+  const { default: http } = await import("node:http");
+  const requests: Array<{ url: string; body: any }> = [];
+  let answer: (body: any) => { status?: number; json: unknown } = () => ({ json: {} });
+  const server = http.createServer((request, response) => {
+    let raw = ""; request.on("data", chunk => { raw += chunk; });
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "GET") { response.end(JSON.stringify({ data: [{ id: "tool-model" }, { id: "other-model" }] })); return; }
+      const body = JSON.parse(raw); requests.push({ url: String(request.url), body });
+      const reply = answer(body); response.statusCode = reply.status ?? 200; response.end(JSON.stringify(reply.json));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+  const call = async (body: unknown) => {
+    let payload: any;
+    const res = { status() { return this; }, json(value: unknown) { payload = value; return this; } };
+    await createProviderDiscoverController()({ body } as never, res as never);
+    return payload;
+  };
+  const warnings: unknown[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args); });
+  answer = () => ({ json: { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "list_files", arguments: "{\"path\":\"src\"}" } }] } }] } });
+  assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123" }), { models: ["tool-model", "other-model"], nativeTools: "chat" });
+  assert.equal(requests[0].url, "/v1/chat/completions");
+  assert.equal(requests[0].body.model, "tool-model", "the model it will use");
+  assert.deepEqual(requests[0].body.tools.map((tool: any) => tool.function.name), ["list_files"]);
+  assert.equal(requests[0].body.parallel_tool_calls, false);
+  // Text instead of a call, a refusal of tools, or a call of something else: JSON, as before.
+  for (const reply of [() => ({ json: { choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"type":"tool_call","tool":"file.list"}' } }] } }),
+    () => ({ status: 400, json: { error: { message: "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set" } } }),
+    () => ({ status: 401, json: { error: { message: "Invalid key good-key-123" } } }),
+    () => ({ json: { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }] } }] } })]) {
+    answer = reply;
+    assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123", dialect: "chat" }), { models: ["tool-model", "other-model"] });
+  }
+  assert.deepEqual(warnings, [], "a failed check logs nothing, and never the key");
+  // A preset's service has its dialect's tools: it is not asked.
+  const before = requests.length;
+  assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123", dialect: "deepseek" }), { models: ["tool-model", "other-model"] });
+  assert.equal(requests.length, before);
 });

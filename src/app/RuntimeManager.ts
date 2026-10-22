@@ -286,7 +286,8 @@ export class RuntimeManager {
             apiKey: fromEnvironment ? base?.apiKey : provider.apiKey || base?.apiKey,
             name: provider.name || base?.name || id,
             dialect: provider.dialect || base?.dialect || "chat",
-            ...(provider.preset ? { preset: provider.preset } : {})
+            ...(provider.preset ? { preset: provider.preset } : {}),
+            ...(provider.nativeTools === "chat" ? { nativeTools: "chat" as const } : {})
           }];
         })),
       outputDir: settings.filesystem?.outputDir ?? this.baseConfig.outputDir

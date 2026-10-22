@@ -178,10 +178,10 @@ export class AppSettingsStore {
         delete next.providers[providerId];
         continue;
       }
-      next.providers[providerId] = {
-        ...(next.providers[providerId] ?? this.defaultProvider(providerId)),
-        ...providerPatch
-      };
+      const previous = next.providers[providerId] ?? this.defaultProvider(providerId);
+      next.providers[providerId] = { ...previous, ...providerPatch };
+      // Tool calls were checked at the address the service was added at: another address acts in JSON.
+      if (providerPatch.baseUrl !== undefined && providerPatch.baseUrl !== previous.baseUrl && providerPatch.nativeTools === undefined) delete next.providers[providerId]!.nativeTools;
     }
 
     for (const [pluginName, pluginPatch] of Object.entries(patch.plugins ?? {})) {

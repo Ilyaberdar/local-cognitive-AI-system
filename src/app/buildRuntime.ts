@@ -36,7 +36,7 @@ import { OllamaModelManager } from "../llm/OllamaModelManager";
 import { OllamaProvider } from "../llm/OllamaProvider";
 import { OutputSanitizer } from "../llm/OutputSanitizer";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
-import { compatibleDialect } from "../llm/ProviderDialect";
+import { compatibleDialect, withChatTools } from "../llm/ProviderDialect";
 import { providerPreset } from "../llm/providerCatalog";
 import { LocalJsonMemoryAdapter } from "../memory/LocalJsonMemoryAdapter";
 import { MemoryAdapter } from "../memory/MemoryAdapter";
@@ -562,7 +562,9 @@ export const buildRuntime = async (
   // OpenAI-compatible services that are data: one client, shaped by each service's dialect.
   for (const [id, provider] of Object.entries(config.compatibleProviders ?? {})) {
     const preset = providerPreset(provider.preset ?? id);
-    providerRegistry.register(new OpenAICompatibleProvider({ ...provider, id, dialect: compatibleDialect(provider.dialect),
+    // One added as Other that answered a tool call when it was added acts through tool calls.
+    const dialect = compatibleDialect(provider.dialect);
+    providerRegistry.register(new OpenAICompatibleProvider({ ...provider, id, dialect: provider.nativeTools === "chat" ? withChatTools(dialect) : dialect,
       ...(preset ? { catalog: { keyUrl: preset.keyUrl, models: preset.models, ...(preset.regions ? { regions: preset.regions } : {}) } } : {}) }, logger));
   }
   const providerModels = defaultModels(config);
