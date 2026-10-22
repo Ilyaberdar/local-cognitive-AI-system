@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { ProjectStore } from "../projects/ProjectStore";
 import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LLMService } from "../llm/LLMService";
-import { ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
+import { LLMRequest, LLMResponse, ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { answerFileProblem, callsOf, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram } from "./language";
@@ -22,12 +22,17 @@ import { createEgressProxy } from "./agents/AgentHttpProxy";
 import { platformSandbox } from "./checks/sandbox";
 import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
+import type { ModelQueue } from "../local/types";
+import { quantQuality } from "../local/quantization";
 
 interface Services {
   projects: ProjectStore;
   models: Pick<LocalModelManagerRegistry, "listAllModels">;
   /** `shape`: a local model serving several requests at once (agents), each with its own context. */
-  loadModel: (model: ManagedModel, signal: AbortSignal, shape?: {parallel: number; contextSize?: number}) => Promise<void>;
+  /** `queue`: the run's label for requests waiting behind it, and where the load itself waits. */
+  loadModel: (model: ManagedModel, signal: AbortSignal, shape?: {parallel: number; contextSize?: number; fit?: boolean}, queue?: ModelQueue) => Promise<void>;
+  /** The context a loaded local model gives one request, in tokens. */
+  contextWindow?: (model: ManagedModel) => number | undefined;
   llm: Pick<LLMService, "generateObject" | "generateText">;
   /** The models a cloud provider lists, and the providers set up here (cloud-files-v1). */
   catalog?: {listAll(providerId?: string): Promise<ProviderModel[]>};
@@ -39,6 +44,10 @@ interface Services {
 }
 /** Evidence names the evaluators that made it: the calculator adapters and the contract checks. */
 const EVALUATOR_VERSION = `${evaluatorVersion}+${contractChecksVersion}`;
+/** The context a local model is loaded with for a flow that names none (one slot, cut to fit memory). */
+const SYNTHESIS_CONTEXT = 16_384;
+/** A local model's quantization quality; a cloud model has none, and counts as sound. */
+const modelQuality = (model: ManagedModel) => model.providerId === "llamacpp" ? quantQuality(model.quantization, model.variantId ?? model.id) : quantQuality("");
 /** Source in the languages the contract checks know, plus the web files of the calculator. */
 const ARTIFACT_TYPES = /\.(?:js|mjs|cjs|ts|mts|cts|py|c|cc|cpp|cxx|h|hh|hpp|hxx|inl|json|html|css|txt|md)$/;
 const MAX_SUITE_FILES = 24, MAX_SUITE_BYTES = 512 * 1024;
@@ -64,7 +73,7 @@ const suiteFiles = (spec: SpecProgram): string[] => [...new Set([...(spec.tests 
   ...spec.gates.flatMap(gate => gate.check?.kind === "tests" ? gate.check.files : [])])];
 /** What the model reads next: each failing gate's own items (exact, with file:line), else its message. */
 function violations(evidence: Evidence, generationErrors: string[]): string[] {
-  const items = evidence.gates.filter(gate => gate.status !== "Pass")
+  const items = evidence.gates.filter(gate => gate.status !== "Pass" && !gate.skipped)
     .flatMap(gate => gate.feedback?.length ? gate.feedback.map(item => `${gate.id}: ${item}`) : [`${gate.id}: ${gate.message}`]);
   return [...items, ...generationErrors].slice(0, 12).map(item => item.length > 300 ? `${item.slice(0, 299)}…` : item);
 }
@@ -453,7 +462,10 @@ export class SynthesisService {
       lastEvidence.suiteHash === record.suiteHash;
     // A loaded model becomes a role: only the app's own llama.cpp runtime loads; others answer on request.
     const role = async (model: ManagedModel, shape?: {parallel: number; contextSize?: number}) => {
-      if (model.providerId === "llamacpp") await this.services.loadModel(model, signal, shape);
+      // A whole file, the contract, the tests and feedback need more than a chat's context: without a
+      // context of its own, one slot is asked for 16k tokens, as much as memory allows.
+      if (model.providerId === "llamacpp") await this.services.loadModel(model, signal, shape ?? {parallel: 1, contextSize: SYNTHESIS_CONTEXT, fit: true},
+        this.loadQueue(record, model));
       const handle = Object.freeze({model}); roles.add(handle);
       if (!record.models.some(item => item.id === model.id && item.providerId === model.providerId)) record.models.push(model);
       return handle;
@@ -543,9 +555,14 @@ export class SynthesisService {
           }
           const exact = named.id === undefined ? undefined : String(named.id);
           const prefer = String(named.prefer ?? "").toLowerCase();
-          const eligible = list.filter(model => (exact === undefined || model.id === exact || model.displayName === exact) &&
+          // A model whose files are gone from the disk cannot run, however it ranks.
+          const eligible = list.filter(model => (model as {filesAvailable?: boolean}).filesAvailable !== false && (exact === undefined || model.id === exact || model.displayName === exact) &&
             (!Number.isFinite(max) || (typeof model.sizeBytes === "number" && model.sizeBytes > 0 && model.sizeBytes <= max)));
-          eligible.sort((a,b) => Number(`${b.id} ${b.displayName}`.toLowerCase().includes(prefer)) - Number(`${a.id} ${a.displayName}`.toLowerCase().includes(prefer)) || (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity) || a.id.localeCompare(b.id));
+          // The most capable model the limit allows: a preferred name first, then a file of more than
+          // about 3 bits a weight, then the larger file. A smaller file is never chosen just for its size.
+          const preferred = (model: ManagedModel) => Number(`${model.id} ${model.displayName}`.toLowerCase().includes(prefer));
+          const lowBit = (model: ManagedModel) => Number(modelQuality(model).lowBit);
+          eligible.sort((a,b) => preferred(b) - preferred(a) || lowBit(a) - lowBit(b) || (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) || a.id.localeCompare(b.id));
           if (!eligible[0]) throw new SynthesisError(exact !== undefined ? `No listed model is ${exact}.` : "No installed local model matches the selection. Install a suitable model in Models or adjust max_size.");
           value = eligible[0]; break;
         }
@@ -757,8 +774,17 @@ export class SynthesisService {
             try { return (await readText(await containedPath(record.rootPath, cited), 5 * 1024 * 1024)).split("\n").length; } catch { return undefined; }
           };
           const gates: Evidence["gates"] = [];
+          const missing = record.spec.artifacts.filter(file => !Object.hasOwn(files, file) || !files[file]!.trim());
+          // Nothing written: each gate would only repeat that the files are missing. The artifacts gate
+          // below fails, so the candidate still fails and the flow goes on to its next attempt.
+          const empty = record.spec.artifacts.length > 0 && missing.length === record.spec.artifacts.length;
+          if (empty) await this.event(record, "evaluate", "Not evaluated: the model wrote none of the declared files", "failed");
           for (const gate of record.spec.gates) {
             signal.throwIfAborted();
+            if (empty) {
+              gates.push({id: gate.id, evaluator: gate.evaluatorId, severity: gate.severity, status: "Unknown", message: "Not evaluated: no candidate file was written.", skipped: "no_candidate"});
+              continue;
+            }
             if (gate.check?.kind === "tests") await this.event(record, `gate.${gate.id}`, `Running ${gate.check.files.join(", ")}`, "running");
             const result: {status: Evidence["status"]; message: string; feedback?: string[]; cases?: EvidenceCase[]; grounded?: Evidence["gates"][number]["grounded"]} = gate.check
               ? await runCheck(gate.check, checkFiles, {...this.services.checks, signal, projectLines})
@@ -772,7 +798,6 @@ export class SynthesisService {
           }
           if (!gates.some(gate => gate.severity === "hard")) gates.push({id: "acceptance", evaluator: "registry", severity: "hard", status: "Unknown", message: "At least one trusted hard evaluator is required."});
           // A candidate is complete only with every declared file: the gates may judge only some.
-          const missing = record.spec.artifacts.filter(file => !Object.hasOwn(files, file) || !files[file]!.trim());
           gates.push({id: "artifacts", evaluator: "registry", severity: "hard", status: missing.length ? "Fail" : "Pass",
             message: missing.length ? `Declared files are missing or empty: ${missing.join(", ")}.` : "Every declared file is present."});
           if (missing.length) await this.event(record, "gate.artifacts", `Fail: missing ${missing.join(", ")}`, "failed");
@@ -811,9 +836,12 @@ export class SynthesisService {
       signal.throwIfAborted();
       if (quiet) return value;
       const listedFrom = name === "models.list" ? String(named.provider ?? "llamacpp") : undefined;
+      const selected = name === "models.select" ? value as ManagedModel : undefined;
       const detail = listedFrom === "llamacpp" ? `${(value as ManagedModel[]).length} installed local models` : listedFrom ? `${(value as ManagedModel[]).length} models of ${listedFrom}`
-        : name === "models.select" ? (value as ManagedModel).displayName : undefined;
+        : selected ? [selected.displayName, selected.quantization].filter(Boolean).join(" · ") : undefined;
       await this.event(record, name, detail ?? `${name} completed`, "ok", {line: span.start.line});
+      const note = selected && modelQuality(selected).note;
+      if (note) await this.event(record, name, `${selected!.displayName}: ${note}`, "warning", {line: span.start.line});
       return value;
     };
     try {
@@ -855,6 +883,45 @@ export class SynthesisService {
     }
     return {id: descriptor.id, name: descriptor.name, managed: MANAGED_PROVIDERS.has(descriptor.id)};
   }
+  /** While a local request waits for its model: who holds it and how many wait ahead, logged once
+   * each time that changes. */
+  private waitingFor(record: RunRecord, model: ManagedModel, step: string, file?: string): (position: number, heldBy: string[]) => void {
+    let last = "";
+    return (position, heldBy) => {
+      const message = `Waiting for ${model.displayName}: in use by ${heldBy.length ? heldBy.join(", ") : "earlier requests"}${position > 1 ? ` · ${position - 1} ahead` : ""}`;
+      if (message === last) return;
+      last = message;
+      // A failed save (a full disk) must not end the process: the next event saves the record again.
+      void this.event(record, step, message, "running", {model: model.displayName, waiting: true, ...(file ? {file} : {})}).catch(() => undefined);
+    };
+  }
+  /** A model load's place in the queue: logged while it waits, and once more when the load begins. */
+  private loadQueue(record: RunRecord, model: ManagedModel): ModelQueue {
+    let waited = false;
+    const queued = this.waitingFor(record, model, "models.load");
+    return {label: `Synthesis · ${record.moduleName}`, onQueued: (position, heldBy) => { waited = true; queued(position, heldBy); },
+      onStarted: () => { if (waited) void this.event(record, "models.load", `Loading ${model.displayName}`, "running", {model: model.displayName}).catch(() => undefined); }};
+  }
+  /** A model request's progress in the run's log: the wait for a local model, then the tokens written
+   * so far on the running event (saved at most once a second, as the UI polls). */
+  private progress(record: RunRecord, model: ManagedModel, file: string, writing: string): Pick<LLMRequest, "holder" | "onProgress" | "onGenerated"> {
+    const queued = this.waitingFor(record, model, "agent.generate", file);
+    let waited = false, savedAt = 0;
+    return {
+      holder: `Synthesis · ${record.moduleName}`,
+      onProgress: event => {
+        if (event.phase === "queued") { waited = true; queued(event.queuePosition ?? 1, event.heldBy ?? []); }
+        else if (event.phase === "generating" && waited) { waited = false; void this.event(record, "agent.generate", writing, "running", {model: model.displayName, file}).catch(() => undefined); }
+      },
+      onGenerated: tokens => {
+        const last = record.events.at(-1);
+        if (last?.step !== "agent.generate" || last.status !== "running" || last.waiting) return;
+        last.tokens = tokens;
+        if (Date.now() - savedAt < 1000) return;
+        savedAt = Date.now(); record.updatedAt = stamp(); void this.save(record).catch(() => undefined);
+      }
+    };
+  }
   private usage(record: RunRecord, usage?: {inputTokens?: number; outputTokens?: number}): void {
     record.usage.calls++; record.usage.inputTokens += usage?.inputTokens ?? 0; record.usage.outputTokens += usage?.outputTokens ?? 0;
   }
@@ -872,7 +939,9 @@ export class SynthesisService {
       .filter(name => Object.hasOwn(record.suite ?? {}, name));
     // The flow passes verdict.violations: exact items read best as a numbered list.
     const items = feedback.flat(2).filter((item): item is string => typeof item === "string");
-    const feedbackText = items.length ? items.map((item, index) => `${index + 1}. ${item}`).join("\n").slice(0, 4500) : JSON.stringify(feedback).slice(0, 4500);
+    const given = feedback.flat(2).some(item => item !== null && item !== undefined);
+    const feedbackText = items.length ? items.map((item, index) => `${index + 1}. ${item}`).join("\n").slice(0, 4500)
+      : given ? JSON.stringify(feedback).slice(0, 4500) : record.iteration <= 1 ? "none yet: this is the first attempt." : "none.";
     const web = (name: string) => /\.(?:js|html|css)$/.test(name);
     for (const file of files) {
       signal.throwIfAborted();
@@ -894,33 +963,57 @@ export class SynthesisService {
         options.instruction ? `Your focused task for this file:\n${options.instruction}` : "",
         `${web(file) ? "Use plain, minimal code under 100 lines." : "Keep the code plain and as short as the contract allows."} Finish ${format === "json" ? "the JSON object" : "the response"} as soon as this single file is complete. /no_think`
       ].filter(Boolean).join("\n\n");
-      const request = {
-        usagePurpose: "synthesis", model: model.id, signal, prompt, systemPrompt: `You implement only ${file}, one small file of a software module. Follow the exact public interface in the contract. The contract describes the whole module; implement only this file's responsibility. ${format === "json" ? "Output only JSON with a content string." : "Output only source code, not JSON or explanations."}`,
-        temperature: 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1, maxTokens: 2600, localReasoningBudget: 0, sampling: synthesisSampling
-      };
-      let content: string | undefined;
-      let response;
-      if (format === "source") {
-        response = await this.services.llm.generateText(request, model.providerId);
-        const text = response.text.trim();
-        // A language label may hold symbols: ```c++, ```c#, ```objective-c.
-        const fenced = /^```[\w+#.-]*\s*\n([\s\S]*?)\n```$/.exec(text);
-        const source = fenced ? fenced[1] : text;
-        // No extraction from prose or multiple files: ambiguous output remains a failed attempt.
-        if (!source.includes("```") && source && (!text.includes("```") || fenced)) content = source;
-      } else {
-        const result = await this.services.llm.generateObject<{content: string}>({...request,
-          responseFormat: {type: "json_schema", name: "synthesis_file", strict: true, schema: {
-            type: "object", properties: {content: {type: "string"}}, required: ["content"], additionalProperties: false
-          }}
-        }, model.providerId);
-        response = result.response;
-        if (typeof result.data?.content === "string") content = result.data.content;
+      const systemPrompt = `You implement only ${file}, one small file of a software module. Follow the exact public interface in the contract. The contract describes the whole module; implement only this file's responsibility. ${format === "json" ? "Output only JSON with a content string." : "Output only source code, not JSON or explanations."}`;
+      // Room to write the file in the model's context: a prompt that leaves too little is not sent.
+      const window = model.providerId === "llamacpp" ? this.services.contextWindow?.(model) : undefined;
+      const promptTokens = Math.ceil((prompt.length + systemPrompt.length) / 3);
+      const room = window ? window - promptTokens - 64 : Infinity;
+      if (room < 1200) {
+        const message = `${file}: the prompt takes about ${promptTokens} of the model's ${window} context tokens, too little room to write the file. Load the model with a larger context (models.load(model, context = 16384)).`;
+        errors.push(message); await this.event(record, "agent.generate", message, "failed", {model: model.displayName, file});
+        continue;
       }
-      signal.throwIfAborted(); this.usage(record, response.usage);
-      if (response.error || !content || Buffer.byteLength(content) > MAX_ARTIFACT_BYTES) {
-        const message = `${file}: ${response.error ?? "Invalid or oversized artifact response."}`;
-        errors.push(message); await this.event(record, "agent.generate", message, "failed", {model: model.displayName, file, detail: response.text.slice(0, 4000)});
+      let content: string | undefined;
+      let response: LLMResponse | undefined;
+      let problem: string | undefined;
+      // An empty answer (a thinking model that stopped before writing) is asked for once more, with
+      // room to think first; a cut-off or unusable answer is the model's attempt and is not retried.
+      for (const attempt of [1, 2]) {
+        const thinking = attempt === 2 ? 1024 : 0;
+        const maxTokens = Math.min(2600 + thinking, room);
+        const request: LLMRequest = {
+          usagePurpose: "synthesis", model: model.id, signal, systemPrompt, maxTokens, localReasoningBudget: thinking, sampling: synthesisSampling,
+          prompt: attempt === 1 ? prompt : `${prompt.replace(/\s*\/no_think$/, "")}\n\nYour previous answer contained no code. Write the complete file now.`,
+          temperature: 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1,
+          ...this.progress(record, model, file, `Writing ${file}`)
+        };
+        if (format === "source") {
+          response = await this.services.llm.generateText(request, model.providerId);
+          const text = response.text.trim();
+          // A language label may hold symbols: ```c++, ```c#, ```objective-c.
+          const fenced = /^```[\w+#.-]*\s*\n([\s\S]*?)\n```$/.exec(text);
+          const source = fenced ? fenced[1] : text;
+          // No extraction from prose or multiple files: ambiguous output remains a failed attempt.
+          content = !source.includes("```") && source && (!text.includes("```") || fenced) ? source : undefined;
+        } else {
+          const result = await this.services.llm.generateObject<{content: string}>({...request,
+            responseFormat: {type: "json_schema", name: "synthesis_file", strict: true, schema: {
+              type: "object", properties: {content: {type: "string"}}, required: ["content"], additionalProperties: false
+            }}
+          }, model.providerId);
+          response = result.response;
+          content = typeof result.data?.content === "string" ? result.data.content : undefined;
+        }
+        signal.throwIfAborted(); this.usage(record, response.usage);
+        const cutOff = (response.raw as {choices?: Array<{finish_reason?: string}>} | undefined)?.choices?.[0]?.finish_reason === "length";
+        problem = cutOff ? `The answer was cut off at the token limit (${maxTokens} tokens), so the file is incomplete. Write a shorter file.`
+          : response.error ?? (!content ? "The answer was not one complete file (no code, or code mixed with prose)." : Buffer.byteLength(content) > MAX_ARTIFACT_BYTES ? "The file is larger than allowed." : undefined);
+        // Only an empty answer: a timeout or a provider error is not sent again.
+        if (content || cutOff || !/returned no final answer|returned an empty response/.test(response.error ?? "")) break;
+      }
+      if (problem || !content) {
+        const message = `${file}: ${problem ?? "Invalid or oversized artifact response."}`;
+        errors.push(message); await this.event(record, "agent.generate", message, "failed", {model: model.displayName, file, detail: response?.text.slice(0, 4000)});
         continue;
       }
       record.files[file] = content;

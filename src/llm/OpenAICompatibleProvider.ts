@@ -216,17 +216,21 @@ export class OpenAICompatibleProvider implements LLMProvider {
         throw new Error(`${this.id} request failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);
       }
 
-      let note = ""; let lastNoteAt = 0; let streamPhase = "";
+      let note = ""; let lastNoteAt = 0; let streamPhase = ""; let generated = 0;
+      // llama.cpp streams one token per delta: a count of both answer and thinking deltas.
+      const counted = () => request.onGenerated?.(++generated);
       const finalAnswer = request.outputPurpose === "agent-action" && request.onFinalAnswer ? answerStream(finalAnswerSoFar, request.onFinalAnswer) : undefined;
       const emitNote = () => { if (note) request.onProgress?.({ phase: "thinking", model, note }); };
       const payload = stream && response.headers.get("content-type")?.includes("text/event-stream")
         ? await readLocalChatStream(response, delta => {
+          counted();
           if (streamPhase !== "responding") { emitNote(); streamPhase = "responding"; request.onProgress?.({ phase: "responding", model }); }
           // A partial JSON action is never a user-facing answer or an executable tool call.
           if (!request.responseFormat && request.outputPurpose !== "agent-action") request.onTextDelta?.(delta);
           // Of an action, only the text of a final answer is shown while it is written.
           finalAnswer?.push(delta);
         }, delta => {
+          counted();
           note = (note + delta).slice(-6000);
           if (streamPhase !== "thinking" || Date.now() - lastNoteAt >= 400) { streamPhase = "thinking"; lastNoteAt = Date.now(); emitNote(); }
         })
@@ -240,7 +244,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const choices = payload.choices as Array<Record<string, unknown>> | undefined;
       const boundedProse = dialect.local && text && !request.responseFormat && request.outputPurpose !== "agent-action" && choices?.[0]?.finish_reason === "length";
       const errorPayload = boundedProse ? { ...payload, choices: [{ ...choices![0], finish_reason: "stop" }] } : payload;
-      const error = readResponseError(errorPayload) || (!text && !action ? "The model returned no final answer (its response may contain only reasoning)." : undefined);
+      const error = readResponseError(errorPayload) || (!text && !action ? noFinalAnswer(payload, note) : undefined);
 
       return {
         provider: this.id,
@@ -277,4 +281,15 @@ function strictSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(strictSchema);
   if (!schema || typeof schema !== "object") return schema;
   return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== "minLength" && key !== "maxLength").map(([key, value]) => [key, strictSchema(value)]));
+}
+
+/** Why an answer has no text: only reasoning, or the model stopped at once. The words before the colon
+ * stay the same: callers recognize this failure by them. */
+function noFinalAnswer(payload: Record<string, unknown>, streamedReasoning: string): string {
+  const choice = (payload.choices as Array<Record<string, any>> | undefined)?.[0];
+  const reasoning = streamedReasoning || (typeof choice?.message?.reasoning_content === "string" ? choice.message.reasoning_content : "");
+  const tokens = Number((payload.usage as Record<string, unknown> | undefined)?.completion_tokens);
+  const count = Number.isFinite(tokens) && tokens > 0 ? ` (${tokens} token${tokens === 1 ? "" : "s"})` : "";
+  if (reasoning.trim()) return `The model returned no final answer: it wrote only reasoning${count}${choice?.finish_reason === "length" ? " and reached the token limit" : ""}.`;
+  return `The model returned no final answer: it stopped${count} without writing any text.`;
 }

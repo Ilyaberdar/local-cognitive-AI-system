@@ -37,11 +37,13 @@ function createTransport({ target, runtime }) {
     const known = runs.get(id);
     const detail = await call(`/runs/${encodeURIComponent(id)}${known ? `?after=${known.lastSequence}` : ""}`, options);
     const events = [...(known?.events ?? []), ...detail.events].slice(-MAX_EVENTS);
+    // A running generation's tokens so far, on the event the device already has.
+    if (detail.live) { const index = events.findIndex(event => event.sequence === detail.live.sequence); if (index >= 0) events[index] = { ...events[index], tokens: detail.live.tokens }; }
     // The runs read most recently are kept; an older one is read whole again when selected.
     runs.delete(id);
     runs.set(id, { events, lastSequence: detail.lastSequence });
     if (runs.size > MAX_RUNS) runs.delete(runs.keys().next().value);
-    const { lastSequence: _lastSequence, truncated: _truncated, ...run } = detail;
+    const { lastSequence: _lastSequence, truncated: _truncated, live: _live, ...run } = detail;
     return { ...run, events };
   };
   const readDiff = async (id, options) => {

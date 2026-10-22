@@ -789,3 +789,38 @@ test("on a server Web targets are shown, not edited: the server's owner sets the
     assert.equal(asked.some(line => line.startsWith("PUT")), false, "nothing is changed from here");
   } finally { handle.unmount(); dom.window.close(); }
 });
+
+test("a run waiting for its local model says so; a running step shows its time and tokens; a skipped gate reads Not evaluated", async () => {
+  const current = moduleEntry();
+  const at = new Date(Date.now() - 65_000).toISOString();
+  const run: any = { ...runEntry("busy", "running"), phase: "agent.generate", events: [
+    { sequence: 1, at, step: "models.select", message: "Qwen · IQ1_S", iteration: 0, status: "ok" },
+    { sequence: 2, at, step: "models.select", message: "Qwen: IQ1_S keeps little of the model's quality", iteration: 0, status: "warning" },
+    { sequence: 3, at, step: "agent.generate", message: "Waiting for Qwen: in use by Synthesis · Test", iteration: 1, status: "running", waiting: true, file: "calculator.js" }
+  ], evidence: { candidateHash: "h", specHash: "s", status: "Fail", gates: [
+    { id: "arithmetic", evaluator: "calculator.arithmetic", status: "Unknown", message: "Not evaluated: no candidate file was written.", skipped: "no_candidate" },
+    { id: "artifacts", evaluator: "registry", status: "Fail", message: "Declared files are missing or empty: calculator.js." }
+  ] } };
+  const ui = harness((path) => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [current] };
+    if (path === "/synthesis/projects/p1/runs") return [structuredClone(run)];
+    if (path === "/synthesis/projects/p1/modules/Calculator") return current;
+    if (path === "/synthesis/runs/busy") return structuredClone(run);
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    await until(() => ui.text().includes("Waiting for model"), "the badge names the wait");
+    assert.match(ui.text(), /Waiting for Qwen: in use by Synthesis · Test/);
+    assert.match(ui.text(), /agent\.generate · 1:0[5-9]/, "the waiting step's time so far");
+    assert.equal(ui.dom.window.document.querySelector(".synthesis-event.is-waiting .synthesis-event__marker")?.textContent, "…");
+    assert.equal(ui.dom.window.document.querySelector(".synthesis-event.status-warning .synthesis-event__marker")?.textContent, "!");
+    run.events = [...run.events, { sequence: 4, at: new Date().toISOString(), step: "agent.generate", message: "Writing calculator.js", iteration: 1, status: "running", file: "calculator.js", tokens: 310 }];
+    await until(() => ui.text().includes("~310 tokens"), "tokens so far");
+    await until(() => ui.dom.window.document.querySelector(".synthesis-badge")?.textContent === "Running", "writing again: Running");
+    ui.click("Diagnostics");
+    await until(() => ui.text().includes("Not evaluated: no candidate file was written."), "gate detail");
+    const verdicts = [...ui.dom.window.document.querySelectorAll(".synthesis-gate summary")].map((item: any) => item.textContent);
+    assert.ok(verdicts.some(text => /^arithmeticNot evaluated/.test(text)), verdicts.join(" | "));
+    assert.ok(verdicts.some(text => /^artifactsFail/.test(text)));
+  } finally { ui.close(); }
+});

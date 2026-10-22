@@ -12,13 +12,14 @@ export interface SynthesisModule {
 }
 export interface SynthesisEvent {
   sequence: number; at: string; step: string; message: string; detail?: string; iteration?: number;
-  status?: "running" | "ok" | "failed"; model?: string; file?: string; line?: number;
+  status?: "running" | "ok" | "failed" | "warning"; model?: string; file?: string; line?: number;
+  waiting?: true; tokens?: number;
 }
 export interface SynthesisRun {
   id: string; projectId: string; moduleId: string; moduleName: string;
   status: "queued" | "running" | "accepted" | "needs_review" | "blocked" | "unresolved" | "interrupted" | "cancelled";
   phase: string; iteration: number; createdAt: string; updatedAt: string; error?: string; appliedAt?: string;
-  models?: { id: string; providerId: string; providerName?: string; displayName?: string; sizeBytes?: number }[];
+  models?: { id: string; providerId: string; providerName?: string; displayName?: string; sizeBytes?: number; quantization?: string }[];
   usage?: { inputTokens: number; outputTokens: number; calls: number };
   agents?: { total: number; queued: number; running: number; done: number; failed: number; cancelled: number };
   events: SynthesisEvent[];
@@ -27,6 +28,8 @@ export interface SynthesisRun {
     gates: { id: string; evaluator: string; status: "Pass" | "Fail" | "Unknown"; message: string;
       /** What the model read for this gate, and the test cases a Tests gate ran. */
       feedback?: string[];
+      /** Not run: the model wrote none of the declared files. */
+      skipped?: "no_candidate";
       cases?: { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }[];
       /** Grounded: the file it read (relative to the checkout folder) and each place it cites. */
       grounded?: { file: string; references: GroundedReference[] } }[];

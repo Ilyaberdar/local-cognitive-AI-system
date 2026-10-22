@@ -166,3 +166,28 @@ test("catalog projector selection is explicit and its pinned path is included in
   await manager.test.perform("download", "owner/vision");
   assert.equal(requests[1].projectorPath, undefined);
 });
+
+test("a model's detail offers the recommended quantization first, never just the smallest file, and marks low-bit files", async () => {
+  const managerSource = fs.readFileSync("public/assets/model-manager.js", "utf8").replace(/^import .*\n/, "").replace("export function", "function").replace("return { render, bind, start, refresh, repaint, updateLiveView, dispose()", "return { test: { state, openDetail, perform, renderDetail }, render, bind, start, refresh, repaint, updateLiveView, dispose()");
+  const fit = { status: "warning", canLoad: true, canDownload: true, estimatedMemoryBytes: 2000, requiredDiskBytes: 1050, warnings: ["Memory is an estimate"] };
+  const low = { rank: 8, tier: "low", lowBit: true, note: "IQ1_S (about 1.6 bits a weight) keeps little of the model's quality: expect much weaker answers and code. Q4_K_M or higher is the usual choice." };
+  const variants = [
+    { id: "m-UD-IQ1_S.gguf", quantization: "IQ1_S", sizeBytes: 500, files: [{ path: "m-UD-IQ1_S.gguf", sizeBytes: 500 }], compatibility: fit, quality: low },
+    { id: "m-Q4_K_M.gguf", quantization: "Q4_K_M", sizeBytes: 1000, files: [{ path: "m-Q4_K_M.gguf", sizeBytes: 1000 }], compatibility: fit, quality: { rank: 60, tier: "good", lowBit: false } },
+    { id: "m-Q8_0.gguf", quantization: "Q8_0", sizeBytes: 2000, files: [{ path: "m-Q8_0.gguf", sizeBytes: 2000 }], compatibility: fit, quality: { rank: 90, tier: "high", lowBit: false } }
+  ];
+  let detail: any = { repoId: "owner/m", revision: "pinned", variants, recommendedVariantId: "m-Q8_0.gguf" };
+  const context: any = { icon: () => "", window: { setTimeout: () => 1, clearTimeout() {} }, URLSearchParams, setTimeout };
+  vm.runInNewContext(managerSource, context);
+  const manager = context.createModelManager({ request: async (url: string) => url.startsWith("/local/catalog/model") ? detail : { models: [], downloads: [], runtime: {} },
+    getContext: () => ({ models: [], settings: {} }), onLibraryChange() {}, notify() {}, isVisible: () => false });
+  await manager.test.openDetail("owner/m");
+  assert.equal(manager.test.state.variantId, "m-Q8_0.gguf", "the server's recommendation");
+  assert.match(manager.test.renderDetail(), /Q8_0 · [^<]* · recommended<\/option>/);
+  assert.match(manager.test.renderDetail(), /IQ1_S · [^<]* · low quality<\/option>/);
+  detail = { ...detail, recommendedVariantId: undefined };
+  await manager.test.openDetail("owner/m");
+  assert.equal(manager.test.state.variantId, "m-Q4_K_M.gguf", "an older server: its Q4_K_M, not the smallest file");
+  manager.test.state.variantId = "m-UD-IQ1_S.gguf";
+  assert.match(manager.test.renderDetail(), /mm-compatibility-detail warning" role="note">IQ1_S \(about 1\.6 bits a weight\) keeps little/);
+});

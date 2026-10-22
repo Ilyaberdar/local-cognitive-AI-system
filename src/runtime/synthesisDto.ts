@@ -58,10 +58,14 @@ export const runDetail = (run: SynthesisRun, scrub: Scrubber, after = 0) => {
   let events = scrub(run.events.filter(event => event.sequence > after)).map(safeEvent);
   let truncated = false;
   while (events.length > 1 && bytes(events) > MAX_EVENT_BYTES) { events = events.slice(Math.ceil(events.length / 4)); truncated = true; }
+  const last = run.events.at(-1);
+  const live = last?.status === "running" && typeof last.tokens === "number" ? { sequence: last.sequence, tokens: last.tokens } : undefined;
   return {
     ...runSummary(run, scrub),
     ...(run.evidence ? { evidence: scrub(run.evidence) } : {}),
-    models: run.models.map(model => ({ id: model.id, displayName: model.displayName, providerId: model.providerId, providerName: model.providerName, sizeBytes: model.sizeBytes })),
-    usage: run.usage, ...(run.agents ? { agents: run.agents } : {}), events, lastSequence: run.events.at(-1)?.sequence ?? 0, ...(truncated ? { truncated: true } : {})
+    models: run.models.map(model => ({ id: model.id, displayName: model.displayName, providerId: model.providerId, providerName: model.providerName, sizeBytes: model.sizeBytes, ...(model.quantization ? { quantization: model.quantization } : {}) })),
+    usage: run.usage, ...(run.agents ? { agents: run.agents } : {}), events, lastSequence: run.events.at(-1)?.sequence ?? 0, ...(truncated ? { truncated: true } : {}),
+    // A running generation's tokens grow on an event a device may already have: sent on their own.
+    ...(live ? { live } : {})
   };
 };

@@ -42,7 +42,7 @@ export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose 
         <header><h3 id="synthesis-gates-title">Acceptance gates</h3><span className={`synthesis-status status-${evidence?.status.toLowerCase() ?? "idle"}`}>{evidence?.status ?? (running ? "Pending" : "Not evaluated")}</span></header>
         <p className="synthesis-section-note">{evidence ? "Results for the selected run’s frozen source." : running ? "Checks will appear as this run is evaluated." : "Run this module to evaluate its candidate."}</p>
         {evidence ? <div className="synthesis-gates">{evidence.gates.length ? evidence.gates.map(gate => <details className="synthesis-gate" key={gate.id}>
-          <summary><span className={`synthesis-gate__verdict status-${gate.status.toLowerCase()}`}><SynthesisIcon name={gate.status === "Pass" ? "check" : gate.status === "Fail" ? "close" : "clock"} /></span><strong>{gate.id}</strong><span className={`status-${gate.status.toLowerCase()}`}>{gate.status}</span><SynthesisIcon name="chevron" /></summary>
+          <summary><span className={`synthesis-gate__verdict status-${gate.skipped ? "idle" : gate.status.toLowerCase()}`}><SynthesisIcon name={gate.status === "Pass" ? "check" : gate.status === "Fail" ? "close" : "clock"} /></span><strong>{gate.id}</strong><span className={`status-${gate.skipped ? "idle" : gate.status.toLowerCase()}`}>{gate.skipped ? "Not evaluated" : gate.status}</span><SynthesisIcon name="chevron" /></summary>
           <div className="synthesis-gate__detail"><p>{gate.message}</p>
             {gate.cases?.length ? <ul className="synthesis-gate__cases" aria-label={`Tests of ${gate.id}`}>{gate.cases.map((item, index) =>
               <li key={index} className={item.status === "pass" ? "is-pass" : "is-fail"}><SynthesisIcon name={item.status === "pass" ? "check" : "close"} /><span><strong>{item.name}</strong>
@@ -53,7 +53,7 @@ export function SynthesisDiagnostics({ module, run, busy, onOpenSource, onClose 
       </section>
       {run?.models?.length ? <details className="synthesis-inspector-disclosure" open>
         <summary><span>Models</span><small>{run.models.length}</small><SynthesisIcon name="chevron" /></summary>
-        <div className="synthesis-models">{run.models.map(item => <div key={`${item.providerId}:${item.id}`}><strong>{item.displayName || item.id}</strong><small>{item.providerName ?? item.providerId}{item.sizeBytes ? ` · ${(item.sizeBytes / 1024 ** 3).toFixed(1)} GiB` : item.providerId === "llamacpp" ? "" : " · cloud"}</small></div>)}</div>
+        <div className="synthesis-models">{run.models.map(item => <div key={`${item.providerId}:${item.id}`}><strong>{item.displayName || item.id}</strong><small>{item.providerName ?? item.providerId}{item.quantization ? ` · ${item.quantization}` : ""}{item.sizeBytes ? ` · ${(item.sizeBytes / 1024 ** 3).toFixed(1)} GiB` : item.providerId === "llamacpp" ? "" : " · cloud"}</small></div>)}</div>
         {/* The run's total: under two models it read as the second one's. */}
         {run.usage?.calls ? <p className="synthesis-section-note">{run.models.length > 1 ? "All models: " : ""}{run.usage.calls} model {run.usage.calls === 1 ? "call" : "calls"} · {run.usage.inputTokens.toLocaleString()} tokens in, {run.usage.outputTokens.toLocaleString()} out</p> : null}
       </details> : null}

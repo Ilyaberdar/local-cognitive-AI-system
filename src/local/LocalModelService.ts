@@ -9,14 +9,15 @@ import { LocalModelManager } from "../llm/LocalModelManager";
 import { HuggingFaceCatalog, groupVariants } from "./HuggingFaceCatalog";
 import { ModelDownloadService, sha256File } from "./ModelDownloadService";
 import { ModelLibraryStore, modelLibraryId } from "./ModelLibraryStore";
-import { estimateModelMemory, evaluateCompatibility, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
+import { estimateModelMemory, evaluateCompatibility, fittingContext, getFreeDiskBytes, GGUF_INSPECTION_VERSION, readGGUFMetadata } from "./ModelCompatibility";
 import { LocalInferenceScheduler } from "./LocalInferenceScheduler";
+import { parseQuantization, quantQuality, recommendVariant } from "./quantization";
 import { LocalRuntimePool } from "./LocalRuntimePool";
 import type { RuntimeShape } from "./LlamaCppRuntime";
 import { GpuRuntimeError, GpuRuntimeService } from "./GpuRuntimeService";
 import { inspectModelStorage } from "./ModelStorageInventory";
 import { allModelArtifacts, assertStandaloneModel, assertVisionProjector, isProjectorMetadata, modelDiskBytes } from "./ModelArtifacts";
-import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact } from "./types";
+import { CatalogModel, CatalogPage, DownloadJob, DownloadTarget, LibraryModel, LocalModelError, LocalModelEvent, LocalModelOptions, LocalModelSnapshot, LocalModelStorageSnapshot, ModelArtifact, ModelQueue } from "./types";
 import { normalizeLocalGenerationSettings, preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "./GenerationSettings";
 
 /** The shape a model is served with after a load asks for `requested`: a loaded model that already
@@ -26,6 +27,14 @@ export function servedShape(current: RuntimeShape | undefined, requested: Runtim
   const now = current ?? { parallel: 1, contextSize: defaultContext };
   const next = loaded && now.parallel >= requested.parallel && now.contextSize >= requested.contextSize ? now : requested;
   return next.parallel === 1 && next.contextSize === defaultContext ? undefined : next;
+}
+/** An imported model's name: its file's, which the user chose, without the quantization (shown beside it).
+ * A GGUF's own general.name is often a quantizer's leftover ("Lmstudio Community_Nn"). */
+export function importedName(file: string): string {
+  const base = path.basename(file, ".gguf");
+  const quantization = parseQuantization(base);
+  const name = quantization === "GGUF" ? base : base.replace(new RegExp(`[-_.](?:UD[-_.])?${quantization.replace(/[^A-Z0-9_]/gi, "")}$`, "i"), "");
+  return name || base;
 }
 export class LocalModelService implements LocalModelManager {
   readonly providerId = "llamacpp";
@@ -138,7 +147,7 @@ export class LocalModelService implements LocalModelManager {
       const current = this.runtime.forModel(model.id);
       const state = current?.modelId ? ({ ready: "ready", loading: "loading", stopping: "unloading", error: "error" } as const)[current.status as "ready" | "loading" | "stopping" | "error"] ?? "unloaded" : this.fileErrors.has(model.id) ? "error" : "unloaded";
       return { ...model, filesAvailable: !this.fileErrors.has(model.id), sizeBytes: modelDiskBytes(model), vision: Boolean(model.projector), state, loaded: state === "ready", loadedInstanceIds: state === "ready" ? [model.id] : [],
-        busy: this.scheduler.isModelBusy(model.id), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, this.runtime.memoryCapacity(), model.files.map(file => file.path)),
+        busy: this.scheduler.isModelBusy(model.id), quality: quantQuality(model.quantization, model.variantId), compatibility: evaluateCompatibility(modelDiskBytes(model), this.options, model.metadata, this.freeDiskBytes, true, this.runtime.memoryCapacity(), model.files.map(file => file.path)),
         error: state === "error" ? (current?.error ?? this.fileErrors.get(model.id)) : undefined };
     });
     return { models, downloads: this.downloads.list(), runtime, sequence: this.sequence, storage: this.storage ? structuredClone(this.storage) : undefined };
@@ -180,28 +189,43 @@ export class LocalModelService implements LocalModelManager {
   async cancelDownload(id: string): Promise<DownloadJob> { this.assertLibrary(); return this.downloads.cancel(id); }
 
   /** `shape.parallel`: requests the model serves at once (1–16), each with `shape.contextSize` tokens;
-   * the model keeps that shape until it is loaded with another. */
-  async loadModel(modelId: string, callerSignal?: AbortSignal, shape?: Partial<RuntimeShape>): Promise<void> {
+   * the model keeps that shape until it is loaded with another. `shape.fit`: the context is a wish,
+   * cut to what the model was trained for and what fits memory, never below the app's own setting. */
+  async loadModel(modelId: string, callerSignal?: AbortSignal, shape?: Partial<RuntimeShape> & { fit?: boolean }, queue?: ModelQueue): Promise<void> {
     await this.init(); this.assertLibrary();
     let requested: RuntimeShape | undefined;
     if (shape) {
-      const parallel = shape.parallel ?? 1, contextSize = shape.contextSize ?? this.options.contextSize;
+      const parallel = shape.parallel ?? 1;
+      let contextSize = shape.contextSize ?? this.options.contextSize;
       if (!Number.isInteger(parallel) || parallel < 1 || parallel > 16) throw new LocalModelError("A local model serves 1 to 16 requests at once.", 400);
       if (!Number.isInteger(contextSize) || contextSize < 512 || contextSize * parallel > 262_144) throw new LocalModelError("Each slot's context is at least 512 tokens, and all slots together at most 262,144.", 400);
+      if (shape.fit) contextSize = this.fittingContext(modelId, parallel, contextSize);
       requested = { parallel, contextSize };
     }
     const signal = AbortSignal.any([this.lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
     await this.scheduler.run(modelId, async () => {
+      queue?.onStarted?.();
       // The shape changes here, with the model to itself: no request of another run is answered meanwhile.
-      if (requested) {
-        const next = servedShape(this.shapes.get(modelId), requested, this.runtime.forModel(modelId)?.status === "ready", this.options.contextSize);
+      const current = this.shapes.get(modelId), ready = this.runtime.forModel(modelId)?.status === "ready";
+      // A context wish (fit) never takes slots from requests that run on the loaded model at once.
+      if (requested && !(shape?.fit && ready && (current?.parallel ?? 1) > 1)) {
+        const next = servedShape(current, requested, ready, this.options.contextSize);
         if (next) this.shapes.set(modelId, next); else this.shapes.delete(modelId);
       }
       // Loading cancellation is handled by the runtime. A cancelled request for
       // an already resident model must not unload it.
       await this.ensureLoaded(modelId, signal);
       signal.throwIfAborted();
-    }, signal);
+    }, signal, queue?.onQueued, queue?.label);
+  }
+  /** The largest context up to `wanted`, in steps of 1024, that the model was trained for and that fits
+   * the memory limit with this many slots; never below the app's context setting. */
+  private fittingContext(modelId: string, parallel: number, wanted: number): number {
+    const model = this.store.getModel(modelId);
+    return fittingContext(wanted, this.options.contextSize, Number(model.metadata?.contextLength) || undefined, context => {
+      const fit = evaluateCompatibility(modelDiskBytes(model), { ...this.options, contextSize: context * parallel }, model.metadata, undefined, true, this.runtime.memoryCapacity(), model.files.map(file => file.path));
+      return fit.estimatedMemoryBytes <= fit.memoryWarningBytes;
+    });
   }
   /** Loads the loaded models again by the current GPU settings, the largest first, once the
    * requests running on them have finished. It happens only when asked: nothing is unloaded on
@@ -268,7 +292,7 @@ export class LocalModelService implements LocalModelManager {
         // Only application shutdown should discard an otherwise healthy model.
         if (this.lifetime.signal.aborted) await this.runtime.stop(modelId);
       }
-    }, signal, (queuePosition) => request.onProgress?.({ phase: "queued", model: modelId, queuePosition }));
+    }, signal, (queuePosition, heldBy) => request.onProgress?.({ phase: "queued", model: modelId, queuePosition, heldBy }), request.holder);
   }
 
   async importModel(paths: string[]): Promise<LibraryModel> {
@@ -312,11 +336,12 @@ export class LocalModelService implements LocalModelManager {
       for (const artifact of allModelArtifacts({ files: variant.files, projector })) {
         const source = paths.find((file) => path.basename(file) === artifact.path)!;
         const target = await this.store.safePath(staging, artifact.path, true);
-        await fs.copyFile(source, target, fs.constants.COPYFILE_EXCL);
+        // A copy-on-write clone where the disk supports it (APFS, btrfs): an import takes no second copy's space.
+        await fs.copyFile(source, target, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
         if ((await fs.stat(target)).size !== artifact.sizeBytes || await sha256File(target, this.lifetime.signal) !== artifact.sha256) throw new LocalModelError("A model file changed during import. Try again.", 409);
       }
       const metadata = await readGGUFMetadata(await this.store.safePath(staging, variant.files[0].path));
-      const model: LibraryModel = { id, libraryId: id, displayName: metadata.name || path.basename(variant.id, ".gguf"), providerId: "llamacpp", providerName: "Local models",
+      const model: LibraryModel = { id, libraryId: id, displayName: importedName(variant.id), providerId: "llamacpp", providerName: "Local models",
         variantId: variant.id, quantization: variant.quantization, license: "imported — see original model license", installedAt: new Date().toISOString(), owned: true,
         sizeBytes: totalBytes, files: variant.files, projector, vision: Boolean(projector), metadata, loaded: false, loadedInstanceIds: [], state: "unloaded" };
       await fs.rename(staging, this.store.modelDirectory(id)); await this.store.putModel(model); this.storageCheckedAt = 0; this.emit(); return this.snapshot().models.find((item) => item.id === id)!;
@@ -433,7 +458,9 @@ export class LocalModelService implements LocalModelManager {
     }
   }
   private decorateCatalog(model: CatalogModel): CatalogModel {
-    return { ...model, variants: model.variants.map((variant) => ({ ...variant, compatibility: evaluateCompatibility(variant.sizeBytes, this.options, undefined, this.freeDiskBytes, false, this.runtime.memoryCapacity()) })) };
+    const variants = model.variants.map((variant) => ({ ...variant, quality: quantQuality(variant.quantization, variant.id),
+      compatibility: evaluateCompatibility(variant.sizeBytes, this.options, undefined, this.freeDiskBytes, false, this.runtime.memoryCapacity()) }));
+    return { ...model, variants, recommendedVariantId: recommendVariant(variants)?.id };
   }
   private async moveStorage(options: LocalModelOptions): Promise<void> {
     if (this.downloads.list().some((job) => ["queued", "downloading", "verifying"].includes(job.state))) throw new LocalModelError("Pause downloads before moving the model library to another folder.", 409, "downloads_busy");

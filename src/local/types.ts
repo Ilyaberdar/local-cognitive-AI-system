@@ -1,4 +1,5 @@
 import { LocalGenerationSettings, ManagedModel, MultiGpuSettings } from "../types";
+import type { QuantQuality } from "./quantization";
 
 export interface LocalModelOptions {
   enabled: boolean;
@@ -67,6 +68,7 @@ export interface CatalogVariant {
   sizeBytes: number;
   files: ModelArtifact[];
   compatibility?: ModelCompatibility;
+  quality?: QuantQuality;
 }
 
 export interface CatalogModel {
@@ -80,6 +82,8 @@ export interface CatalogModel {
   gated: boolean;
   tags?: string[];
   variants: CatalogVariant[];
+  /** The variant to offer first (recommendVariant): never the smallest file by default. */
+  recommendedVariantId?: string;
   projectors?: ModelArtifact[];
   recommended?: boolean;
   verified?: boolean;
@@ -137,6 +141,7 @@ export interface LibraryModel extends ManagedModel {
   state: "unloaded" | "loading" | "ready" | "unloading" | "error";
   busy?: boolean;
   compatibility?: ModelCompatibility;
+  quality?: QuantQuality;
   error?: string;
 }
 
@@ -236,6 +241,14 @@ export interface LocalPlacementSnapshot {
   hostEstimatedBytes: number;
   warnings: string[];
   retried?: boolean;
+}
+
+/** A caller's place in a model's queue: its label for the requests behind it, and where it waits. */
+export interface ModelQueue {
+  label?: string;
+  onQueued?: (position: number, heldBy: string[]) => void;
+  /** The wait is over: the work on the model begins. */
+  onStarted?: () => void;
 }
 
 export class LocalModelError extends Error {

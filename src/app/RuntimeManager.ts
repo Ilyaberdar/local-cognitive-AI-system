@@ -152,7 +152,8 @@ export class RuntimeManager {
         get projects() { return current().projectStore; },
         models: { listAllModels: (...args) => current().localModelManager.listAllModels(...args) },
         llm: { generateObject: (...args) => current().llmService.generateObject(...args), generateText: (...args) => current().llmService.generateText(...args) },
-        loadModel: (model, signal, shape) => current().localModelService.loadModel(model.id, signal, shape),
+        loadModel: (model, signal, shape, queue) => current().localModelService.loadModel(model.id, signal, shape, queue),
+        contextWindow: model => current().localModelService.getContextWindow(model.id),
         catalog: { listAll: (...args) => current().modelCatalog.listAll(...args) },
         providers: () => current().providerDescriptors,
         agents: { get llm() { return current().llmService; } }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { encode, errorMessage, isAbort, synthesisRequest } from "./api";
-import { SynthesisOutput, statusLabel } from "./SynthesisActivity";
+import { SynthesisOutput, runLabel, statusLabel } from "./SynthesisActivity";
 import { SynthesisChanges } from "./SynthesisChanges";
 import { SynthesisAgents } from "./SynthesisAgents";
 import { diagnosticSummary, SynthesisDiagnostics } from "./SynthesisDiagnostics";
@@ -292,7 +292,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
         </aside>
         <main className="synthesis-main-pane">
           <header className="synthesis-module-header"><div><h2>{module?.name ?? (moduleId ? "Loading module…" : "Your first synthesis")}</h2><span>{module ? remote ? `The source is edited on ${remote.hostName}. Refresh to see saved changes.` : "Edit the source in your IDE. Refresh to validate saved changes." : "Create a module or save matching .lcspec and .lcflow files in your project, then Refresh."}</span></div>
-            {run ? <span className={`synthesis-badge status-${run.status}`}>{statusLabel(run.status)}</span> : null}</header>
+            {run ? <span className={`synthesis-badge status-${run.status}`}>{runLabel(run)}</span> : null}</header>
           <div className="synthesis-tabs" role="tablist" aria-label="Module views">{([['contract', 'Contract'], ['flow', 'Flow'], ...(run?.agents ? [['agents', `Agents · ${run.agents.total}`]] : []), ['changes', 'Changes']] as Array<[SourceTab, string]>).map(([id, label]) =>
             <button role="tab" type="button" key={id} id={`synthesis-tab-${id}`} aria-selected={tab === id} aria-controls="synthesis-source-panel" disabled={!module && !run} onClick={() => setTab(id)}>{label}</button>)}
             {sourceTab && module && !remote ? <button type="button" className="synthesis-open-source" disabled={Boolean(busy)} onClick={() => open(tab === "contract" ? "spec" : "flow")}>Open project .{tab === "contract" ? "lcspec" : "lcflow"} ↗</button> : null}

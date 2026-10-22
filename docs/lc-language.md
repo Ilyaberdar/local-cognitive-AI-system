@@ -500,7 +500,9 @@ Selection works as follows:
 1. Keep eligible models from the supplied runtime list.
 2. If `max_size` is provided, require a known positive GGUF size no larger than the limit.
 3. Prefer a case-insensitive substring match in the model ID or display name.
-4. Sort remaining ties by smaller file size, then by model ID.
+4. Then prefer a file of more than about 3 bits a weight to a low-bit one (`IQ1_*`, `IQ2_*`, `Q2_K`, `TQ1_0` and the like), then the larger file, so the most capable model the limit allows wins; then the model ID.
+
+When the selected model is a low-bit file, the run's log shows a warning: such a file keeps little of the model's quality, and code it writes is much weaker. In Models, Q4_K_M is the variant offered first whenever it fits with room.
 
 No eligible model is a runtime error, not `none`. Without a size limit, a model with unknown size can remain eligible. To require a specific model, use its exact ID with `model(...)` or `id = ...`; do not rely on `prefer` as an exact match. There is no download, and a local flow never falls back to a cloud model.
 

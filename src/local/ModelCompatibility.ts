@@ -48,6 +48,14 @@ export const estimateModelMemory = (weightsBytes: number, contextSize: number, m
     perLayerBytes: layers ? weightsBytes / (layers + 1) + (kvCacheBytes + recurrentStateBytes) / layers : 0 };
 };
 
+/** The largest context up to `wanted`, in steps of 1024, that the model was trained for and for which
+ * `roomy` holds; never below `floor`, the app's own context setting. */
+export function fittingContext(wanted: number, floor: number, trained: number | undefined, roomy: (context: number) => boolean): number {
+  let size = Math.max(floor, trained !== undefined && Number.isFinite(trained) && trained > 0 ? Math.min(wanted, trained) : wanted);
+  while (size - 1024 >= floor && !roomy(size)) size -= 1024;
+  return size;
+}
+
 export const evaluateCompatibility = (
   sizeBytes: number,
   options: Pick<LocalModelOptions, "contextSize" | "memoryLimitPercent">,

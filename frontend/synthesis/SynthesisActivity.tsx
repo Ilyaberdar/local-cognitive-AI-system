@@ -6,11 +6,34 @@ import type { SynthesisEvent, SynthesisRun } from "./types";
 export function statusLabel(status?: string) {
   return ({ accepted: "Accepted", needs_review: "Needs review", unresolved: "Unresolved", interrupted: "Interrupted", blocked: "Blocked", running: "Running", queued: "Queued", cancelled: "Cancelled" } as Record<string, string>)[status ?? ""] ?? "Ready to run";
 }
+/** The time now, ticking each second while `active`. */
+function useNow(active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
+}
+/** m:ss since `since`; a clock behind the host's counts from 0. */
+export function elapsed(since: string, now: number) {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(since)) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+/** A running run's badge: waiting for a local model another request holds reads differently. */
+export function runLabel(run: SynthesisRun) {
+  return run.status === "running" && run.events?.at(-1)?.waiting ? "Waiting for model" : statusLabel(run.status);
+}
+function marker(event: SynthesisEvent) {
+  return event.status === "failed" ? "×" : event.status === "warning" ? "!" : event.waiting ? "…" : event.status === "running" ? "·" : "✓";
+}
 function EventDetail({ event }: { event: SynthesisEvent }) {
-  return <article className={`synthesis-event status-${event.status ?? "ok"}`} data-sequence={event.sequence}>
-    <span className="synthesis-event__marker" aria-label={event.status}>{event.status === "failed" ? "×" : event.status === "running" ? "·" : "✓"}</span>
+  return <article className={`synthesis-event status-${event.status ?? "ok"}${event.waiting ? " is-waiting" : ""}`} data-sequence={event.sequence}>
+    <span className="synthesis-event__marker" aria-label={event.waiting ? "waiting" : event.status}>{marker(event)}</span>
     <div><strong>{event.message}</strong>
-      {event.file ? <small>{event.file}{event.line ? `:${event.line}` : ""}</small> : null}
+      {event.file ? <small>{event.file}{event.line ? `:${event.line}` : ""}{event.tokens ? ` · ~${event.tokens.toLocaleString()} tokens` : ""}</small> : event.tokens ? <small>~{event.tokens.toLocaleString()} tokens</small> : null}
       {event.detail ? <details><summary>Details</summary><pre>{event.detail}</pre></details> : null}
     </div>
     <time title={event.at}>{new Date(event.at).toLocaleTimeString([], { hour12: false })}</time>
@@ -36,6 +59,9 @@ export function SynthesisActivity({ run, resize }: { run: SynthesisRun | null; r
     if (following && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
   }, [following, run?.id, events.length, events.at(-1)?.detail]);
   const current = events.at(-1);
+  // A step that is still running shows how long it has taken, and a generation its tokens so far.
+  const live = run?.status === "running" && current?.status === "running";
+  const now = useNow(live);
   return <section className="synthesis-activity" aria-label="Synthesis agent activity">
     <header className="synthesis-pane-header">
       <div {...resize} className="synthesis-activity__resize" aria-label="Resize Agent activity" title="Drag to resize · Double-click to reset"><span aria-hidden="true" /><strong>Agent activity</strong></div>
@@ -43,7 +69,7 @@ export function SynthesisActivity({ run, resize }: { run: SynthesisRun | null; r
     </header>
     <div className={`synthesis-activity__current status-${run?.status ?? "idle"}`} aria-live="polite">
       <strong>{run?.status === "running" ? current?.message ?? run.phase : statusLabel(run?.status)}</strong>
-      {run ? <span>{run.moduleName} · {run.iteration ? `Iteration ${run.iteration} · ` : ""}{run.phase}</span> : <span>Run a module to see each agent action and evaluation.</span>}
+      {run ? <span>{run.moduleName} · {run.iteration ? `Iteration ${run.iteration} · ` : ""}{run.phase}{live && current ? ` · ${elapsed(current.at, now)}` : ""}{live && current?.tokens ? ` · ~${current.tokens.toLocaleString()} tokens` : ""}</span> : <span>Run a module to see each agent action and evaluation.</span>}
     </div>
     <div className="synthesis-activity__history" ref={scroller} tabIndex={0} aria-label="Synthesis action history"
       onScroll={event => { const el = event.currentTarget; setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 40); }}

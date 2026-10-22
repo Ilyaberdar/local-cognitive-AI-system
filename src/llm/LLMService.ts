@@ -56,7 +56,10 @@ export class LLMService {
     const usageCall = new UsageCall(this.usage ?? NO_LEDGER, provider.id, request.model ?? provider.defaultModel ?? "", { ...currentUsageScope(), ...(request.usagePurpose ? { purpose: request.usagePurpose } : {}) });
     let response: LLMResponse;
     try {
-      response = await provider.generateText({ ...request, images, onProgress, ...(effort ? { reasoningEffort: effort } : {}),
+      // A local model names who holds it to the requests waiting behind (Synthesis names its run).
+      const origin = currentUsageScope().origin;
+      const holder = request.holder ?? (origin === "chat" ? "a chat" : origin === "workflow" ? "a workflow" : undefined);
+      response = await provider.generateText({ ...request, images, onProgress, ...(holder ? { holder } : {}), ...(effort ? { reasoningEffort: effort } : {}),
         localReasoningBudget: request.localReasoningBudget ?? currentLocalThinkingBudget() ?? (effort ? localThinkingBudgetForEffort(effort) : undefined),
         usageCall });
     } catch (error) {

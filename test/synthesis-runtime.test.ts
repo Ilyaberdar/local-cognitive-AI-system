@@ -46,6 +46,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const requests: Array<{file: string; provider?: string; request: LLMRequest}> = [];
   const textRequests: Array<{file: string; provider?: string; request: LLMRequest}> = [];
   const loads: ManagedModel[] = [];
+  const shapes: unknown[] = [];
   const providers: Array<string | undefined> = [];
   const services = {
     projects,
@@ -53,7 +54,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
       providers.push(provider);
       return options.models?.() ?? [localModel("large-coder", 7_000_000_000), tiny, localModel("tiny-generic", 500_000_000)];
     } },
-    loadModel: async (model: ManagedModel, signal: AbortSignal) => { loads.push(model); await options.load?.(model, signal); },
+    loadModel: async (model: ManagedModel, signal: AbortSignal, shape?: unknown) => { loads.push(model); shapes.push(shape); await options.load?.(model, signal); },
     catalog: { listAll: async (providerId?: string) => options.catalog?.(providerId) ?? [] },
     providers: () => options.providers ?? [],
     llm: {
@@ -97,7 +98,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   };
   const run = async () => service.wait((await service.start(project.id, "Calculator")).id);
   const newService = async () => { const next = new SynthesisService(data, services); instances.push(next); await next.init(); return next; };
-  return {temp, root, data, projects, project, service, module, requests, textRequests, loads, providers, writeSources, readRecord, run, newService};
+  return {temp, root, data, projects, project, service, module, requests, textRequests, loads, shapes, providers, writeSources, readRecord, run, newService};
 }
 
 test("DSL lists/selects/loads a tiny local model, repairs failed evidence, and accepts without writing the project", async (t) => {
@@ -660,3 +661,97 @@ test("for runs in order without spending iterations; range, append and indexes a
   await assert.rejects(run("iterations 1, time 1m", "names = [\"a\"]; checkpoint(names[1]);"), /Index 1 is outside a list of 1/);
   await assert.rejects(run("iterations 1, time 1m", "names = range(10001);"), /range takes a whole number from 0 to 10000/);
 });
+
+const quantized = (id: string, sizeBytes: number, quantization: string): ManagedModel => ({...localModel(id, sizeBytes), quantization, variantId: `${id}-${quantization}.gguf`});
+const NO_TEXT = "The model returned no final answer: it stopped (1 token) without writing any text.";
+
+test("a local model is loaded with a 16k context by default, cut to fit memory; a flow's own context is kept exactly", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.run()).status, "accepted");
+  assert.deepEqual(f.shapes, [{parallel: 1, contextSize: 16384, fit: true}]);
+  await f.writeSources({flow: calculatorTemplate("Calculator", "compact").flow.replace("models.load(selected)", "models.load(selected, context = 8192)")});
+  assert.equal((await f.run()).status, "accepted");
+  assert.deepEqual(f.shapes[1], {parallel: 1, contextSize: 8192});
+});
+
+test("models.select takes the most capable model the limit allows, a low-bit file last, and warns when it takes one", async (t) => {
+  let installed = [quantized("big-iq1", 1_900_000_000, "IQ1_S"), quantized("qwen2.5-1.5b", 950_000_000, "Q4_K_M"), quantized("tiny-generic", 500_000_000, "Q8_0")];
+  const f = await fixture(t, {models: () => installed});
+  const flow = calculatorTemplate("Calculator", "compact").flow.replace(/models\.select\(available, [^)]*\)/, "models.select(available, max_size = 2GiB)");
+  await f.writeSources({flow});
+  const first = await f.run();
+  assert.equal(first.status, "accepted", first.error);
+  assert.equal(f.loads.at(-1)?.id, "qwen2.5-1.5b", "the larger sound file, not the smallest and not the 1-bit one");
+  assert.ok(first.events.some(event => event.step === "models.select" && event.status === "ok" && event.message === "qwen2.5-1.5b · Q4_K_M"));
+  assert.ok(!first.events.some(event => event.status === "warning"));
+  installed = [quantized("big-iq1", 1_900_000_000, "IQ1_S")];
+  const second = await f.run();
+  assert.equal(f.loads.at(-1)?.id, "big-iq1");
+  const warning = second.events.find(event => event.status === "warning");
+  assert.equal(warning?.step, "models.select");
+  assert.match(warning?.message ?? "", /^big-iq1: IQ1_S .*keeps little of the model's quality/);
+});
+
+test("an empty answer is asked for once more with room to think; a cut-off answer is the model's failed attempt", async (t) => {
+  const answers: Record<string, number> = {};
+  const f = await fixture(t, {templateMode: "focused", models: () => [tiny], source: (file) => {
+    const call = answers[file] = (answers[file] ?? 0) + 1;
+    if (file === "calculator.js" && call === 1) return {text: "", error: NO_TEXT};
+    if (file === "index.html" && call === 1) return {text: workingFiles[file].slice(0, 80), raw: {choices: [{finish_reason: "length"}]}};
+    return workingFiles[file];
+  }});
+  const result = await f.run();
+  assert.equal(result.status, "accepted", result.error);
+  const calculator = f.textRequests.filter(item => item.file === "calculator.js");
+  assert.equal(calculator[0].request.localReasoningBudget, 0);
+  assert.equal(calculator[1].request.localReasoningBudget, 1024, "the retry may think first");
+  assert.ok(calculator[1].request.prompt.endsWith("Your previous answer contained no code. Write the complete file now."));
+  assert.equal(calculator[1].request.maxTokens, 2600 + 1024);
+  assert.equal(calculator[0].request.holder, "Synthesis · Calculator");
+  const html = f.textRequests.filter(item => item.file === "index.html");
+  assert.equal(html.length, 2, "a cut-off answer is not retried in the same iteration");
+  assert.ok(!html[1].request.prompt.includes("Your previous answer"), "it is written again in the next iteration");
+  assert.ok(result.events.some(event => event.status === "failed" && /^index\.html: The answer was cut off at the token limit/.test(event.message)));
+  assert.ok(html[1].request.prompt.includes("cut off at the token limit"), "the next attempt is told why");
+});
+
+test("a candidate with none of its files is not evaluated gate by gate: one clear failure, and the flow goes on", async (t) => {
+  let iteration1 = true;
+  const f = await fixture(t, {templateMode: "focused", models: () => [tiny], source: (file, _call, request) => {
+    if (iteration1 && !request.prompt.includes("Feedback from trusted tests: 1.")) return {text: "", error: NO_TEXT};
+    iteration1 = false;
+    return workingFiles[file];
+  }});
+  const result = await f.run();
+  assert.equal(result.status, "accepted", result.error);
+  assert.equal(result.iteration, 2);
+  const first = result.events.filter(event => event.iteration === 1);
+  assert.deepEqual(first.filter(event => event.step === "evaluate" && event.status === "failed").map(event => event.message), ["Not evaluated: the model wrote none of the declared files"]);
+  assert.ok(!first.some(event => /^gate\.(arithmetic|ui)$/.test(event.step)), "no gate ran on the missing files");
+  assert.ok(first.some(event => event.step === "gate.artifacts" && event.status === "failed"));
+  const next = f.textRequests.find(item => item.request.prompt.includes("Feedback from trusted tests: 1."))!;
+  assert.ok(next.request.prompt.includes("artifacts:"));
+  assert.ok(!/\b(arithmetic|ui): Not evaluated/.test(next.request.prompt), "a skipped gate is not feedback");
+  assert.ok(f.textRequests[0].request.prompt.includes("Feedback from trusted tests: none yet: this is the first attempt."));
+});
+
+test("a request waiting for its local model says who holds it, once, then writes again; its tokens show on the running event", async (t) => {
+  const f = await fixture(t, {templateMode: "focused", models: () => [tiny], generation: async (request) => {
+    if (!request.prompt.startsWith("Implement only the file calculator.js")) return;
+    request.onProgress?.({phase: "queued", model: tiny.id, queuePosition: 1, heldBy: ["Synthesis · Rate limiter"]});
+    request.onProgress?.({phase: "queued", model: tiny.id, queuePosition: 1, heldBy: ["Synthesis · Rate limiter"]});
+    request.onProgress?.({phase: "generating", model: tiny.id});
+    request.onGenerated?.(1); request.onGenerated?.(42);
+  }});
+  const result = await f.run();
+  assert.equal(result.status, "accepted", result.error);
+  const steps = result.events.filter(event => event.step === "agent.generate" && event.file === "calculator.js" && event.iteration === 1);
+  assert.deepEqual(steps.map(event => [event.message, event.waiting ?? false]), [
+    ["Writing calculator.js", false],
+    ["Waiting for qwen2.5-1.5b: in use by Synthesis · Rate limiter", true],
+    ["Writing calculator.js", false],
+    [`calculator.js: ${Buffer.byteLength(workingFiles["calculator.js"])} bytes`, false]
+  ]);
+  assert.equal(steps[2].tokens, 42, "the token count is kept on the running event, not as new events");
+});
+

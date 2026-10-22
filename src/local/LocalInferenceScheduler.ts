@@ -7,7 +7,10 @@ interface QueueEntry<T = unknown> {
   reject: (error: unknown) => void;
   signal?: AbortSignal;
   abort?: () => void;
-  onQueued?: (position: number) => void;
+  /** `heldBy`: what keeps it waiting, by the labels of the requests that have its model. */
+  onQueued?: (position: number, heldBy: string[]) => void;
+  /** Names the request to the ones waiting behind it, e.g. "Synthesis · Calculator". */
+  label?: string;
   exclusive?: boolean;
   /** An inference request: it shares the model with others, up to its slots. */
   shared?: boolean;
@@ -32,19 +35,19 @@ export class LocalInferenceScheduler {
     return this.enqueue("__exclusive", operation, signal, undefined, true);
   }
 
-  run<T>(modelId: string, operation: () => Promise<T>, signal?: AbortSignal, onQueued?: (position: number) => void): Promise<T> {
-    return this.enqueue(modelId, operation, signal, onQueued);
+  run<T>(modelId: string, operation: () => Promise<T>, signal?: AbortSignal, onQueued?: QueueEntry["onQueued"], label?: string): Promise<T> {
+    return this.enqueue(modelId, operation, signal, onQueued, false, false, label);
   }
   /** An inference request: it runs beside the model's other requests while a slot is free. */
-  infer<T>(modelId: string, operation: () => Promise<T>, signal?: AbortSignal, onQueued?: (position: number) => void): Promise<T> {
-    return this.enqueue(modelId, operation, signal, onQueued, false, true);
+  infer<T>(modelId: string, operation: () => Promise<T>, signal?: AbortSignal, onQueued?: QueueEntry["onQueued"], label?: string): Promise<T> {
+    return this.enqueue(modelId, operation, signal, onQueued, false, true, label);
   }
 
-  private enqueue<T>(modelId: string, operation: () => Promise<T>, signal?: AbortSignal, onQueued?: (position: number) => void, exclusive = false, shared = false): Promise<T> {
+  private enqueue<T>(modelId: string, operation: () => Promise<T>, signal?: AbortSignal, onQueued?: QueueEntry["onQueued"], exclusive = false, shared = false, label?: string): Promise<T> {
     if (this.closed) return Promise.reject(new LocalModelError("The local model service is shutting down.", 503));
     if (signal?.aborted) return Promise.reject(new LocalModelError("Request cancelled.", 499, "cancelled"));
     return new Promise<T>((resolve, reject) => {
-      const entry: QueueEntry<T> = { modelId, operation, resolve, reject, signal, onQueued, exclusive, shared };
+      const entry: QueueEntry<T> = { modelId, operation, resolve, reject, signal, onQueued, exclusive, shared, label };
       entry.abort = () => {
         const index = this.queue.indexOf(entry);
         if (index < 0) return; // Active work owns its own abort signal.
@@ -100,8 +103,19 @@ export class LocalInferenceScheduler {
   }
 
   private notify(): void {
-    this.queue.forEach((entry, index) => entry.onQueued?.(1 + this.queue.slice(0, index).filter(other => other.modelId === entry.modelId || other.exclusive).length));
+    this.queue.forEach((entry, index) => {
+      const ahead = this.queue.slice(0, index).filter(other => other.modelId === entry.modelId || other.exclusive);
+      entry.onQueued?.(1 + ahead.length, this.holders(entry, ahead));
+    });
     this.changed();
+  }
+  /** What keeps a waiting request waiting: the requests that have its model, or a settings change. */
+  private holders(entry: QueueEntry<any>, ahead: QueueEntry<any>[]): string[] {
+    const settings = "a change of model settings";
+    const running = this.active.get("__exclusive") ?? this.active.get(entry.modelId);
+    const names = [...(running ?? [])].map(other => other.exclusive ? settings : other.label ?? "another request");
+    if (!names.length && ahead.some(other => other.exclusive)) names.push(settings);
+    return [...new Set(names)];
   }
   private resolveIdle(): void { if (!this.active.size && !this.queue.length) for (const resolve of this.idleResolvers.splice(0)) resolve(); }
 }

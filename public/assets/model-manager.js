@@ -405,11 +405,21 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     return `<div data-mm-downloads>${active.length ? `<section class="mm-downloads"><div class="mm-section-heading"><h3>Downloads</h3><span class="mm-count">${active.length}</span><span class="subtle">Saved automatically · Resume after restart</span></div>${active.map(renderDownload).join("")}</section>` : ""}</div>`;
   }
 
+  // The file to offer first, as the server recommends it (Q4_K_M when it fits with room, never just
+  // the smallest). An older server names none: its Q4_K_M that can run, then any file that can run.
+  function recommendedOf(model) {
+    const variants = variantsOf(model);
+    const runs = (item) => !compatibility(item).blocked;
+    return variants.find((item) => String(item.id || item.variantId) === String(model?.recommendedVariantId || ""))
+      || variants.find((item) => runs(item) && String(item.quantization || "").toUpperCase() === "Q4_K_M")
+      || variants.find(runs) || variants[0];
+  }
+
   function renderCatalogCard(item) {
     const repoId = repoOf(item);
     const author = item.author || repoId.split("/")[0];
     const installed = models().some((model) => model.repoId === repoId);
-    const preview = variantsOf(item)[0] || item;
+    const preview = recommendedOf(item) || item;
     return `<article class="mm-model-card">
       <div class="mm-card-heading"><div class="mm-model-mark">${icon("models")}</div><div><h3>${escape(nameOf(item))}</h3><div class="subtle">${escape(author)}</div></div>${installed ? `<span class="badge success">${escape(hostName() ? `On ${hostName()}` : "On device")}</span>` : ""}</div>
       ${item.description ? `<p class="mm-description">${escape(item.description)}</p>` : ""}
@@ -450,7 +460,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const fit = compatibility(model);
     return `<article class="mm-model-card mm-library-card" data-mm-library-id="${escape(id)}">
       <div class="mm-card-heading"><div class="mm-model-mark ${loaded ? "is-loaded" : ""}">${icon("models")}</div><div><h3>${escape(nameOf(model))}</h3><div class="subtle">${escape(model.repoId || model.providerName || "Local models")}</div></div><span class="badge ${loaded ? "success" : status === "error" ? "danger" : ""}">${busy ? '<span class="button-spinner mm-loading-spinner" aria-hidden="true"></span>' : ""}${escape(status === "unloaded" && hostName() ? `On ${hostName()}` : MODEL_LABELS[status] || status)}</span></div>
-      <div class="mm-tags"><span>${bytes(totalOf(model))}</span><span>${model.vision === true ? "Images" : "Text only"}</span>${model.quantization ? `<span>${escape(model.quantization)}</span>` : ""}${model.license ? `<span>${escape(model.license)}</span>` : ""}${isDefault(model) ? '<span class="mm-tag-selected">App default</span>' : ""}${isCurrent(model) ? '<span class="mm-tag-selected">Current chat</span>' : ""}${used ? '<span>In use</span>' : ""}</div>
+      <div class="mm-tags"><span>${bytes(totalOf(model))}</span><span>${model.vision === true ? "Images" : "Text only"}</span>${model.quantization ? `<span>${escape(model.quantization)}</span>` : ""}${model.quality?.lowBit ? `<span class="warning" title="${escape(model.quality.note || "")}">Low quality</span>` : ""}${model.license ? `<span>${escape(model.license)}</span>` : ""}${isDefault(model) ? '<span class="mm-tag-selected">App default</span>' : ""}${isCurrent(model) ? '<span class="mm-tag-selected">Current chat</span>' : ""}${used ? '<span>In use</span>' : ""}</div>
       <div class="mm-library-status">${renderCompatibility(model)}
       ${fit.memory ? `<div class="subtle mm-memory-estimate">Estimated memory: ${bytes(fit.memory)}${fit.totalMemory ? ` · ${bytes(fit.totalMemory)} ${escape(place("on device"))}` : ""}</div>` : ""}
       ${fit.messages.length ? `<details class="mm-memory-details"><summary>Compatibility details</summary>${renderCompatibility(model, true)}</details>` : ""}
@@ -473,7 +483,8 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     if (!state.detailRepoId) return "";
     const detail = state.detail;
     const variants = variantsOf(detail);
-    const variant = variants.find((item) => String(item.id || item.variantId) === state.variantId) || variants[0];
+    const variant = variants.find((item) => String(item.id || item.variantId) === state.variantId) || recommendedOf(detail);
+    const recommendedId = String(detail?.recommendedVariantId || "");
     const projectors = asArray(detail?.projectors);
     const projector = projectors.find((item) => item.path === state.projectorPath);
     const downloadSize = totalOf(variant) + Number(projector?.sizeBytes || 0);
@@ -486,8 +497,8 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       <div class="mm-detail-body">${state.detailLoading ? '<div class="mm-empty" role="status"><span class="activity-scan" aria-hidden="true"></span><p>Checking available files and device compatibility…</p></div>' : state.detailError ? `<div class="mm-inline-error" role="alert">${escape(state.detailError)}</div>` : `
         <div class="mm-tags"><span>GGUF · ${projector ? "Images" : "Text only"}</span>${detail?.license ? `<span>License: ${escape(detail.license)}</span>` : '<span>License not specified</span>'}${detail?.revision ? `<span title="${escape(detail.revision)}">Revision ${escape(detail.revision.slice(0, 8))}</span>` : ""}</div>
         ${detail?.description ? `<p class="mm-description">${escape(detail.description)}</p>` : ""}
-        <div class="mm-detail-section"><h3>Download variant</h3><p class="subtle">Smaller quantizations use less disk space and memory. Only the selected variant and its required parts are downloaded.</p>
-          ${variants.length ? `<label class="field" for="mm-variant"><span class="subtle">Quantization</span><select id="mm-variant" name="variant">${variants.map((item) => { const id = item.id || item.variantId; return `<option value="${escape(id)}" ${String(id) === String(variant?.id || variant?.variantId) ? "selected" : ""}>${escape(item.quantization || item.name || id)} · ${bytes(totalOf(item))}${compatibility(item).blocked ? " · incompatible" : ""}</option>`; }).join("")}</select></label>` : '<div class="mm-inline-error">This repository has no downloadable text-model variants supported by this runtime.</div>'}
+        <div class="mm-detail-section"><h3>Download variant</h3><p class="subtle">Smaller quantizations use less disk space and memory but answer worse: 1–2-bit files lose much of the model's quality. Q4_K_M is the usual balance. Only the selected variant and its required parts are downloaded.</p>
+          ${variants.length ? `<label class="field" for="mm-variant"><span class="subtle">Quantization</span><select id="mm-variant" name="variant">${variants.map((item) => { const id = item.id || item.variantId; return `<option value="${escape(id)}" ${String(id) === String(variant?.id || variant?.variantId) ? "selected" : ""}>${escape(item.quantization || item.name || id)} · ${bytes(totalOf(item))}${String(id) === recommendedId ? " · recommended" : ""}${item.quality?.lowBit ? " · low quality" : ""}${compatibility(item).blocked ? " · incompatible" : ""}</option>`; }).join("")}</select></label>${variant?.quality?.note ? `<div class="mm-compatibility-detail warning" role="note">${escape(variant.quality.note)}${recommendedId && recommendedId !== String(variant.id || variant.variantId) ? ` ${escape(`${variants.find((item) => String(item.id || item.variantId) === recommendedId)?.quantization || "Another file"} is the recommended file ${place("for this device")}.`)}` : ""}</div>` : ""}` : '<div class="mm-inline-error">This repository has no downloadable text-model variants supported by this runtime.</div>'}
           ${projectors.length ? `<label class="field" for="mm-projector"><span class="subtle">Vision adapter (optional)</span><select id="mm-projector" name="projectorPath"><option value="" ${!projector ? "selected" : ""}>Text only — no vision adapter</option>${projectors.map((item) => `<option value="${escape(item.path)}" ${item.path === state.projectorPath ? "selected" : ""}>${escape(item.path)} · ${bytes(item.sizeBytes)}</option>`).join("")}</select></label><p class="subtle mm-projector-note">${projectors.length > 1 ? "Several adapters are available. Choose the one that matches this model to enable images." : "Choose the matching adapter above to enable images, or choose Text only if you do not need images."} The adapter adds to disk and memory use; compatibility is checked before downloading and loading.</p>` : '<p class="subtle mm-projector-note">No vision adapter is listed in this repository. This download supports text; a matching adapter can be added from your library later.</p>'}
           ${variant ? `<div class="mm-variant-metrics"><div><span>Download size</span><strong>${bytes(downloadSize)}</strong></div><div><span>${projector ? "Main-model memory estimate" : "Estimated memory"}</span><strong>${bytes(result.memory)}</strong></div><div><span>Files</span><strong>${(asArray(variant.files).length || 1) + Number(Boolean(projector))}</strong></div></div>${renderCompatibility(variant, true, projector)}` : ""}
           ${gated ? '<div class="mm-compatibility-detail warning">This model requires access on Hugging Face. Choose a public model from the catalog for direct download.</div>' : ""}
@@ -603,8 +614,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
       if (sequence !== detailSequence || state.detailRepoId !== repoId) return;
       state.detail = detail;
       if (asArray(detail.projectors).length === 1) state.projectorPath = detail.projectors[0].path;
-      const variants = variantsOf(detail);
-      const preferred = variants.find((item) => !compatibility(item).blocked && compatibility(item).tone === "success") || variants.find((item) => !compatibility(item).blocked) || variants[0];
+      const preferred = recommendedOf(detail);
       state.variantId = String(preferred?.id || preferred?.variantId || "");
     } catch (error) {
       if (sequence === detailSequence) state.detailError = error.message;

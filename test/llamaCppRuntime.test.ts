@@ -296,3 +296,29 @@ server.listen(Number(arg('--port')), '127.0.0.1', () => fs.writeFileSync(arg('--
   assert.equal(runtime.status, "ready", "the model was not unloaded");
   assert.equal((await slow).text, "done");
 });
+
+test("a queued request learns what holds its model: the holder's label, or a change of model settings", async () => {
+  const scheduler = new LocalInferenceScheduler();
+  let release!: () => void;
+  const first = scheduler.infer("alpha", () => new Promise<void>((resolve) => { release = resolve; }), undefined, undefined, "Synthesis · Rate limiter");
+  await delay(0);
+  const second: Array<[number, string[]]> = [], third: Array<[number, string[]]> = [];
+  const secondRun = scheduler.infer("alpha", async () => "second", undefined, (position, heldBy) => second.push([position, heldBy]), "Synthesis · Calculator");
+  const thirdRun = scheduler.infer("alpha", async () => "third", undefined, (position, heldBy) => third.push([position, heldBy]));
+  assert.deepEqual(second.at(-1), [1, ["Synthesis · Rate limiter"]]);
+  assert.deepEqual(third.at(-1), [2, ["Synthesis · Rate limiter"]]);
+  const told = second.length;
+  release(); await first;
+  assert.equal(await secondRun, "second"); assert.equal(await thirdRun, "third");
+  assert.equal(second.length, told, "a request that started is not told it waits");
+  assert.deepEqual(third.at(-1), [1, ["Synthesis · Calculator"]]);
+
+  let settled!: () => void;
+  const settings = scheduler.runExclusive(() => new Promise<void>((resolve) => { settled = resolve; }));
+  await delay(0);
+  const blocked: Array<[number, string[]]> = [];
+  const after = scheduler.infer("beta", async () => "beta", undefined, (position, heldBy) => blocked.push([position, heldBy]));
+  assert.deepEqual(blocked.at(-1), [1, ["a change of model settings"]]);
+  settled(); await settings; assert.equal(await after, "beta");
+  await scheduler.dispose();
+});

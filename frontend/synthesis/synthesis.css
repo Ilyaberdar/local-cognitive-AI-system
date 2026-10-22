@@ -115,6 +115,8 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-workspace :is(.status-fail, .status-failed) { color: var(--danger); }
 .synthesis-workspace :is(.status-unknown, .status-needs_review, .status-blocked, .status-interrupted, .status-unresolved) { color: var(--warning); }
 .synthesis-workspace :is(.status-idle, .status-cancelled) { color: var(--muted); }
+.synthesis-event.status-warning .synthesis-event__marker { color: var(--warning); }
+.synthesis-event.is-waiting { color: var(--muted); }
 
 /* One vertical inspector, with independently readable source and run results. */
 .synthesis-inspector { position: absolute; z-index: 5; inset: 0 0 0 auto; display: flex; flex-direction: column; width: min(340px, 100%); min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 16px; background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--popover-shadow); backdrop-filter: blur(32px) saturate(1.08); -webkit-backdrop-filter: blur(32px) saturate(1.08); }

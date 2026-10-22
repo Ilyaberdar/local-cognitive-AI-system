@@ -10,7 +10,12 @@ export interface SynthesisModule {
 }
 export interface ActivityEvent {
   sequence: number; at: string; step: string; message: string; iteration: number;
-  status: "running" | "ok" | "failed"; detail?: string; model?: string; file?: string; line?: number;
+  /** warning: the step went on, but the run is likely to suffer (a low-bit model was chosen). */
+  status: "running" | "ok" | "failed" | "warning"; detail?: string; model?: string; file?: string; line?: number;
+  /** The step waits for a local model another request holds. */
+  waiting?: true;
+  /** Tokens a running generation has streamed so far. */
+  tokens?: number;
 }
 export type VerdictStatus = "Pass" | "Fail" | "Unknown";
 export interface EvidenceCase { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }
@@ -21,6 +26,8 @@ export interface Evidence {
   gates: Array<{id: string; evaluator: string; status: VerdictStatus; message: string; severity: "hard" | "soft";
     /** What the model reads next for this gate; the test cases a Tests gate ran. */
     feedback?: string[]; cases?: EvidenceCase[];
+    /** Not run: the model wrote none of the declared files, so there was nothing to judge. */
+    skipped?: "no_candidate";
     /** Grounded: the file it read (relative to the checkout folder) and each place it cites, with what was found. */
     grounded?: {file: string; references: Array<{path: string; start?: number; end?: number; status: "ok" | "missing" | "range"; lines?: number}>}}>;
 }

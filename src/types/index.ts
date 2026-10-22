@@ -529,7 +529,12 @@ export interface LLMRequest {
   sampling?: SamplingSettings;
   timeoutMs?: number;
   signal?: AbortSignal;
-  onProgress?: (event: { phase: "queued" | "loading" | "waiting" | "thinking" | "generating" | "responding"; model: string; queuePosition?: number; note?: string }) => void;
+  /** `heldBy` (queued): what keeps the request waiting, by the holders' labels. */
+  onProgress?: (event: { phase: "queued" | "loading" | "waiting" | "thinking" | "generating" | "responding"; model: string; queuePosition?: number; heldBy?: string[]; note?: string }) => void;
+  /** Names this request to the ones waiting behind it for a local model, e.g. "Synthesis · Calculator". */
+  holder?: string;
+  /** Tokens streamed so far (answer and thinking), counted as the bundled llama.cpp sends them. */
+  onGenerated?: (tokens: number) => void;
   onTextDelta?: (delta: string) => void;
   /** An agent action's final answer as far as it has been written (the bundled llama.cpp streams it):
    * only the decoded text of {"type":"final","text":…}, never a tool call, JSON or reasoning. */
@@ -717,6 +722,9 @@ export interface ManagedModel {
   providerId: string;
   providerName: string;
   sizeBytes?: number;
+  /** A local GGUF file's quantization and file name (llamacpp). */
+  quantization?: string;
+  variantId?: string;
   loaded: boolean;
   loadedInstanceIds: string[];
 }
