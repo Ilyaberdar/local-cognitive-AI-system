@@ -72,7 +72,7 @@ description: Common problems with models, GPUs, Remote, Synthesis and updates, a
 : A request to its model took longer than 10 minutes, the most an agent's request may take. Some models hosted by Perplexity (Kimi, GLM) are this slow on big tasks: give agents smaller tasks or a faster model.
 
 **An agent fails because its model doesn't answer with an action**
-: Agents on an added provider choose each action in JSON, and some models don't keep to it: in our tests, Perplexity's presets (`fast` to `xhigh`) and `openai/gpt-5.4-nano` through Perplexity. Name a hosted model such as `openai/gpt-5-mini` or `anthropic/claude-haiku-4-5`, or use DeepSeek.
+: Agents act through the provider's own function calls on OpenAI, Claude, Gemini, Qwen, DeepSeek, OpenRouter, Groq and Perplexity. A service added as **Other** uses them only when it answered one while **Add provider** checked it, and a model without function calls (some on OpenRouter) writes each action as JSON instead, which small models don't always keep to. Choose a model that supports tool calls, or add the service again after turning on its tool calls (vLLM: `--enable-auto-tool-choice` with a `--tool-call-parser`).
 
 **Agents slow down, or the provider answers 429**
 : The provider limits how many requests it takes. The run sends it fewer at once and repeats a refused request after the pause the provider asks for, without spending the agent's turns. If it stays slow, lower `concurrency` in `parallel_map`.

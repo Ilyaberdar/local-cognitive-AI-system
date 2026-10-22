@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Synthesis
+
+- **Agents on DeepSeek, OpenRouter, Groq, Qwen and Perplexity use the service's own function calls**, as on OpenAI, Claude and Gemini, instead of writing each action as JSON. In our tests JSON cost many turns: `openai/gpt-5.4-nano` through Perplexity had 8 of 34 steps refused, DeepSeek 12 of 57, and Perplexity's `fast` preset searched the web instead of reading the project's files. With function calls none was refused: six DeepSeek agents made 54 tool calls instead of 39 and all wrote their note (five did before), and of six nano agents four to six wrote theirs (three did before). A model without function calls, such as some on OpenRouter, goes on in JSON.
+- **A service added as Other** uses its function calls when it answered one while Add provider checked it; otherwise its agents write JSON, as before. A service added earlier stays on JSON until it is added again.
+- **An agent's last turn is for its answer:** no tool may be called on it, so the agent writes its answer instead of a call that would not run. An agent on function calls reads how many turns it has left after its latest result, as one in JSON does (on Gemini, still before them).
+- **Several calls in one reply** (DeepSeek sends them): the first runs, and the agent is told to make one at a time.
+- **Each tool result is sent once.** With OpenAI, Perplexity, Claude and Gemini, a result went both in the agent's transcript and as the function's output.
+- **Agents that write JSON lose fewer turns too:** stray closing brackets after an action, or the same action twice, run it once; line breaks inside an answer's text are read; `{"type":"file.read",…}` is that tool call; a reply that is only a tool's arguments hears which tools they fit. Text before or after an action still never runs.
+
 ## 0.1.8 — 2026-10-22
 
 A fix for Models & Providers: it now says which providers work.
@@ -61,7 +72,6 @@ Synthesis with cloud models and agents in parallel: tens of agents on one task, 
 - Windows has no sandbox yet: agents there can't use a terminal, and contract tests don't run.
 - A flow's `cost` limit is recorded, not enforced: watch your spending in the provider's dashboard.
 - On a server's screen, a module's files are edited on the server, and runs can't be deleted from a paired device yet.
-- Agents on an added provider choose actions in JSON, and some models don't keep to it, such as Perplexity's presets and `openai/gpt-5.4-nano`.
 
 ### Docs
 
