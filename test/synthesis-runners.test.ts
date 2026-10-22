@@ -625,3 +625,18 @@ test("the sandbox is trusted only after it shows it isolates: reading, writing a
   assert.equal(await verifyIsolation(weakened(/deny file-write\*\)$/)), "a sandboxed process wrote outside its work folder");
   assert.match(String(await verifyIsolation({ wrap: () => ({ executable: "/usr/bin/false", args: [], env: {} }) })), /did not run its check|could not run a check/, "a sandbox that runs nothing is no answer");
 });
+
+test("a value imported with import type is named once when the tests meet its ReferenceError", async () => {
+  const { typeImportHints } = await import("../src/synthesis/checks/runners");
+  const failed = (file: string) => ({ name: "router: match", status: "fail" as const, message: `ReferenceError: Pattern is not defined (${file}:8)` });
+  const candidate = {
+    "src/router.ts": "import type { Pattern } from './pattern.ts';\nexport class Router { add() { return new Pattern('/'); } }",
+    "src/inline.ts": "import { type Pattern, other } from './pattern.ts';\nnew Pattern('/');",
+    "src/plain.ts": "import { Pattern } from './pattern.ts';\nnew Pattern('/');"
+  };
+  const hints = typeImportHints([failed("src/router.ts"), failed("src/router.ts"), failed("src/inline.ts"), failed("src/plain.ts"), failed("src/missing.ts")], candidate);
+  assert.equal(hints.length, 2, "once per file and name; a plain import or an unknown file gives none");
+  assert.match(hints[0], /^src\/router\.ts imports Pattern with "import type", which is removed when the code runs/);
+  assert.match(hints[1], /^src\/inline\.ts imports Pattern/);
+  assert.deepEqual(typeImportHints([{ name: "x", status: "fail", message: "TypeError: boom (src/router.ts:3)" }], candidate), []);
+});

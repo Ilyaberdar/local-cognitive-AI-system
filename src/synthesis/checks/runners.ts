@@ -183,6 +183,20 @@ const caseFeedback = (item: CheckCase) => {
   const head = `${clip(item.name, 100)}: `;
   return clip(head + clip(oneLine(item.message ?? "failed"), Math.max(40, 300 - head.length - values.length - where.length)) + values + where, 300);
 };
+/** A value imported with `import type` is gone when the code runs, a trap small models fall into
+ * ("ReferenceError: Pattern is not defined" six times over): said once, before the failed cases. */
+export function typeImportHints(cases: CheckCase[], candidate: Record<string, string>): string[] {
+  const hints = new Map<string, string>();
+  for (const item of cases) {
+    const found = /ReferenceError: ([A-Za-z_$][\w$]*) is not defined \(([^():\s]+):\d+\)/.exec(item.message ?? "");
+    const source = found && candidate[found[2]];
+    if (!found || !source) continue;
+    const [, name, file] = found, word = name.replace(/\$/g, "\\$");
+    if (!new RegExp(`import\\s+type\\s*\\{[^}]*\\b${word}\\b[^}]*\\}|import\\s+type\\s+${word}\\b|import\\s*\\{[^}]*\\btype\\s+${word}\\b`).test(source)) continue;
+    hints.set(`${file}:${name}`, `${file} imports ${name} with "import type", which is removed when the code runs, so ${name} is not defined where the code uses it as a value (new ${name}, a call): import it with a plain import instead.`);
+  }
+  return [...hints.values()];
+}
 /** The line that says why a process died: a sanitizer report, a failed assert(), an abort. */
 function crashLine(stderr: string, clean: (text: string) => string): string | undefined {
   const lines = stderr.split("\n").map(line => line.trim()).filter(line => line && !/WARNING:|^#\d+ /.test(line));
@@ -200,7 +214,7 @@ function judge(run: Run, report: Report, request: TestRunRequest, runner: Runner
   const { hidden } = request, cases = report.cases;
   const failed = cases.filter(item => item.status === "fail");
   const total = Math.max(cases.length, report.done?.total ?? 0), failures = Math.max(failed.length, report.done?.failed ?? 0);
-  const caseItems = failed.map(caseFeedback);
+  const caseItems = [...hidden ? [] : typeImportHints(failed, request.files.candidate), ...failed.map(caseFeedback)];
   const open = interrupted(report);
   // The engineer's UI sees what a hang or a crash interrupted as failed cases too.
   const stopped = (message: string) => [...cases, ...open.map((name): CheckCase => ({ name, status: "fail", message }))];
