@@ -391,7 +391,7 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const id = job.downloadId || job.id;
     return `<article class="mm-download" data-mm-download="${escape(id)}">
       <div class="mm-download-head"><div><strong>${escape(job.displayName || job.name || job.modelName || job.repoId?.split("/").at(-1) || "Model download")}</strong><span class="subtle">${escape(job.quantization || job.variantId || "")}</span></div><span class="mm-download-state ${status === "failed" ? "danger" : ""}">${escape(DOWNLOAD_LABELS[status] || status)}</span></div>
-      <progress class="mm-download-progress" max="100" ${total > 0 ? `value="${percent}"` : ""} aria-label="Download progress"></progress>
+      <progress class="mm-download-progress lc-progress is-compact${status === "paused" ? " is-paused" : status === "failed" ? " is-error" : ""}" max="100" ${total > 0 ? `value="${percent}"` : ""} aria-label="Download progress"></progress>
       <div class="mm-download-footer"><div class="mm-download-numbers"><span>${bytes(received)} / ${bytes(total)}${total ? ` · ${percent.toFixed(1)}%` : ""}</span><span>${status === "downloading" && speed ? `${bytes(speed)}/s` : status === "verifying" ? "Checking file integrity" : ""}</span></div><div class="mm-inline-actions">
         ${["queued", "downloading"].includes(status) ? actionButton("pause", id, "Pause") : ""}
         ${["paused", "failed"].includes(status) ? actionButton("resume", id, status === "failed" ? "Retry" : "Resume") : ""}
