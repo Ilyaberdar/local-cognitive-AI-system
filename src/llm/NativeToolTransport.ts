@@ -4,9 +4,19 @@ import { readNativeAgentResponse } from "./ResponseItems";
 
 type Item = Record<string, any>;
 
+/** Consecutive tool results go back in one user turn: every call of the turn before answered together. */
+function grouped(turns: Item[], key: "content" | "parts"): Item[] {
+  return turns.reduce<Item[]>((out, turn) => {
+    const last = out.at(-1);
+    if (last?.role === "user" && turn.role === "user" && last.tools && turn.tools) last[key] = [...last[key], ...turn[key]];
+    else out.push(turn);
+    return out;
+  }, []).map(({ tools: _tools, ...turn }) => turn);
+}
+
 export function anthropicContinuation(items: Item[] = []): Item[] {
-  return items.flatMap(item => item.type === "anthropic_message" ? [{ role: "assistant", content: item.content }]
-    : item.type === "function_call_output" ? [{ role: "user", content: [{ type: "tool_result", tool_use_id: item.call_id, content: item.output }] }] : []);
+  return grouped(items.flatMap(item => item.type === "anthropic_message" ? [{ role: "assistant", content: item.content }]
+    : item.type === "function_call_output" ? [{ role: "user", tools: true, content: [{ type: "tool_result", tool_use_id: item.call_id, content: item.output }] }] : []), "content");
 }
 
 export function anthropicAgentResponse(payload: Item, tools: LLMFunctionTool[]): Partial<LLMResponse> {
@@ -21,13 +31,13 @@ export function anthropicAgentResponse(payload: Item, tools: LLMFunctionTool[]):
 }
 
 export function geminiContinuation(items: Item[] = []): Item[] {
-  return items.flatMap(item => {
+  return grouped(items.flatMap(item => {
     if (item.type === "gemini_content") return [item.content];
     if (item.type !== "function_call_output") return [];
     const call = items.find(candidate => candidate.type === "function_call" && candidate.call_id === item.call_id);
-    return [{ role: "user", parts: [{ functionResponse: { name: call?.name,
+    return [{ role: "user", tools: true, parts: [{ functionResponse: { name: call?.name,
       ...(call?.providerCallId ? { id: call.providerCallId } : {}), response: { output: item.output } } }] }];
-  });
+  }), "parts");
 }
 
 export function geminiAgentResponse(content: Item, tools: LLMFunctionTool[]): Partial<LLMResponse> {
@@ -41,3 +51,4 @@ export function geminiAgentResponse(content: Item, tools: LLMFunctionTool[]): Pa
   if (result.outputItems) result.outputItems = output.filter(item => item.type !== "message");
   return result;
 }
+

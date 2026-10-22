@@ -159,15 +159,79 @@ test("authentication failures never trigger protocol downgrade or automatic resu
   assert.match((await f.run()).error!, /401/); assert.equal(f.calls.length, 1);
 });
 
-test("multiple native calls are rejected without executing any, and diagnostic evidence is saved", async t => {
+// DeepSeek's chat sends two to four calls at once whatever parallel_tool_calls says; refusing them all
+// cost 29% of its steps. The first runs as it would have alone; the others are answered "not run", since
+// OpenAI and Perplexity refuse a continuation with a call left unanswered.
+for (const id of ["openai", "anthropic", "gemini"]) test(`${id}: several native calls in one reply: the first runs, the others are answered not run, and the model hears why`, async t => {
+  const f = await fixture(t, id);
+  const several = payload(id, write);
+  const second = { ...write.arguments, path: "second.js" };
+  if (id === "openai") several.output.push({ ...several.output.at(-1), call_id: "call-2", arguments: JSON.stringify(second) });
+  if (id === "anthropic") several.content.push({ type: "tool_use", id: "call-2", name: "file_write", input: second });
+  if (id === "gemini") several.candidates[0].content.parts.push({ functionCall: { id: "call-2", name: "file_write", args: second } });
+  f.replies.push(several, payload(id, finish));
+  const result = await f.run();
+  assert.equal(result.error, undefined);
+  assert.equal(result.tools.length, 1);
+  assert.equal(await fs.readFile(path.join(f.work, "result.js"), "utf8"), code);
+  await assert.rejects(fs.stat(path.join(f.work, "second.js")), "the second call never runs");
+  const next = f.calls[1];
+  if (id === "openai") {
+    const outputs = next.input.filter((item: any) => item.type === "function_call_output");
+    assert.deepEqual(outputs.map((item: any) => item.call_id), ["call-1", "call-2"]);
+    assert.match(outputs[1].output, /^Not run: one function call per turn/);
+    assert.match(next.input[0].content[0].text, /held 2 function calls; only the first runs now/);
+  } else if (id === "anthropic") {
+    // Both results in the one user turn after the calls.
+    const results = next.messages.at(-1).content;
+    assert.deepEqual(results.map((item: any) => [item.type, item.tool_use_id]), [["tool_result", "call-1"], ["tool_result", "call-2"]]);
+    assert.match(results[1].content, /^Not run/);
+  } else {
+    const parts = next.contents.at(-1).parts;
+    assert.deepEqual(parts.map((part: any) => [part.functionResponse.name, part.functionResponse.id]), [["file_write", "call-1"], ["file_write", "call-2"]]);
+  }
+  const run = (await f.runner().store.get("agent"))!;
+  assert.equal(run.repairs, 0, "not a malformed reply");
+});
+
+test("a native call that cannot run is refused without executing anything, and diagnostic evidence is saved", async t => {
   const f = await fixture(t, "openai");
-  const malformed = payload("openai", write); malformed.output.push({ ...malformed.output.at(-1), call_id: "call-2" });
+  const malformed = payload("openai", write); malformed.output.at(-1).name = "file_unknown";
   f.replies.push(malformed, malformed, malformed);
-  assert.match((await f.run()).error!, /multiple calls/);
+  assert.match((await f.run()).error!, /Unknown function: file_unknown/);
   await assert.rejects(fs.stat(path.join(f.work, "result.js")));
   const run = (await f.runner().store.get("agent"))!;
   assert.equal(run.repairs, 3); assert.equal(run.turns[0].diagnostic?.responseId, "response-1");
   assert.ok(run.turns[0].diagnostic!.outputTypes.includes("function_call"));
+});
+
+// Native agents sent each tool result twice, in the transcript and as the function's output: 243k input
+// tokens against 136k in JSON for the same work.
+for (const id of ["openai", "anthropic", "gemini"]) test(`${id}: a result the continuation carries is not written out again in the transcript`, async t => {
+  const f = await fixture(t, id);
+  await fs.writeFile(path.join(f.work, "notes.txt"), "Distinctive evidence 4242");
+  const read = { type: "tool_call" as const, tool: "file.read", arguments: { path: "notes.txt" } };
+  const first = payload(id, read as any);
+  if (id === "openai") first.output.at(-1).name = "file_read";
+  if (id === "anthropic") first.content.at(-1).name = "file_read";
+  if (id === "gemini") first.candidates[0].content.parts[0].functionCall.name = "file_read";
+  f.replies.push(first, payload(id, finish));
+  assert.equal((await f.run()).error, undefined);
+  const next = f.calls[1];
+  const prompt = id === "openai" ? next.input[0].content[0].text : id === "anthropic" ? next.messages[0].content : next.contents[0].parts[0].text;
+  const history = JSON.stringify(next.input ?? next.messages ?? next.contents);
+  assert.equal(history.split("Distinctive evidence 4242").length - 1, 1, "the result is sent once");
+  assert.doesNotMatch(prompt, /Distinctive evidence 4242/);
+  assert.match(prompt, /results of your latest function call follow this message/);
+});
+
+test("a JSON agent keeps every result in its transcript", async t => {
+  const f = await fixture(t, "lmstudio");
+  await fs.writeFile(path.join(f.work, "notes.txt"), "Distinctive evidence 4242");
+  f.replies.push(payload("lmstudio", { type: "tool_call", tool: "file.read", arguments: { path: "notes.txt" } } as any), payload("lmstudio", finish));
+  assert.equal((await f.run()).error, undefined);
+  assert.match(f.calls[1].messages.at(-1).content, /Distinctive evidence 4242/);
+  assert.doesNotMatch(f.calls[1].messages.at(-1).content, /follow this message/);
 });
 
 test("structured data uses only the final message and preserves the requested schema", async t => {
@@ -272,6 +336,12 @@ for (const id of ids) test(`${id}: the final permitted turn returns evidence wit
   assert.equal(result.text, final);
   assert.equal(result.tools.length, 1);
   assert.equal(f.calls.length, 2);
+  // Native tools stay offered on the last turn with the choice "none": the model answers in text.
+  const [first, last] = f.calls;
+  if (id === "openai") { assert.equal(first.tool_choice, undefined); assert.equal(last.tool_choice, "none"); assert.ok(last.tools.length); }
+  else if (id === "anthropic") { assert.equal(first.tool_choice.type, "auto"); assert.deepEqual(last.tool_choice, { type: "none" }); }
+  else if (id === "gemini") { assert.equal(first.toolConfig.functionCallingConfig.mode, "AUTO"); assert.equal(last.toolConfig.functionCallingConfig.mode, "NONE"); }
+  else assert.equal(last.tool_choice, undefined);
 });
 
 test("finalization respects an earlier schema downgrade", async t => {

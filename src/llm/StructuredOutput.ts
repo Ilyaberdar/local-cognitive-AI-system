@@ -23,6 +23,20 @@ function objectEnd(source: string, at: number): number {
   return -1;
 }
 
+/** The JSON object a text starts with (after a code fence), whatever follows it; undefined when it starts otherwise. */
+export function leadingJsonObject(text: string): unknown {
+  const source = unfenced(text);
+  if (!source.startsWith("{")) return undefined;
+  const end = objectEnd(source, 0);
+  if (end < 0) return undefined;
+  try { return JSON.parse(source.slice(0, end)); } catch { return undefined; }
+}
+
+/** Whether the text (after a code fence) is one JSON object and nothing else. */
+export function wholeJsonObject(text: string): boolean {
+  try { const value = parseJsonDocument(text); return Boolean(value && typeof value === "object" && !Array.isArray(value)); } catch { return false; }
+}
+
 /** The JSON objects of a text that holds several, one after another ({...}\n{...}), or undefined when
  * it is anything else: one object, text around them, an object that is not valid JSON. */
 export function jsonObjectSequence(text: string): unknown[] | undefined {

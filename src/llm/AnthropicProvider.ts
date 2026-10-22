@@ -112,7 +112,8 @@ export class AnthropicProvider implements LLMProvider {
           max_tokens: request.maxTokens ?? this.options.maxTokens,
           system: request.systemPrompt,
           ...(tools?.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })),
-            tool_choice: { type: "auto", disable_parallel_tool_use: true } }
+            // The last turn: no tool may be called, so the answer is text.
+            tool_choice: request.toolChoice === "none" ? { type: "none" } : { type: "auto", disable_parallel_tool_use: true } }
             : request.responseFormat?.type === "json_schema" ? { output_config: { format: { type: "json_schema", schema: request.responseFormat.schema } } } : {}),
           messages: [
             {

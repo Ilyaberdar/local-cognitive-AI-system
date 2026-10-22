@@ -1,4 +1,5 @@
 import { LLMFunctionTool, LLMResponse } from "../types";
+import { leadingJsonObject, wholeJsonObject } from "./StructuredOutput";
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 
@@ -25,14 +26,30 @@ export function responseRefusal(payload: Record<string, unknown>): string | unde
   }
 }
 
-/** Only protocol-level function calls can authorize an action. Text is always a final answer. */
-export function readNativeAgentResponse(payload: Record<string, unknown>, tools: LLMFunctionTool[]): Pick<LLMResponse, "agentAction" | "protocolError" | "toolCallId" | "outputItems"> {
+/** A native reply's text that is a JSON envelope: a tool call written as text (never run: only a
+ * protocol-level function call authorizes an action), or a final answer wrapped as one ({"type":"final"}). */
+function textEnvelope(text: string, tools: LLMFunctionTool[]): { toolCall: true } | { final: string } | undefined {
+  const value = leadingJsonObject(text);
+  if (!record(value)) return undefined;
+  const names = new Set(tools.flatMap(tool => [tool.name, tool.action]));
+  const toolCall = (item: Record<string, unknown>): boolean => item.type === "tool_call" || typeof item.tool === "string" ||
+    (typeof item.type === "string" && names.has(item.type)) || (typeof item.name === "string" && names.has(item.name) && ("arguments" in item || "parameters" in item));
+  const action = Object.keys(value).length === 1 && record(value.action) ? value.action : value;
+  if (toolCall(action)) return { toolCall: true };
+  // Only a whole reply that is exactly {"type":"final","text":…} is unwrapped; anything else stays the answer as written.
+  if (action.type === "final" && typeof action.text === "string" && action.text.trim() && Object.keys(action).length === 2 && wholeJsonObject(text)) return { final: action.text.trim() };
+  return undefined;
+}
+
+/** Only protocol-level function calls can authorize an action. Text is always a final answer. Several
+ * calls in one reply (DeepSeek's chat sends them whatever parallel_tool_calls says): the first runs, as
+ * it would have alone, and `extraCalls` names the others, which never run. */
+export function readNativeAgentResponse(payload: Record<string, unknown>, tools: LLMFunctionTool[]): Pick<LLMResponse, "agentAction" | "protocolError" | "toolCallId" | "outputItems" | "extraCalls"> {
   const outputItems = responseItems(payload);
   const calls = outputItems.filter(item => item.type === "function_call");
   try {
-    if (calls.length > 1) throw new Error("Expected one function call; received multiple calls. No action was executed.");
-    if (calls.length === 1) {
-      const call = calls[0];
+    if (calls.length) {
+      const [call, ...others] = calls;
       const tool = tools.find(tool => tool.name === call.name);
       if (!tool) throw new Error(`Unknown function: ${String(call.name)}. No action was executed.`);
       if (typeof call.call_id !== "string" || !call.call_id) throw new Error("Function call has no call_id. No action was executed.");
@@ -41,13 +58,16 @@ export function readNativeAgentResponse(payload: Record<string, unknown>, tools:
       const args: unknown = JSON.parse(call.arguments);
       if (!record(args)) throw new Error("Function arguments must be a JSON object.");
       for (const key of tool.optionalArguments) if (args[key] === null) delete args[key];
-      return { agentAction: { type: "tool_call", tool: tool.action, arguments: args }, toolCallId: call.call_id, outputItems };
+      const extraCalls = others.length ? { extraCalls: { count: others.length, callIds: others.map(item => item.call_id).filter((id): id is string => typeof id === "string" && id !== "") } } : {};
+      return { agentAction: { type: "tool_call", tool: tool.action, arguments: args }, toolCallId: call.call_id, outputItems, ...extraCalls };
     }
     const messages = responseMessages(payload);
-    if (messages.length !== 1) throw new Error(`Expected one final message; received ${messages.length}.`);
-    const text = messageText(messages[0]).trim();
+    if (messages.length > 1) throw new Error(`Expected one final message; received ${messages.length}.`);
+    const text = messages.length ? messageText(messages[0]).trim() : "";
     if (!text) throw new Error("The model returned no final answer or function call.");
-    return { agentAction: { type: "final", text } };
+    const envelope = textEnvelope(text, tools);
+    if (envelope && "toolCall" in envelope) throw new Error(`Your reply wrote a tool call as text, so nothing ran. To act, call the function itself (${tools.slice(0, 3).map(tool => tool.name).join(", ")}…), not JSON in your answer; when you are done, answer in plain Markdown.`);
+    return { agentAction: { type: "final", text: envelope?.final ?? text } };
   } catch (error) {
     return { protocolError: error instanceof Error ? error.message : String(error) };
   }

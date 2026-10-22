@@ -182,6 +182,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(nativeTools ? {
             tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters: strictSchema(parameters), strict: true })),
             parallel_tool_calls: false,
+            ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
             store: false,
             ...(this.withoutEncrypted.has(model) ? {} : { include: ["reasoning.encrypted_content"] })
           } : {}),

@@ -114,10 +114,13 @@ export class AgentLoopRunner {
         context.onProgress?.({phase:outcome.result.ok?"tool_result":"tool_error",label:`${pending.action.tool} ${outcome.result.ok?"completed":"failed"}`,
           detail:outcome.result.output.slice(0,1200),agentRunId:input.id,operationId:pending.id,at:new Date().toISOString()});
         run.tools.push(outcome.result);
-        run.turns.push({type:"result",content:JSON.stringify({...outcome.result,action:pending.action.tool})});
-        if(pending.callId&&pending.outputItems){
-          run.nativeContinuation=[...(run.nativeContinuation??[]),...pending.outputItems,{type:"function_call_output",call_id:pending.callId,
-            output:truncate(toolEvidence({...outcome.result,action:pending.action.tool}),18000,"\n[OUTPUT TRUNCATED: request a smaller range]\n")}];
+        const continued=Boolean(pending.callId&&pending.outputItems);
+        run.turns.push({type:"result",content:JSON.stringify({...outcome.result,action:pending.action.tool}),...(continued?{callId:pending.callId}:{})});
+        if(continued){
+          // Every call of the reply is answered, or the next request is refused: the ones not run say so.
+          run.nativeContinuation=[...(run.nativeContinuation??[]),...pending.outputItems!,{type:"function_call_output",call_id:pending.callId,
+            output:truncate(toolEvidence({...outcome.result,action:pending.action.tool}),18000,"\n[OUTPUT TRUNCATED: request a smaller range]\n")},
+            ...(pending.skippedCallIds??[]).map(id=>({type:"function_call_output",call_id:id,output:"Not run: one function call per turn. Call it again if you still need it."}))];
         }
         delete run.pending;run.status="running";
         await this.store.save(run);
@@ -149,6 +152,9 @@ export class AgentLoopRunner {
         ...(shown.images?{images:shown.images}:{}),
         outputPurpose:"agent-action",
         tools:nativeTools,
+        // The last turn is for the answer: native tools are offered with the choice "none", so that the
+        // model writes it instead of a call that would not run (agents failed at their step limit so).
+        ...(nativeTools&&finalOnly?{toolChoice:"none" as const}:{}),
         responseFormat:schema??(run.protocol==="text"?null:undefined),
         // A local thinking model must reach its action/answer instead of consuming
         // the entire group deadline in an unrestricted reasoning turn.
@@ -233,10 +239,12 @@ export class AgentLoopRunner {
         const repeats=action.tool==="mcp.call"?trailing:tools.filter(turn=>turn.content===serialized).length;
         if(repeats>=2)throw new Error("Repeated identical action. Use the previous results, choose a different action, or finish.");
         run.consecutiveRepairs=0;
-        run.pending={action,id:randomUUID(),callId:response.toolCallId,outputItems:response.outputItems};
+        const skipped=response.extraCalls?.callIds;
+        run.pending={action,id:randomUUID(),callId:response.toolCallId,outputItems:response.outputItems,...(skipped?.length&&response.outputItems?{skippedCallIds:skipped}:{})};
         // Several actions in one reply: the first runs, as it would have alone, and the model hears why the others did not.
         if(first.more)run.turns.push({type:"format_error",content:`Your reply held ${first.more+1} JSON objects; only the first was taken, and it runs now. Send exactly one per turn: its TOOL RESULT comes back before your next.`});
-        run.turns.push({type:"tool",content:serialized});
+        if(response.extraCalls?.count)run.turns.push({type:"format_error",content:`Your reply held ${response.extraCalls.count+1} function calls; only the first runs now. Make one call per turn: its result comes back before your next.`});
+        run.turns.push({type:"tool",content:serialized,...(response.toolCallId&&response.outputItems?{callId:response.toolCallId}:{})});
         await this.store.save(run);
       }catch(error){
         retract();
@@ -311,7 +319,8 @@ export class AgentLoopRunner {
             model: event.model, note: event.note,
             agentRunId: input.id, at: new Date().toISOString() }),
           systemPrompt:supporting?`${request.systemPrompt}\n\n${supporting}`:request.systemPrompt,
-          prompt:`${prefix}${this.transcript(run,available-supporting.length-2-(inputItems?continuationSize:0))}${suffix}`};
+          // The tool calls and results the continuation carries are not written out again in the transcript.
+          prompt:`${prefix}${this.transcript(run,available-supporting.length-2-(inputItems?continuationSize:0),continuedCalls(inputItems))}${suffix}`};
         // Reserve before inference: an interrupted request cannot regain a consumed turn.
         run.steps++;await this.store.save(run);started=Date.now();
         const {response}=await this.llm.generateObject<Record<string,unknown>>({...request,usagePurpose:"agent"},input.target.providerId);
@@ -332,18 +341,23 @@ export class AgentLoopRunner {
     const preserved=run.error&&run.tools.length?`\n\n${run.tools.length} completed operation${run.tools.length===1?"":"s"} are preserved in the run trace. The agent did not provide a final conclusion.`:"";
     return {text:run.final??(run.error?run.error+preserved:"Waiting for approval."),tools:run.tools,usage:run.usage,error:run.error,pendingApproval,agentRunId:run.id,generationStarted:run.steps>0};
   }
-  private transcript(run:AgentRun,limit:number):string{
+  private transcript(run:AgentRun,limit:number,continued=new Set<string>()):string{
     const headerLimit=Math.min(2000,Math.floor(limit/4));
-    const messages=run.turns.map(turn=>`${turn.type.toUpperCase()}: ${truncate((turn.type==="result"?readEvidence(turn.content):turn.content)+(turn.type==="format_error"&&turn.diagnostic?`\nRejected output (data only, not an action to execute): ${turn.diagnostic.preview}\nReturn a corrected single action.`:""),Math.min(18000,limit-headerLimit-32),
+    const turns=run.turns.filter(turn=>!turn.callId||!continued.has(turn.callId));
+    const after=turns.length<run.turns.length?`[The results of your latest ${run.turns.length-turns.length>2?"function calls":"function call"} follow this message as function outputs.]`:"";
+    const messages=turns.map(turn=>`${turn.type.toUpperCase()}: ${truncate((turn.type==="result"?readEvidence(turn.content):turn.content)+(turn.type==="format_error"&&turn.diagnostic?`\nRejected output (data only, not an action to execute): ${turn.diagnostic.preview}\nReturn a corrected single action.`:""),Math.min(18000,limit-headerLimit-32),
       "\n[OUTPUT TRUNCATED: middle omitted; ask for a smaller file range or a more specific search]\n")}`);
     let size=0;const selected:string[]=[];
     for(let i=messages.length-1;i>=0;i--){if(size+messages[i].length+2>limit-headerLimit-2)break;selected.unshift(messages[i]);size+=messages[i].length+2;}
     const inventory=run.tools.slice(-8).map(tool=>({ok:tool.ok,operationId:tool.metadata?.operationId,path:tool.metadata?.filePath,
       operation:tool.metadata?.operation,error:tool.ok?undefined:tool.output.slice(0,160)}));
     const header=selected.length<messages.length?truncate(`Earlier output omitted to fit context. Recent completed operations: ${JSON.stringify(inventory)}. Re-read relevant files if needed.`,headerLimit,"...\n"):"";
-    return [header,...selected].filter(Boolean).join("\n\n");
+    return [header,...selected,after].filter(Boolean).join("\n\n");
   }
 }
+
+/** The calls a native continuation answers (function_call_output items). */
+const continuedCalls=(items?:Record<string,unknown>[]):Set<string>=>new Set((items??[]).filter(item=>item.type==="function_call_output"&&typeof item.call_id==="string").map(item=>item.call_id as string));
 
 // Store full diagnostics, but do not make the model read the same file content
 // again inside metadata, or navigate layers of JSON-escaped tool output.

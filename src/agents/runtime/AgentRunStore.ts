@@ -9,9 +9,11 @@ import { AgentLimits } from "./AgentLimits";
 export interface AgentRun {
   id:string; fingerprint:string; input:string; instructions:string;
   status:"running"|"waiting"|"completed"|"failed";
-  turns:Array<{type:"tool"|"result"|"format_error";content:string;diagnostic?:{responseId?:string;preview:string;outputTypes:string[]}}>;
+  /** `callId`: a native call and its result that a continuation carries (left out of the transcript then). */
+  turns:Array<{type:"tool"|"result"|"format_error";content:string;callId?:string;diagnostic?:{responseId?:string;preview:string;outputTypes:string[]}}>;
   tools:ToolExecutionResult[];
-  pending?:{action:AgentAction;id:string;approval?:PendingApproval;callId?:string;outputItems?:Record<string,unknown>[]};
+  /** `skippedCallIds`: the reply's other function calls, answered "not run" beside this one's result. */
+  pending?:{action:AgentAction;id:string;approval?:PendingApproval;callId?:string;outputItems?:Record<string,unknown>[];skippedCallIds?:string[]};
   nativeContinuation?: Record<string,unknown>[];
   consecutiveRepairs?: number;
   protocol?: "native" | "schema" | "json" | "text";

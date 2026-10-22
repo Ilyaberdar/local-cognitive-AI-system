@@ -543,6 +543,8 @@ export interface LLMRequest {
   previousResponseId?: string;
   responseFormat?: LLMResponseFormat | null;
   tools?: LLMFunctionTool[];
+  /** Native tools: "none" on an agent's last turn, so that it answers in text instead of calling one. */
+  toolChoice?: "auto" | "none";
   /** Complete Responses output items and their matching tool results, never flattened into text. */
   inputItems?: Record<string, unknown>[];
 }
@@ -561,6 +563,8 @@ export interface LLMResponse {
   agentAction?: { type: "tool_call"; tool: string; arguments: Record<string, unknown> } | { type: "final"; text: string };
   toolCallId?: string;
   outputItems?: Record<string, unknown>[];
+  /** Function calls after the first of one reply, not run: their ids are answered "not run" in the continuation. */
+  extraCalls?: { count: number; callIds: string[] };
 }
 
 export interface ExecutionContext {

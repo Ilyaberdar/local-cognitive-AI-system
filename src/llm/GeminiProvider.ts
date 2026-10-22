@@ -122,7 +122,7 @@ export class GeminiProvider implements LLMProvider {
               }
             : undefined,
           ...(tools?.length ? { tools: [{ functionDeclarations: tools.map(tool => ({ name: tool.name, description: tool.description, parametersJsonSchema: tool.parameters })) }],
-            toolConfig: { functionCallingConfig: { mode: "AUTO" } } } : {}),
+            toolConfig: { functionCallingConfig: { mode: request.toolChoice === "none" ? "NONE" : "AUTO" } } } : {}),
           contents: [
             {
               role: "user",
