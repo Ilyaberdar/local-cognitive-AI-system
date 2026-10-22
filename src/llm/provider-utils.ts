@@ -25,6 +25,9 @@ export const createDescriptor = (
   capabilities
 });
 
+/** The prompt with the turn's guidance after it, for a request that does not send it after its continuation. */
+export const promptWithTurn = (request: LLMRequest): string => request.turnPrompt ? `${request.prompt}\n\n${request.turnPrompt}` : request.prompt;
+
 export const buildComposedPrompt = (request: LLMRequest): string =>
   request.systemPrompt ? `${request.systemPrompt}\n\n${request.prompt}` : request.prompt;
 

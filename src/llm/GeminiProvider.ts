@@ -4,7 +4,7 @@ import { LLMProvider } from "./LLMProvider";
 import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { geminiAgentResponse, geminiContinuation } from "./NativeToolTransport";
-import { countedFetch, fetchWithRetries, unsupportedFeature } from "./provider-utils";
+import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -126,7 +126,7 @@ export class GeminiProvider implements LLMProvider {
           contents: [
             {
               role: "user",
-              parts: [{ text: request.prompt }, ...images.map(image => {
+              parts: [{ text: promptWithTurn(request) }, ...images.map(image => {
                 const decoded = decodeImage(image);
                 return { inline_data: { mime_type: decoded.mimeType, data: decoded.data } };
               })]

@@ -319,6 +319,9 @@ export class AgentLoopRunner {
         const continuationSize=continuation?JSON.stringify(continuation).length:0;
         const inputItems=continuation&&continuationSize<Math.floor((available-supporting.length)/2)?continuation:undefined;
         if(continuation&&!inputItems)delete run.nativeContinuation;
+        // The tool calls and results the continuation carries are not written out again in the transcript, and
+        // the turn's guidance (its remaining turns) follows them: the model reads it after its latest results.
+        const transcript=this.transcript(run,available-supporting.length-2-(inputItems?continuationSize:0),continuedCalls(inputItems));
         request={...request,inputItems,signal:controller.signal,timeoutMs:remainingMs,
           onProgress: event => input.context.onProgress?.({ phase: event.phase,
             label: event.phase === "queued" ? "Queued" : event.phase === "loading" ? "Loading model" : event.phase === "thinking" ? "Thinking" : event.phase === "responding" ? "Preparing next action" : "Waiting for model",
@@ -326,8 +329,7 @@ export class AgentLoopRunner {
             model: event.model, note: event.note,
             agentRunId: input.id, at: new Date().toISOString() }),
           systemPrompt:supporting?`${request.systemPrompt}\n\n${supporting}`:request.systemPrompt,
-          // The tool calls and results the continuation carries are not written out again in the transcript.
-          prompt:`${prefix}${this.transcript(run,available-supporting.length-2-(inputItems?continuationSize:0),continuedCalls(inputItems))}${suffix}`};
+          ...(inputItems?{prompt:`${prefix}${transcript}`,turnPrompt:suffix.trim()}:{prompt:`${prefix}${transcript}${suffix}`})};
         // Reserve before inference: an interrupted request cannot regain a consumed turn.
         run.steps++;await this.store.save(run);started=Date.now();
         const {response}=await this.llm.generateObject<Record<string,unknown>>({...request,usagePurpose:"agent"},input.target.providerId);

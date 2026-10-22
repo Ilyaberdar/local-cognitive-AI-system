@@ -183,7 +183,7 @@ for (const id of ["openai", "anthropic", "gemini"]) test(`${id}: several native 
     assert.match(next.input[0].content[0].text, /held 2 function calls; only the first runs now/);
   } else if (id === "anthropic") {
     // Both results in the one user turn after the calls.
-    const results = next.messages.at(-1).content;
+    const results = next.messages.at(-1).content.filter((item: any) => item.type === "tool_result");
     assert.deepEqual(results.map((item: any) => [item.type, item.tool_use_id]), [["tool_result", "call-1"], ["tool_result", "call-2"]]);
     assert.match(results[1].content, /^Not run/);
   } else {
@@ -223,6 +223,13 @@ for (const id of ["openai", "anthropic", "gemini"]) test(`${id}: a result the co
   assert.equal(history.split("Distinctive evidence 4242").length - 1, 1, "the result is sent once");
   assert.doesNotMatch(prompt, /Distinctive evidence 4242/);
   assert.match(prompt, /results of your latest function call follow this message/);
+  // The turn's guidance comes after the latest result, where JSON agents read it too (Gemini: in the prompt).
+  const turn = /Choose the next action or final answer\.\s+You have \d+ turns remaining/;
+  if (id === "openai") { assert.deepEqual(next.input.at(-1).role, "user"); assert.match(next.input.at(-1).content[0].text, turn); assert.doesNotMatch(prompt, turn); }
+  if (id === "anthropic") { const last = next.messages.at(-1).content; assert.equal(last[0].type, "tool_result"); assert.match(last.at(-1).text, turn); assert.doesNotMatch(prompt, turn); }
+  if (id === "gemini") assert.match(prompt, turn);
+  assert.doesNotMatch(JSON.stringify(f.calls[0]), /results of your latest/, "the first turn has no continuation");
+  assert.match(id === "openai" ? f.calls[0].input[0].content[0].text : id === "anthropic" ? f.calls[0].messages[0].content : f.calls[0].contents[0].parts[0].text, turn);
 });
 
 test("a JSON agent keeps every result in its transcript", async t => {

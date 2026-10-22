@@ -549,6 +549,9 @@ export interface LLMRequest {
   toolChoice?: "auto" | "none";
   /** Complete Responses output items and their matching tool results, never flattened into text. */
   inputItems?: Record<string, unknown>[];
+  /** With inputItems: the turn's guidance (its remaining turns), sent after them where the provider can,
+   * so the model reads it after its latest results; otherwise after the prompt. */
+  turnPrompt?: string;
 }
 
 export interface LLMResponse {

@@ -19,7 +19,8 @@ import {
   readUsage,
   fetchWholeWithRetries,
   fetchWithRetries,
-  countedFetch
+  countedFetch,
+  promptWithTurn
 } from "./provider-utils";
 import { unsupportedFeature } from "./provider-utils";
 import { dialectFor, type ProviderDialect } from "./ProviderDialect";
@@ -152,9 +153,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
           messages: [
             ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
             { role: "user", content: images.length ? [
-              { type: "text", text: request.prompt },
+              { type: "text", text: promptWithTurn(request) },
               ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
-            ] : request.prompt }
+            ] : promptWithTurn(request) }
           ],
           // With thinking on, Qwen takes at most 32768 here.
           ...(typeof request.maxTokens === "number" ? { max_tokens: thinking ? Math.min(request.maxTokens, 32_768) : request.maxTokens } : {}),
@@ -179,10 +180,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
         } : {
           // An agent's next action is about its own tools and files: web results would only stand in for them.
           ...(dialect.presets?.includes(model) ? { preset: model } : { model, ...(dialect.presets && request.outputPurpose !== "agent-action" ? { tools: [{ type: "web_search" }] } : {}) }),
+          // The turn's guidance follows the continuation: the last thing the model reads, after its latest results.
           input: images.length || nativeTools || request.inputItems?.length ? [{ role: "user", content: [
-            { type: "input_text", text: request.prompt },
+            { type: "input_text", text: request.inputItems?.length ? request.prompt : promptWithTurn(request) },
             ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" }))
-          ] }, ...(request.inputItems ?? [])] : request.prompt,
+          ] }, ...(request.inputItems ?? []),
+          ...(request.inputItems?.length && request.turnPrompt ? [{ role: "user", content: [{ type: "input_text", text: request.turnPrompt }] }] : [])] : promptWithTurn(request),
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
           ...(effort ? { reasoning: { effort } } : {}),

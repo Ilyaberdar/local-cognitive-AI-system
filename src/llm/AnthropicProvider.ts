@@ -3,8 +3,8 @@ import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
-import { anthropicAgentResponse, anthropicContinuation } from "./NativeToolTransport";
-import { countedFetch, fetchWithRetries, unsupportedFeature } from "./provider-utils";
+import { anthropicAgentResponse, anthropicContinuation, withTurn } from "./NativeToolTransport";
+import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -122,10 +122,11 @@ export class AnthropicProvider implements LLMProvider {
                 ...images.map(image => { const decoded = decodeImage(image); return {
                   type: "image", source: { type: "base64", media_type: decoded.mimeType, data: decoded.data }
                 }; }),
-                { type: "text", text: request.prompt }
-              ] : request.prompt
+                { type: "text", text: request.inputItems?.length ? request.prompt : promptWithTurn(request) }
+              ] : request.inputItems?.length ? request.prompt : promptWithTurn(request)
             },
-            ...anthropicContinuation(request.inputItems)
+            // The turn's guidance after the tool results, in their user turn (text comes after tool_result blocks).
+            ...withTurn(anthropicContinuation(request.inputItems), request.inputItems?.length ? request.turnPrompt : undefined)
           ]
         }),
         signal: resolveAbortSignal(timeoutMs, request.signal)

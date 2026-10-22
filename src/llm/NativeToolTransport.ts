@@ -20,6 +20,14 @@ export function anthropicContinuation(items: Item[] = []): Item[] {
     : item.type === "function_call_output" ? [{ role: "user", tools: true, content: [{ type: "tool_result", tool_use_id: item.call_id, content: item.output }] }] : []), "content");
 }
 
+/** Anthropic: the turn's guidance as text after the tool results of the last user turn (or a user turn of its own). */
+export function withTurn(messages: Item[], turn: string | undefined): Item[] {
+  if (!turn) return messages;
+  const last = messages.at(-1);
+  if (last?.role === "user" && Array.isArray(last.content)) return [...messages.slice(0, -1), { ...last, content: [...last.content, { type: "text", text: turn }] }];
+  return [...messages, { role: "user", content: turn }];
+}
+
 export function anthropicAgentResponse(payload: Item, tools: LLMFunctionTool[]): Partial<LLMResponse> {
   const content: Item[] = Array.isArray(payload.content) ? payload.content : [];
   const calls = content.filter(item => item.type === "tool_use").map(item => ({ type: "function_call", name: item.name,
