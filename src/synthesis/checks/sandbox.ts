@@ -157,6 +157,62 @@ let nestedUsernsBlocked: boolean | undefined;
 /** A server installed by install.sh sets bubblewrap and its service up with its own command. */
 const fix = (otherwise: string) => fs.existsSync("/usr/local/bin/local-cognitive-server") ? "on this server, run sudo local-cognitive-server sandbox" : otherwise;
 
+/** A seccomp filter for every sandboxed command (classic BPF, as bubblewrap's --seccomp takes it): socket()
+ * opens only Unix, IPv4, IPv6 and netlink sockets (a network namespace does not confine others, such as
+ * vsock to the host or a hypervisor), io_uring (which opens sockets without socket()) is not there, and a
+ * syscall of another architecture (32-bit code on a 64-bit machine, x32) is refused. Undefined on an
+ * architecture it does not know: the sandbox then runs without it, and a terminal gets no web access. */
+export function seccompFilter(arch: string = process.arch): Buffer | undefined {
+  const target = ({ x64: { audit: 0xC000003E, socket: 41, x32: true }, arm64: { audit: 0xC00000B7, socket: 198, x32: false } } as const)[arch as "x64" | "arm64"];
+  if (!target) return undefined;
+  const LD = 0x20, JEQ = 0x15, JGE = 0x35, RET = 0x06;
+  const ALLOW = 0x7fff0000, ERRNO = 0x00050000, EPERM = 1, ENOSYS = 38, EAFNOSUPPORT = 97;
+  type Step = { code: number; k: number; t?: string; f?: string; label?: string };
+  const program: Step[] = [
+    { code: LD, k: 4 }, { code: JEQ, k: target.audit, f: "foreign" },
+    { code: LD, k: 0 },
+    ...(target.x32 ? [{ code: JGE, k: 0x40000000, t: "foreign" }] : []),
+    // io_uring_setup, io_uring_enter, io_uring_register.
+    { code: JEQ, k: 425, t: "nosys" }, { code: JEQ, k: 426, t: "nosys" }, { code: JEQ, k: 427, t: "nosys" },
+    { code: JEQ, k: target.socket, f: "allow" },
+    // socket(family, ...): the family's high half must be 0, then AF_UNIX, AF_INET, AF_INET6 or AF_NETLINK.
+    { code: LD, k: 20 }, { code: JEQ, k: 0, f: "family" },
+    { code: LD, k: 16 }, { code: JEQ, k: 1, t: "allow" }, { code: JEQ, k: 2, t: "allow" }, { code: JEQ, k: 10, t: "allow" }, { code: JEQ, k: 16, t: "allow" },
+    { code: RET, k: ERRNO | EAFNOSUPPORT, label: "family" },
+    { code: RET, k: ALLOW, label: "allow" },
+    { code: RET, k: ERRNO | ENOSYS, label: "nosys" },
+    { code: RET, k: ERRNO | EPERM, label: "foreign" }
+  ];
+  const at = (label: string) => program.findIndex(step => step.label === label);
+  const out = Buffer.alloc(program.length * 8);
+  program.forEach((step, index) => {
+    const jump = (label?: string) => label ? at(label) - index - 1 : 0;
+    out.writeUInt16LE(step.code, index * 8);
+    out.writeUInt8(jump(step.t), index * 8 + 2); out.writeUInt8(jump(step.f), index * 8 + 3);
+    out.writeUInt32LE(step.k >>> 0, index * 8 + 4);
+  });
+  return out;
+}
+/** The filter, written once where only the server's user reads it (bubblewrap reads it from fd 3). */
+let seccompFile: string | undefined;
+function seccompPath(): string | undefined {
+  if (seccompFile && fs.existsSync(seccompFile)) return seccompFile;
+  const filter = seccompFilter();
+  if (!filter) return undefined;
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "lc-seccomp-"));
+  seccompFile = path.join(folder, "filter.bpf");
+  fs.writeFileSync(seccompFile, filter, { mode: 0o600 });
+  return seccompFile;
+}
+/** bubblewrap with the filter on fd 3, opened by a shell that then becomes bubblewrap. */
+const SECCOMP_EXEC = 'f=$1; shift; exec "$@" 3<"$f"';
+/** Whether this bubblewrap loads the filter: checked with the sandbox; without it, no web access. */
+let seccompActive = false;
+const withSeccomp = (bwrap: string, args: string[]) => {
+  const filter = seccompActive ? seccompPath() : undefined;
+  return filter ? { executable: "/bin/sh", args: ["-c", SECCOMP_EXEC, "sh", filter, bwrap, "--seccomp", "3", ...args] } : { executable: bwrap, args };
+};
+
 async function probeBwrap(): Promise<string | undefined> {
   const bwrap = onPath("bwrap");
   if (!bwrap) return `Contract tests need bubblewrap (bwrap) to sandbox the code: ${fix("install the bubblewrap package")}.`;
@@ -168,7 +224,14 @@ async function probeBwrap(): Promise<string | undefined> {
   // An older bubblewrap (0.6 on Ubuntu 22.04) does not know the option, and runs without it.
   const blocks = help.stdout.includes("--disable-userns");
   const { error } = await run([...bwrapBase(), ...(blocks ? NO_NESTED_USERNS : []), "--", "/usr/bin/true"]);
-  if (!error) { nestedUsernsBlocked = blocks; return undefined; }
+  if (!error) {
+    nestedUsernsBlocked = blocks;
+    // The socket filter, where this bubblewrap and kernel take it: the sandbox works without it as before.
+    const filter = seccompPath();
+    seccompActive = Boolean(filter) && await new Promise<boolean>(resolve => execFile("/bin/sh", ["-c", SECCOMP_EXEC, "sh", filter!, bwrap, "--seccomp", "3", ...bwrapBase(), ...(blocks ? NO_NESTED_USERNS : []), "--", "/usr/bin/true"],
+      { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } }, error => resolve(!error)));
+    return undefined;
+  }
   return `bubblewrap cannot create a sandbox here (${error}): ${fix("allow unprivileged user namespaces (on Ubuntu 24.04 and later, with the AppArmor profile bwrap-userns-restrict from apparmor-profiles)")}.`;
 }
 let bwrapProbe: Promise<string | undefined> | undefined;
@@ -193,6 +256,7 @@ const linux: SandboxProvider = {
         // An older bubblewrap lets the command make namespaces of its own, with capabilities in them over
         // networks of its own: the kernel then answers more than the proxy alone, so no web access.
         if (!nestedUsernsBlocked) return "this bubblewrap cannot keep commands from making user namespaces of their own (it needs 0.8 or later)";
+        if (!seccompActive) return "the sandbox's socket filter (seccomp) could not be loaded here";
         return verifyEgress(linux).catch(error => `it could not be checked (${error instanceof Error ? error.message : String(error)})`);
       })() };
     }
@@ -203,9 +267,9 @@ const linux: SandboxProvider = {
   wrap: (executable, args, workDir, readable, egress) => {
     if (nestedUsernsBlocked === undefined) throw new Error("bubblewrap has not been checked on this machine yet.");
     const bwrap = onPath("bwrap") ?? "bwrap", env = sandboxEnv(executable, real(workDir));
-    if (!egress) return { executable: bwrap, args: bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked), env };
+    if (!egress) return { ...withSeccomp(bwrap, bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked)), env };
     const wired = linuxEgress(egress);
-    return { executable: bwrap, args: bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked, wired), env: { ...env, ...wired.env }, proxyUrl: EGRESS_URL };
+    return { ...withSeccomp(bwrap, bwrapArgs(executable, args, workDir, readable, nestedUsernsBlocked, wired)), env: { ...env, ...wired.env }, proxyUrl: EGRESS_URL };
   },
   egressTransport: "unix"
 };

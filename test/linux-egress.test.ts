@@ -9,7 +9,7 @@ import { AddressInfo } from "node:net";
 import { RequestBudget } from "../src/synthesis/agents/AgentHttp";
 import { createEgressProxy } from "../src/synthesis/agents/AgentHttpProxy";
 import { AgentTerminal, TerminalHost } from "../src/synthesis/agents/Terminal";
-import { bwrapArgs, EGRESS_FORWARDER, linuxEgress, unsandboxed, verifyEgress } from "../src/synthesis/checks/sandbox";
+import { bwrapArgs, EGRESS_FORWARDER, linuxEgress, platformSandbox, seccompFilter, unsandboxed, verifyEgress } from "../src/synthesis/checks/sandbox";
 import type { SandboxProvider } from "../src/synthesis/checks/types";
 
 const hooks = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
@@ -132,4 +132,51 @@ test("a terminal sends its tools through the proxy its sandbox names, and throug
   } finally {
     await fs.rm(work, { recursive: true, force: true }); await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+/** Runs a classic BPF seccomp program on one syscall, as the kernel does (only the instructions it uses). */
+function runFilter(program: Buffer, call: { arch: number; nr: number; arg0?: number; arg0High?: number }): number {
+  const data = Buffer.alloc(64);
+  data.writeUInt32LE(call.nr, 0); data.writeUInt32LE(call.arch, 4);
+  data.writeUInt32LE(call.arg0 ?? 0, 16); data.writeUInt32LE(call.arg0High ?? 0, 20);
+  let a = 0;
+  for (let pc = 0; pc * 8 < program.length;) {
+    const code = program.readUInt16LE(pc * 8), jt = program[pc * 8 + 2]!, jf = program[pc * 8 + 3]!, k = program.readUInt32LE(pc * 8 + 4);
+    if (code === 0x20) { a = data.readUInt32LE(k); pc++; }
+    else if (code === 0x15) pc += 1 + (a === k ? jt : jf);
+    else if (code === 0x35) pc += 1 + (a >= k ? jt : jf);
+    else if (code === 0x06) return k;
+    else throw new Error(`unexpected instruction ${code}`);
+  }
+  throw new Error("the program fell off its end");
+}
+
+test("the sandbox's socket filter opens only Unix, IPv4, IPv6 and netlink sockets, and has no io_uring or foreign syscalls", () => {
+  const ALLOW = 0x7fff0000, NO_FAMILY = 0x00050000 | 97, NO_SYS = 0x00050000 | 38, EPERM = 0x00050000 | 1;
+  for (const [arch, audit, socket] of [["x64", 0xC000003E, 41], ["arm64", 0xC00000B7, 198]] as const) {
+    const program = seccompFilter(arch)!;
+    const run = (nr: number, arg0?: number, extra: Partial<{ arch: number; arg0High: number }> = {}) => runFilter(program, { arch: audit, nr, arg0, ...extra });
+    for (const family of [1, 2, 10, 16]) assert.equal(run(socket, family), ALLOW, `${arch}: family ${family}`);
+    for (const family of [40, 17, 36, 0, 3, 41]) assert.equal(run(socket, family), NO_FAMILY, `${arch}: family ${family} (vsock, packet, hv_sock …)`);
+    assert.equal(run(socket, 2, { arg0High: 1 }), NO_FAMILY, `${arch}: a family with high bits set`);
+    for (const nr of [425, 426, 427]) assert.equal(run(nr), NO_SYS, `${arch}: io_uring ${nr}`);
+    assert.equal(run(0), ALLOW, `${arch}: other syscalls`);
+    assert.equal(run(socket, 40, { arch: 0x40000003 }), EPERM, `${arch}: another architecture's syscalls`);
+  }
+  assert.equal(runFilter(seccompFilter("x64")!, { arch: 0xC000003E, nr: 0x40000000 | 41, arg0: 40 }), EPERM, "x32 syscalls");
+  assert.equal(seccompFilter("ia32"), undefined);
+});
+
+test("in the Linux sandbox a command opens IPv4 sockets but no vsock", { skip: process.platform !== "linux" || !fsSync.existsSync("/usr/bin/python3") }, async () => {
+  const sandbox = platformSandbox();
+  if (await sandbox.unavailable()) return;
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), "lc-seccomp-"));
+  try {
+    const probe = 'import socket\nfor name, family in (("INET", socket.AF_INET), ("VSOCK", getattr(socket, "AF_VSOCK", 40))):\n    try:\n        socket.socket(family, socket.SOCK_STREAM).close(); print(name + "=open")\n    except OSError as e:\n        print(name + "=" + str(e.errno))';
+    const wrapped = sandbox.wrap("/usr/bin/python3", ["-I", "-c", probe], work, []);
+    const { execFile } = await import("node:child_process");
+    const out = await new Promise<string>(resolve => execFile(wrapped.executable, wrapped.args, { cwd: work, env: wrapped.env, timeout: 20_000 }, (_error, stdout) => resolve(String(stdout))));
+    assert.match(out, /INET=open/, out);
+    assert.match(out, /VSOCK=97/, `vsock is refused by the filter (EAFNOSUPPORT): ${out}`);
+  } finally { await fs.rm(work, { recursive: true, force: true }); }
 });
