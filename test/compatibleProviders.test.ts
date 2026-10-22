@@ -324,6 +324,9 @@ test("agents act through each service's own function calls: chat tool calls for 
     assert.equal(body.tools[0].type, "function");
     assert.equal(body.tools[0].function.strict, undefined, `${id}: no strict field on chat tools`);
     assert.doesNotMatch(JSON.stringify(body.tools), /minLength|maxLength/, id);
+    // No strict mode on chat completions: an optional argument is optional, not required and nullable.
+    assert.deepEqual(body.tools[0].function.parameters.required, ["path"], id);
+    assert.deepEqual(body.tools[0].function.parameters.properties.startLine, { type: "integer", minimum: 1 }, id);
     assert.equal(body.tool_choice, "auto", id);
     assert.equal(body.parallel_tool_calls, false, id);
     assert.equal(body.response_format, undefined, `${id}: no JSON mode beside tools`);

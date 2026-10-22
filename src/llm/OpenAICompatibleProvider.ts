@@ -1,4 +1,4 @@
-import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
+import { LLMFunctionTool, LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { answerStream, finalAnswerSoFar } from "./AnswerStream";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
@@ -171,7 +171,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           // Chat tool calls, one a turn (DeepSeek may send several anyway: the first runs).
-          ...(nativeTools ? { tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters: strictSchema(parameters) } })),
+          ...(nativeTools ? { tools: nativeTools.map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: chatSchema(tool) } })),
             tool_choice: request.toolChoice ?? "auto", parallel_tool_calls: false } : {}),
           ...(!nativeTools && request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
             ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
@@ -300,11 +300,26 @@ export class OpenAICompatibleProvider implements LLMProvider {
 }
 
 /** A tool schema as OpenAI's strict mode takes it: string length limits are not supported there
- * (the arguments are still checked here against the full schema). */
+ * (the arguments are still checked here against the full schema). A bound that bounds nothing (zod's
+ * integer maximum, 2^53 − 1) is left out: it is only tokens in every request. */
 function strictSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(strictSchema);
   if (!schema || typeof schema !== "object") return schema;
-  return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== "minLength" && key !== "maxLength").map(([key, value]) => [key, strictSchema(value)]));
+  return Object.fromEntries(Object.entries(schema).filter(([key, value]) => key !== "minLength" && key !== "maxLength" &&
+    !(key === "maximum" && value === Number.MAX_SAFE_INTEGER) && !(key === "minimum" && value === Number.MIN_SAFE_INTEGER)).map(([key, value]) => [key, strictSchema(value)]));
+}
+
+/** A tool schema for chat completions, which have no strict mode: an optional argument is optional (not
+ * required and nullable, which Groq checks a call against and some models fill with every default). */
+function chatSchema(tool: LLMFunctionTool): unknown {
+  const schema = strictSchema(tool.parameters) as { properties?: Record<string, { anyOf?: Array<{ type?: string }> }>; required?: string[] };
+  if (!schema.properties) return schema;
+  const optional = new Set(tool.optionalArguments);
+  const properties = Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => {
+    const choices = value.anyOf;
+    return [key, optional.has(key) && choices?.length === 2 && choices[1]?.type === "null" ? choices[0] : value];
+  }));
+  return { ...schema, properties, ...(schema.required ? { required: schema.required.filter(key => !optional.has(key)) } : {}) };
 }
 
 /** Groq's refusal of a tool call or JSON the model wrote that did not parse (400 tool_use_failed or
