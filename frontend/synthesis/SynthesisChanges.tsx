@@ -3,6 +3,7 @@ import { encode, errorMessage } from "./api";
 import { DiffColumns } from "./SynthesisDiff";
 import { JsonView, MarkdownView, SourceLines, type Cited, type Citations } from "./fileViews";
 import { revealIn } from "./scroll";
+import { usePaneSplit } from "./usePaneSplit";
 import type { CandidateDiff, GroundedReference, SynthesisRun } from "./types";
 
 type ChangedFile = CandidateDiff["files"][number];
@@ -74,6 +75,8 @@ export function SynthesisChanges({ diff, loading, gates, runId, request, remote 
   }), [file?.path, checked, files, root, remote, runId]);
 
   const list = useRef<HTMLUListElement>(null);
+  const container = useRef<HTMLDivElement>(null);
+  const split = usePaneSplit("lcai.synthesis.changesSplit.v1", 26, "x", container);
   const option = (path: string) => [...(list.current?.querySelectorAll<HTMLElement>("[data-path]") ?? [])].find(item => item.dataset.path === path);
   // The chosen file stays in view in its list (also when a citation chose it).
   useEffect(() => { if (file) revealIn(option(file.path)); }, [file?.path]);
@@ -94,17 +97,21 @@ export function SynthesisChanges({ diff, loading, gates, runId, request, remote 
   };
   const broken = (path: string) => [...(checked.get(relative(path))?.values() ?? [])].filter(reference => reference.status !== "ok").length;
 
-  return <div className="synthesis-changes">
+  return <div className="synthesis-changes" ref={container} data-resizing={split.resizing || undefined}
+    style={{ gridTemplateColumns: `minmax(120px, ${split.value}fr) 9px minmax(0, ${100 - split.value}fr)` }}>
     <ul className="synthesis-changes__files" role="listbox" aria-label="Changed files" ref={list} onKeyDown={move}>
       {files.map(item => {
         const failing = broken(item.path);
+        const cut = item.path.lastIndexOf("/") + 1;
+        // The file's name first, its folder under it: a narrow list breaks neither in the middle.
         return <li key={item.path}><button type="button" role="option" data-path={item.path} aria-selected={item === file && !project} tabIndex={item === file ? 0 : -1} onClick={() => choose(item.path)}>
-          <span className="synthesis-changes__name" title={item.path}>{item.path}</span>
+          <span className="synthesis-changes__name" title={item.path}>{cut ? <span className="synthesis-changes__folder">{item.path.slice(0, cut)}</span> : null}<span className="synthesis-changes__base">{item.path.slice(cut)}</span></span>
           <span className={`synthesis-changes__state is-${state(item).toLowerCase()}`}>{state(item)}</span>
           {failing ? <span className="synthesis-changes__broken" title={`${failing} cited places do not hold (Grounded)`}>{failing} broken</span> : null}
         </button></li>;
       })}
     </ul>
+    <div {...split.handle} className="synthesis-split" aria-label="Resize the list of changed files" title="Drag to resize · Double-click to reset" />
     <section className="synthesis-changes__file" aria-label={project ? `Project file ${project.path}` : file.path}>
       {project ? <>
         <header className="synthesis-changes__header">

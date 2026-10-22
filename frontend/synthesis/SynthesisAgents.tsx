@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { encode, errorMessage } from "./api";
 import { revealIn } from "./scroll";
+import { usePaneSplit } from "./usePaneSplit";
 import type { AgentDetail, AgentItem, SynthesisRun } from "./types";
 
 const statusText: Record<AgentItem["status"], string> = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled" };
@@ -15,6 +16,8 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const list = useRef<HTMLUListElement>(null);
+  const container = useRef<HTMLDivElement>(null);
+  const split = usePaneSplit("lcai.synthesis.agentsSplit.v1", 34, "x", container);
   const live = run.status === "running" || run.status === "queued";
   useEffect(() => {
     let current = true;
@@ -62,7 +65,8 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
       {counts.cancelled ? <span><strong>{counts.cancelled}</strong> cancelled</span> : null}
     </div> : null}
     {error && !items.length ? <div className="synthesis-empty" role="alert">{error}</div> : null}
-    {items.length ? <div className="synthesis-agents__split">
+    {items.length ? <div className="synthesis-agents__split" ref={container} data-resizing={split.resizing || undefined}
+      style={{ gridTemplateColumns: `minmax(180px, ${split.value}fr) 9px minmax(0, ${100 - split.value}fr)` }}>
       <ul className="synthesis-agents__list" role="listbox" aria-label="Agents of this run" ref={list} onKeyDown={move}>
         {items.map(item => <li key={`${item.call}:${item.index}`}><button type="button" role="option" data-agent={item.index} aria-selected={item.index === shown}
           tabIndex={item.index === shown ? 0 : -1} className={`synthesis-agents__row status-${item.status}`} onClick={() => setSelected(item.index)}>
@@ -75,6 +79,7 @@ export function SynthesisAgents({ run, request }: { run: SynthesisRun; request: 
           {item.error ? <span className="synthesis-agents__error status-fail">{item.error}</span> : null}
         </button></li>)}
       </ul>
+      <div {...split.handle} className="synthesis-split" aria-label="Resize the list of agents" title="Drag to resize · Double-click to reset" />
       {view ? <section className="synthesis-agent-detail" aria-label={`Agent ${view.index + 1}`}>
         <header><strong>Agent {view.index + 1}</strong><span>{named(view).provider} · {named(view).model} · {statusText[view.status]}{view.protocol ? ` · ${view.protocol} actions` : ""}</span></header>
         <p className="synthesis-agent-detail__task">{view.task}</p>

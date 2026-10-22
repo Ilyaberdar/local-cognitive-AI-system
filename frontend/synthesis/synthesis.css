@@ -15,74 +15,144 @@
 .synthesis-workspace :is(input, textarea, .synthesis-lines, .synthesis-source, .synthesis-markdown, .synthesis-json, .synthesis-diff__code, .synthesis-diff2__code,
   .synthesis-agent-detail pre, .synthesis-agent-detail__task, .synthesis-agent-detail__error, .synthesis-event pre, .synthesis-message, .synthesis-diagnostic strong, .synthesis-provenance dd) { -webkit-user-select: text; user-select: text; }
 .synthesis-icon { width: 16px; height: 16px; flex: 0 0 16px; display: block; }
-.synthesis-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; padding: 4px 0 16px; }
-.synthesis-toolbar__heading h2 { margin: 0; font-size: calc(22px * var(--font-scale, 1)); font-weight: 550; letter-spacing: -.5px; }
-.synthesis-toolbar__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+/* The module heads the page as Models and Workflow head theirs: a line above, its name, a line below. */
+.synthesis-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px 24px; padding: 4px 4px 18px; }
+.synthesis-toolbar__heading { flex: 1 1 320px; min-width: 0; }
+.synthesis-eyebrow { display: block; overflow: hidden; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); font-weight: 500; letter-spacing: .03em; text-overflow: ellipsis; white-space: nowrap; }
+.synthesis-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.synthesis-title h2 { margin: 3px 0 5px; min-width: 0; font-size: calc(22px * var(--font-scale, 1)); font-weight: 510; letter-spacing: -.65px; overflow-wrap: anywhere; }
+.synthesis-toolbar__heading p { margin: 0; color: var(--muted); font-size: var(--text-caption); }
+.synthesis-toolbar__actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .synthesis-toolbar__actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap; }
 .synthesis-toolbar button.synthesis-run { background: var(--text); border-color: var(--text); color: var(--bg); font-weight: 550; }
 .synthesis-toolbar button.synthesis-run:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 90%, var(--bg)); }
 .synthesis-toolbar button.synthesis-stop { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
 .synthesis-toolbar button[aria-expanded="true"] { background: var(--control-active); border-color: var(--line-strong); }
-.synthesis-layout { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 16px; isolation: isolate; }
-.synthesis-module-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; padding: 4px 0; }
+.synthesis-count { min-width: 18px; padding: 0 5px; border-radius: 6px; background: var(--surface-2); color: var(--muted); font-size: calc(10.5px * var(--font-scale, 1)); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+/* Refresh keeps its label and place: only its icon turns while the files are read again. */
+.synthesis-refresh.is-refreshing .synthesis-icon { animation: synthesis-spin 700ms linear infinite; }
+@keyframes synthesis-spin { to { transform: rotate(360deg); } }
+html[data-motion="off"] .synthesis-refresh.is-refreshing .synthesis-icon { animation: none; }
 .synthesis-pane-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 8px; min-height: 38px; padding: 9px 16px; font-size: var(--text-caption); }
 .synthesis-pane-header strong { font-weight: 550; }
 .synthesis-pane-header > span { color: var(--faint); font-variant-numeric: tabular-nums; }
 .synthesis-pane-header button { display: inline-flex; align-items: center; gap: 5px; font-size: calc(11px * var(--font-scale, 1)); min-height: 26px; padding: 2px 6px; border-color: transparent; background: transparent; color: var(--muted); }
-.synthesis-module-pane > .synthesis-pane-header { padding: 4px 10px 10px; color: var(--muted); }
-.synthesis-module-list { display: grid; gap: 3px; }
-.synthesis-workspace .synthesis-module { display: flex; align-items: center; gap: 10px; text-align: left; width: 100%; padding: 10px; border-color: transparent; background: transparent; }
-.synthesis-module-row { position: relative; min-width: 0; }
-.synthesis-workspace .synthesis-module-row .synthesis-module { padding-right: 30px; }
-.synthesis-workspace .synthesis-module-remove { position: absolute; right: 4px; top: calc(50% - 13px); display: grid; place-items: center; width: 26px; height: 26px; min-height: 26px; padding: 0; border-color: transparent; background: transparent; color: var(--muted); opacity: 0; }
-.synthesis-module-row:is(:hover, :focus-within) .synthesis-module-remove { opacity: 1; }
-.synthesis-hidden-modules { margin-top: 12px; padding: 0 8px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
+/* The module, and beside it the panels (Modules, Diagnostics) in a column of their own width. */
+.synthesis-layout { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 0px; isolation: isolate; transition: grid-template-columns 320ms cubic-bezier(.2, .8, .2, 1); }
+.synthesis-layout.is-side-open { grid-template-columns: minmax(0, 1fr) min(var(--synthesis-side-width, 340px), max(260px, calc(100% - 420px))); }
+.synthesis-layout[data-resizing] { transition: none; cursor: col-resize; }
+[data-resizing] { -webkit-user-select: none; user-select: none; }
+.synthesis-main-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.synthesis-side { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; padding-left: 14px; overflow: hidden; opacity: 0; transition: opacity 220ms ease; }
+.synthesis-layout.is-side-open .synthesis-side { opacity: 1; }
+/* The panel's left edge: a drag (or the arrow keys) sets the column's width. */
+.synthesis-side__resize { position: absolute; z-index: 2; inset: 0 auto 0 0; width: 14px; cursor: col-resize; touch-action: none; }
+.synthesis-side__resize::after { content: ""; position: absolute; inset: 16px auto 16px 6px; width: 2px; border-radius: 2px; background: transparent; transition: background 120ms; }
+.synthesis-side__resize:is(:hover, :focus-visible)::after, .synthesis-layout[data-resizing] .synthesis-side__resize::after { background: var(--line-strong); }
+/* A split between two panes: a line that a drag moves. */
+.synthesis-split { position: relative; min-width: 0; min-height: 0; cursor: col-resize; touch-action: none; }
+.synthesis-split::before { content: ""; position: absolute; inset: 0 auto 0 4px; width: 1px; background: var(--line); transition: background 120ms; }
+.synthesis-split:is(:hover, :focus-visible)::before, [data-resizing] > .synthesis-split::before { left: 3px; width: 3px; background: var(--line-strong); }
+.synthesis-split--row { cursor: row-resize; }
+.synthesis-split--row::before { inset: 4px 16px auto; width: auto; height: 1px; background: transparent; }
+.synthesis-split--row:is(:hover, :focus-visible)::before, [data-resizing] > .synthesis-split--row::before { inset: 3px 16px auto; width: auto; height: 3px; border-radius: 3px; background: var(--line-strong); }
+
+/* Panels: framed cards, as the app's other screens frame theirs. */
+.synthesis-panel { display: flex; flex-direction: column; min-width: 246px; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-1); box-shadow: inset 0 1px 0 var(--highlight); }
+.synthesis-panel__header { display: flex; align-items: flex-start; justify-content: space-between; flex-shrink: 0; gap: 12px; padding: 16px 16px 14px; border-bottom: 1px solid var(--line); }
+.synthesis-panel__header > div { min-width: 0; }
+.synthesis-panel__header h2 { margin: 0; font-size: var(--text-control); font-weight: 550; line-height: 1.4; }
+.synthesis-panel__header h2 > span { margin-left: 6px; color: var(--faint); font-weight: 450; font-variant-numeric: tabular-nums; }
+.synthesis-panel__header h2:focus { outline: none; }
+.synthesis-panel__header p { margin: 4px 0 0; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); overflow-wrap: anywhere; }
+.synthesis-panel__body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0 16px; }
+.synthesis-modules-panel .synthesis-panel__body { padding: 8px 8px 12px; }
+
+.synthesis-module-list { display: grid; gap: 2px; }
+.synthesis-workspace .synthesis-module { display: flex; align-items: center; gap: 10px; text-align: left; width: 100%; padding: 9px 10px; border-color: transparent; background: transparent; }
+.synthesis-module-row, .synthesis-run-row { position: relative; min-width: 0; }
+.synthesis-workspace .synthesis-module-row .synthesis-module { padding-right: 32px; }
+.synthesis-workspace :is(.synthesis-module-remove, .synthesis-run-remove) { position: absolute; right: 4px; top: calc(50% - 13px); display: grid; place-items: center; width: 26px; height: 26px; min-height: 26px; padding: 0; border-color: transparent; background: transparent; color: var(--muted); opacity: 0; }
+.synthesis-workspace .synthesis-run-remove:hover:not(:disabled) { color: var(--danger); }
+:is(.synthesis-module-row, .synthesis-run-row):is(:hover, :focus-within) :is(.synthesis-module-remove, .synthesis-run-remove) { opacity: 1; }
+@media (hover: none) { .synthesis-workspace :is(.synthesis-module-remove, .synthesis-run-remove) { opacity: 1; } }
+.synthesis-hidden-modules { margin-top: 10px; padding: 0 10px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 .synthesis-hidden-modules > summary { cursor: pointer; }
 .synthesis-hidden-modules > summary span { margin-left: 5px; color: var(--faint); }
 .synthesis-hidden-modules p { margin: 8px 0; }
 .synthesis-workspace .synthesis-hidden-modules button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; background: transparent; border-color: transparent; padding: 5px 0; }
 .synthesis-hidden-modules button span { min-width: 0; overflow-wrap: anywhere; }
-@media (hover: none) { .synthesis-workspace .synthesis-module-remove { opacity: 1; } }
 .synthesis-module > span:last-child { min-width: 0; }
 .synthesis-module strong, .synthesis-module small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .synthesis-module strong { font-weight: 500; font-size: var(--text-control); }
 .synthesis-module small { font-size: calc(11px * var(--font-scale, 1)); color: var(--muted); margin-top: 2px; }
-.synthesis-workspace .synthesis-module.is-selected, .synthesis-workspace .synthesis-run-history > button.is-selected { background: var(--highlight); border-color: var(--line); box-shadow: inset 0 1px 0 var(--highlight); }
+.synthesis-workspace :is(.synthesis-module, .synthesis-run-item).is-selected { background: var(--highlight); border-color: var(--line); box-shadow: inset 0 1px 0 var(--highlight); }
 .synthesis-status-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: currentColor; color: var(--faint); }
 .synthesis-status-dot.is-valid { color: var(--success); }
 .synthesis-status-dot.is-invalid { color: var(--warning); }
-.synthesis-workspace .synthesis-new-module { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 10px 0 0; background: transparent; font-size: calc(11px * var(--font-scale, 1)); }
-.synthesis-discovery-hint { margin: 8px 10px 18px; color: var(--faint); font-size: calc(10px * var(--font-scale, 1)); line-height: 1.6; }
+.synthesis-workspace .synthesis-new-module { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; margin: 10px 0 0; background: transparent; font-size: calc(11px * var(--font-scale, 1)); }
 .synthesis-module small.synthesis-module-path { color: var(--faint); font-size: calc(10px * var(--font-scale, 1)); }
-.synthesis-module-pane .synthesis-run-history-title { border-top: 1px solid var(--line); padding-top: 16px; }
-.synthesis-run-history { display: grid; gap: 3px; min-height: 0; }
-.synthesis-workspace .synthesis-run-history > button { display: grid; gap: 3px; width: 100%; background: transparent; border-color: transparent; text-align: left; padding: 9px 10px; }
-.synthesis-run-history strong { font-size: var(--text-caption); font-weight: 450; }
-.synthesis-run-history small { color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
-.synthesis-main-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-1); }
-.synthesis-module-header { display: flex; align-items: flex-start; justify-content: space-between; flex-shrink: 0; gap: 12px; padding: 18px 20px 12px; }
-.synthesis-module-header > div { min-width: 0; }
-.synthesis-module-header h2 { margin: 0 0 5px; font-size: calc(16px * var(--font-scale, 1)); font-weight: 550; letter-spacing: -.25px; overflow-wrap: anywhere; }
-.synthesis-module-header > div > span { font-size: var(--text-caption); color: var(--muted); }
+.synthesis-runs { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.synthesis-runs > header { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 2px 6px 10px; }
+.synthesis-runs h3 { margin: 0; font-size: var(--text-caption); font-weight: 550; white-space: nowrap; }
+.synthesis-runs > header > span { flex: 1; min-width: 0; overflow: hidden; color: var(--faint); font-size: calc(11px * var(--font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.synthesis-workspace .synthesis-runs__clear { margin-left: auto; min-height: 26px; padding: 2px 8px; border-color: transparent; background: transparent; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
+/* Each run keeps its own height: a long history scrolls in the panel, it never squeezes a row. */
+.synthesis-run-history { display: grid; gap: 2px; align-content: start; }
+.synthesis-workspace .synthesis-run-item { display: grid; gap: 3px; width: 100%; min-height: 0; padding: 8px 34px 8px 10px; border-color: transparent; background: transparent; text-align: left; }
+.synthesis-run__top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.synthesis-run__top strong { font-size: var(--text-caption); font-weight: 500; white-space: nowrap; }
+.synthesis-run__top time { margin-left: auto; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.synthesis-run-item small { overflow: hidden; color: var(--faint); font-size: calc(11px * var(--font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.synthesis-confirm { margin: 2px 0 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--danger) 6%, transparent); }
+.synthesis-confirm--row { margin: 2px 0; }
+.synthesis-confirm p { margin: 0 0 9px; color: var(--text); font-size: var(--text-caption); line-height: 1.5; }
+.synthesis-confirm > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.synthesis-workspace .synthesis-confirm button { min-height: 28px; padding: 3px 10px; font-size: calc(11px * var(--font-scale, 1)); }
+.synthesis-workspace .synthesis-danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+.synthesis-workspace .synthesis-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 86%, #000); border-color: color-mix(in srgb, var(--danger) 86%, #000); }
 .synthesis-badge, .synthesis-status { font-size: calc(11px * var(--font-scale, 1)); font-weight: 500; }
-.synthesis-badge { flex-shrink: 0; padding: 3px 0; }
-.synthesis-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); padding: 0 12px; flex-shrink: 0; flex-wrap: wrap; }
+.synthesis-badge { flex-shrink: 0; }
+.synthesis-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); padding: 0; flex-shrink: 0; flex-wrap: wrap; }
 .synthesis-tabs button { border: 0; border-radius: 0; background: transparent; color: var(--muted); border-bottom: 2px solid transparent; padding: 9px 10px; font-size: var(--text-caption); }
 .synthesis-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
+.synthesis-dirty { margin-left: 5px; color: var(--warning); }
 .synthesis-tabs button.synthesis-open-source { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: calc(11px * var(--font-scale, 1)); padding-inline: 5px; }
-.synthesis-source-origin { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: calc(11px * var(--font-scale, 1)); color: var(--muted); }
+.synthesis-source-origin { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 4px; border-bottom: 1px solid var(--line); font-size: calc(11px * var(--font-scale, 1)); color: var(--muted); }
 .synthesis-source-origin > div { display: flex; gap: 3px; }
 .synthesis-source-origin button { background: transparent; color: var(--muted); min-height: 26px; padding: 3px 7px; font-size: inherit; border-color: transparent; border-radius: 5px; }
 .synthesis-source-origin button[aria-pressed="true"] { background: var(--control-active); color: var(--text); }
 .synthesis-source-origin > span { overflow-wrap: anywhere; }
-.synthesis-source-panel { min-height: 0; flex: 1; overflow: auto; background: var(--bg-elevated); }
-.synthesis-source { margin: 0; padding: 14px 16px 20px 0; font: var(--code-font-size, 12px)/1.8 var(--font-mono); min-width: max-content; tab-size: 2; }
+.synthesis-source-actions { display: flex; gap: 6px; margin-left: auto; }
+.synthesis-workspace .synthesis-source-actions button { min-height: 26px; padding: 3px 12px; border-radius: 7px; font-size: inherit; }
+.synthesis-workspace .synthesis-source-actions button:not(.synthesis-primary) { border-color: var(--line); }
+.synthesis-source-panel { min-height: 0; flex: 1; overflow: auto; }
+.synthesis-source-panel.is-editing { display: flex; flex-direction: column; overflow: hidden; }
+.synthesis-source { margin: 0; padding: 14px 16px 20px 0; font: var(--code-font-size, 12px)/1.8 var(--font-mono); min-width: max-content; tab-size: 2; font-variant-ligatures: none; }
 .synthesis-source__line { display: flex; min-height: 1.8em; }
 .synthesis-source__line > span:last-child { white-space: pre; }
 .synthesis-source__number { width: 46px; flex: 0 0 46px; padding-right: 15px; text-align: right; color: var(--faint); user-select: none; }
 .synthesis-source__keyword { color: #bca9d6; }
 .synthesis-source__string { color: #9cb9a3; }
 .synthesis-source__comment { color: var(--muted); }
+.synthesis-source__line.is-error { background: color-mix(in srgb, var(--danger) 11%, transparent); }
+.synthesis-source__line.is-warning { background: color-mix(in srgb, var(--warning) 9%, transparent); }
+.synthesis-source__line.is-error .synthesis-source__number { color: var(--danger); }
+.synthesis-source__line.is-warning .synthesis-source__number { color: var(--warning); }
+/* The editor: a text area over the highlighted lines, at the same metrics; the lines follow its scroll. */
+.synthesis-editor { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.synthesis-editor__layer { position: absolute; top: 0; left: 0; min-width: 100%; pointer-events: none; will-change: transform; }
+.synthesis-workspace textarea.synthesis-editor__input { position: absolute; inset: 0; box-sizing: border-box; width: 100%; height: 100%; margin: 0; padding: 14px 16px 20px 46px; border: 0; border-radius: 0; outline: none; box-shadow: none; resize: none; overflow: auto;
+  background: transparent; color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--text); font: var(--code-font-size, 12px)/1.8 var(--font-mono); letter-spacing: normal; font-variant-ligatures: none; tab-size: 2; white-space: pre; overflow-wrap: normal; }
+.synthesis-workspace textarea.synthesis-editor__input::selection { background: color-mix(in srgb, var(--accent-border) 55%, transparent); }
+.synthesis-workspace textarea.synthesis-editor__input:focus-visible { outline: none; }
+.synthesis-problems { display: flex; flex-wrap: wrap; flex-shrink: 0; align-items: center; gap: 2px 6px; padding: 6px 4px; border-top: 1px solid var(--line); }
+.synthesis-workspace .synthesis-problems button { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 26px; padding: 3px 8px; border-color: transparent; background: transparent; color: var(--text); font-size: calc(11px * var(--font-scale, 1)); text-align: left; overflow-wrap: anywhere; }
+.synthesis-problems button .synthesis-icon { width: 13px; height: 13px; flex-basis: 13px; color: var(--danger); }
+.synthesis-problems button.is-warning .synthesis-icon { color: var(--warning); }
+.synthesis-problems button > span { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.synthesis-problems__note { padding: 0 4px; color: var(--faint); font-size: calc(11px * var(--font-scale, 1)); }
+.synthesis-workspace .synthesis-empty > button { display: flex; align-items: center; gap: 7px; margin-top: 10px; }
 html[data-theme="light"] .synthesis-source__keyword { color: #7a438e; }
 html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-activity { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line); overflow: hidden; }
@@ -118,15 +188,8 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-event.status-warning .synthesis-event__marker { color: var(--warning); }
 .synthesis-event.is-waiting { color: var(--muted); }
 
-/* One vertical inspector, with independently readable source and run results. */
-.synthesis-inspector { position: absolute; z-index: 5; inset: 0 0 0 auto; display: flex; flex-direction: column; width: min(340px, 100%); min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 16px; background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--popover-shadow); backdrop-filter: blur(32px) saturate(1.08); -webkit-backdrop-filter: blur(32px) saturate(1.08); }
-.synthesis-inspector__header { display: flex; align-items: flex-start; justify-content: space-between; flex-shrink: 0; gap: 12px; padding: 18px 18px 16px; border-bottom: 1px solid var(--line); }
-.synthesis-inspector__header > div { min-width: 0; }
-.synthesis-inspector__header h2 { margin: 0; font-size: var(--text-control); font-weight: 550; line-height: 1.4; }
-.synthesis-inspector__header h2:focus { outline: none; }
-.synthesis-inspector__header p { color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); margin: 4px 0 0; overflow-wrap: anywhere; }
+/* Diagnostics: the source's problems and the selected run's results, each readable on its own. */
 .synthesis-workspace .synthesis-icon-button { display: grid; place-items: center; width: 28px; height: 28px; min-height: 28px; flex: 0 0 28px; padding: 0; background: transparent; border-color: transparent; color: var(--muted); border-radius: 7px; }
-.synthesis-inspector__body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0 18px; }
 .synthesis-diagnostic-section { padding: 18px 0; border-bottom: 1px solid var(--line); }
 .synthesis-diagnostic-section > header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 10px; }
 .synthesis-diagnostic-section h3 { margin: 0; font-size: var(--text-caption); font-weight: 550; }
@@ -134,14 +197,14 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-validation-result { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: var(--text-caption); }
 .synthesis-validation-result .synthesis-icon { margin-top: 2px; }
 .synthesis-diagnostics { display: grid; gap: 12px; }
-.synthesis-workspace .synthesis-diagnostic { display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left; padding: 8px; margin: 0; border-color: transparent; background: transparent; }
-.synthesis-diagnostic > span { flex: 1; min-width: 0; }
-.synthesis-diagnostic > .synthesis-icon { color: var(--danger); margin-top: 2px; }
-.synthesis-diagnostic.is-warning > .synthesis-icon { color: var(--warning); }
+.synthesis-diagnostic { display: flex; align-items: flex-start; gap: 2px; }
+.synthesis-workspace .synthesis-diagnostic__show { display: flex; flex: 1; align-items: flex-start; gap: 9px; min-width: 0; text-align: left; padding: 8px; margin: 0; border-color: transparent; background: transparent; }
+.synthesis-diagnostic__show > span { flex: 1; min-width: 0; }
+.synthesis-diagnostic__show > .synthesis-icon { color: var(--danger); margin-top: 2px; }
+.synthesis-diagnostic.is-warning .synthesis-diagnostic__show > .synthesis-icon { color: var(--warning); }
+.synthesis-workspace .synthesis-diagnostic__open { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; margin-top: 4px; padding: 0; border-color: transparent; background: transparent; color: var(--muted); }
 .synthesis-diagnostic strong { font-size: var(--text-caption); font-weight: 450; line-height: 1.5; overflow-wrap: anywhere; }
 .synthesis-diagnostic small { display: block; margin-top: 5px; color: var(--muted); font: calc(11px * var(--font-scale, 1))/1.5 var(--font-mono); overflow-wrap: anywhere; }
-.synthesis-diagnostic__action { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
-.synthesis-diagnostic__action .synthesis-icon { width: 12px; height: 12px; flex-basis: 12px; }
 .synthesis-gates { margin-top: 10px; }
 .synthesis-gate { border-bottom: 1px solid var(--line); }
 .synthesis-gate:last-child { border-bottom: 0; }
@@ -173,23 +236,22 @@ html[data-theme="light"] .synthesis-source__string { color: #3e7452; }
 .synthesis-provenance dl { display: grid; gap: 12px; margin: 12px 0 0; }
 .synthesis-provenance dt { color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 .synthesis-provenance dd { margin: 4px 0 0; color: var(--faint); overflow-wrap: anywhere; font: calc(11px * var(--font-scale, 1))/1.6 var(--font-mono); }
-/* The inspector slides in and out, over the screen when it is narrow, beside it when there is room. */
-.synthesis-inspector { opacity: 0; transform: translateX(18px); pointer-events: none; transition: opacity 220ms ease, transform 320ms cubic-bezier(.2, .8, .2, 1); }
-.synthesis-layout.is-inspector-open .synthesis-inspector { opacity: 1; transform: none; pointer-events: auto; }
-@container synthesis (min-width: 1100px) {
-  .synthesis-layout { grid-template-columns: 176px minmax(0, 1fr) 0px; column-gap: 0; transition: grid-template-columns 320ms cubic-bezier(.2, .8, .2, 1); }
-  .synthesis-layout > .synthesis-module-pane { margin-right: 16px; }
-  .synthesis-layout.is-inspector-open { grid-template-columns: 176px minmax(0, 1fr) 320px; }
-  .synthesis-inspector { position: static; width: auto; margin-left: 16px; box-shadow: inset 0 1px 0 var(--highlight); background: var(--surface-1); transform: none; }
-  /* While the column opens or closes, the panel keeps its own width and is clipped, never squeezed. */
-  .synthesis-inspector > * { min-width: 302px; }
+/* With little room the panels slide in over the module instead of beside it. */
+@container synthesis (max-width: 860px) {
+  .synthesis-layout, .synthesis-layout.is-side-open { grid-template-columns: minmax(0, 1fr); }
+  .synthesis-side { position: absolute; z-index: 5; inset: 0 0 0 auto; width: min(var(--synthesis-side-width, 340px), 100%); transform: translateX(18px); pointer-events: none; transition: opacity 220ms ease, transform 320ms cubic-bezier(.2, .8, .2, 1); }
+  .synthesis-layout.is-side-open .synthesis-side { transform: none; pointer-events: auto; }
+  .synthesis-side .synthesis-panel { border-color: var(--line-strong); background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--popover-shadow); backdrop-filter: blur(32px) saturate(1.08); -webkit-backdrop-filter: blur(32px) saturate(1.08); }
 }
-html[data-motion="off"] :is(.synthesis-layout, .synthesis-inspector) { transition: none; }
-@media (prefers-reduced-transparency: reduce) { .synthesis-inspector { background: var(--bg-panel); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+html[data-motion="off"] :is(.synthesis-layout, .synthesis-side) { transition: none; }
+@media (prefers-reduced-transparency: reduce) { .synthesis-side .synthesis-panel { background: var(--bg-panel); backdrop-filter: none; -webkit-backdrop-filter: none; } }
 
 .synthesis-message { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 9px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: var(--text-caption); overflow-wrap: anywhere; background: var(--highlight); }
 .synthesis-message--error { color: var(--danger); }
 .synthesis-message button { margin-left: auto; padding: 0 5px; min-height: 24px; border: 0; background: transparent; }
+.synthesis-conflict { flex-wrap: wrap; margin: 8px 0 0; }
+.synthesis-conflict > span { flex: 1 1 240px; }
+.synthesis-workspace .synthesis-conflict button { margin-left: 0; min-height: 26px; padding: 3px 10px; border: 1px solid var(--line); color: var(--text); }
 .synthesis-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; color: var(--muted); font-size: var(--text-caption); border-top: 1px solid var(--line); }
 .synthesis-recovery button { white-space: nowrap; margin-left: auto; }
 .synthesis-workspace-footer { display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0; gap: 8px 10px; padding: 12px 0 0; font-size: var(--text-caption); }
@@ -216,7 +278,7 @@ html[data-motion="off"] :is(.synthesis-layout, .synthesis-inspector) { transitio
 .synthesis-welcome h2 { font-size: calc(22px * var(--font-scale, 1)); font-weight: 500; margin: 12px 0 0; }
 .synthesis-welcome p { max-width: 400px; color: var(--muted); }
 .synthesis-welcome__symbol { font-size: 30px; color: var(--muted); }
-.synthesis-diff-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 9px 16px; border-bottom: 1px solid var(--line); font-size: var(--text-caption); color: var(--muted); }
+.synthesis-diff-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 9px 4px; border-bottom: 1px solid var(--line); font-size: var(--text-caption); color: var(--muted); }
 .synthesis-diff-toolbar button { font-size: calc(11px * var(--font-scale, 1)); }
 .synthesis-diff__columns { display: grid; }
 .synthesis-diff__code { min-width: 0; overflow: hidden; }
@@ -254,17 +316,20 @@ html[data-motion="off"] :is(.synthesis-layout, .synthesis-inspector) { transitio
 :is(.synthesis-changes, .synthesis-agents__split), :is(.synthesis-changes, .synthesis-agents__split) * { scrollbar-width: none; }
 :is(.synthesis-changes, .synthesis-agents__split) ::-webkit-scrollbar, :is(.synthesis-changes, .synthesis-agents__split)::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .synthesis-changes-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.synthesis-changes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(170px, 26%) minmax(0, 1fr); }
-.synthesis-changes__files { margin: 0; padding: 6px 0; list-style: none; overflow: auto; border-right: 1px solid var(--line); }
-.synthesis-changes__files button { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; width: 100%; padding: 6px 12px; border: 0; border-radius: 0; background: transparent; color: var(--muted); text-align: left; min-height: 0; }
-.synthesis-changes__files button:hover { background: var(--surface-1); color: var(--text); }
-.synthesis-changes__files button[aria-selected="true"] { background: var(--control-active); color: var(--text); }
-.synthesis-changes__name { flex: 1 1 100%; min-width: 0; font: calc(11.5px * var(--font-scale, 1))/1.45 var(--font-mono); overflow-wrap: anywhere; }
+.synthesis-changes { flex: 1; min-height: 0; display: grid; }
+.synthesis-changes__files { display: grid; align-content: start; gap: 2px; margin: 0; padding: 6px 4px 6px 0; list-style: none; overflow: auto; }
+.synthesis-workspace .synthesis-changes__files button { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; min-height: 0; }
+.synthesis-workspace .synthesis-changes__files button:hover:not(:disabled) { background: var(--surface-1); color: var(--text); }
+.synthesis-workspace .synthesis-changes__files button[aria-selected="true"] { background: var(--control-active); color: var(--text); }
+/* The file's name, then its folder under it. */
+.synthesis-changes__name { display: flex; flex-direction: column; flex: 1 1 100%; min-width: 0; }
+.synthesis-changes__base { order: -1; font: calc(11.5px * var(--font-scale, 1))/1.45 var(--font-mono); overflow-wrap: anywhere; }
+.synthesis-changes__folder { overflow: hidden; color: var(--faint); font: calc(10.5px * var(--font-scale, 1))/1.45 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .synthesis-changes__state, .synthesis-changes__broken { font-size: calc(10.5px * var(--font-scale, 1)); color: var(--faint); }
 .synthesis-changes__state.is-added { color: var(--success); }
 .synthesis-changes__state.is-deleted, .synthesis-changes__broken { color: var(--danger); }
 .synthesis-changes__file { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.synthesis-changes__header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: calc(11px * var(--font-scale, 1)); color: var(--muted); }
+.synthesis-changes__header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: calc(11px * var(--font-scale, 1)); color: var(--muted); }
 .synthesis-changes__path { font: calc(11.5px * var(--font-scale, 1))/1.45 var(--font-mono); color: var(--text); overflow-wrap: anywhere; }
 .synthesis-changes__header [role="group"] { display: flex; gap: 3px; margin-left: auto; }
 .synthesis-changes__header button { min-height: 24px; padding: 2px 8px; font-size: inherit; background: transparent; color: var(--muted); border-color: transparent; border-radius: 5px; }
@@ -329,35 +394,22 @@ html[data-theme="light"] .synthesis-json__number, html[data-theme="light"] .synt
 .synthesis-folder-list button { display: flex; align-items: center; gap: 8px; text-align: left; background: transparent; border-color: transparent; }
 .synthesis-folder-browser footer { display: flex; justify-content: flex-end; padding: 8px; border-top: 1px solid var(--line); }
 @container synthesis (max-width: 760px) {
-  .synthesis-layout { grid-template-columns: 148px minmax(0, 1fr); gap: 12px; }
-  .synthesis-toolbar__actions { flex: 1 1 100%; }
-  .synthesis-toolbar__heading h2 { font-size: calc(20px * var(--font-scale, 1)); }
-  .synthesis-module-header { padding: 14px 16px 10px; }
+  .synthesis-toolbar__actions { flex: 1 1 100%; justify-content: flex-start; }
+  .synthesis-title h2 { font-size: calc(20px * var(--font-scale, 1)); }
   .synthesis-workspace-footer > span { display: none; }
   .synthesis-workspace-footer select { flex: 1; width: auto; max-width: none; min-width: 0; }
 }
 @container synthesis (max-width: 520px) {
-  .synthesis-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
-  .synthesis-module-pane { max-height: 140px; flex-direction: row; align-items: center; gap: 8px; padding: 0 0 4px; }
-  .synthesis-module-pane > .synthesis-pane-header, .synthesis-new-module, .synthesis-run-history-title, .synthesis-run-history { flex-shrink: 0; }
-  .synthesis-module-pane > .synthesis-pane-header { padding: 4px; }
-  .synthesis-module-list { display: flex; }
-  .synthesis-discovery-hint { display: none; }
-  .synthesis-hidden-modules { flex: 0 0 160px; margin: 0; max-height: 132px; overflow: auto; }
-  .synthesis-workspace .synthesis-module { width: 170px; }
-  .synthesis-workspace .synthesis-new-module { margin: 0; white-space: nowrap; }
-  .synthesis-module-pane .synthesis-run-history-title { border: 0; border-left: 1px solid var(--line); padding: 4px 10px; }
-  .synthesis-run-history { display: flex; }
-  .synthesis-workspace .synthesis-run-history > button { width: 140px; }
   .synthesis-toolbar { gap: 10px; padding-bottom: 10px; }
   .synthesis-toolbar__actions button { padding: 6px 8px; min-height: 32px; gap: 5px; }
   .synthesis-toolbar__actions { gap: 5px; }
-  .synthesis-tabs { padding: 0 6px; gap: 0; }
+  .synthesis-panel-toggle > span:not(.synthesis-count, .synthesis-status-dot) { display: none; }
+  .synthesis-tabs { gap: 0; }
   .synthesis-tabs button { padding-inline: 8px; }
   .synthesis-main-pane { overflow: auto; }
-  .synthesis-module-header { padding: 12px; }
   .synthesis-output { min-height: 300px; flex: 1 0 300px; }
-  .synthesis-inspector { width: 100%; }
+  .synthesis-side { width: 100%; padding-left: 0; }
+  .synthesis-side__resize { display: none; }
   .synthesis-diff__columns { grid-template-columns: minmax(0, 1fr) !important; }
   .synthesis-diff__resize { display: none; }
   .synthesis-workspace-footer { padding-top: 8px; }
@@ -367,8 +419,8 @@ html[data-theme="light"] .synthesis-json__number, html[data-theme="light"] .synt
 .synthesis-agents__counts { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); color: var(--muted); flex-shrink: 0; }
 .synthesis-agents__counts strong { color: var(--text, inherit); font-variant-numeric: tabular-nums; margin-right: 3px; }
 /* The agents on the left, the chosen one's steps on the right: each scrolls on its own. */
-.synthesis-agents__split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(230px, 34%) minmax(0, 1fr); }
-.synthesis-agents__list { margin: 0; padding: 4px 0; list-style: none; overflow: auto; border-right: 1px solid var(--line); }
+.synthesis-agents__split { flex: 1; min-height: 0; display: grid; }
+.synthesis-agents__list { margin: 0; padding: 4px 0; list-style: none; overflow: auto; }
 .synthesis-workspace .synthesis-agents__row { display: grid; gap: 2px; width: 100%; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: inherit; text-align: left; font: inherit; min-height: 0; }
 .synthesis-workspace .synthesis-agents__row:hover:not(:disabled) { background: var(--surface-1); }
 .synthesis-workspace .synthesis-agents__row[aria-selected="true"] { background: var(--control-active); }
@@ -394,9 +446,10 @@ html[data-theme="light"] .synthesis-json__number, html[data-theme="light"] .synt
 .synthesis-agent-turn.is-format_error > span, .synthesis-agent-turn.is-refused > span { color: var(--danger); }
 .synthesis-agent-turn.is-tool pre { font-weight: 500; }
 .synthesis-agent-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; font-size: calc(11px * var(--font-scale, 1)); }
-@media (max-width: 720px) {
-  .synthesis-changes { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 32%) minmax(0, 1fr); }
-  .synthesis-changes__files { border-right: 0; border-bottom: 1px solid var(--line); }
-  .synthesis-agents__split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 38%) minmax(0, 1fr); }
-  .synthesis-agents__list { border-right: 0; border-bottom: 1px solid var(--line); }
+@container synthesis (max-width: 640px) {
+  .synthesis-changes { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 32%) minmax(0, 1fr); }
+  .synthesis-changes__files { padding-right: 0; border-bottom: 1px solid var(--line); }
+  .synthesis-agents__split { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 38%) minmax(0, 1fr); }
+  .synthesis-agents__list { border-bottom: 1px solid var(--line); }
+  :is(.synthesis-changes, .synthesis-agents__split) > .synthesis-split { display: none; }
 }

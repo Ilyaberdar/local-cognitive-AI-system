@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
+import express from "express";
+import { localApiOriginGuard } from "../src/api/integrationControllers";
+import { createSynthesisRouter } from "../src/api/synthesisControllers";
 import os from "node:os";
 import path from "node:path";
 import test, { TestContext } from "node:test";
@@ -755,3 +759,109 @@ test("a request waiting for its local model says who holds it, once, then writes
   assert.equal(steps[2].tokens, 42, "the token count is kept on the running event, not as new events");
 });
 
+
+test("a module's contract and flow are saved from the app over the text the editor started from, keep CRLF and the file's mode, and come back checked", async (t) => {
+  const f = await fixture(t);
+  const flowFile = path.join(f.root, f.module.flowPath), specFile = path.join(f.root, f.module.specPath);
+  const flow = f.module.flowSource!;
+  await fs.chmod(flowFile, 0o640);
+  const saved = await f.service.saveSource(f.project.id, "Calculator", "flow", `${flow}\n// edited in the app\n`, flow);
+  assert.equal(saved.valid, true, JSON.stringify(saved.diagnostics));
+  assert.equal(await fs.readFile(flowFile, "utf8"), `${flow}\n// edited in the app\n`);
+  assert.equal((await fs.stat(flowFile)).mode & 0o777, 0o640, "the file keeps its mode");
+  assert.deepEqual((await fs.readdir(path.dirname(flowFile))).filter(name => name.endsWith(".tmp")), [], "no temporary file left");
+
+  // A syntax error is saved like any edit; the module says what is wrong and where.
+  const spec = f.module.specSource!;
+  const broken = await f.service.saveSource(f.project.id, "Calculator", "spec", spec.replace(/\}\s*$/, ""), spec);
+  assert.equal(broken.valid, false);
+  assert.ok(broken.diagnostics.some(item => item.file === f.module.specPath && item.line), JSON.stringify(broken.diagnostics));
+
+  // Edited elsewhere since: nothing is written; without `expected` the editor's text replaces it.
+  await fs.writeFile(specFile, `${spec}\n// from the IDE\n`);
+  await assert.rejects(f.service.saveSource(f.project.id, "Calculator", "spec", spec, spec.replace(/\}\s*$/, "")), (error: any) => error.statusCode === 409 && /changed on disk since it was opened here/.test(error.message));
+  assert.equal(await fs.readFile(specFile, "utf8"), `${spec}\n// from the IDE\n`);
+  assert.equal((await f.service.saveSource(f.project.id, "Calculator", "spec", spec)).valid, true);
+  assert.equal(await fs.readFile(specFile, "utf8"), spec);
+
+  // A file with Windows line ends keeps them; the editor sends \n.
+  await fs.writeFile(flowFile, flow.replace(/\n/g, "\r\n"));
+  await f.service.saveSource(f.project.id, "Calculator", "flow", `${flow}// crlf\n`, flow.replace(/\n/g, "\r\n"));
+  assert.equal(await fs.readFile(flowFile, "utf8"), `${flow}// crlf\n`.replace(/\n/g, "\r\n"));
+
+  // Only the module's two files, as text of a bounded size, and never through a link.
+  await assert.rejects(f.service.saveSource(f.project.id, "Calculator", "tests", "x"), /spec or flow/);
+  await assert.rejects(f.service.saveSource(f.project.id, "Calculator", "spec", "a\0b"), /text/);
+  await assert.rejects(f.service.saveSource(f.project.id, "Calculator", "spec", "x".repeat(129 * 1024)), /at most 128 KiB/);
+  await assert.rejects(f.service.saveSource(f.project.id, "file:../outside/Calculator", "spec", "x"), /relative path/);
+  const outside = path.join(f.temp, "outside.lcspec");
+  await fs.writeFile(outside, "outside");
+  await fs.rm(specFile); await fs.symlink(outside, specFile);
+  await assert.rejects(f.service.saveSource(f.project.id, "Calculator", "spec", "replaced"), /Symbolic links/);
+  assert.equal(await fs.readFile(outside, "utf8"), "outside");
+});
+
+test("a finished run is deleted with its checkpoints and agents' steps; one still going is refused; Clear deletes a module's finished runs only", async (t) => {
+  const hold = deferred();
+  let holding = false;
+  const f = await fixture(t, { load: async () => { if (holding) await hold.promise; } });
+  const first = await f.run(), second = await f.run();
+  assert.equal(first.status, "accepted", first.error);
+  const runs = path.join(f.data, "synthesis", "runs"), agents = path.join(f.data, "synthesis", "agents");
+  await fs.mkdir(path.join(runs, "checkpoints"), { recursive: true });
+  await fs.writeFile(path.join(runs, "checkpoints", `${first.id}-7.json`), "{}");
+  await fs.writeFile(path.join(runs, "checkpoints", `${second.id}-7.json`), "{}");
+  await fs.mkdir(path.join(agents, first.id, "terminal"), { recursive: true });
+  await fs.writeFile(path.join(agents, first.id, "loop.json"), "{}");
+
+  await f.service.remove(first.id);
+  await assert.rejects(f.service.get(first.id), (error: any) => error.statusCode === 404);
+  await assert.rejects(fs.access(path.join(agents, first.id)), { code: "ENOENT" });
+  const left = await fs.readdir(path.join(runs, "checkpoints"));
+  assert.ok(left.includes(`${second.id}-7.json`) && left.every(name => name.startsWith(`${second.id}-`)), `only that run's checkpoints go: ${left.join(", ")}`);
+  assert.deepEqual((await f.service.list(f.project.id)).map(run => run.id), [second.id]);
+  await assert.rejects(f.service.remove(first.id), (error: any) => error.statusCode === 404);
+  await assert.rejects(f.service.remove("../../etc"), /Invalid run identifier/);
+
+  // Another module's run, and one still going.
+  const other = { ...await f.readRecord(second.id), id: "00000000-0000-4000-8000-000000000001", moduleId: "Other" };
+  await fs.writeFile(path.join(runs, `${other.id}.json`), JSON.stringify(other));
+  holding = true;
+  const going = await f.service.start(f.project.id, "Calculator");
+  await assert.rejects(f.service.remove(going.id), (error: any) => error.statusCode === 409 && /still going/.test(error.message));
+  assert.deepEqual(await f.service.clear(f.project.id, "Calculator"), { deleted: 1, kept: 1 });
+  assert.deepEqual((await f.service.list(f.project.id)).map(run => run.id).sort(), [going.id, other.id].sort());
+  hold.resolve();
+  await f.service.wait(going.id);
+  assert.deepEqual(await f.service.clear(f.project.id), { deleted: 2, kept: 0 }, "without a module: all of the project's finished runs");
+  assert.deepEqual(await f.service.list(f.project.id), []);
+});
+
+test("the app's API saves a module's file and deletes runs only for this application's own requests", async (t) => {
+  const f = await fixture(t);
+  const finished = await f.run();
+  const app = express();
+  app.use(express.json());
+  app.use(localApiOriginGuard);
+  app.use("/synthesis", createSynthesisRouter(() => f.service));
+  app.use((error: Error & { statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.statusCode ?? 500).json({ message: error.message }); });
+  const server = http.createServer(app);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
+  const origin = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const send = (method: string, route: string, body?: unknown, app = true) => fetch(`${origin}/synthesis${route}`, { method,
+    headers: { "Content-Type": "application/json", ...(app ? { "X-Local-Cognitive": "1" } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const flow = f.module.flowSource!;
+  const source = { file: "flow", source: `${flow}// saved over HTTP\n`, expected: flow };
+  assert.equal((await send("PUT", `/projects/${f.project.id}/modules/Calculator/source`, source, false)).status, 403, "a page elsewhere cannot write a module");
+  const saved = await send("PUT", `/projects/${f.project.id}/modules/Calculator/source`, source);
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).valid, true);
+  assert.equal((await send("PUT", `/projects/${f.project.id}/modules/Calculator/source`, source)).status, 409, "the text it started from is gone now");
+  assert.equal((await send("DELETE", `/runs/${finished.id}`, undefined, false)).status, 403);
+  assert.equal((await send("DELETE", `/runs/${finished.id}`)).status, 200);
+  assert.equal((await send("DELETE", `/runs/${finished.id}`)).status, 404);
+  await f.run();
+  const cleared = await send("DELETE", `/projects/${f.project.id}/runs?moduleId=Calculator`);
+  assert.deepEqual(await cleared.json(), { deleted: 1, kept: 0 });
+});

@@ -20,6 +20,9 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
     res.status(201).json(await service().createModule(param(req, "projectId"), req.body.name ?? (req.body.template === "empty" ? "NewModule" : req.body.template === "rate-limiter" ? "RateLimiter" : req.body.template === "repository-review" ? "RepositoryReview" : "Calculator"), {template: req.body.template, directory: req.body.directory}));
   }));
   router.get("/projects/:projectId/modules/:moduleId", route(async (req, res) => res.json(await service().module(param(req, "projectId"), param(req, "moduleId")))));
+  // The contract or flow as edited in the app: on this computer only, no Remote operation writes a module.
+  router.put("/projects/:projectId/modules/:moduleId/source", route(async (req, res) =>
+    res.json(await service().saveSource(param(req, "projectId"), param(req, "moduleId"), req.body?.file, req.body?.source, req.body?.expected))));
   router.post("/projects/:projectId/open", route(async (req, res) => {
     if (req.body?.file !== undefined && !["spec", "flow"].includes(req.body.file)) throw new SynthesisError("file must be spec or flow.");
     if (req.body?.moduleId !== undefined && typeof req.body.moduleId !== "string") throw new SynthesisError("moduleId must be a string.");
@@ -31,7 +34,12 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
     if (typeof req.body?.moduleId !== "string") throw new SynthesisError("Select a module before Run.");
     res.status(202).json(await service().start(param(req, "projectId"), req.body.moduleId));
   }));
+  router.delete("/projects/:projectId/runs", route(async (req, res) => {
+    if (req.query.moduleId !== undefined && typeof req.query.moduleId !== "string") throw new SynthesisError("moduleId must be a string.");
+    res.json(await service().clear(param(req, "projectId"), req.query.moduleId as string | undefined));
+  }));
   router.get("/runs/:id", route(async (req, res) => res.json(await service().get(param(req, "id")))));
+  router.delete("/runs/:id", route(async (req, res) => { await service().remove(param(req, "id")); res.json({ok: true}); }));
   router.get("/runs/:id/sources", route(async (req, res) => res.json(await service().sources(param(req, "id")))));
   router.post("/runs/:id/cancel", route(async (req, res) => res.json(await service().cancel(param(req, "id")))));
   router.post("/runs/:id/resume", route(async (req, res) => res.status(202).json(await service().restart(param(req, "id")))));

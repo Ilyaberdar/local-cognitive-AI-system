@@ -16,7 +16,7 @@ A Synthesis module has two files in your project:
 - **`.lcspec`, the contract:** what the module must do, its files, and the checks that decide whether it is done.
 - **`.lcflow`, the flow:** which models do the work, how many iterations, time and cost they may use, and how they react to failed checks.
 
-**Run synthesis** runs the flow: agents write the files, the checks run, failures go back to the agents, and the run ends **Accepted** when every check passes, or stops at its limits. Every iteration, check and decision stays in the run history. You edit the files in your own editor (**Open in editor**) and **Refresh** to validate them.
+**Run synthesis** runs the flow: agents write the files, the checks run, failures go back to the agents, and the run ends **Accepted** when every check passes, or stops at its limits. Every iteration, check and decision stays in the run history. You edit the contract and flow right in Synthesis (**Save** or ⌘S checks them and marks each problem on its line), or in your own editor (**Open in editor**) and **Refresh**. The modules and each module's run history are in the **Modules** panel, beside **Diagnostics**; delete a run there, or **Clear** a module's finished runs.
 
 Nothing in your project changes during a run. **Changes** lists each file the run would add, modify or delete; choose one to see its diff, its source with line numbers, or, for Markdown and JSON, the file formatted. In a report, every `path:line` it cites opens that place: a file of the run at the line, or the project's file, read-only. The places `Grounded` found missing are marked in red. **Apply verified patch** writes the files all at once, after checking that none of them changed in the meantime.
 

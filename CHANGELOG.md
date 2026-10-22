@@ -25,6 +25,10 @@ Synthesis with cloud models and agents in parallel: tens of agents on one task, 
 - **Local models write whole files.** A model a flow loads without a context of its own gets 16,384 tokens, as much as memory allows, instead of the app's 4,096, so the contract, its tests and the other files fit beside the answer. An answer the model's token limit cut off is a failed attempt, never a candidate, and the next attempt is told to write a shorter file. An empty answer (a thinking model that stopped before writing) is asked for once more with room to think. When the model wrote none of the declared files, the run says so once instead of failing every gate on files that are not there, and the flow goes on to its next attempt.
 - **`models.select` takes the most capable model the limit allows:** a preferred name first, then a file of more than about 3 bits a weight, then the larger file. It took the smallest one before. Choosing a 1–2-bit file shows a warning in the run's log.
 - **A run waiting for a local model says so:** "Waiting for Qwen3.8-27B: in use by Synthesis · RateLimiter", and its badge reads Waiting for model; two runs on one model take turns. A running step shows its time so far, and a local model's tokens as it writes them. The run history shows runs started elsewhere (another window, a paired device, MCP) while it is open; it showed them only after Refresh.
+- **Edit the contract and flow in Synthesis.** Contract and Flow are editors, highlighted as you type: **Save** (⌘S or Ctrl+S) writes the file and checks it, and each problem is marked on its line and listed under the editor; a problem in Diagnostics opens its line. A run saves what you edited first. When the file changed in your IDE meanwhile, nothing is overwritten until you choose **Reload from disk** or **Replace with mine**. A run's snapshot stays read-only.
+- **More room for the module.** Its name heads the screen without a frame, as on the other screens. The modules and their run history moved from the left column into a **Modules** panel next to **Diagnostics**: with both open, the one opened later sits below; drag the panels' edge to set their width and the line between them to share the height. The lists in Changes and Agents can be made wider or narrower too, and Changes names each file first, its folder under it.
+- **Delete runs.** A run in the history is deleted after you confirm, with its log, candidate and agents' steps; **Clear** deletes all finished runs of a module. Files already applied stay in the project.
+- **Fixes:** Refresh no longer shifts the toolbar and blanks Changes while it reads the files again (its icon turns instead); a run in the history no longer spills its date out of its card.
 
 ### Models
 
@@ -47,6 +51,7 @@ Synthesis with cloud models and agents in parallel: tens of agents on one task, 
 
 - Windows has no sandbox yet: agents there can't use a terminal, and contract tests don't run.
 - A flow's `cost` limit is recorded, not enforced: watch your spending in the provider's dashboard.
+- On a server's screen, a module's files are edited on the server, and runs can't be deleted from a paired device yet.
 - Agents on an added provider choose actions in JSON, and some models don't keep to it, such as Perplexity's presets and `openai/gpt-5.4-nano`.
 
 ### Docs

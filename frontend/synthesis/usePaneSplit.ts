@@ -46,3 +46,45 @@ export function usePaneSplit(key: string, initial: number, axis: "x" | "y", cont
   };
   return { value, resizing, handle };
 }
+
+/** A persisted width in pixels for a pane on the right: its handle is on the pane's left edge, so a
+ * drag to the left widens it. `max` is read when a drag starts (the room there is then). */
+export function usePaneWidth(key: string, initial: number, min: number, max: () => number) {
+  const [value, setValue] = useState(() => {
+    try { const saved = Number(localStorage.getItem(key)); return Number.isFinite(saved) && saved >= min ? saved : initial; }
+    catch { return initial; }
+  });
+  const drag = useRef<{ pointer: number; origin: number; value: number; max: number } | null>(null);
+  const [resizing, setResizing] = useState(false);
+  useEffect(() => { if (!resizing) { try { localStorage.setItem(key, String(value)); } catch { /* Optional preference. */ } } }, [key, value, resizing]);
+  const bound = (width: number, limit = max()) => Math.round(Math.max(min, Math.min(Math.max(min, limit), width)));
+  const stop = () => { drag.current = null; setResizing(false); };
+  const handle: HTMLAttributes<HTMLDivElement> = {
+    role: "separator", tabIndex: 0, "aria-orientation": "vertical", "aria-valuemin": min, "aria-valuenow": value,
+    onPointerDown(event) {
+      if (event.button !== 0) return;
+      event.preventDefault(); event.currentTarget.focus();
+      const limit = max();
+      drag.current = { pointer: event.pointerId, origin: event.clientX, value: bound(value, limit), max: limit };
+      event.currentTarget.setPointerCapture(event.pointerId); setResizing(true);
+    },
+    onPointerMove(event) {
+      const start = drag.current;
+      if (!start || start.pointer !== event.pointerId) return;
+      setValue(bound(start.value + start.origin - event.clientX, start.max));
+    },
+    onPointerUp(event) {
+      stop();
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    },
+    onPointerCancel: stop,
+    onLostPointerCapture: stop,
+    onDoubleClick() { setValue(initial); },
+    onKeyDown(event) {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      setValue(current => event.key === "Home" ? min : event.key === "End" ? bound(Number.MAX_SAFE_INTEGER) : bound(current + (event.key === "ArrowLeft" ? 24 : -24)));
+    }
+  };
+  return { value, resizing, handle };
+}

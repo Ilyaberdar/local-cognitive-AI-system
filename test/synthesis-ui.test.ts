@@ -29,7 +29,10 @@ function harness(route: (path: string, options: RequestInit) => unknown | Promis
   dom.window.fetch = async (path: string, options: RequestInit) => {
     // The local API guard rejects mutations without this header (403).
     if (options.method && options.method !== "GET") assert.equal((options.headers as Record<string, string>)["X-Local-Cognitive"], "1", `${options.method} ${path}`);
-    return { ok: true, json: async () => route(path, options) };
+    // A route answers a refusal as { __status, message }.
+    const value = await route(path, options) as any;
+    if (value && typeof value === "object" && "__status" in value) return { ok: false, status: value.__status, json: async () => ({ message: value.message }) };
+    return { ok: true, json: async () => value };
   };
   dom.window.eval(`${bundle}\nwindow.SynthesisUI = SynthesisUI;`);
   const handle = dom.window.SynthesisUI.mountSynthesisWorkspace(dom.window.document.getElementById("root"), { projects, active: true });
@@ -159,8 +162,8 @@ test("synthesis source tabs and restart preserve prior run history and select th
     ui.click("Restart from snapshot");
     await until(() => ui.text().includes("restarted activity"), "new run selected");
     assert.ok(calls.includes("/synthesis/runs/old/resume"));
-    assert.equal(ui.dom.window.document.querySelectorAll(".synthesis-run-history > button").length, 2);
-    assert.match(ui.dom.window.document.querySelector(".synthesis-run-history .is-selected").textContent, /Accepted/);
+    assert.equal(ui.dom.window.document.querySelectorAll(".synthesis-run-history .synthesis-run-item").length, 2);
+    assert.match(ui.dom.window.document.querySelector(".synthesis-run-history .synthesis-run-item.is-selected").textContent, /Accepted/);
     assert.deepEqual([...ui.dom.window.document.querySelectorAll('[role="tab"]')].map((tab: any) => tab.textContent), ["Contract", "Flow", "Changes"], "no Preview tab");
     assert.equal(ui.dom.window.document.querySelector("iframe"), null, "nothing a candidate wrote runs in the app");
   } finally { ui.close(); }
@@ -223,7 +226,7 @@ test("historical source views load lazily and fence snapshots from the previous 
     await until(() => ui.text().includes("current flow"), "current project flow");
     ui.click("Run snapshot");
     await until(() => sourceRequests === 2, "pending second snapshot request");
-    ui.dom.window.document.querySelectorAll(".synthesis-run-history > button")[1].click();
+    ui.dom.window.document.querySelectorAll(".synthesis-run-history .synthesis-run-item")[1].click();
     await until(() => ui.text().includes("newer flow"), "new run snapshot");
     releaseOld(sources("stale"));
     await new Promise(resolve => setTimeout(resolve, 30));
@@ -262,7 +265,12 @@ test("diagnostics separates invalid current source from passing historical evide
     assert.match(ui.dom.window.document.querySelector('.synthesis-gates').textContent, /arithmeticPass/);
     assert.match(ui.text(), /selected run’s frozen source/);
     assert.doesNotMatch(ui.text(), /Spec and flow are valid/);
-    ui.dom.window.document.querySelector('.synthesis-diagnostic').click();
+    // A diagnostic shows its line in the module's own editor; the button beside it opens the IDE.
+    ui.dom.window.document.querySelector('.synthesis-diagnostic__show').click();
+    await until(() => ui.dom.window.document.querySelector('#synthesis-tab-flow')?.getAttribute("aria-selected") === "true", "the diagnostic opens Flow");
+    const editor = ui.dom.window.document.querySelector('textarea[aria-label="LC Flow source"]') as any;
+    await until(() => ui.dom.window.document.activeElement === editor, "the caret is in the flow");
+    ui.dom.window.document.querySelector('.synthesis-diagnostic__open').click();
     await until(() => opened.length === 1, "diagnostic opens the correct source file");
     assert.deepEqual(opened[0], { moduleId: "Calculator", file: "flow" });
     ui.dom.window.document.querySelector('#synthesis-diagnostics').dispatchEvent(new ui.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -716,12 +724,15 @@ test("Cloud models is a switch; a click leaves no focus ring; the diagnostics pa
     assert.equal(workspace.dataset.modality, "keyboard");
     box.dispatchEvent(new ui.dom.window.Event("pointerdown", { bubbles: true }));
     assert.equal(workspace.dataset.modality, "pointer", "a click: no focus ring");
+    // The panels' column slides away with its last panel (Modules is open from the start).
+    (doc.querySelector('[aria-label="Close modules"]') as any).click();
+    await until(() => !doc.querySelector(".synthesis-side"), "no panel");
     ui.click("Diagnostics");
-    await until(() => Boolean(doc.querySelector(".synthesis-layout.is-inspector-open .synthesis-inspector")), "panel in");
+    await until(() => Boolean(doc.querySelector(".synthesis-layout.is-side-open #synthesis-diagnostics")), "panel in");
     ui.click("Diagnostics");
-    await until(() => !doc.querySelector(".synthesis-layout.is-inspector-open"), "panel leaving");
-    assert.ok(doc.querySelector(".synthesis-inspector"), "still there while it slides away");
-    await until(() => !doc.querySelector(".synthesis-inspector"), "panel gone");
+    await until(() => !doc.querySelector(".synthesis-layout.is-side-open"), "panel leaving");
+    assert.ok(doc.querySelector("#synthesis-diagnostics"), "still there while it slides away");
+    await until(() => !doc.querySelector("#synthesis-diagnostics"), "panel gone");
   } finally { ui.close(); }
 });
 
@@ -837,9 +848,188 @@ test("a run started elsewhere (another window, a paired device, MCP) joins the o
     throw new Error(`Unexpected request ${path}`);
   });
   try {
-    await until(() => ui.text().includes("Runs for this module appear here."), "an empty history");
+    await until(() => ui.text().includes("Runs of this module appear here."), "an empty history");
     runs = [later];
     await until(() => ui.text().includes("Writing calculator.js"), "the new run, opened", 12_000);
-    assert.equal(ui.dom.window.document.querySelectorAll(".synthesis-run-history > button").length, 1);
+    assert.equal(ui.dom.window.document.querySelectorAll(".synthesis-run-history .synthesis-run-item").length, 1);
   } finally { ui.close(); }
+});
+
+/** Types into a text area as a person would: React reads the input event. */
+function typeInto(ui: ReturnType<typeof harness>, element: any, value: string) {
+  Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(element, value);
+  element.dispatchEvent(new ui.dom.window.Event("input", { bubbles: true }));
+}
+
+test("the contract and flow are edited here: Save sends what the editor started from, shows the problems it finds, and a run saves first", async () => {
+  let module: any = { ...moduleEntry(), specPath: "Synthesis/Calculator/Calculator.lcspec", flowPath: "Synthesis/Calculator/Calculator.lcflow" };
+  const puts: any[] = [];
+  const order: string[] = [];
+  let refuse = false;
+  const ui = harness((path, options) => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [module] };
+    if (path === "/synthesis/projects/p1/runs" && options.method === "POST") { order.push("run"); return runEntry("new", "queued"); }
+    if (path === "/synthesis/projects/p1/runs") return [];
+    if (path === "/synthesis/runs/new") return runEntry("new", "queued");
+    if (path === "/synthesis/projects/p1/modules/Calculator") return module;
+    if (path === "/synthesis/projects/p1/modules/Calculator/source" && options.method === "PUT") {
+      const body = JSON.parse(String(options.body)); puts.push(body); order.push(`save ${body.file}`);
+      if (refuse) { refuse = false; return { __status: 409, message: "Synthesis/Calculator/Calculator.lcspec changed on disk since it was opened here. Reload it, or save again to replace it." }; }
+      const broken = body.source.includes("broken");
+      module = { ...module, [body.file === "spec" ? "specSource" : "flowSource"]: body.source, valid: !broken,
+        diagnostics: broken ? [{ severity: "error", message: "Expected a declaration", file: module.specPath, line: 2, column: 1 }] : [] };
+      return module;
+    }
+    throw new Error(`Unexpected request ${path} ${options.method ?? "GET"}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => Boolean(doc.querySelector('textarea[aria-label="LC Spec source"]')), "the contract's editor");
+    const spec = doc.querySelector('textarea[aria-label="LC Spec source"]') as any;
+    assert.equal(spec.value, 'module Calculator version "1" {}');
+    typeInto(ui, spec, 'module Calculator version "1" {}\nbroken');
+    await until(() => doc.querySelector("#synthesis-tab-contract")!.textContent === "Contract•", "unsaved mark on the tab");
+    assert.match(ui.text(), /Unsaved changes/);
+    ui.click("Save");
+    await until(() => puts.length === 1, "saved");
+    assert.deepEqual(puts[0], { file: "spec", source: 'module Calculator version "1" {}\nbroken', expected: 'module Calculator version "1" {}' });
+    await until(() => Boolean(doc.querySelector(".synthesis-editor__layer .synthesis-source__line.is-error")), "the line marked");
+    assert.equal(doc.querySelectorAll(".synthesis-editor__layer .synthesis-source__line")[1].className, "synthesis-source__line is-error");
+    assert.match(doc.querySelector(".synthesis-problems")!.textContent!, /Line 2Expected a declaration/);
+    assert.equal(doc.querySelector("#synthesis-tab-contract")!.textContent, "Contract");
+    assert.match(doc.querySelector(".synthesis-module.is-selected")!.textContent!, /Needs attention/);
+
+    // The file changed elsewhere: nothing is written until the person chooses.
+    typeInto(ui, spec, 'module Calculator version "1" {}');
+    refuse = true;
+    ui.click("Save");
+    await until(() => Boolean(doc.querySelector(".synthesis-conflict")), "the conflict");
+    assert.match(doc.querySelector(".synthesis-conflict")!.textContent!, /changed on disk/);
+    ui.click("Replace with mine");
+    await until(() => puts.length === 3, "replaced");
+    assert.equal("expected" in puts[2], false, "Replace with mine sends no expected text");
+    await until(() => !doc.querySelector(".synthesis-conflict") && !doc.querySelector(".synthesis-problems"), "saved and valid");
+
+    // Run with an unsaved flow: the flow is saved, then the run starts.
+    ui.click("Flow");
+    await until(() => Boolean(doc.querySelector('textarea[aria-label="LC Flow source"]')), "the flow's editor");
+    typeInto(ui, doc.querySelector('textarea[aria-label="LC Flow source"]'), "implement Calculator { return unresolved(); }\n");
+    ui.click("Run synthesis");
+    await until(() => order.includes("run"), "the run");
+    assert.deepEqual(order, ["save spec", "save spec", "save spec", "save flow", "run"]);
+  } finally { ui.close(); }
+});
+
+test("a module on a server, or a run's snapshot, is read, not edited", async () => {
+  const saved = runEntry("old", "accepted");
+  const ui = harness(path => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [moduleEntry()] };
+    if (path === "/synthesis/projects/p1/runs") return [saved];
+    if (path === "/synthesis/projects/p1/modules/Calculator") return moduleEntry();
+    if (path === "/synthesis/runs/old") return saved;
+    if (path === "/synthesis/runs/old/sources") return { specSource: 'module Calculator version "old" {}', flowSource: "implement Calculator {}", specHash: "h" };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => Boolean(doc.querySelector('textarea[aria-label="LC Spec source"]')), "editable project source");
+    ui.click("Run snapshot");
+    await until(() => Boolean(doc.querySelector('pre[aria-label="LC Spec run snapshot"]')), "the snapshot, read only");
+    assert.equal(doc.querySelector("textarea.synthesis-editor__input"), null);
+    assert.equal(doc.querySelector(".synthesis-source-actions"), null);
+  } finally { ui.close(); }
+});
+
+test("Modules and Diagnostics share one column beside the module: the one opened later sits below, each closes on its own, and the choice is kept", async () => {
+  const ui = harness(path => {
+    if (path.endsWith("/runs")) return [];
+    if (path.endsWith("/modules")) return { modules: [moduleEntry()] };
+    if (path.endsWith("/modules/Calculator")) return moduleEntry();
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    const order = () => [...doc.querySelectorAll(".synthesis-side > section")].map((item: any) => item.id);
+    await until(() => order().length === 1, "Modules, open from the start");
+    assert.deepEqual(order(), ["synthesis-modules"]);
+    assert.equal(doc.querySelector(".synthesis-module-pane"), null, "no list of modules left of the module");
+    ui.click("Diagnostics");
+    await until(() => order().length === 2, "both");
+    assert.deepEqual(order(), ["synthesis-modules", "synthesis-diagnostics"]);
+    assert.ok(doc.querySelector('.synthesis-side > [role="separator"][aria-label="Resize the side panels’ heights"], .synthesis-side > .synthesis-split--row'), "a split between them");
+    assert.ok(doc.querySelector('.synthesis-side > .synthesis-side__resize[role="separator"]'), "the column's width handle");
+    (doc.querySelector('[aria-label="Close modules"]') as any).click();
+    await until(() => order().length === 1, "Modules closed");
+    (doc.querySelector('[aria-controls="synthesis-modules"]') as any).click();
+    await until(() => order().length === 2, "Modules again");
+    assert.deepEqual(order(), ["synthesis-diagnostics", "synthesis-modules"], "opened later: below");
+    assert.equal(ui.dom.window.localStorage.getItem("lcai.synthesis.panels.v1"), '["diagnostics","modules"]');
+  } finally { ui.close(); }
+});
+
+test("runs are deleted from the history after a confirmation, one or all of a module's finished runs", async () => {
+  let runs = [runEntry("first", "unresolved"), { ...runEntry("second", "accepted"), createdAt: "2026-09-28T11:00:00.000Z" }];
+  const deletes: string[] = [];
+  const ui = harness((path, options) => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [moduleEntry()] };
+    if (path === "/synthesis/projects/p1/runs?moduleId=Calculator" && options.method === "DELETE") { deletes.push(path); const deleted = runs.length; runs = []; return { deleted, kept: 0 }; }
+    if (path === "/synthesis/projects/p1/runs") return runs;
+    if (path === "/synthesis/projects/p1/modules/Calculator") return moduleEntry();
+    const run = /^\/synthesis\/runs\/(\w+)$/.exec(path);
+    if (run && options.method === "DELETE") { deletes.push(path); runs = runs.filter(item => item.id !== run[1]); return { ok: true }; }
+    if (run) return runs.find(item => item.id === run[1]) ?? { __status: 404, message: "Synthesis run not found." };
+    throw new Error(`Unexpected request ${path} ${options.method ?? "GET"}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    const items = () => doc.querySelectorAll(".synthesis-run-history .synthesis-run-item").length;
+    await until(() => items() === 2 && ui.text().includes("first activity"), "two runs, the newest open");
+    (doc.querySelectorAll(".synthesis-run-remove")[0] as any).click();
+    await until(() => ui.text().includes("Delete this run from"), "asks first");
+    assert.deepEqual(deletes, []);
+    ui.click("Delete");
+    await until(() => items() === 1, "one left");
+    assert.deepEqual(deletes, ["/synthesis/runs/first"]);
+    await until(() => ui.text().includes("second activity"), "the next run opens");
+    ui.click("Clear");
+    await until(() => ui.text().includes("Delete the finished run of Calculator?"), "Clear asks first");
+    ui.click("Delete run");
+    await until(() => items() === 0 && ui.text().includes("1 run of Calculator deleted."), "history empty");
+    assert.equal(deletes[1], "/synthesis/projects/p1/runs?moduleId=Calculator");
+    assert.equal(doc.querySelector(".synthesis-badge"), null);
+  } finally { ui.close(); }
+});
+
+test("Refresh keeps the screen as it is: the label stays, Run stays usable, and Changes stays while it is read again", async () => {
+  const saved = runEntry("done", "accepted");
+  let diffs = 0;
+  let release!: () => void;
+  const ui = harness(path => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [moduleEntry()] };
+    if (path === "/synthesis/projects/p1/runs") return [saved];
+    if (path === "/synthesis/projects/p1/modules/Calculator") return moduleEntry();
+    if (path === "/synthesis/runs/done") return saved;
+    if (path === "/synthesis/runs/done/diff") {
+      const diff = { files: [{ path: "calc/a.js", before: null, after: "1" }], canApply: false, root: "calc" };
+      return ++diffs === 1 ? diff : new Promise(resolve => { release = () => resolve(diff); });
+    }
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => ui.text().includes("done activity"), "the run");
+    ui.click("Changes");
+    await until(() => Boolean(doc.querySelector(".synthesis-changes")), "Changes");
+    const button = doc.querySelector("button.synthesis-refresh") as any;
+    button.click();
+    await until(() => diffs === 2, "read again");
+    assert.equal(button.textContent, "Refresh");
+    assert.ok(button.classList.contains("is-refreshing"));
+    assert.ok(doc.querySelector(".synthesis-changes"), "the files stay on screen");
+    assert.doesNotMatch(ui.text(), /Loading candidate changes/);
+    const run = [...doc.querySelectorAll("button")].find((item: any) => item.textContent === "Run synthesis") as any;
+    assert.equal(run.disabled, false, "Run is not switched off by a refresh");
+    release();
+    await until(() => !button.classList.contains("is-refreshing"), "the icon stops", 3000);
+  } finally { release?.(); ui.close(); }
 });
