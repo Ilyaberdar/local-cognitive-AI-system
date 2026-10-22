@@ -12,9 +12,12 @@ import { createEgressProxy, EgressProxy } from "../src/synthesis/agents/AgentHtt
 import { AgentTerminal, TerminalHost } from "../src/synthesis/agents/Terminal";
 import { platformSandbox } from "../src/synthesis/checks/sandbox";
 
-// Stage 1 opens terminal egress on macOS (sandbox-exec filters by rule); Linux egress is stage 2 (a
-// user-mode network in the bubblewrap namespace), so these run on macOS with a working sandbox and curl.
-const onDarwin = process.platform === "darwin";
+// Terminal egress: on macOS sandbox-exec opens one loopback port; on Linux bubblewrap keeps a network of
+// its own with only lo, and a forwarder inside bridges 127.0.0.1:3128 to the proxy's socket. These run
+// where the sandbox works and says it can route to the proxy.
+const supported = process.platform === "darwin" || process.platform === "linux";
+const unix = () => platformSandbox().egressTransport === "unix";
+const ready = async () => !await platformSandbox().unavailable() && platformSandbox().egressSupported === true;
 const haveCurl = fsSync.existsSync("/usr/bin/curl");
 const hooks = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
 
@@ -23,14 +26,15 @@ async function upstream(): Promise<{ port: number; close: () => Promise<void> }>
   await new Promise<void>(resolve => srv.listen(0, "127.0.0.1", resolve));
   return { port: (srv.address() as AddressInfo).port, close: () => new Promise(resolve => srv.close(() => resolve())) };
 }
-test("terminal egress: a sandboxed tool reaches an allowed target only through the proxy; direct and off-list are refused", { skip: !(onDarwin && haveCurl) }, async () => {
-  if (await platformSandbox().unavailable()) return;
+test("terminal egress: a sandboxed tool reaches an allowed target only through the proxy; direct and off-list are refused", { skip: !(supported && haveCurl) }, async () => {
+  if (!await ready()) return;
   const up = await upstream();
   const workDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-egress-")));
-  const p = await createEgressProxy({ allow: [`http://local.test:${up.port}`], budget: new RequestBudget(100), hooks });
-  const proxyEnv = { http_proxy: p.url, https_proxy: p.url, HTTP_PROXY: p.url, HTTPS_PROXY: p.url, ALL_PROXY: p.url };
-  const curl = (args: string[], endpoint = p.endpoint, env: NodeJS.ProcessEnv = proxyEnv) => new Promise<{ code: number; stdout: string }>(resolve => {
+  const p = await createEgressProxy({ allow: [`http://local.test:${up.port}`], budget: new RequestBudget(100), hooks, unix: unix() });
+  const curl = (args: string[], endpoint = p.endpoint) => new Promise<{ code: number; stdout: string }>(resolve => {
     const wrapped = platformSandbox().wrap("/usr/bin/curl", args, workDir, [], endpoint);
+    const url = wrapped.proxyUrl!;
+    const env = { http_proxy: url, https_proxy: url, HTTP_PROXY: url, HTTPS_PROXY: url, ALL_PROXY: url };
     execFile(wrapped.executable, wrapped.args, { cwd: workDir, env: { ...wrapped.env, ...env }, timeout: 15_000 },
       (error, stdout) => resolve({ code: (error as NodeJS.ErrnoException & { code?: number })?.code ? Number((error as { code?: number }).code) : 0, stdout: String(stdout) }));
   });
@@ -48,13 +52,13 @@ test("terminal egress: a sandboxed tool reaches an allowed target only through t
   } finally { await p.close(); await up.close(); await fs.rm(workDir, { recursive: true, force: true }); }
 });
 
-test("terminal egress: the proxy env is set for an agent with web targets and absent for one without", { skip: !onDarwin }, async () => {
-  if (await platformSandbox().unavailable()) return;
+test("terminal egress: the proxy env is set for an agent with web targets and absent for one without", { skip: !supported }, async () => {
+  if (!await ready()) return;
   const started: EgressProxy[] = [];
   const host: TerminalHost = {
     sandbox: platformSandbox(), git: false,
     workRoot: await fs.mkdtemp(path.join(os.tmpdir(), "lcai-egress-work-")),
-    egress: async allow => { const p = await createEgressProxy({ allow, budget: new RequestBudget(100), hooks }); started.push(p); return p; }
+    egress: async allow => { const p = await createEgressProxy({ allow, budget: new RequestBudget(100), hooks, unix: unix() }); started.push(p); return p; }
   };
   const view = { root: await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-egress-root-"))), readable: async () => [], content: async () => null, candidate: () => ({ files: {}, removed: [] }) };
   const print = 'console.log("PROXY=" + (process.env.HTTP_PROXY || "none"))';

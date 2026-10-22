@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { allowed, defaultHooks, parseTarget, resolveAndPin, type Hooks, type RequestBudget, type Target } from "./AgentHttp";
 
 /** A loopback HTTP(S) proxy a sandboxed terminal is pointed at, so a real tool (curl, a scanner) reaches
@@ -9,7 +12,9 @@ import { allowed, defaultHooks, parseTarget, resolveAndPin, type Hooks, type Req
  * the proxy cannot see, so https is allowed by host and port only (the connection is tunnelled, never
  * decrypted). Every target is resolved, block-checked and pinned, so a name cannot rebind to a private
  * address through the proxy. Nothing of the app's own identity is added; the tool sends its own headers. */
-export interface EgressProxy { url: string; endpoint: { host: string; port: number }; close(): Promise<void> }
+export interface EgressProxy { url: string; endpoint: { host: string; port: number; socketPath?: string }; close(): Promise<void> }
+/** The longest UNIX socket path every platform takes (sun_path is 104 or 108 bytes). */
+const MAX_SOCKET_PATH = 100;
 export interface EgressOptions {
   /** The agent's web targets (a subset of what the project allows). */
   allow: readonly string[];
@@ -21,6 +26,10 @@ export interface EgressOptions {
   hooks?: Partial<Hooks>;
   /** How often an open tunnel re-asks consent (default 15 s); a test seam to exercise the teardown. */
   recheckMs?: number;
+  /** Listen on a UNIX socket (proxy.sock, alone in a new folder only this user may open) instead of a
+   * loopback port: a Linux sandbox has a network of its own with nothing in it, and reaches the proxy
+   * only through this socket, bound into it read-only. */
+  unix?: boolean;
 }
 
 /** Headers the proxy never forwards: the hop's own, and any that would carry proxy credentials onward. */
@@ -105,6 +114,25 @@ export async function createEgressProxy(options: EgressOptions): Promise<EgressP
   server.on("connect", (req, socket, head) => void handleConnect(req, socket as net.Socket, head));
   // A malformed request from a tool closes its own socket, never the engine's process.
   server.on("clientError", (_error, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
+  if (options.unix) {
+    // mkdtemp makes the folder 0700: only this user (the server's) may connect to the socket in it.
+    const folder = await fs.mkdtemp(path.join(os.tmpdir(), "lce-"));
+    const socketPath = path.join(folder, "proxy.sock");
+    try {
+      if (Buffer.byteLength(socketPath) >= MAX_SOCKET_PATH) throw new Error(`The egress proxy's socket path is too long (${socketPath}).`);
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+      await fs.chmod(socketPath, 0o600);
+    } catch (error) {
+      server.close();
+      await fs.rm(folder, { recursive: true, force: true });
+      throw error;
+    }
+    return {
+      url: `unix:${socketPath}`,
+      endpoint: { host: "127.0.0.1", port: 0, socketPath },
+      close: () => new Promise<void>(resolve => server.close(() => resolve())).then(() => fs.rm(folder, { recursive: true, force: true }))
+    };
+  }
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const port = (server.address() as net.AddressInfo).port;
   return {

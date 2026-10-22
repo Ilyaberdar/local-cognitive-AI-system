@@ -41,8 +41,7 @@ export interface TerminalHost {
 
 /** The proxy env a sandboxed tool reads to send its web requests through the egress proxy and nowhere
  * else (curl, git and python honour different casings; nothing is exempted). */
-const proxyEnv = (endpoint: { host: string; port: number }): Record<string, string> => {
-  const url = `http://${endpoint.host}:${endpoint.port}`;
+const proxyEnv = (url: string): Record<string, string> => {
   return { HTTP_PROXY: url, HTTPS_PROXY: url, ALL_PROXY: url, http_proxy: url, https_proxy: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 };
 
@@ -169,7 +168,7 @@ export class AgentTerminal {
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
       // npm's scripts start under an absolute /bin/sh: looking sh up through the node_modules/.bin of every
       // parent folder (which the macOS sandbox refuses with EPERM, ending the search) would fail them.
-      { env: { ...wrapped.env, ...(proxy ? proxyEnv(proxy.endpoint) : {}), ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
+      { env: { ...wrapped.env, ...(proxy && wrapped.proxyUrl ? proxyEnv(wrapped.proxyUrl) : {}), ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
     const status = done.exec(result.stdout);
     const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
     return { exitCode: status ? Number(status[1]) : result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout.replace(done, "\n"))), stderr: clip(hide(result.stderr)) };

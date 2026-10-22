@@ -39,9 +39,11 @@ export interface CheckFiles {
   suite: Record<string, string>;
 }
 
-/** A single loopback endpoint a sandboxed command may be let out to (an egress proxy): the sandbox's
- * only way to the network, so the proxy, not the tool, enforces where it may go. */
-export interface EgressEndpoint { host: string; port: number }
+/** A single endpoint a sandboxed command may be let out to (an egress proxy): the sandbox's only way to
+ * the network, so the proxy, not the tool, enforces where it may go. On macOS it is a loopback port; on
+ * Linux the proxy listens on a UNIX socket (`socketPath`, named proxy.sock in a folder of its own), which
+ * the sandbox sees read-only and reaches from a network of its own that has nothing else. */
+export interface EgressEndpoint { host: string; port: number; socketPath?: string }
 
 /** Runs a command in a sandbox: no network, writes only inside the work folder, nothing from the
  * user's home or the app's data. `unavailable` says why it cannot run here (the check is then Unknown).
@@ -49,8 +51,11 @@ export interface EgressEndpoint { host: string; port: number }
 export interface SandboxProvider {
   name: string;
   unavailable(): Promise<string | undefined>;
-  wrap(executable: string, args: string[], workDir: string, readable: string[], egress?: EgressEndpoint): { executable: string; args: string[]; env: NodeJS.ProcessEnv };
-  /** Whether a sandboxed command can be let out to one loopback proxy (and nothing else) on this
-   * platform. When absent or false, a terminal runs with no network, as before, even with the http right. */
+  /** `proxyUrl`: where the command sends its web requests, set only when `egress` was wired in. */
+  wrap(executable: string, args: string[], workDir: string, readable: string[], egress?: EgressEndpoint): { executable: string; args: string[]; env: NodeJS.ProcessEnv; proxyUrl?: string };
+  /** Whether a sandboxed command can be let out to one proxy (and nothing else) on this platform. When
+   * absent or false, a terminal runs with no network, as before, even with the http right. */
   egressSupported?: boolean;
+  /** How the proxy is reached: a loopback port (macOS) or a UNIX socket (Linux). */
+  egressTransport?: "tcp" | "unix";
 }

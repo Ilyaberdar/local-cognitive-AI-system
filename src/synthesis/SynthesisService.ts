@@ -745,7 +745,7 @@ export class SynthesisService {
               // An agent with both a terminal and the http right reaches its web targets through a loopback
               // proxy, when the sandbox can route to one; it enforces the same allowlist, consent and budget.
               ...(wanted.length && sandbox.egressSupported && httpBudget && consent
-                ? {egress: (allow: readonly string[]) => createEgressProxy({allow, budget: httpBudget!, consent: consent!})} : {})},
+                ? {egress: (allow: readonly string[]) => createEgressProxy({allow, budget: httpBudget!, consent: consent!, unix: sandbox.egressTransport === "unix"})} : {})},
             admit: async spec => { await this.provider(record, spec.model.providerId); },
             update: current => { record.agentRuns = [...earlier, ...current]; record.agents = counts(record.agentRuns); saveSoon(); }});
           for (const summary of summaries) { record.usage.calls += summary.steps; record.usage.inputTokens += summary.inputTokens; record.usage.outputTokens += summary.outputTokens; }
