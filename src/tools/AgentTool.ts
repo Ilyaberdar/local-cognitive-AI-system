@@ -71,7 +71,10 @@ export function parseAgentAction(value: unknown): AgentAction {
     throw new Error(`${tool} requires arguments.expectedVersion. For a NEW file pass the exact string "missing". For an existing file, read it first and copy its returned version. No action was executed.`);
   }
   const args = { ...shape.arguments };
-  for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) if (args[key] === null && field.isOptional()) delete args[key];
+  // An optional argument left null, or empty where empty is never valid (a search's path ""), takes its default.
+  for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) {
+    if (field.isOptional() && (args[key] === null || args[key] === "" && !field.safeParse("").success)) delete args[key];
+  }
   return { tool, arguments: checked(agentToolSchemas[tool] as z.ZodType<Record<string, unknown>>, args, "arguments") };
 }
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.

@@ -10,6 +10,7 @@ import { ExecutionContext, LLMRequest, ProcessProgressEvent } from "../src/types
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
 import { LLMService } from "../src/llm/LLMService";
 import { escapeControlCharacters, firstJsonDocument, jsonObjectSequence } from "../src/llm/StructuredOutput";
+import { parseAgentAction } from "../src/tools/AgentTool";
 import { LLMRegistry } from "../src/llm/LLMRegistry";
 import { OutputSanitizer } from "../src/llm/OutputSanitizer";
 import { Logger } from "../src/utils/Logger";
@@ -684,4 +685,12 @@ test("an action names its tool in its type, a reply of bare arguments hears whic
   assert.doesNotMatch(prompts[3]!, /DSML/, "the markup is not shown back as the reply");
   assert.match(prompts[4]!, /Expected type tool_call/, "a type that names no tool is still refused");
   assert.match(prompts[5]!, /Expected type tool_call/, "a type and a tool that disagree are refused, never guessed");
+});
+
+// gpt-5.4-nano through Perplexity's strict function tools sent file.search with "path":"" for the folder it may leave out.
+test("an optional argument left empty where empty is never valid takes its default; a required one is still refused", () => {
+  assert.deepEqual(parseAgentAction({ tool: "file.search", arguments: { path: "", query: "Checkouts.ts", include: ["Checkouts.ts"] } }).arguments.path, ".");
+  assert.deepEqual(parseAgentAction({ tool: "file.list", arguments: { path: null } }).arguments.path, ".");
+  assert.throws(() => parseAgentAction({ tool: "file.read", arguments: { path: "" } }), /arguments\.path/);
+  assert.equal(parseAgentAction({ tool: "http.request", arguments: { url: "https://a.example/x", body: "" } }).arguments.body, "", "an empty body is a body");
 });
