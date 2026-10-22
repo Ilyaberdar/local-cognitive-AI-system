@@ -8,7 +8,7 @@ import { LLMService } from "../../llm/LLMService";
 import { firstJsonDocument } from "../../llm/StructuredOutput";
 import { ExecutionContext, LLMImage, LLMRequest, LLMResponse, PendingApproval, ProviderTarget, TokenUsage, ToolExecutionResult } from "../../types";
 import { OperationExecutor } from "../../tools/OperationExecutor";
-import { agentActionFormat,agentFunctionTools,agentToolInstructions,parseAgentAction,readTool } from "../../tools/AgentTool";
+import { agentActionFormat,agentFunctionTools,agentToolInstructions,bareArgumentsError,parseAgentAction,readTool,toolByName } from "../../tools/AgentTool";
 import { withFileLock } from "../../utils/fileStore";
 import { AgentRun,AgentRunStore } from "./AgentRunStore";
 import { AgentLimits, normalizeAgentLimits, restrictAgentLimits } from "./AgentLimits";
@@ -215,7 +215,7 @@ export class AgentLoopRunner {
       }
       try{
         if(response.protocolError)throw new Error(response.protocolError);
-        const first=response.agentAction?{value:response.agentAction,more:0}:firstJsonDocument(response.text);
+        const first:{value:unknown;more:number;note?:string}=response.agentAction?{value:response.agentAction,more:0}:firstJsonDocument(response.text);
         const parsed=first.value as Record<string,unknown>;
         const data=parsed&&typeof parsed==="object"&&Object.keys(parsed).length===1&&"action" in parsed?parsed.action as Record<string,unknown>:parsed;
         if(!data||typeof data!=="object")throw new Error("Return one JSON object with type tool_call or final.");
@@ -227,6 +227,12 @@ export class AgentLoopRunner {
         if(finalOnly)throw new Error("The final turn is reserved for an answer. No further tool action was executed.");
         // {"tool":…,"arguments":…} without its type is a tool call all the same (DeepSeek leaves the type out now and then).
         if(data.type===undefined&&typeof data.tool==="string")data.type="tool_call";
+        // {"type":"file.read","arguments":…} names its tool in the type (gpt-5.4-nano, also with the same "tool" beside it).
+        const typed=data.type!=="tool_call"?toolByName(data.type):undefined;
+        if(typed&&(data.tool===undefined||toolByName(data.tool)===typed)){data.type="tool_call";data.tool=typed;}
+        // Only the arguments, with neither type nor tool: refused with the tools they fit.
+        const bare=data.type===undefined&&data.tool===undefined&&data.arguments===undefined?bareArgumentsError(data):undefined;
+        if(bare)throw bare;
         if(data.type!=="tool_call"||Object.keys(data).some(key=>!["type","tool","arguments"].includes(key)))throw new Error("Expected type tool_call, tool and arguments, or type final and text.");
         const action=parseAgentAction({tool:data.tool,arguments:data.arguments});
         if (!allowedTools.has(action.tool)) throw new Error("This tool is not available in this context.");
@@ -243,6 +249,7 @@ export class AgentLoopRunner {
         run.pending={action,id:randomUUID(),callId:response.toolCallId,outputItems:response.outputItems,...(skipped?.length&&response.outputItems?{skippedCallIds:skipped}:{})};
         // Several actions in one reply: the first runs, as it would have alone, and the model hears why the others did not.
         if(first.more)run.turns.push({type:"format_error",content:`Your reply held ${first.more+1} JSON objects; only the first was taken, and it runs now. Send exactly one per turn: its TOOL RESULT comes back before your next.`});
+        if(first.note)run.turns.push({type:"format_error",content:first.note});
         if(response.extraCalls?.count)run.turns.push({type:"format_error",content:`Your reply held ${response.extraCalls.count+1} function calls; only the first runs now. Make one call per turn: its result comes back before your next.`});
         run.turns.push({type:"tool",content:serialized,...(response.toolCallId&&response.outputItems?{callId:response.toolCallId}:{})});
         await this.store.save(run);

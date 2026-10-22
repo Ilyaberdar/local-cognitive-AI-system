@@ -9,7 +9,7 @@ import { OperationExecutor } from "../src/tools/OperationExecutor";
 import { ExecutionContext, LLMRequest, ProcessProgressEvent } from "../src/types";
 import { SessionSettingsStore } from "../src/session/SessionSettingsStore";
 import { LLMService } from "../src/llm/LLMService";
-import { jsonObjectSequence } from "../src/llm/StructuredOutput";
+import { escapeControlCharacters, firstJsonDocument, jsonObjectSequence } from "../src/llm/StructuredOutput";
 import { LLMRegistry } from "../src/llm/LLMRegistry";
 import { OutputSanitizer } from "../src/llm/OutputSanitizer";
 import { Logger } from "../src/utils/Logger";
@@ -616,4 +616,72 @@ for (const error of [
   assert.match(result.text, /completed operation.*preserved in the run trace/);
   assert.doesNotMatch(result.text, /Verified result 42/);
   await assert.rejects(fs.stat(path.join(f.work, "must-not-execute.txt")), { code: "ENOENT" });
+});
+
+/** The agent loop over a real LLMService, whose provider answers these texts in turn. */
+function replying(texts: string[]) {
+  const registry = new LLMRegistry(); const prompts: string[] = [];
+  registry.register({ id: "fixture", name: "Fixture", defaultModel: "test", isConfigured: () => true,
+    getDescriptor: () => ({ id: "fixture", name: "Fixture", defaultModel: "test", configured: true }),
+    generateText: async request => { prompts.push(request.prompt); const text = texts.shift(); assert.ok(text !== undefined, "Unexpected model call"); return { provider: "fixture", model: "test", text }; } });
+  return { llm: new LLMService(registry, "fixture", new Logger(), new OutputSanitizer()), prompts };
+}
+const read = (file: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "tool_call", tool: "file.read", arguments: { path: file, ...extra } });
+
+// Real replies of openai/gpt-5.4-nano through Perplexity in JSON: its action, stray closers, then the action again.
+test("a tool call followed only by stray closers, or by them and the very same call again, runs once and the model hears why", async t => {
+  for (const [index, text] of [`${read("a.txt")}}{"type":"tool_call","tool":"file.read","arguments":{"path":"a.txt"}}`, `${read("a.txt")}]}${read("a.txt")}`,
+    `${read("a.txt", { startLine: 1, endLine: 3 })}"}${read("a.txt", { startLine: 1, endLine: 3 })}`, `${read("a.txt")}}}`].entries()) {
+    const f = await fixture(t);
+    await fs.writeFile(path.join(f.work, "a.txt"), "alpha");
+    const { llm, prompts } = replying([text, JSON.stringify({ type: "final", text: "Read alpha." })]);
+    const result = await new AgentLoopRunner(llm, f.operations, f.root).run({ id: `stray-${index}`, input: "Read a.txt", instructions: "", context: f.context, target: f.context.activeTarget });
+    assert.equal(result.error, undefined, text);
+    assert.equal(result.tools.length, 1, text);
+    assert.match(prompts[1]!, index === 3 ? /stray closing brackets after its JSON object; the object was taken/ : /wrote its JSON object twice, with stray closing brackets; it was taken once/, text);
+    const run = (await new AgentLoopRunner(llm, f.operations, f.root).store.get(`stray-${index}`))!;
+    assert.equal(run.repairs, 0, text);
+  }
+});
+
+test("only stray closers or the same object are tolerated: another action, prose, or a final followed by anything are refused", () => {
+  const a = read("a.txt");
+  assert.deepEqual(firstJsonDocument(`${a}}}`), { value: JSON.parse(a), more: 0, note: "Your reply had stray closing brackets after its JSON object; the object was taken and runs now. Send only the one object, with its brackets balanced." });
+  // The same object with its keys in another order is the same action.
+  assert.equal(firstJsonDocument(`${a}}{"arguments":{"path":"a.txt"},"tool":"file.read","type":"tool_call"}`).note?.startsWith("Your reply wrote its JSON object twice"), true);
+  for (const text of [`${a}}${read("b.txt")}`, `${a}}}{"type":"tool_call"`, `${a}}} and more`, `${a}\n\n---\n\nI need to keep going with tools.`, `${a}}${a}}${a}`,
+    `{"type":"final","text":"Done."}}}`, `{"type":"final","text":"Done."}"}{"type":"final","text":"Done."}`, `{"action":{"type":"final","text":"Done."}}]}`]) {
+    assert.throws(() => firstJsonDocument(text), /went on after its JSON object, so nothing ran/, text);
+  }
+});
+
+// Gemini (through Perplexity) wrote its final answer's Markdown with raw line breaks inside the JSON string.
+test("raw line breaks inside a JSON string are read as the line breaks they are, and nothing outside strings changes", () => {
+  const raw = '{"type":"final","text":"# Review\n\n- src/synthesis/paths.ts:13 throws\tSynthesisError"}'.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+  assert.throws(() => JSON.parse(raw));
+  assert.deepEqual(firstJsonDocument(raw).value, { type: "final", text: "# Review\n\n- src/synthesis/paths.ts:13 throws\tSynthesisError" });
+  const valid = '{\n  "a": "x\\ny",\n  "b": "\\"q\\""\n}';
+  assert.equal(escapeControlCharacters(valid), valid);
+  assert.equal(escapeControlCharacters('{"a":"\u0001"}'), '{"a":"\\u0001"}');
+});
+
+test("an action names its tool in its type, a reply of bare arguments hears which tools they fit, and DeepSeek's DSML closers are not part of a reply", async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.work, "a.txt"), "alpha");
+  // gpt-5.4-nano: {"type":"file.read",…}, with and without the same "tool" beside it.
+  const { llm, prompts } = replying([
+    '{"type":"file.read","arguments":{"path":"a.txt","startLine":1,"endLine":120}}',
+    '{"type":"file_list","tool":"file.list","arguments":{"path":"."}}',
+    // DeepSeek: only the arguments, then its tool-call markup's closers.
+    '{"path": ".", "query": "alpha", "include": ["*.txt"]}</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>',
+    '{"type":"tool_search","arguments":{"query":"alpha","path":"."}}',
+    '{"type":"file.read","tool":"file.write","arguments":{"path":"a.txt"}}',
+    JSON.stringify({ type: "final", text: "Read alpha." })]);
+  const result = await new AgentLoopRunner(llm, f.operations, f.root).run({ id: "named-types", input: "Read a.txt", instructions: "", context: f.context, target: f.context.activeTarget });
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.tools.map(tool => tool.metadata?.operation), ["read", "list"]);
+  assert.match(prompts[3]!, /only a tool's arguments, with no "type" and "tool", so nothing ran.*fit file\.search/);
+  assert.doesNotMatch(prompts[3]!, /DSML/, "the markup is not shown back as the reply");
+  assert.match(prompts[4]!, /Expected type tool_call/, "a type that names no tool is still refused");
+  assert.match(prompts[5]!, /Expected type tool_call/, "a type and a tool that disagree are refused, never guessed");
 });
