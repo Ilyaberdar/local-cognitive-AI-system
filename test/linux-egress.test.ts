@@ -28,6 +28,9 @@ test("Linux web access keeps bubblewrap's own network: the proxy's socket is bou
     const at = web.indexOf("/run/lc-egress");
     assert.deepEqual(web.slice(at - 2, at + 1), ["--ro-bind", socketDir, "/run/lc-egress"], "the socket's folder, read-only");
     assert.equal(web.filter(item => item === "/run/lc-egress").length, 1);
+    for (const ca of ["/etc/pki/tls/certs", "/etc/ssl/certs"]) assert.equal(web[web.indexOf(ca) - 1], "--ro-bind-try", `the certificate authorities in ${ca}, read-only`);
+    assert.equal(web.some(item => /^\/etc\/(?:ssl|pki\/tls)\/private/.test(item)), false, "never a private key folder");
+    assert.equal(plain.includes("/etc/ssl/certs"), false, "without the web, no certificates are needed");
     const node = web.indexOf(runtimeDir);
     assert.equal(web[node - 1], "--ro-bind", "the forwarder's runtime, read-only");
     const command = web.slice(web.indexOf("--", web.indexOf("--chdir")) + 1);

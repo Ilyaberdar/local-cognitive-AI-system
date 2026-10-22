@@ -274,6 +274,9 @@ const linux: SandboxProvider = {
   egressTransport: "unix"
 };
 
+/** Where Linux distributions keep the trusted certificate authorities (Fedora and RHEL, Debian and Ubuntu,
+ * openSUSE, Alpine): the bundles and certificate folders OpenSSL, curl and Python read by default. */
+const CA_PATHS = ["/etc/pki/tls/certs", "/etc/pki/tls/cert.pem", "/etc/pki/ca-trust/extracted", "/etc/ssl/certs", "/etc/ssl/cert.pem", "/etc/ca-certificates", "/var/lib/ca-certificates"];
 /** Inside a Linux sandbox: where the proxy's socket folder is seen (read-only), and the loopback port the
  * forwarder listens on for the command's tools. */
 const EGRESS_DIR = "/run/lc-egress", EGRESS_PORT = 3128, EGRESS_URL = `http://127.0.0.1:${EGRESS_PORT}`;
@@ -330,7 +333,9 @@ export function bwrapArgs(executable: string, args: string[], workDir: string, r
   const folders = [...readable, ...(egress ? [path.dirname(egress.runtime)] : [])];
   const binds = [...new Set(folders.flatMap(dir => [path.resolve(dir), real(dir)]))]
     .filter(dir => !inside(dir, "/usr") && openable(dir) && fs.existsSync(dir)).flatMap(dir => ["--ro-bind", dir, dir]);
-  const web = egress ? ["--ro-bind", egress.socketDir, EGRESS_DIR] : [];
+  // With the web, the system's trusted certificate authorities (only those: never /etc/ssl/private), so
+  // a tool's https through the proxy can verify the server it reaches.
+  const web = egress ? ["--ro-bind", egress.socketDir, EGRESS_DIR, ...CA_PATHS.flatMap(file => ["--ro-bind-try", file, file])] : [];
   const command = egress ? ["/bin/sh", "-c", EGRESS_BOOT, "sh", executable, ...args] : [executable, ...args];
   return [...bwrapBase(), ...(noNestedUserns ? NO_NESTED_USERNS : []), ...binds, ...web, "--bind", work, work, "--chdir", work, "--", ...command];
 }
