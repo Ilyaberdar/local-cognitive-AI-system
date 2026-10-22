@@ -824,3 +824,22 @@ test("a run waiting for its local model says so; a running step shows its time a
     assert.ok(verdicts.some(text => /^artifactsFail/.test(text)));
   } finally { ui.close(); }
 });
+
+test("a run started elsewhere (another window, a paired device, MCP) joins the open history and opens", async () => {
+  const current = moduleEntry();
+  let runs: any[] = [];
+  const later = { ...runEntry("elsewhere", "running"), events: [{ sequence: 1, at: new Date().toISOString(), step: "agent.generate", message: "Writing calculator.js", iteration: 1, status: "running" }] };
+  const ui = harness((path) => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [current] };
+    if (path === "/synthesis/projects/p1/runs") return runs;
+    if (path === "/synthesis/projects/p1/modules/Calculator") return current;
+    if (path === "/synthesis/runs/elsewhere") return later;
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    await until(() => ui.text().includes("Runs for this module appear here."), "an empty history");
+    runs = [later];
+    await until(() => ui.text().includes("Writing calculator.js"), "the new run, opened", 12_000);
+    assert.equal(ui.dom.window.document.querySelectorAll(".synthesis-run-history > button").length, 1);
+  } finally { ui.close(); }
+});

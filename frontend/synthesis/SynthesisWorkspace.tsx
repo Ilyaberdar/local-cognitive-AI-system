@@ -136,6 +136,19 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     return () => controller.abort();
   }, [projectId, active, revision]);
 
+  // Runs started elsewhere (another window, a paired device, MCP) join the history while it is open;
+  // a run's own poll below keeps the selected one current.
+  useEffect(() => {
+    if (!active || !projectId) return;
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      request<SynthesisRun[]>(`/projects/${encode(projectId)}/runs`, { signal: controller.signal })
+        .then(list => { if (!controller.signal.aborted) setRuns(current => list.map(item => ({ ...current.find(known => known.id === item.id), ...item }))); })
+        .catch(() => { /* The next tick tries again; a lasting failure shows on the run's own poll. */ });
+    }, 5000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [projectId, active]);
+
   useEffect(() => {
     setModule(null); setRunId(""); setRun(null); setDiff(null);
     setSourceOrigin("project"); setRunSources(null); setSourceError("");
