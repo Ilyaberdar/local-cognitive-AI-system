@@ -95,6 +95,7 @@ html[data-motion="off"] .synthesis-refresh.is-refreshing .synthesis-icon { anima
 .synthesis-runs { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .synthesis-runs > header { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 2px 6px 10px; }
 .synthesis-runs h3 { margin: 0; font-size: var(--text-caption); font-weight: 550; white-space: nowrap; }
+.synthesis-runs h3:focus { outline: none; }
 .synthesis-runs > header > span { flex: 1; min-width: 0; overflow: hidden; color: var(--faint); font-size: calc(11px * var(--font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
 .synthesis-workspace .synthesis-runs__clear { margin-left: auto; min-height: 26px; padding: 2px 8px; border-color: transparent; background: transparent; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
 /* Each run keeps its own height: a long history scrolls in the panel, it never squeezes a row. */
@@ -140,7 +141,8 @@ html[data-motion="off"] .synthesis-refresh.is-refreshing .synthesis-icon { anima
 .synthesis-source__line.is-error .synthesis-source__number { color: var(--danger); }
 .synthesis-source__line.is-warning .synthesis-source__number { color: var(--warning); }
 /* The editor: a text area over the highlighted lines, at the same metrics; the lines follow its scroll. */
-.synthesis-editor { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.synthesis-editor { position: relative; flex: 1; min-height: 96px; overflow: hidden; }
+.synthesis-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .synthesis-editor__layer { position: absolute; top: 0; left: 0; min-width: 100%; pointer-events: none; will-change: transform; }
 .synthesis-workspace textarea.synthesis-editor__input { position: absolute; inset: 0; box-sizing: border-box; width: 100%; height: 100%; margin: 0; padding: 14px 16px 20px 46px; border: 0; border-radius: 0; outline: none; box-shadow: none; resize: none; overflow: auto;
   background: transparent; color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--text); font: var(--code-font-size, 12px)/1.8 var(--font-mono); letter-spacing: normal; font-variant-ligatures: none; tab-size: 2; white-space: pre; overflow-wrap: normal; }

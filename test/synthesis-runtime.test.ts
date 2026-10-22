@@ -865,3 +865,36 @@ test("the app's API saves a module's file and deletes runs only for this applica
   const cleared = await send("DELETE", `/projects/${f.project.id}/runs?moduleId=Calculator`);
   assert.deepEqual(await cleared.json(), { deleted: 1, kept: 0 });
 });
+
+test("Apply and Delete of one run never overlap: whichever comes second is refused, and a deleted run is never written back", async (t) => {
+  const f = await fixture(t);
+  const first = await f.run(), second = await f.run();
+  assert.equal(first.status, "accepted", first.error);
+  // Apply first: Delete, asked at once, refuses the run being applied.
+  const applying = f.service.apply(first.id);
+  await assert.rejects(f.service.remove(first.id), (error: any) => error.statusCode === 409 && /being applied/.test(error.message));
+  await applying;
+  assert.ok((await f.service.get(first.id)).appliedAt);
+  // Asked together: one of them goes on and the other is refused, never both.
+  const removing = f.service.remove(second.id).then(() => "deleted", (error: any) => error.statusCode === 409 ? "refused" : Promise.reject(error));
+  const applied = f.service.apply(second.id).then(() => "applied", (error: any) => error.statusCode === 404 ? "no run" : "apply refused");
+  const [removal, application] = await Promise.all([removing, applied]);
+  if (removal === "deleted") assert.equal(application, "no run");
+  else assert.notEqual(application, "no run");
+  // Deleted: Apply and the check after a restart find no run, and nothing writes its record again.
+  const third = await f.run();
+  await f.service.remove(third.id);
+  await assert.rejects(f.service.apply(third.id), (error: any) => error.statusCode === 404);
+  await assert.rejects(f.service.applyOutcome(third.id), (error: any) => error.statusCode === 404);
+  await assert.rejects(fs.access(path.join(f.data, "synthesis", "runs", `${third.id}.json`)), { code: "ENOENT" });
+});
+
+test("a module whose contract is missing still shows its flow as it is on disk, so the editor never offers an empty one", async (t) => {
+  const f = await fixture(t);
+  await fs.rm(path.join(f.root, f.module.specPath));
+  const module = await f.service.module(f.project.id, "Calculator");
+  assert.equal(module.valid, false);
+  assert.equal(module.specSource, "");
+  assert.equal(module.flowSource, f.module.flowSource, "the flow is read although the contract is not");
+  assert.deepEqual(module.diagnostics.map(item => [item.code, item.file]), [["SOURCE_READ", f.module.specPath]]);
+});

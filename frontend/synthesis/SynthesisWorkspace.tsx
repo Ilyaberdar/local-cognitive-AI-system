@@ -18,6 +18,10 @@ type SourceTab = "contract" | "flow" | "agents" | "changes";
 type SourceFile = "spec" | "flow";
 /** The panels beside the module, in the order they were opened (the later one below). */
 type Panel = "modules" | "diagnostics";
+/** An edit not saved yet: its text, and the file's text as read when the edit began (what Save expects on disk). */
+type Draft = { text: string; base: string };
+/** This computer's API says 404; a server's operation, not_found. */
+const missing = (reason: unknown) => (reason instanceof RequestError && reason.status === 404) || (reason as { code?: unknown } | null)?.code === "not_found";
 // Each machine keeps its own view preferences (a server's screen passes its key).
 const projectKey = (machine = "") => `lcai.synthesis.project.v1${machine ? `:${machine}` : ""}`;
 const hiddenModulesKey = (machine = "") => `lcai.synthesis.hiddenModules.v1${machine ? `:${machine}` : ""}`;
@@ -69,7 +73,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const [focusPanel, setFocusPanel] = useState<Panel | null>(null);
   const [creatingModule, setCreatingModule] = useState(false);
   /** Edits of a module's contract and flow not saved yet, by project, module and file. */
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   /** A save the file refused: it was changed elsewhere since the editor read it. */
   const [conflict, setConflict] = useState<{ key: string; message: string } | null>(null);
   const [reveal, setReveal] = useState<{ file: SourceFile; line: number; key: number } | undefined>();
@@ -82,6 +86,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const triggers = { modules: useRef<HTMLButtonElement>(null), diagnostics: useRef<HTMLButtonElement>(null) };
   const selection = useRef({ projectId, moduleId, runId });
   selection.current = { projectId, moduleId, runId };
+  const selectedStatus = useRef<string | undefined>(undefined);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
   /** Runs deleted here: a list read before the deletion does not bring them back. */
@@ -89,6 +94,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const kept = (list: SynthesisRun[]) => list.filter(item => !deletedRuns.current.has(item.id));
   const project = availableProjects.find(item => item.id === projectId);
   const running = Boolean(run && activeStatuses.has(run.status));
+  selectedStatus.current = run?.id === runId ? run?.status : undefined;
   const moduleRuns = runs.filter(item => item.moduleId === moduleId);
   const sourceTab = tab === "contract" || tab === "flow";
   const sourceFile: SourceFile = tab === "flow" ? "flow" : "spec";
@@ -97,8 +103,9 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const diagnostics = diagnosticSummary(module);
 
   const draftKey = (file: SourceFile) => `${projectId}\n${moduleId}\n${file}`;
-  const savedSource = (file: SourceFile) => normalizeLines((file === "spec" ? module?.specSource : module?.flowSource) ?? "");
-  const dirty = (file: SourceFile) => drafts[draftKey(file)] !== undefined && drafts[draftKey(file)] !== savedSource(file);
+  const rawSource = (file: SourceFile) => (file === "spec" ? module?.specSource : module?.flowSource) ?? "";
+  const savedSource = (file: SourceFile) => normalizeLines(rawSource(file));
+  const dirty = (file: SourceFile) => drafts[draftKey(file)] !== undefined && drafts[draftKey(file)]!.text !== savedSource(file);
   const unsaved = Boolean(module) && (dirty("spec") || dirty("flow"));
   // The project's own files are edited here; a run's snapshot and a server's files are only read.
   const editable = Boolean(module) && !remote && (sourceOrigin === "project" || !run);
@@ -200,7 +207,13 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     const controller = new AbortController();
     const timer = setInterval(() => {
       request<SynthesisRun[]>(`/projects/${encode(projectId)}/runs`, { signal: controller.signal })
-        .then(list => { if (!controller.signal.aborted) setRuns(current => kept(list).map(item => ({ ...current.find(known => known.id === item.id), ...item }))); })
+        .then(list => {
+          if (controller.signal.aborted) return;
+          setRuns(current => kept(list).map(item => ({ ...current.find(known => known.id === item.id), ...item })));
+          // The open run was deleted elsewhere. One still going is kept: it may be newer than the list.
+          const open = selection.current.runId;
+          if (open && !list.some(item => item.id === open) && selectedStatus.current && !activeStatuses.has(selectedStatus.current)) forget([open]);
+        })
         .catch(() => { /* The next tick tries again; a lasting failure shows on the run's own poll. */ });
     }, 5000);
     return () => { controller.abort(); clearInterval(timer); };
@@ -221,6 +234,15 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   useEffect(() => {
     if (moduleId && !runId && moduleRuns.length) setRunId(moduleRuns[0].id);
   }, [moduleId, runId, runs]);
+  // The file changed on disk (the IDE, Apply) while it is being edited here: say so now, not at Save.
+  useEffect(() => {
+    if (!module || module.id !== moduleId) return;
+    for (const file of ["spec", "flow"] as const) {
+      const key = draftKey(file), draft = drafts[key];
+      if (draft && draft.base !== rawSource(file)) setConflict(current => current?.key === key ? current
+        : { key, message: `${(file === "spec" ? module.specPath : module.flowPath) ?? "The file"} changed on disk since you began editing it here. Reload it from disk, or replace it with your version.` });
+    }
+  }, [module]);
 
   useEffect(() => {
     if (!runId || !active || busy) return;
@@ -236,6 +258,8 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
         setRuns(current => [result, ...current.filter(item => item.id !== result.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
         shouldContinue = activeStatuses.has(result.status);
       } catch (reason) {
+        // Deleted elsewhere (another window, the server's owner): it leaves the history.
+        if (missing(reason) && !controller.signal.aborted) { forget([runId]); return; }
         if (!isAbort(reason) && !controller.signal.aborted) setError(errorMessage(reason));
       }
       if (!controller.signal.aborted && shouldContinue) timer = setTimeout(poll, 1200);
@@ -282,12 +306,14 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   });
 
   const edit = (file: SourceFile, value: string) => {
-    const key = draftKey(file), saved = savedSource(file);
+    const key = draftKey(file), raw = rawSource(file), saved = normalizeLines(raw);
     setDrafts(current => {
       const next = { ...current };
-      if (value === saved) delete next[key]; else next[key] = value;
+      if (value === saved) delete next[key]; else next[key] = { text: value, base: current[key]?.base ?? raw };
       return next;
     });
+    // Back to the file's text: nothing is left to choose between.
+    if (value === saved) setConflict(current => current?.key === key ? null : current);
   };
   const discard = (file: SourceFile) => {
     const key = draftKey(file);
@@ -296,14 +322,21 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   };
   /** Writes a file's edits; false when the file changed elsewhere since it was read (nothing written). */
   const saveSource = async (file: SourceFile, replace = false): Promise<boolean> => {
-    const key = draftKey(file), source = drafts[key];
-    if (source === undefined || !module) return true;
-    const expected = (file === "spec" ? module.specSource : module.flowSource) ?? "";
+    const key = draftKey(file), draft = drafts[key];
+    if (!draft || !module) { setConflict(current => current?.key === key ? null : current); return true; }
+    const source = draft.text;
     try {
       const saved = await request<SynthesisModule>(`/projects/${encode(projectId)}/modules/${encode(moduleId)}/source`,
-        { method: "PUT", body: JSON.stringify({ file, source, ...(replace ? {} : { expected }) }) });
-      // Typing that went on during the save stays a draft.
-      setDrafts(current => { if (current[key] !== source) return current; const next = { ...current }; delete next[key]; return next; });
+        { method: "PUT", body: JSON.stringify({ file, source, ...(replace ? {} : { expected: draft.base }) }) });
+      // Typing that went on during the save stays a draft, now based on what was saved.
+      const written = (file === "spec" ? saved.specSource : saved.flowSource) ?? source;
+      setDrafts(current => {
+        const now = current[key];
+        if (!now) return current;
+        const next = { ...current };
+        if (now.text === source) delete next[key]; else next[key] = { text: now.text, base: written };
+        return next;
+      });
       setConflict(current => current?.key === key ? null : current);
       setModules(current => current.map(item => item.id === saved.id ? saved : item));
       if (selection.current.projectId === projectId && selection.current.moduleId === moduleId) setModule(saved);
@@ -328,7 +361,11 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   };
   const startRun = () => void perform("run", async () => {
     // A run reads the saved files: what is edited here is saved first.
-    for (const file of ["spec", "flow"] as const) if (dirty(file) && !await saveSource(file)) return;
+    for (const file of ["spec", "flow"] as const) if (dirty(file) && !await saveSource(file)) {
+      // Nothing ran: the file whose save was refused is shown with its choice.
+      setTab(file === "flow" ? "flow" : "contract"); setSourceOrigin("project");
+      return;
+    }
     const created = await request<SynthesisRun>(`/projects/${encode(projectId)}/runs`, { method: "POST", body: JSON.stringify({ moduleId }) });
     if (selection.current.projectId !== projectId || selection.current.moduleId !== moduleId) return;
     setRuns(current => [created, ...current.filter(item => item.id !== created.id)]); setRunId(created.id); setRun(created);
@@ -349,11 +386,11 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   });
   const clearRuns = () => void perform("delete", async () => {
     const name = module?.name ?? moduleId;
-    const before = runs.filter(item => item.moduleId === moduleId && !activeStatuses.has(item.status)).map(item => item.id);
+    const known = runs.filter(item => item.moduleId === moduleId).map(item => item.id);
     const result = await request<{ deleted: number; kept: number }>(`/projects/${encode(projectId)}/runs?moduleId=${encode(moduleId)}`, { method: "DELETE" });
     const left = new Set((await request<SynthesisRun[]>(`/projects/${encode(projectId)}/runs`)).map(item => item.id));
     if (selection.current.projectId !== projectId) return;
-    forget(before.filter(id => !left.has(id)));
+    forget(known.filter(id => !left.has(id)));
     setNotice(`${result.deleted} ${result.deleted === 1 ? "run" : "runs"} of ${name} deleted.${result.kept ? ` ${result.kept} still going ${result.kept === 1 ? "stays" : "stay"}.` : ""}`);
   });
   // Another project (or host) shows nothing until its own answer arrives.
@@ -403,8 +440,8 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     if (!editable) return <SourcePreview source={(tab === "contract" ? module.specSource : module.flowSource) ?? ""} name={label} />;
     const problems = problemsOf(sourceFile);
     return <>
-      <SourceEditor key={`${projectId}:${moduleId}:${sourceFile}`} value={drafts[draftKey(sourceFile)] ?? savedSource(sourceFile)} label={label} problems={problems}
-        reveal={reveal?.file === sourceFile ? reveal : undefined} onChange={value => edit(sourceFile, value)} onSave={() => { if (dirty(sourceFile)) save(sourceFile); }} />
+      <SourceEditor key={`${projectId}:${moduleId}:${sourceFile}`} value={drafts[draftKey(sourceFile)]?.text ?? savedSource(sourceFile)} label={label} problems={problems}
+        reveal={reveal?.file === sourceFile ? reveal : undefined} onRevealed={() => setReveal(undefined)} onChange={value => edit(sourceFile, value)} onSave={() => { if (dirty(sourceFile)) save(sourceFile); }} />
       {problems.length ? <div className="synthesis-problems" aria-label="Problems in this file">
         {dirty(sourceFile) ? <span className="synthesis-problems__note">As last saved:</span> : null}
         {problems.slice(0, 3).map((problem, index) => <button type="button" key={index} className={`is-${problem.severity}`} onClick={() => setReveal({ file: sourceFile, line: problem.line, key: Date.now() })}>

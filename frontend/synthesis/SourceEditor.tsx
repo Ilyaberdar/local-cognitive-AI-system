@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent } from "react";
 
 const KEYWORDS = "module|version|interface|behavior|invariants|constraints|evaluate|hard|soft|implement|using|limit|while|if|else|await|return|continue|true|false|none";
 const TOKENS = new RegExp(`("(?:[^"\\\\]|\\\\.)*"|\\/\\/.*$|\\b(?:${KEYWORDS})\\b)`, "g");
@@ -38,12 +38,15 @@ function indentUnit(source: string) {
 /** The contract or flow as text to edit, highlighted as it is typed. The text area lies over the
  * highlighted lines and scrolls them with it, so the caret, selection, undo and the system's text
  * services stay the browser's own. Tab indents (Escape, then Tab, moves on); ⌘S or Ctrl+S saves. */
-export function SourceEditor({ value, label, problems, reveal, onChange, onSave }: {
+export function SourceEditor({ value, label, problems, reveal, onRevealed, onChange, onSave }: {
   value: string; label: string; problems: SourceProblem[];
   /** A line to bring the caret to; `key` asks again for the same line. */
   reveal?: { line: number; key: number };
+  /** The line was shown: an editor made again later does not show it again. */
+  onRevealed?: () => void;
   onChange: (value: string) => void; onSave: () => void;
 }) {
+  const hint = useId();
   const area = useRef<HTMLTextAreaElement>(null);
   const layer = useRef<HTMLPreElement>(null);
   const sync = () => { if (area.current && layer.current) layer.current.style.transform = `translate(${-area.current.scrollLeft}px, ${-area.current.scrollTop}px)`; };
@@ -59,19 +62,25 @@ export function SourceEditor({ value, label, problems, reveal, onChange, onSave 
     const height = parseFloat(getComputedStyle(element).lineHeight) || 21;
     element.scrollTop = Math.max(0, (line - 1) * height - element.clientHeight / 3);
     sync();
+    onRevealed?.();
   }, [reveal?.key]);
 
   /** Replaces the selection as typing would, so undo takes it back. */
   const insert = (text: string) => {
     const element = area.current!;
     if (document.execCommand?.("insertText", false, text)) return;
+    // Without the command: the text is set as typing sets it, so the caret can be placed at once.
     const { selectionStart: start, selectionEnd: end } = element;
-    onChange(element.value.slice(0, start) + text + element.value.slice(end));
-    requestAnimationFrame(() => element.setSelectionRange(start + text.length, start + text.length));
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value")!.set!.call(element, element.value.slice(0, start) + text + element.value.slice(end));
+    element.setSelectionRange(start + text.length, start + text.length);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
   };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const element = event.currentTarget;
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") { event.preventDefault(); onSave(); return; }
+    // Keys that confirm an input method's text are its own.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // The key, not its letter: ⌘S saves in any keyboard layout (as the app's shortcuts do).
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.code === "KeyS" || event.key.toLowerCase() === "s")) { event.preventDefault(); onSave(); return; }
     if (event.key === "Escape") { event.preventDefault(); element.blur(); return; }
     const { selectionStart: start, selectionEnd: end, value: text } = element;
     const unit = indentUnit(text);
@@ -83,11 +92,14 @@ export function SourceEditor({ value, label, problems, reveal, onChange, onSave 
       const last = end > start && text[end - 1] === "\n" ? end - 1 : end;
       const close = text.indexOf("\n", last);
       const block = text.slice(first, close === -1 ? text.length : close);
-      const moved = block.split("\n").map(line => event.shiftKey ? line.replace(new RegExp(`^(?: {1,${unit.length}}|\\t)`), "") : line ? unit + line : line).join("\n");
-      if (moved === block) return;
+      const lines = block.split("\n");
+      const moved = lines.map(line => event.shiftKey ? line.replace(new RegExp(`^(?: {1,${unit.length}}|\\t)`), "") : line ? unit + line : line);
+      if (moved.join("\n") === block) return;
       element.setSelectionRange(first, first + block.length);
-      insert(moved);
-      element.setSelectionRange(first, first + moved.length);
+      insert(moved.join("\n"));
+      // A caret stays where it was in its line; a selection keeps the lines it held.
+      if (start === end) { const at = Math.max(first, start + moved[0]!.length - lines[0]!.length); element.setSelectionRange(at, at); }
+      else element.setSelectionRange(first, first + moved.join("\n").length);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -101,7 +113,8 @@ export function SourceEditor({ value, label, problems, reveal, onChange, onSave 
   };
   return <div className="synthesis-editor">
     <pre className="synthesis-source synthesis-editor__layer" ref={layer} aria-hidden="true"><Lines source={value} problems={problems} /></pre>
-    <textarea ref={area} className="synthesis-editor__input" aria-label={label} aria-invalid={problems.some(problem => problem.severity === "error") || undefined}
+    <span id={hint} className="synthesis-visually-hidden">Tab indents. Press Escape, then Tab, to leave the editor. ⌘S or Ctrl+S saves.</span>
+    <textarea ref={area} className="synthesis-editor__input" aria-label={label} aria-describedby={hint} aria-invalid={problems.some(problem => problem.severity === "error") || undefined}
       value={value} wrap="off" spellCheck={false} autoCapitalize="off" autoComplete="off" autoCorrect="off" data-gramm="false"
       onChange={event => onChange(event.target.value)} onScroll={sync} onKeyDown={keyDown} />
   </div>;

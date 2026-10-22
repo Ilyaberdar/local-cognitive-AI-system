@@ -177,8 +177,11 @@ export class SynthesisService {
   private disposed = false;
   /** Each run's record is written by one writer at a time: the last write holds the latest state. */
   private readonly writes = new Map<string, {last: Promise<void>; queued?: {record: RunRecord; done: Promise<void>}}>();
-  /** Applies under way, by run id. */
+  /** Applies under way (by run id, how many at once), runs being deleted, and runs deleted: an Apply
+   * and a Delete of one run never overlap, and a deleted run's record is never written again. */
   private readonly applying = new Map<string, number>();
+  private readonly removing = new Set<string>();
+  private readonly removed = new Set<string>();
   constructor(appDataDir: string, private readonly services: Services) { this.directory = path.join(appDataDir, "synthesis", "runs"); }
 
   async init(): Promise<void> {
@@ -250,17 +253,19 @@ export class SynthesisService {
   async module(projectId: string, id: string): Promise<SynthesisModule> {
     const project = await this.project(projectId);
     const {name, specPath, flowPath} = moduleSources(id);
-    let specSource = "", flowSource = "", reading = specPath;
-    try {
-      specSource = await readText(await containedPath(project.rootPath, specPath));
-      reading = flowPath;
-      flowSource = await readText(await containedPath(project.rootPath, flowPath));
-    } catch (error) {
-      // The project-relative file, never the host's full path (it may reach a paired device).
-      const message = isMissingFile(error) ? `Missing ${reading}.` : error instanceof SynthesisError ? error.message : `${reading} could not be read.`;
-      return {id, name, specPath, flowPath, specSource, flowSource, valid: false,
-        diagnostics: [{severity: "error", code: "SOURCE_READ", message, file: reading, line: 1, column: 1}]};
-    }
+    // Each file is read on its own, so the one that can be read is shown (and edited) as it is.
+    const unread: SynthesisModule["diagnostics"] = [];
+    const read = async (file: string) => {
+      try { return await readText(await containedPath(project.rootPath, file)); }
+      catch (error) {
+        // The project-relative file, never the host's full path (it may reach a paired device).
+        const message = isMissingFile(error) ? `Missing ${file}.` : error instanceof SynthesisError ? error.message : `${file} could not be read.`;
+        unread.push({severity: "error", code: "SOURCE_READ", message, file, line: 1, column: 1});
+        return "";
+      }
+    };
+    const specSource = await read(specPath), flowSource = await read(flowPath);
+    if (unread.length) return {id, name, specPath, flowPath, specSource, flowSource, valid: false, diagnostics: unread};
     const compiled = compileProgram(specSource, flowSource, {specPath, flowPath});
     const diagnostics = [...compiled.diagnostics.map(item => ({severity: item.severity, code: item.code, message: item.message, file: item.path, line: item.span.start.line, column: item.span.start.column})),
       // What Run would refuse is shown before it: the module is not "valid" only to fail at Run.
@@ -337,8 +342,9 @@ export class SynthesisService {
     await fs.access(target); return target;
   }
   /** Saves a module's contract or flow as edited in the app, and returns the module as it is then,
-   * with its diagnostics. `expected`: the text the editor started from; when the file holds another
-   * (it was edited elsewhere since), nothing is written. A file with CRLF line ends keeps them. */
+   * with its diagnostics. `expected`: the file's text as read when the edit began; when the file
+   * holds another (it was edited elsewhere since), nothing is written. CRLF line ends and the file's
+   * mode are kept. */
   async saveSource(projectId: string, id: string, file: unknown, source: unknown, expected?: unknown): Promise<SynthesisModule> {
     if (file !== "spec" && file !== "flow") throw new SynthesisError("file must be spec or flow.");
     if (typeof source !== "string" || source.includes("\0")) throw new SynthesisError("source must be text.");
@@ -353,7 +359,11 @@ export class SynthesisService {
     if (Buffer.byteLength(text) > MAX_SOURCE_BYTES) throw new SynthesisError(`${relative} may hold at most ${MAX_SOURCE_BYTES / 1024} KiB.`);
     const mode = now === null ? undefined : (await fs.stat(target)).mode & 0o777;
     const temporary = `${target}.${randomUUID()}.tmp`;
-    try { await fs.writeFile(temporary, text, {flag: "wx", ...(mode !== undefined ? {mode} : {})}); await fs.rename(temporary, target); }
+    try {
+      await fs.writeFile(temporary, text, {flag: "wx"});
+      if (mode !== undefined) await fs.chmod(temporary, mode);
+      await fs.rename(temporary, target);
+    }
     catch (error) { if (isMissingFile(error)) throw new SynthesisError(`The folder of ${relative} does not exist.`, 404); throw error; }
     finally { await fs.unlink(temporary).catch(() => {}); }
     return this.module(projectId, id);
@@ -455,29 +465,55 @@ export class SynthesisService {
     if (item) { item.controller.abort(new Error("Cancelled by user.")); await item.done; }
     return this.get(id);
   }
-  /** Deletes a finished run: its record, checkpoints and agents' steps. What Apply wrote stays in the project. */
+  /** Deletes a finished run: its agents' steps, checkpoints and record. What Apply wrote stays in the project. */
   async remove(id: string): Promise<void> {
     const key = runId(id);
     const record = await this.read(key);
+    // No await from these checks to the mark: an Apply that starts now finds the run being deleted.
     if (this.active.has(key) || activeStatus(record.status)) throw new SynthesisError("This run is still going. Stop it before deleting it.", 409);
     if (this.applying.has(key)) throw new SynthesisError("This run is being applied. Delete it once Apply is done.", 409);
-    await this.writes.get(key)?.last.catch(() => undefined);
-    await fs.rm(path.join(this.directory, `${key}.json`), {force: true});
-    await fs.rm(path.join(this.directory, "..", "agents", key), {recursive: true, force: true});
-    const checkpoints = path.join(this.directory, "checkpoints");
-    for (const file of await fs.readdir(checkpoints).catch(() => [] as string[])) if (file.startsWith(`${key}-`)) await fs.rm(path.join(checkpoints, file), {force: true});
+    if (this.removing.has(key)) throw new SynthesisError("Synthesis run not found.", 404);
+    this.removing.add(key);
+    try {
+      await this.writes.get(key)?.last.catch(() => undefined);
+      await fs.rm(path.join(this.directory, "..", "agents", key), {recursive: true, force: true, maxRetries: 3, retryDelay: 200});
+      const checkpoints = path.join(this.directory, "checkpoints");
+      for (const file of await fs.readdir(checkpoints).catch(() => [] as string[])) if (file.startsWith(`${key}-`)) await fs.rm(path.join(checkpoints, file), {force: true});
+      // The record goes last: if a step above fails, the run stays listed and Delete can be tried again.
+      await fs.rm(path.join(this.directory, `${key}.json`), {force: true});
+      this.removed.add(key);
+    } finally { this.removing.delete(key); }
   }
-  /** Deletes a project's finished runs, only one module's when `moduleId` is given. Runs still going stay. */
+  /** Deletes a project's finished runs, only one module's when `moduleId` is given. Runs still going
+   * (or being applied) stay; one deleted meanwhile elsewhere counts as gone. */
   async clear(projectId: string, moduleId?: string): Promise<{deleted: number; kept: number}> {
     if (!await this.services.projects.get(projectId)) throw new SynthesisError("Select an existing project.", 404);
+    const gone = (error: unknown) => error instanceof SynthesisError && error.statusCode === 404;
     let deleted = 0, kept = 0;
     for (const id of await this.ids()) {
-      const record = await this.read(id);
-      if (record.projectId !== projectId || (moduleId !== undefined && record.moduleId !== moduleId)) continue;
+      const record = await this.read(id).catch(error => { if (gone(error)) return undefined; throw error; });
+      if (!record || record.projectId !== projectId || (moduleId !== undefined && record.moduleId !== moduleId)) continue;
       if (this.active.has(id) || activeStatus(record.status) || this.applying.has(id)) { kept++; continue; }
-      await this.remove(id); deleted++;
+      try { await this.remove(id); deleted++; }
+      catch (error) {
+        if (gone(error)) continue;
+        if (error instanceof SynthesisError && error.statusCode === 409) { kept++; continue; }
+        throw error;
+      }
     }
     return {deleted, kept};
+  }
+  /** Apply, and its check after a restart, hold the run: Delete refuses it meanwhile, and a run being
+   * deleted is not applied. No await before the mark, so this and Delete's checks never interleave. */
+  private async applyingRun<T>(id: string, task: () => Promise<T>): Promise<T> {
+    const key = runId(id);
+    if (this.removing.has(key) || this.removed.has(key)) throw new SynthesisError("Synthesis run not found.", 404);
+    this.applying.set(key, (this.applying.get(key) ?? 0) + 1);
+    try { return await task(); }
+    finally {
+      const left = (this.applying.get(key) ?? 1) - 1;
+      if (left) this.applying.set(key, left); else this.applying.delete(key);
+    }
   }
   /** Useful for CLI/tests; HTTP execution remains non-blocking. */
   async wait(id: string): Promise<SynthesisRun> { await this.active.get(runId(id))?.done; return this.get(id); }
@@ -1095,10 +1131,11 @@ export class SynthesisService {
   }
   async apply(id: string): Promise<void> {
     if (this.active.has(id)) throw new SynthesisError("Run is active. Wait for it to finish before Apply.", 409);
+    return this.applyingRun(id, () => this.applyCandidate(id));
+  }
+  private async applyCandidate(id: string): Promise<void> {
     const first = await this.read(id);
-    // Delete refuses a run while it is applied: Apply's last event would write the record again.
-    this.applying.set(first.id, (this.applying.get(first.id) ?? 0) + 1);
-    try { await withFileLock(path.join(first.rootPath, ".synthesis-apply-lock"), async () => {
+    await withFileLock(path.join(first.rootPath, ".synthesis-apply-lock"), async () => {
       const record = await this.read(id); const project = await this.project(record.projectId);
       if (this.active.has(id) || project.rootPath !== record.rootPath || record.status !== "accepted" || record.appliedAt || !record.outputPath || record.evidence?.status !== "Pass" || record.evidence.candidateHash !== filesHash(record.files) || record.evidence.specHash !== record.specHash || record.evidence.evaluatorVersion !== EVALUATOR_VERSION) throw new SynthesisError("Only a fresh accepted, unapplied candidate can be applied.", 409);
       // after null: a file the run deleted.
@@ -1132,15 +1169,13 @@ export class SynthesisService {
         throw error;
       }
       record.appliedAt = stamp(); await this.event(record, "apply", `${targets.length} candidate files applied to ${record.outputPath}.`, "ok");
-    }); } finally {
-      const left = (this.applying.get(first.id) ?? 1) - 1;
-      if (left) this.applying.set(first.id, left); else this.applying.delete(first.id);
-    }
+    });
   }
   /** After a restart during Apply: "applied" when every changed file holds the candidate (the run
    * is then marked applied), "none" when every one still holds what was checked out, "partial"
    * otherwise (some files written, or edited since). */
-  async applyOutcome(id: string): Promise<"applied" | "none" | "partial"> {
+  async applyOutcome(id: string): Promise<"applied" | "none" | "partial"> { return this.applyingRun(id, () => this.checkApplied(id)); }
+  private async checkApplied(id: string): Promise<"applied" | "none" | "partial"> {
     const first = await this.read(id);
     if (first.appliedAt) return "applied";
     if (!first.outputPath) return "none";
@@ -1188,6 +1223,8 @@ export class SynthesisService {
   /** Saves never overlap: a save made while one is being written waits for it, and saves of the
    * same record made meanwhile share one write, which serializes the record as it is by then. */
   private save(record: RunRecord): Promise<void> {
+    // A deleted run is not written back.
+    if (this.removed.has(record.id) || this.removing.has(record.id)) return Promise.resolve();
     const file = path.join(this.directory, `${runId(record.id)}.json`);
     let state = this.writes.get(record.id);
     if (!state) { state = {last: Promise.resolve()}; this.writes.set(record.id, state); }

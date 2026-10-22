@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
 import { usePaneSplit } from "./usePaneSplit";
 import type { SynthesisEvent, SynthesisRun } from "./types";
@@ -62,6 +62,12 @@ export function SynthesisActivity({ run, resize }: { run: SynthesisRun | null; r
   // A step that is still running shows how long it has taken, and a generation its tokens so far.
   const live = run?.status === "running" && current?.status === "running";
   const now = useNow(live);
+  // Up to 2,000 events: drawn again only when they change, not on each key typed in the editor.
+  const trace = useMemo(() => events.map((event, index) => <div key={event.sequence}>
+    {index === 0 || events[index - 1].iteration !== event.iteration ? <div className="synthesis-activity__iteration">{event.iteration ? `Iteration ${event.iteration}` : "Preparation"}</div> : null}
+    {index === 0 || events[index - 1].step !== event.step || events[index - 1].iteration !== event.iteration ? <div className="synthesis-activity__step"><span>{event.step.replace(/[._-]/g, " ")}</span>{event.model ? <small>{event.model}</small> : null}</div> : null}
+    <EventDetail event={event} />
+  </div>), [events]);
   return <section className="synthesis-activity" aria-label="Synthesis agent activity">
     <header className="synthesis-pane-header">
       <div {...resize} className="synthesis-activity__resize" aria-label="Resize Agent activity" title="Drag to resize · Double-click to reset"><span aria-hidden="true" /><strong>Agent activity</strong></div>
@@ -79,11 +85,7 @@ export function SynthesisActivity({ run, resize }: { run: SynthesisRun | null; r
           el.scrollTop = event.key === "End" ? el.scrollHeight : 0; setFollowing(event.key === "End");
         }
       }}>
-      {events.length ? events.map((event, index) => <div key={event.sequence}>
-        {index === 0 || events[index - 1].iteration !== event.iteration ? <div className="synthesis-activity__iteration">{event.iteration ? `Iteration ${event.iteration}` : "Preparation"}</div> : null}
-        {index === 0 || events[index - 1].step !== event.step || events[index - 1].iteration !== event.iteration ? <div className="synthesis-activity__step"><span>{event.step.replace(/[._-]/g, " ")}</span>{event.model ? <small>{event.model}</small> : null}</div> : null}
-        <EventDetail event={event} />
-      </div>) : <div className="synthesis-empty">The execution trace will appear here: model loading, file changes, checks, and repair iterations.</div>}
+      {events.length ? trace : <div className="synthesis-empty">The execution trace will appear here: model loading, file changes, checks, and repair iterations.</div>}
     </div>
   </section>;
 }

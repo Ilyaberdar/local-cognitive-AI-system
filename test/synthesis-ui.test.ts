@@ -932,7 +932,7 @@ test("a module on a server, or a run's snapshot, is read, not edited", async () 
   });
   try {
     const doc = ui.dom.window.document;
-    await until(() => Boolean(doc.querySelector('textarea[aria-label="LC Spec source"]')), "editable project source");
+    await until(() => Boolean(doc.querySelector('textarea[aria-label="LC Spec source"]')) && ui.text().includes("old activity"), "editable project source, and the run");
     ui.click("Run snapshot");
     await until(() => Boolean(doc.querySelector('pre[aria-label="LC Spec run snapshot"]')), "the snapshot, read only");
     assert.equal(doc.querySelector("textarea.synthesis-editor__input"), null);
@@ -1032,4 +1032,65 @@ test("Refresh keeps the screen as it is: the label stays, Run stays usable, and 
     release();
     await until(() => !button.classList.contains("is-refreshing"), "the icon stops", 3000);
   } finally { release?.(); ui.close(); }
+});
+
+test("an edit made here and a change made in the IDE meet: Refresh shows the conflict at once, and Save never writes over the IDE's text", async () => {
+  const base = { ...moduleEntry(), specPath: "Synthesis/Calculator/Calculator.lcspec", flowPath: "Synthesis/Calculator/Calculator.lcflow" };
+  let module: any = base;
+  const puts: any[] = [];
+  const ui = harness((path, options) => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [module] };
+    if (path === "/synthesis/projects/p1/runs") return [];
+    if (path === "/synthesis/projects/p1/modules/Calculator") return module;
+    if (path.endsWith("/modules/Calculator/source")) {
+      const body = JSON.parse(String(options.body)); puts.push(body);
+      return body.expected !== undefined && body.expected !== module.specSource ? { __status: 409, message: "Synthesis/Calculator/Calculator.lcspec changed on disk since it was opened here." } : (module = { ...module, specSource: body.source });
+    }
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => Boolean(doc.querySelector('textarea[aria-label="LC Spec source"]')), "the editor");
+    typeInto(ui, doc.querySelector('textarea[aria-label="LC Spec source"]'), 'module Calculator version "2" {}');
+    module = { ...base, specSource: 'module Calculator version "ide" {}' };
+    ui.click("Refresh");
+    await until(() => Boolean(doc.querySelector(".synthesis-conflict")), "the conflict, before any Save");
+    assert.equal((doc.querySelector('textarea[aria-label="LC Spec source"]') as any).value, 'module Calculator version "2" {}', "the edit stays on screen");
+    // Cmd+S in a Russian layout: the S key reports "ы".
+    doc.querySelector('textarea[aria-label="LC Spec source"]')!.dispatchEvent(new ui.dom.window.KeyboardEvent("keydown", { key: "ы", code: "KeyS", metaKey: true, bubbles: true }));
+    await until(() => puts.length === 1, "saved by the key");
+    assert.equal(puts[0].expected, 'module Calculator version "1" {}', "Save expects the text the edit began from, not the IDE's");
+    assert.equal(module.specSource, 'module Calculator version "ide" {}', "the IDE's text is not written over");
+    await until(() => [...doc.querySelectorAll(".synthesis-conflict button")].every((item: any) => !item.disabled), "the save is done");
+    ui.click("Reload from disk");
+    await until(() => (doc.querySelector('textarea[aria-label="LC Spec source"]') as any)?.value === 'module Calculator version "ide" {}', "the file as on disk");
+    assert.equal(doc.querySelector(".synthesis-conflict"), null);
+  } finally { ui.close(); }
+});
+
+test("a run deleted elsewhere leaves the history quietly; Shift+Tab moves a line back and keeps the caret in it", async () => {
+  let runs: any[] = [runEntry("gone", "accepted")];
+  const ui = harness(path => {
+    if (path === "/synthesis/projects/p1/modules") return { modules: [{ ...moduleEntry(), specSource: 'module Calculator version "1" {\n    target {}\n}' }] };
+    if (path === "/synthesis/projects/p1/runs") return runs;
+    if (path === "/synthesis/projects/p1/modules/Calculator") return { ...moduleEntry(), specSource: 'module Calculator version "1" {\n    target {}\n}' };
+    if (path === "/synthesis/runs/gone") return runs.length ? runs[0] : { __status: 404, message: "Synthesis run not found." };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => ui.text().includes("gone activity"), "the run");
+    runs = [];
+    (doc.querySelector('[role="tab"]#synthesis-tab-flow') as any).click();
+    (doc.querySelector('[role="tab"]#synthesis-tab-contract') as any).click();
+    await until(() => !doc.querySelector(".synthesis-run-history .synthesis-run-item"), "the run left the history", 12_000);
+    assert.equal(doc.querySelector('[role="alert"]'), null, "no error for a run that is gone");
+    const editor = doc.querySelector('textarea[aria-label="LC Spec source"]') as any;
+    const at = editor.value.indexOf("target") + 3;
+    editor.focus(); editor.setSelectionRange(at, at);
+    editor.dispatchEvent(new ui.dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+    await until(() => editor.value.includes("\ntarget {}"), "the line moved back");
+    assert.equal(editor.selectionStart, editor.selectionEnd, "a caret, not a selected line");
+    assert.equal(editor.selectionStart, editor.value.indexOf("target") + 3);
+  } finally { ui.close(); }
 });
