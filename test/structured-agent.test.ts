@@ -137,6 +137,27 @@ test("native write approval survives a runner rebuild and preserves tool call id
   assert.ok(f.calls[1].input.some((item: any) => item.type === "function_call_output" && item.call_id === "call-1"));
 });
 
+test("a call waiting for approval keeps the reply's other calls through a rebuild, and they are answered not run", async t => {
+  const f = await fixture(t, "openai");
+  f.context.sessionSettings.defaultAccessMode = "ask";
+  f.context.execution = { workspace: f.context.workspace!, accessMode: "ask", agentRunId: "agent", pauseForApproval: true };
+  const several = payload("openai", write);
+  several.output.push({ ...several.output.at(-1), call_id: "call-2", arguments: JSON.stringify({ ...write.arguments, path: "second.js" }) });
+  f.replies.push(several);
+  const waiting = await f.run(); assert.ok(waiting.pendingApproval);
+  assert.deepEqual((await f.runner().store.get("agent"))!.pending?.skippedCallIds, ["call-2"], "saved with the waiting call");
+  // A new runner (the app restarted) resumes the saved call after approval.
+  f.context.execution.approval = { id: waiting.pendingApproval.id, approved: true };
+  f.replies.push(payload("openai", finish));
+  assert.equal((await f.run()).error, undefined);
+  assert.equal(await fs.readFile(path.join(f.work, "result.js"), "utf8"), code);
+  await assert.rejects(fs.stat(path.join(f.work, "second.js")));
+  const outputs = f.calls[1].input.filter((item: any) => item.type === "function_call_output");
+  assert.deepEqual(outputs.map((item: any) => item.call_id), ["call-1", "call-2"]);
+  assert.match(outputs[1].output, /^Not run: one function call per turn/);
+  assert.equal(f.calls.length, 2);
+});
+
 test("unsupported local schema downgrades within the same run without replaying an operation", async t => {
   const f = await fixture(t, "lmstudio");
   f.replies.push(Response.json({ error: { message: "json_schema format is not supported by this model" } }, { status: 400 }),
