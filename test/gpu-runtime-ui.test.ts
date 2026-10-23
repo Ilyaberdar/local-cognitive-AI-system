@@ -41,6 +41,10 @@ test("GPU acceleration: each CUDA state says what happens, with NVIDIA's license
     /<div class="gpu-runtime-actions"><button[^>]*data-gpu-action="cancel"[^>]*>Cancel<\/button><button[^>]*data-offer="close">Close<\/button><\/div>/);
   assert.match(ui.cudaHtml(acceleration({ state: "installing" }), { actions: close }), /<div class="gpu-runtime-actions"><button[^>]*data-offer="close">Close<\/button><\/div>/);
   assert.doesNotMatch(ui.cudaHtml(acceleration({ state: "installing" })), /gpu-runtime-actions/, "no empty row in Settings");
+  // After a cancelled download the dialog offers the install again without repeating its own text.
+  const again = ui.cudaHtml(acceleration({}), { actions: close, intro: false });
+  assert.doesNotMatch(again, /faster than with Vulkan/);
+  assert.match(again, /data-gpu-action="install"[^>]*>Install CUDA runtime<\/button><button[^>]*data-offer="close">Close/);
   assert.match(ui.cudaHtml(acceleration({ state: "installed" })), /is installed.*Remove CUDA runtime \(frees 0\.7 GB\)/s);
   assert.match(ui.cudaHtml(acceleration({ state: "failed", reason: "The CUDA runtime does not see the GPU." })), /does not see the GPU\. Models run on Vulkan\..*Try again/s);
   assert.match(ui.cudaHtml(acceleration({ state: "unavailable", reason: "Update the NVIDIA driver to 551.78 or newer to use CUDA (this computer has 537.58)." })), /Update the NVIDIA driver.*Check again/s);

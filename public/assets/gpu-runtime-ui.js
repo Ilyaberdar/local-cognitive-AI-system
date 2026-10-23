@@ -18,8 +18,8 @@ const progressText = progress => progress?.totalBytes
   ? `${megabytes(progress.receivedBytes)} of ${megabytes(progress.totalBytes)}${progress.bytesPerSecond ? ` · ${(progress.bytesPerSecond / 1024 ** 2).toFixed(1)} MB/s` : ''}` : 'Starting…';
 
 /** The CUDA part of the card (or of the offer dialog) for a state; `actions` joins the state's buttons
- * in their row (the dialog's Close). */
-export function cudaHtml(acceleration, { confirming = false, busy = false, error = '', actions: more = '' } = {}) {
+ * in their row (the dialog's Close), and `intro: false` leaves out what the dialog's own text says. */
+export function cudaHtml(acceleration, { confirming = false, busy = false, error = '', actions: more = '', intro = true } = {}) {
   const cuda = acceleration?.cuda;
   if (!cuda) return '';
   const button = (action, label, primary = false) => `<button type="button" class="${primary ? 'primary-button' : 'ghost-button'}" data-gpu-action="${action}" ${busy ? 'disabled' : ''}>${label}</button>`;
@@ -42,7 +42,7 @@ export function cudaHtml(acceleration, { confirming = false, busy = false, error
       return `<p class="settings-description is-error" role="alert">${escape(failure || 'The CUDA runtime could not use this GPU.')} Models run on Vulkan.</p>${actions(button('confirm', 'Try again'), button('remove', 'Remove CUDA runtime'))}`;
     case 'available':
       if (confirming) return `${licenseNotice(cuda.license)}${actions(button('confirm', 'Agree and install', true), button('not-now', 'Cancel'))}`;
-      return `<p class="settings-description">With the CUDA runtime, models on this NVIDIA GPU run faster than with Vulkan (about 1.5× in our tests). ${escape(size)}</p>
+      return `${intro ? `<p class="settings-description">With the CUDA runtime, models on this NVIDIA GPU run faster than with Vulkan (about 1.5× in our tests). ${escape(size)}</p>` : ''}
         ${failure ? `<p class="settings-description is-error" role="alert">${escape(failure)}</p>` : ''}${actions(button('install', failure ? 'Try again' : 'Install CUDA runtime', true))}`;
     default:
       return `<p class="settings-description">${escape(failure || 'CUDA needs an NVIDIA GPU.')}</p>${actions(acceleration.gpu ? button('detect', 'Check again') : '')}`;
@@ -162,7 +162,7 @@ export function createCudaOffer({ request, doc = document, delays = [3000, 10000
           const started = await request('/local/runtime/cuda/install', { method: 'POST', body: JSON.stringify({ license: LICENSE_TOKEN }) });
           if (started?.cuda) runtime = { ...runtime, acceleration: started };
         } catch (failure) { progress.innerHTML = `<p class="settings-description is-error" role="alert">${escape(failure instanceof Error ? failure.message : String(failure))}</p>`; }
-        dispose = mountGpu(progress, { request, getRuntime: () => runtime, render: (acceleration, options) => cudaHtml(acceleration, { ...options, actions: '<button type="button" class="ghost-button" data-offer="close">Close</button>' }),
+        dispose = mountGpu(progress, { request, getRuntime: () => runtime, render: (acceleration, options) => cudaHtml(acceleration, { ...options, intro: false, actions: '<button type="button" class="ghost-button" data-offer="close">Close</button>' }),
           onDone: () => undefined });
       } else if (action === 'close') close();
     });
