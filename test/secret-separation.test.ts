@@ -19,7 +19,9 @@ const ignored = (file: string): boolean => {
 
 test("packaged files exclude OAuth registrations and env files", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")) as { build: { files: string[] } };
-  assert.deepEqual(manifest.build.files, ["LICENSE", "electron/*.cjs", "dist/src/**/*", "public/**/*", "package.json", "!**/.env", "!**/.env.*"]);
+  // The rest leaves out the parts of typescript Synthesis's type check does not load.
+  assert.deepEqual(manifest.build.files.filter(pattern => !pattern.startsWith("!node_modules/typescript/")), ["LICENSE", "electron/*.cjs", "dist/src/**/*", "public/**/*", "package.json", "!**/.env", "!**/.env.*"]);
+  assert.ok(manifest.build.files.filter(pattern => pattern.startsWith("!node_modules/typescript/")).every(pattern => !/typescript\/lib\/(?:typescript\.js|lib\.)/.test(pattern)), "the compiler and its lib files stay");
 });
 
 test("credential-bearing local files are git-ignored and examples are not", { skip: !isGitCheckout }, () => {
