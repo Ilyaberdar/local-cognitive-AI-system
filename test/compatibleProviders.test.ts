@@ -404,6 +404,21 @@ test("agents act through each service's own function calls: chat tool calls for 
   for (const id of ["llamacpp", "lmstudio"]) assert.equal(dialectFor(id).nativeTools, undefined, id);
 });
 
+// DeepSeek writes its own function-call markup (DSML) into the content now and then, without tool_calls; a
+// reasoning model may put a <think> block before its answer. Neither is an answer.
+test("a native reply's text is cleaned as JSON replies are: DSML call markup is a tool call written as text, a think block is not the answer", async () => {
+  const dsml = '<｜｜DSML｜｜function_calls>\n<｜｜DSML｜｜invoke name="file_read">\n<｜｜DSML｜｜parameter name="path" string="true">a.ts</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜function_calls>';
+  const texts = [dsml, `I will read it.\n\n${dsml}`, "<think>Read a.ts first.</think>\n\n## Findings\n\n- a.ts:1", "## Review of LLMService.ts\n\nIt strips `/\\s*<\\/?｜+DSML｜+[\\s\\S]*$/u` from an action."];
+  const provider = presetProvider("deepseek", service((_call, index) => Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: texts[index] } }] })).fetchImpl);
+  for (const index of [0, 1]) {
+    const reply = await provider.generateText(agentRequest());
+    assert.equal(reply.agentAction, undefined, `${index}: the markup never completes the agent`);
+    assert.match(reply.protocolError!, /wrote a tool call as text, so nothing ran/, String(index));
+  }
+  assert.deepEqual((await provider.generateText(agentRequest())).agentAction, { type: "final", text: "## Findings\n\n- a.ts:1" });
+  assert.equal((await provider.generateText(agentRequest())).agentAction?.type, "final", "an answer that quotes the markup's pattern is an answer");
+});
+
 test("a service that refuses only the last turn's tool_choice none is asked again without it, and keeps its tools", async () => {
   for (const id of ["deepseek", "perplexity"]) {
     const refusal = { error: { message: "tool_choice 'none' is not supported for this model", type: "invalid_request_error" } };

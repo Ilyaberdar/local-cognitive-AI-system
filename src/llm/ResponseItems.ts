@@ -3,6 +3,11 @@ import { leadingJsonObject, wholeJsonObject } from "./StructuredOutput";
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 
+/** Reasoning a model wrote before its answer in <think>, <thinking> or <analysis> blocks: never the answer. */
+export const withoutLeadingThinking = (text: string): string => text.replace(/^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "");
+/** DeepSeek's own function-call markup (<｜DSML｜function_calls>, invoke, parameter; its bars doubled at times). */
+export const DSML_CALL = /<\/?｜+DSML｜+\s*(?:function_calls|calls|invoke|parameter)\b/u;
+
 export const responseItems = (payload: Record<string, unknown>): Record<string, unknown>[] =>
   Array.isArray(payload.output) ? payload.output.filter(record) : [];
 
@@ -63,9 +68,10 @@ export function readNativeAgentResponse(payload: Record<string, unknown>, tools:
     }
     const messages = responseMessages(payload);
     if (messages.length > 1) throw new Error(`Expected one final message; received ${messages.length}.`);
-    const text = messages.length ? messageText(messages[0]).trim() : "";
+    // Cleaned as an agent's JSON reply is (LLMService): reasoning before the answer is not part of it.
+    const text = messages.length ? withoutLeadingThinking(messageText(messages[0]).trim()).trim() : "";
     if (!text) throw new Error("The model returned no final answer or function call.");
-    const envelope = textEnvelope(text, tools);
+    const envelope = DSML_CALL.test(text) ? { toolCall: true as const } : textEnvelope(text, tools);
     if (envelope && "toolCall" in envelope) throw new Error(`Your reply wrote a tool call as text, so nothing ran. To act, call the function itself (${tools.slice(0, 3).map(tool => tool.name).join(", ")}…), not JSON in your answer; when you are done, answer in plain Markdown.`);
     return { agentAction: { type: "final", text: envelope?.final ?? text } };
   } catch (error) {
