@@ -7,7 +7,7 @@ import { LLMService } from "../llm/LLMService";
 import { LLMRequest, LLMResponse, ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { answerFileProblem, callsOf, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram } from "./language";
+import { answerFileProblem, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram, terminalAllowsOf } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, MAX_SOURCE_BYTES, readOptional, readText, relativePath } from "./paths";
@@ -290,13 +290,23 @@ export class SynthesisService {
         try { within = targetWithin(parseTarget(target), allowList); } catch { within = false; }
         if (!within) diagnostics.push({severity: "error", code: "SYNTHESIS_WEB_CONSENT", message: this.webConsentRefusal(project, [target]), file: flowPath, line: span.start.line, column: span.start.column});
       }
-      // A terminal where this platform has no sandbox at all (Windows): Run would stop at parallel_map.
-      // Whether a sandbox that exists isolates is checked at Run, which tries it.
+      // A terminal where this platform has no sandbox at all (an unsupported OS), or names a command the
+      // platform's sandbox does not run (Windows runs only node, npm and npx in v1): Run would stop at
+      // parallel_map. Whether a sandbox that exists isolates is checked at Run, which tries it.
       const sandbox = this.services.checks?.sandbox ?? platformSandbox();
-      const terminal = callsOf(compiled.flow, "terminal")[0];
-      if (terminal && sandbox.name === "none") {
+      const terminals = terminalAllowsOf(compiled.flow);
+      if (terminals.length && sandbox.name === "none") {
+        const terminal = terminals[0]!.span;
         diagnostics.push({severity: "error", code: "SYNTHESIS_SANDBOX", message: `Agents with a terminal need a sandbox: ${await sandbox.unavailable()} Remove terminal(...) from their tools to run here.`,
           file: flowPath, line: terminal.start.line, column: terminal.start.column});
+      } else if (sandbox.name === "appcontainer") {
+        const unsupported = ["git", "ls", "cat", "python3", "rg"];
+        for (const {commands, span} of terminals) {
+          const named = (commands ?? unsupported).filter(command => unsupported.includes(command));
+          if (named.length) diagnostics.push({severity: "error", code: "SYNTHESIS_SANDBOX",
+            message: `On Windows an agent's terminal runs only node, npm and npx; ${named.join(", ")} ${named.length === 1 ? "is" : "are"} not available here yet. Narrow terminal(allow = [...]) to those, or run the flow on a Mac or a Linux server.`,
+            file: flowPath, line: span.start.line, column: span.start.column});
+        }
       }
     }
     const folder = path.posix.dirname(specPath);

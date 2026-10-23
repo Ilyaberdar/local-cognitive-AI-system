@@ -123,6 +123,22 @@ export function callsOf(flow: FlowProgram, name: string): SourceSpan[] {
     .sort((a, b) => a.start.offset - b.start.offset);
 }
 
+/** The commands each terminal(allow = [...]) in the flow names, with where it is; `commands` is null when
+ * terminal() names none (every command is allowed then). Used to warn where a platform (Windows) runs only
+ * some of them in its sandbox. */
+export function terminalAllowsOf(flow: FlowProgram): Array<{ commands: string[] | null; span: SourceSpan }> {
+  const found: Array<{ commands: string[] | null; span: SourceSpan }> = [];
+  for (const node of flowNodes(flow)) {
+    if (node.kind !== "call" || callName(node.callee) !== "terminal") continue;
+    const allow = node.args.find(arg => arg.name === "allow")?.value;
+    const commands = allow && allow.kind === "array"
+      ? allow.items.filter(item => item.kind === "literal" && typeof item.value === "string").map(item => (item as { value: string }).value)
+      : null;
+    found.push({ commands, span: node.span });
+  }
+  return found.sort((a, b) => a.span.start.offset - b.span.start.offset);
+}
+
 /** Resolve only named language intrinsics, never arbitrary host object methods. */
 export function callName(expression: Expression): string | undefined {
   if (expression.kind === "identifier") return expression.name;

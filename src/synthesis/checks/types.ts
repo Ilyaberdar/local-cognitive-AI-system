@@ -62,4 +62,24 @@ export interface SandboxProvider {
    * undefined when it does (then egressSupported is true), else why not (a terminal then runs without
    * network). Asked when an agent first needs it, never for contract tests. */
   checkEgress?(): Promise<string | undefined>;
+  /** True when the sandbox itself ends the whole process tree it started (a Windows Job object), so the
+   * caller needs no shell wrapper to end what a command leaves behind, and no done-token on the output:
+   * killing the helper (a run's timeout) tears the tree down. macOS and Linux leave this unset and end
+   * the process group themselves. */
+  endsItsGroup?: boolean;
+  /** How verifyIsolation runs its probe where a shell script cannot (Windows): the helper's own built-in,
+   * which reads the canary, writes to the read-only folder and tries loopback, the internet and DNS,
+   * printing LC_PROBE_RAN. Absent on macOS and Linux, where the probe is a /bin/sh script through wrap(). */
+  probe?(workDir: string, readable: string[], params: { canary: string; written: string; port: number }): WrappedCommand;
+  /** File operations run inside the sandbox where it has no shell (Windows), in place of the /bin/sh
+   * `cat >`, `rm` and `rm -rf` the Unix providers use: write (stdin into <workDir>/rel), remove
+   * (<workDir>/rel) and empty (<workDir>'s contents, never following a reparse point a command left).
+   * Absent on macOS and Linux. */
+  write?(workDir: string, rel: string): WrappedCommand;
+  remove?(workDir: string, rel: string): WrappedCommand;
+  empty?(workDir: string): WrappedCommand;
 }
+
+/** A command ready for runCommand: the sandbox tool as the executable, the real command wrapped in its
+ * arguments, and the whole environment the command runs with. */
+export interface WrappedCommand { executable: string; args: string[]; env: NodeJS.ProcessEnv; proxyUrl?: string }

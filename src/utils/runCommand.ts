@@ -19,7 +19,8 @@ export const runCommand = (
   new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const grouped = process.platform !== "win32";
-    const child = spawn(executable, args, { cwd, shell: false, env: options.env ?? childProcessEnv(), detached: grouped });
+    // windowsHide keeps a sandboxed console program (the helper, node) from flashing a window.
+    const child = spawn(executable, args, { cwd, shell: false, env: options.env ?? childProcessEnv(), detached: grouped, windowsHide: true });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

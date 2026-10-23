@@ -10,9 +10,10 @@ import { bwrapArgs, darwinProfile, platformSandbox, sandboxEnv, unsandboxed, ver
 import type { CheckFiles, CheckResult, SandboxProvider } from "../src/synthesis/checks/types";
 
 const sandbox = platformSandbox();
-/** Windows runs no contract tests (it has no sandbox, so the runner answers Unknown first), and a run's
- * folder is emptied with /bin/sh: the runner's own tests run where it does. */
-const NO_RUNNER = process.platform === "win32" && "Windows runs no contract tests: it has no sandbox yet";
+/** This cross-language matrix (JavaScript, TypeScript, Python and C++, and the macOS/Linux sandbox
+ * profiles) runs on macOS and Linux; the Windows AppContainer, which runs JavaScript and TypeScript only,
+ * is covered by windows-sandbox.test.ts and a live check on a Windows machine. */
+const NO_RUNNER = process.platform === "win32" && "the Windows sandbox is covered by windows-sandbox.test.ts and a live check";
 const providers: Array<[string, SandboxProvider]> = [["sandboxed", sandbox], ["unsandboxed", unsandboxed]];
 type Files = Partial<CheckFiles> & { suite: Record<string, string> };
 
