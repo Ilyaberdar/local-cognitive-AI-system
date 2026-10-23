@@ -14,7 +14,7 @@ import type { SandboxProvider } from "../src/synthesis/checks/types";
 
 const hooks = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
 
-test("Linux web access keeps bubblewrap's own network: the proxy's socket is bound read-only and the command starts after the forwarder", async () => {
+test("Linux web access keeps bubblewrap's own network: the proxy's socket is bound read-only and the command starts after the forwarder", { skip: process.platform === "win32" }, async () => {
   const work = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-bwrap-args-")));
   const runtimeDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-node-")));
   try {
@@ -104,7 +104,7 @@ test("the egress proxy on a UNIX socket enforces the allowlist, is its user's al
   assert.equal(fsSync.existsSync(path.dirname(proxy.endpoint.socketPath!)), false, "the socket and its folder are gone");
 });
 
-test("the web access check refuses a sandbox that does not route to the proxy alone, and its probe is valid code", async () => {
+test("the web access check refuses a sandbox that does not route to the proxy alone, and its probe is valid code", { skip: process.platform === "win32" }, async () => {
   // Without isolation the probe cannot reach the proxy through a forwarder (none starts): no web access.
   assert.ok(await verifyEgress(unsandboxed, process.execPath));
   assert.match(await verifyEgress(unsandboxed, null) ?? "", /server's own Node/);
@@ -114,7 +114,7 @@ test("the web access check refuses a sandbox that does not route to the proxy al
   new Function(probe.replace(/^const net=require/, "const net=(()=>{})||require"));
 });
 
-test("a terminal sends its tools through the proxy its sandbox names, and through none when the sandbox names none", async () => {
+test("a terminal sends its tools through the proxy its sandbox names, and through none when the sandbox names none", { skip: process.platform === "win32" }, async () => {
   const work = await fs.mkdtemp(path.join(os.tmpdir(), "lc-terminal-egress-"));
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-terminal-root-")));
   const seen: string[] = [];
