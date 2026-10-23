@@ -55,3 +55,4 @@ test-tmp
 /resources/speech/darwin-*/
 /resources/speech/win32-*/
 /resources/speech/linux-*/
+/resources/sandbox/win32-*/

@@ -31,7 +31,8 @@
     "dist:mac": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch arm64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg zip --arm64 --x64 --publish never",
     "dist:mac:arm64": "npm run prepare:llama -- --platform darwin --arch arm64 && npm run prepare:speech -- --arch arm64 && npm run build && electron-builder --mac dmg zip --arm64 --publish never",
     "dist:mac:x64": "npm run prepare:llama -- --platform darwin --arch x64 && npm run prepare:speech -- --arch x64 && npm run build && electron-builder --mac dmg zip --x64 --publish never",
-    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run prepare:speech -- --platform win32 --arch x64 && npm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:win": "npm run prepare:llama -- --platform win32 --arch x64 && npm run prepare:speech -- --platform win32 --arch x64 && npm run prepare:sandbox -- --arch x64 && npm run build && electron-builder --win nsis --x64 --publish never",
+    "prepare:sandbox": "node scripts/prepare-sandbox-helper.mjs",
     "prepare:llama": "node scripts/prepare-llama-runtime.mjs",
     "prepare:llama:server": "node scripts/prepare-llama-runtime.mjs --platform linux --arch x64 && node scripts/prepare-llama-runtime.mjs --variant linux-x64-cuda12",
     "verify:llama": "node scripts/verify-packaged-runtime.mjs",
@@ -184,6 +185,13 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "resources/sandbox/win32-${arch}",
+          "to": "sandbox/win32-${arch}",
+          "filter": [
+            "**/*"
+          ]
         }
       ]
     },
@@ -191,6 +199,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
       "artifactName": "Local-Cognitive-Setup-${version}.${ext}"
     },
     "extraResources": [

@@ -88,6 +88,20 @@ const configureRuntimeEnvironment = async () => {
   process.env.LOCAL_MODELS_DIR = path.join(dataRoot, "models");
   // Windows: the CUDA build the app downloads on request (resources are read-only and replaced by updates).
   if (process.platform === "win32") process.env.LLAMA_RUNTIMES_DIR = path.join(dataRoot, "runtimes", "llama");
+  // Windows Synthesis sandbox: the helper, the Node runtime it runs there, and the folders a work folder
+  // may be inside (the app's data and the temporary folder). grant-tools (once, idempotent) lets the
+  // sandbox read the helper and that Node.
+  if (process.platform === "win32") {
+    const sandboxDir = path.join(resourceRoot, "sandbox", `win32-${process.arch}`);
+    const helper = path.join(sandboxDir, "lc-sandbox.exe");
+    if (fs.existsSync(helper)) {
+      process.env.LC_SANDBOX_HELPER = helper;
+      process.env.LC_SANDBOX_NODE = path.join(sandboxDir, "node", "node.exe");
+      process.env.LC_SANDBOX_ROOTS = [dataRoot, require("os").tmpdir()].join(path.delimiter);
+      try { require("child_process").execFileSync(helper, ["grant-tools", sandboxDir], { stdio: "ignore", timeout: 30000 }); }
+      catch (error) { console.error("lc-sandbox grant-tools failed:", error && error.message); }
+    }
+  }
   process.env.APP_DATA_DIR = path.join(dataRoot, "app");
   process.env.MEMORY_DIR = path.join(dataRoot, "memory");
   // Its default is relative to the working directory, which is inside the signed app.
