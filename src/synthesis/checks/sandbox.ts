@@ -609,13 +609,23 @@ export async function verifyProcessTree(provider: Pick<SandboxProvider, "wrap" |
       'fs.writeFileSync("holder.pid",String(h.pid));process.stdout.write("HELD\\n");setInterval(()=>{},1000);';
     const wrapped = provider.wrap(node, ["-e", code], work, [path.dirname(node)]);
     const child = (await import("node:child_process")).spawn(wrapped.executable, wrapped.args, { cwd: work, env: wrapped.env });
-    let out = "";
+    let out = "", err = "";
+    let exit: string | undefined;
     child.stdout.on("data", (chunk: Buffer) => { out += String(chunk); });
+    child.stderr.on("data", (chunk: Buffer) => { if (err.length < 8000) err += String(chunk); });
+    child.once("exit", (code, signal) => { exit = signal ? `ended by ${signal}` : `exited with code ${code}`; });
+    child.once("error", error => { exit = `could not start (${error.message})`; });
     const pidFile = path.join(work, "holder.pid");
     const started = Date.now();
-    while (Date.now() - started < 15_000 && !(out.includes("HELD") && fs.existsSync(pidFile))) await new Promise(resolve => setTimeout(resolve, 100));
+    while (Date.now() - started < 15_000 && exit === undefined && !(out.includes("HELD") && fs.existsSync(pidFile))) await new Promise(resolve => setTimeout(resolve, 100));
     const holder = Number.parseInt(fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8").trim() : "", 10);
-    if (!holder) { try { child.kill("SIGKILL"); } catch { /* already gone */ } return "the check could not start a held process"; }
+    if (!holder) {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      // Why, in a few words: how the command ended (or that it never answered) and its last error line.
+      const last = err.split(/\r?\n/).map(line => line.trim()).filter(Boolean).pop()?.slice(0, 200);
+      const how = exit ?? (out.includes("HELD") ? "it wrote no process id in 15 s" : "it did not answer in 15 s");
+      return `the check could not start a held process (${how}${last ? `: ${last}` : ""})`;
+    }
     // Killing the helper closes the Job object's last handle: kill-on-close ends the holder with the tree.
     child.kill("SIGKILL");
     await new Promise(resolve => setTimeout(resolve, 1000));
