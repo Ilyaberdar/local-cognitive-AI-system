@@ -13,6 +13,10 @@
 - **Each tool result is sent once.** With OpenAI, Perplexity, Claude and Gemini, a result went both in the agent's transcript and as the function's output.
 - **Agents that write JSON lose fewer turns too:** stray closing brackets after an action, or the same action twice, run it once; line breaks inside an answer's text are read; `{"type":"file.read",…}` is that tool call; a reply that is only a tool's arguments hears which tools they fit. Text before or after an action still never runs.
 
+### Desktop
+
+- **Progress bars look the part everywhere they appear:** the app's update, the CUDA runtime, model downloads and the voice model share one bar, with a rounded track and a fill in your accent colour. While the size is still unknown, a wave runs along the bar; a paused download is grey and a failed one red; with motion off the bar stays still. The update download shows what is downloading, then its sizes, speed and time left beside the percent, over a bar the width of its row. The microphone's level in Voice uses the same track.
+
 ## 0.1.8 — 2026-10-22
 
 A fix for Models & Providers: it now says which providers work.
