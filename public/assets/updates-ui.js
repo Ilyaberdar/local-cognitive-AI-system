@@ -51,8 +51,11 @@ export function updatesHtml(state, { confirm, renderNotes = renderReleaseNotes }
         state.blocker ? '' : button('download', 'Download', true))}${error}${notesHtml(available, renderNotes)}`;
     case 'downloading': {
       const progress = state.progress ?? {};
-      return `${row(`Downloading ${escape(available?.version)}…`, `<span data-update-progress-text>${progressText(progress)}</span>`, button('cancel', 'Cancel'))}
-        <progress class="updates-progress" data-update-progress max="100" value="${Math.round(progress.percent || 0)}" aria-label="Download progress"></progress>${notesHtml(available, renderNotes)}`;
+      // The bar sits in the card with what it says: sizes, speed and time left beside the percent.
+      return `<div class="settings-rows"><div class="settings-row updates-downloading"><div class="lc-progress-block"><span class="settings-row-label">Downloading ${escape(available?.version)}…</span>
+        <div class="lc-progress-meta"><span data-update-progress-text>${progressText(progress)}</span><strong data-update-progress-percent>${Math.round(progress.percent || 0)}%</strong></div>
+        <progress class="lc-progress" data-update-progress max="100" value="${Math.round(progress.percent || 0)}" aria-label="Download progress"></progress></div>
+        <div class="settings-control updates-actions">${button('cancel', 'Cancel')}</div></div></div>${notesHtml(available, renderNotes)}`;
     }
     case 'ready':
       if (confirm) return `${row(`Version ${escape(available?.version)} is ready`, `Running on this computer: ${escape(workText(confirm))}. Restarting stops it; model downloads pause and resume after. Work on your server goes on.`,
@@ -65,11 +68,14 @@ export function updatesHtml(state, { confirm, renderNotes = renderReleaseNotes }
   }
 }
 
+/** Sizes, speed and about how long is left; the percent is shown beside it. */
 const progressText = (progress = {}) => {
-  const parts = [`${Math.round(progress.percent || 0)}%`];
+  const parts = [];
   if (progress.total) parts.push(`${megabytes(progress.transferred)} of ${megabytes(progress.total)}`);
   if (progress.bytesPerSecond) parts.push(`${megabytes(progress.bytesPerSecond)}/s`);
-  return parts.join(' · ');
+  const left = progress.total && progress.bytesPerSecond ? Math.max(0, (progress.total - (progress.transferred || 0)) / progress.bytesPerSecond) : undefined;
+  if (left !== undefined) parts.push(left < 60 ? `${Math.max(1, Math.round(left))} s left` : `${Math.round(left / 60)} min left`);
+  return parts.join(' · ') || 'Starting…';
 };
 
 /** Mounts the panel; returns its disposer. */
@@ -82,9 +88,10 @@ export function mountUpdatesPanel(container, { bridge = window.desktopUpdates, r
     // Progress moves in place: what's new and its scroll position stay as they are.
     const key = `${state?.phase}|${state?.available?.version}|${state?.error?.code ?? ''}|${state?.blocker ?? ''}|${Boolean(confirm)}|${state?.checkedAt ?? ''}`;
     if (key === shown && state?.phase === 'downloading') {
-      const bar = container.querySelector('[data-update-progress]'), text = container.querySelector('[data-update-progress-text]');
+      const bar = container.querySelector('[data-update-progress]'), text = container.querySelector('[data-update-progress-text]'), percent = container.querySelector('[data-update-progress-percent]');
       if (bar) bar.value = Math.round(state.progress?.percent || 0);
       if (text) text.textContent = progressText(state.progress);
+      if (percent) percent.textContent = `${Math.round(state.progress?.percent || 0)}%`;
       return;
     }
     shown = key;

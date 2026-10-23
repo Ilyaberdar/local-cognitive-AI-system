@@ -30,14 +30,18 @@
 .voice-device-refresh { border: 0; background: transparent; color: var(--muted); padding: 6px 0; font-size: calc(10px * var(--font-scale, 1)); }
 .voice-panel__model { display: grid; gap: 4px; margin: 14px 0 10px; font-size: calc(11px * var(--font-scale, 1)); }
 .voice-panel__model span { color: var(--muted); }
-.voice-panel progress, .voice-settings progress { width: 100%; height: 5px; }
+.voice-panel__model .lc-progress { margin-top: 4px; }
 .voice-panel__actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .voice-panel__actions button { font-size: calc(10px * var(--font-scale, 1)); padding: 7px 10px; min-height: 28px; }
 .voice-panel__error { font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; color: var(--warning, #d5b47a); }
 .voice-input-test { margin: 12px 0; }
-.voice-input-test meter { display: block; width: 100%; height: 8px; appearance: none; border-radius: 8px; overflow: hidden; background: var(--line); }
-.voice-input-test meter::-webkit-meter-bar { height: 8px; border: 0; border-radius: 8px; background: var(--line); }
-.voice-input-test meter::-webkit-meter-optimum-value { background: var(--success, #6abf95); }
+/* The microphone's level, on the same track as the app's progress bars. */
+.voice-input-test meter { display: block; width: 100%; height: 8px; appearance: none; border-radius: 999px; overflow: hidden; background: transparent; }
+.voice-input-test meter::-webkit-meter-bar { height: 8px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 7%, transparent), inset 0 1px 2px rgb(0 0 0 / .22); }
+.voice-input-test meter::-webkit-meter-optimum-value { border-radius: 999px; transition: width 80ms linear;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--success, #6abf95) 70%, #000), var(--success, #6abf95) 60%, color-mix(in srgb, var(--success, #6abf95) 75%, #fff));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--success, #6abf95) 45%, transparent), inset 0 1px 0 rgb(255 255 255 / .25); }
 .voice-input-test p { margin: 8px 0 0; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); line-height: 1.5; }
 .voice-panel label + .voice-panel__actions { margin-top: 10px; }
 /* Settings → Voice: cards, fields and labels as on the other Settings pages (in light, --surface-2 is the page itself). */

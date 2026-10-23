@@ -240,7 +240,9 @@ test("the update panel: phases, what's new made harmless, progress in place, a c
   const notesElement = panel.querySelector(".updates-notes");
   listener({ ...available, phase: "downloading", progress: { percent: 42, transferred: 42 * 1024 ** 2, total: 100 * 1024 ** 2, bytesPerSecond: 1024 ** 2 } });
   assert.equal((panel.querySelector("[data-update-progress]") as HTMLProgressElement).value, 42);
-  assert.match(panel.textContent!, /42% · 42\.0 MB of 100\.0 MB · 1\.0 MB\/s/);
+  assert.match(panel.querySelector("[data-update-progress-text]")!.textContent!, /^42\.0 MB of 100\.0 MB · 1\.0 MB\/s · 58 s left$/);
+  assert.equal(panel.querySelector("[data-update-progress-percent]")!.textContent, "42%");
+  assert.ok(panel.querySelector(".settings-row [data-update-progress]"), "the bar is in the card with what it says");
   assert.equal(panel.querySelector(".updates-notes"), notesElement, "what's new was not redrawn");
   listener({ ...available, phase: "ready" });
   (panel.querySelector('[data-update-action="install"]') as HTMLButtonElement).click();

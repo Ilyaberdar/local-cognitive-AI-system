@@ -27,7 +27,7 @@ export function cudaHtml(acceleration, { confirming = false, busy = false, error
   switch (cuda.state) {
     case 'downloading':
       return `<p class="gpu-runtime-status" data-gpu-progress-text>Downloading the CUDA runtime: ${escape(progressText(cuda.progress))}</p>
-        <progress class="updates-progress" data-gpu-progress max="100" value="${cuda.progress?.totalBytes ? Math.round(cuda.progress.receivedBytes / cuda.progress.totalBytes * 100) : 0}" aria-label="CUDA runtime download"></progress>
+        <progress class="lc-progress" data-gpu-progress max="100" value="${cuda.progress?.totalBytes ? Math.round(cuda.progress.receivedBytes / cuda.progress.totalBytes * 100) : 0}" aria-label="CUDA runtime download"></progress>
         <p class="settings-description">Models keep running on Vulkan meanwhile. A cancelled download continues where it stopped.</p>${button('cancel', 'Cancel')}`;
     case 'installing':
       return `<p class="gpu-runtime-status"><span class="button-spinner" aria-hidden="true"></span>Checking and installing the CUDA runtime…</p>`;
