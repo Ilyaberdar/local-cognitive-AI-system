@@ -32,7 +32,7 @@ Synthesis is built to keep small local models on the architecture you designed. 
 
 Each failure goes back to the model as an exact item, for example a failed test with its expected and actual values and its file and line, until every gate passes.
 
-Tests run in TypeScript or JavaScript (Node.js 22.18+), Python 3 and C++20. The sandbox is built into macOS; on Linux it needs [bubblewrap](https://github.com/containers/bubblewrap), which the server installer sets up from 0.1.3 (on a server installed earlier, run `sudo local-cognitive-server sandbox` once after updating). Windows has no sandbox yet, so tests don't run there.
+Tests run in TypeScript or JavaScript (Node.js 22.18+), Python 3 and C++20. The sandbox is built into macOS; on Linux it needs [bubblewrap](https://github.com/containers/bubblewrap), which the server installer sets up from 0.1.3 (on a server installed earlier, run `sudo local-cognitive-server sandbox` once after updating). On Windows it is a regular AppContainer inside a kill-on-close Job object, running the app's own bundled Node: JavaScript and TypeScript tests run; Python runs only where the sandbox can read it (installed under Program Files, otherwise the gate is Unknown); C++ tests are Unknown.
 
 ## Cloud models
 
@@ -101,7 +101,7 @@ With `terminal(allow = ["node", "npm"])` among its tools, an agent can build and
 - for at most 120 s a command; `git` only reads history, and `npm` only runs `test`, `run` and `ls` (an agent never installs packages: the project's own `node_modules` is used, read-only; on a server, install it once with `sudo local-cognitive-server deps <project>`);
 - what a command writes stays in the copy: the run's files change only through the agent's file actions.
 
-Before a run gives agents a terminal, the sandbox shows that it isolates. A process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. If any of these succeeds, the run stops and says why, and contract tests are Unknown for the same reason. Windows has no sandbox yet, so a terminal is refused there, and the module shows it before you run.
+Before a run gives agents a terminal, the sandbox shows that it isolates. A process inside it tries to read a file outside its folders, write outside its work folder and reach a local port. If any of these succeeds, the run stops and says why, and contract tests are Unknown for the same reason. On Windows a terminal runs only `node`, `npm` and `npx` (all from the app's bundled Node); if an agent's `terminal(allow = [...])` names anything else, the module shows it before you run.
 
 *Checked live: three DeepSeek agents each fixed a bug, running the module's tests in their terminal until they passed. The run was accepted in about 15 s.*
 
