@@ -420,6 +420,19 @@ test("a native reply's text is cleaned as JSON replies are: DSML call markup is 
   assert.equal((await provider.generateText(agentRequest())).agentAction?.type, "final", "an answer that quotes the markup's pattern is an answer");
 });
 
+test("Add provider's tool check fits in the time the window waits for it, and gives up at its own limit", async () => {
+  const { answersToolCalls, TOOL_CHECK_TIMEOUT_MS } = await import("../src/llm/toolProbe");
+  const wait = Number(/discoverModels:[^\n]*timeoutMs: (\d+)/.exec(await fs.readFile("public/assets/settings-data.js", "utf8"))![1]);
+  // The models are listed first (at most 5 s), then the check: both with room under the window's wait.
+  assert.ok(5_000 + TOOL_CHECK_TIMEOUT_MS <= wait - 10_000, `${TOOL_CHECK_TIMEOUT_MS} ms`);
+  const hanging = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+  const started = Date.now();
+  const awake = setTimeout(() => undefined, 5_000); // AbortSignal.timeout alone does not keep the test running
+  assert.equal(await answersToolCalls({ baseUrl: "https://slow.example/v1", apiKey: "k", model: "m", dialect: CHAT_DIALECT, timeoutMs: 50 }, hanging), false);
+  clearTimeout(awake);
+  assert.ok(Date.now() - started < 2_000);
+});
+
 test("a native answer that starts with JSON is refused only when it is a call: the whole reply, or naming a tool the agent has", () => {
   const read = (text: string) => readNativeAgentResponse({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }] }, agentTools);
   // A Markdown answer with a config example first stays the answer (on the last turn it would be lost).
