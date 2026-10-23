@@ -14,6 +14,9 @@ import { localModel } from "./fixtures/synthesisFixture";
 // The platform's sandbox where it exists (macOS, Linux with bubblewrap); otherwise, only in these
 // tests, the runner's direct mode, so CI without bubblewrap still runs the contract end to end.
 const sandbox = async () => (await platformSandbox().unavailable()) ? unsandboxed : platformSandbox();
+// On Windows the runners use only the Node the app ships (electron/main.cjs sets LC_SANDBOX_NODE); a test
+// run has none, so it lends its own.
+if (process.platform === "win32") process.env.LC_SANDBOX_NODE ??= process.execPath;
 
 const rateLimiter = (refill: boolean) => `export class RateLimiter {
   private tokens: number;
