@@ -240,9 +240,45 @@ for (const [label, provider] of providers) {
     assert.equal(result.message, "2 of 3 tests passed");
     assert.equal(result.feedback.length, 1);
     const line = lineOf(rateLimiterTest, 'test("never holds more than its capacity"');
-    assert.match(result.feedback[0]!, new RegExp(`^never holds more than its capacity: Expected values to be strictly equal: 12 !== 2 \\(expected 2, actual 12\\) \\[tests/rateLimiter\\.test\\.ts:${line}\\]$`));
+    // The assertion that failed, as a test holds several: its own line in the test file.
+    const at = line + rateLimiterTest.split("\n").slice(line).findIndex(text => text.includes("assert.equal(limiter.available(), 2)")) + 1;
+    assert.match(result.feedback[0]!, new RegExp(`^never holds more than its capacity: Expected values to be strictly equal: 12 !== 2 \\(at tests/rateLimiter\\.test\\.ts:${at}\\) \\(expected 2, actual 12\\) \\[tests/rateLimiter\\.test\\.ts:${line}\\]$`));
     const failed = result.cases?.find(item => item.status === "fail");
     assert.deepEqual([failed?.expected, failed?.actual, failed?.line], ["2", "12", line]);
+    noAbsolutePaths(result);
+  });
+
+  test(`TypeScript (${label}): an error thrown in the code under test names its line and the test line that called it`, async t => {
+    const tests = `import assert from "node:assert/strict";
+import test from "node:test";
+import { label } from "../src/label.ts";
+
+test("labels a value and refuses a missing one", () => {
+  assert.equal(label({ name: "Ann" }), "ANN");
+  assert.equal(label({}), "");
+});
+`;
+    const result = await check(t, provider, { candidate: { "src/label.ts": "export function label(item: { name?: string }): string {\n  return item.name!.toUpperCase();\n}\n" }, suite: { "tests/label.test.ts": tests } }, ["tests/label.test.ts"]);
+    if (!result) return;
+    assert.equal(result.status, "Fail");
+    assert.match(result.feedback[0]!, new RegExp(`^labels a value and refuses a missing one: TypeError: Cannot read properties of undefined \\(reading 'toUpperCase'\\) \\(src/label\\.ts:2\\), called at tests/label\\.test\\.ts:${lineOf(tests, "label({})")} \\[tests/label\\.test\\.ts:${lineOf(tests, "test(")}\\]$`));
+    noAbsolutePaths(result);
+  });
+
+  test(`TypeScript (${label}): values that print alike are said to differ in type or prototype`, async t => {
+    const tests = `import assert from "node:assert/strict";
+import test from "node:test";
+import { counts } from "../src/counts.ts";
+
+test("counts words", () => {
+  assert.deepEqual(counts("a b a"), { a: 2, b: 1 });
+});
+`;
+    const source = "export function counts(text: string): Record<string, number> {\n  const out: Record<string, number> = Object.create(null);\n  for (const word of text.split(\" \")) out[word] = (out[word] ?? 0) + 1;\n  return out;\n}\n";
+    const result = await check(t, provider, { candidate: { "src/counts.ts": source }, suite: { "tests/counts.test.ts": tests } }, ["tests/counts.test.ts"]);
+    if (!result) return;
+    assert.equal(result.status, "Fail");
+    assert.match(result.feedback[0]!, /\(expected and actual both print \{ a: 2, b: 1 \}: they print alike but differ in type or prototype, which a strict comparison checks \(a number vs a string, an Object\.create\(null\) object\)\) \[tests\/counts\.test\.ts:5\]$/);
     noAbsolutePaths(result);
   });
 
@@ -314,7 +350,25 @@ test("never runs", () => { if (!ok) throw new Error("no"); });
     assert.equal(result.status, "Fail");
     assert.equal(result.message, "2 of 3 tests passed");
     const line = lineOf(pyTest, "self.assertEqual(limiter.available(), 2)");
-    assert.deepEqual(result.feedback, [`RateLimiterTest › test_capacity: 12 != 2 (expected 2, actual 12) [tests/test_rate_limiter.py:${line}]`]);
+    assert.deepEqual(result.feedback, [`RateLimiterTest › test_capacity: 12 != 2 (at tests/test_rate_limiter.py:${line}) (expected 2, actual 12) [tests/test_rate_limiter.py:${line}]`]);
+    noAbsolutePaths(result);
+  });
+
+  test(`Python (${label}): an error raised in the code under test names its line and the test line that called it`, async t => {
+    const tests = `import unittest
+from src.label import label
+
+
+class LabelTest(unittest.TestCase):
+    def test_label(self):
+        self.assertEqual(label({"name": "Ann"}), "ANN")
+        self.assertEqual(label({}), "")
+`;
+    const result = await check(t, provider, { candidate: { "src/label.py": "def label(item):\n    return item[\"name\"].upper()\n" }, suite: { "tests/test_label.py": tests } }, ["tests/test_label.py"]);
+    if (!result) return;
+    assert.equal(result.status, "Fail");
+    const at = lineOf(tests, "label({})");
+    assert.deepEqual(result.feedback, [`LabelTest › test_label: KeyError: 'name' (src/label.py:2), called at tests/test_label.py:${at} [tests/test_label.py:${at}]`]);
     noAbsolutePaths(result);
   });
 

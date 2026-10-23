@@ -29,7 +29,7 @@ const FUNCTIONS: Record<string, FunctionDefinition> = {
   checkout: { returns: "candidate", required: 1, max: 1, parameters: [["string"]] },
   inspect: { returns: "context", required: 1, max: 1, parameters: [["array"]] },
   accepted: { returns: "boolean", required: 2, max: 2, parameters: [["candidate"], ["frozenSpec"]] },
-  evaluate: { returns: "evidence", required: 2, max: 3, parameters: [["candidate"], ["frozenSpec"], ["tests"]], named: { supplemental: ["tests"] }, async: true },
+  evaluate: { returns: "evidence", required: 2, max: 3, parameters: [["candidate"], ["frozenSpec"], ["tests"]], named: { supplemental: ["tests"], keep: ["string"] }, async: true },
   verify: { returns: "verdict", required: 2, max: 2, parameters: [["frozenSpec"], ["evidence"]] },
   checkpoint: { returns: "none", required: 1, max: 8 },
   accept: { returns: "result", required: 2, max: 2, parameters: [["candidate"], ["evidence"]] },

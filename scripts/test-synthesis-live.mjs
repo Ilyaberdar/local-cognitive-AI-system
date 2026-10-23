@@ -13,6 +13,7 @@
 // --keys: the keys file (~/.config/local-cognitive/provider-keys.env by default), or - for standard input.
 // --local: a GGUF file imported into a local llama.cpp runtime for the run (provider "llamacpp"), from
 //          this repository's resources/llama (or --runtime <folder>); local models need no keys.
+// --seed: the run's seed (1 to 2147483646): every request's seed derives from it, so a local run repeats.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -107,7 +108,7 @@ if (!module.valid) { console.error(module.diagnostics.map(item => `${item.file}:
 
 console.log(`Providers with keys: ${configured.join(", ")}. Module ${name}; project at ${project}.`);
 const started = Date.now();
-const run = await synthesis.start(created.id, module.id);
+const run = await synthesis.start(created.id, module.id, option("seed") ? { seed: Number(option("seed")) } : {});
 let shown = 0;
 const timer = setInterval(async () => {
   const current = await synthesis.get(run.id).catch(() => undefined);
@@ -119,7 +120,7 @@ const result = await synthesis.wait(run.id);
 clearInterval(timer);
 for (const event of result.events.slice(shown)) if (event.status !== "running") console.log(`  ${((Date.parse(event.at) - started) / 1000).toFixed(1).padStart(6)}s ${event.status === "ok" ? "✓" : "✗"} ${event.step}: ${masked(event.message).slice(0, 160)}`);
 
-console.log(`\nRun ${result.status}${result.error ? `: ${masked(result.error)}` : ""} in ${((Date.now() - started) / 1000).toFixed(1)} s, iteration ${result.iteration}.`);
+console.log(`\nRun ${result.status}${result.error ? `: ${masked(result.error)}` : ""} in ${((Date.now() - started) / 1000).toFixed(1)} s, iteration ${result.iteration}${result.seed ? `, seed ${result.seed}` : ""}.`);
 console.log(`Models: ${result.models.map(model => `${model.providerId}/${model.id}`).join(", ") || "none"}.`);
 console.log(`Calls ${result.usage.calls}, tokens ${result.usage.inputTokens} in, ${result.usage.outputTokens} out.`);
 for (const gate of result.evidence?.gates ?? []) console.log(`  gate ${gate.id}: ${gate.status} ${masked(gate.message).slice(0, 140)}`);

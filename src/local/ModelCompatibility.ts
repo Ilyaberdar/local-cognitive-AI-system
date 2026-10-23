@@ -4,7 +4,7 @@ import { GGUFMetadata, LocalModelError, LocalModelOptions, ModelCompatibility } 
 import { standaloneModelIssue } from "./ModelArtifacts";
 
 const GiB = 1024 ** 3;
-export const GGUF_INSPECTION_VERSION = 2;
+export const GGUF_INSPECTION_VERSION = 3;
 const deltaNetArchitectures = new Set(["qwen35", "qwen35moe", "qwen3next"]);
 
 export interface ModelMemoryEstimate {
@@ -177,7 +177,10 @@ export const readGGUFMetadata = async (filePath: string): Promise<GGUFMetadata> 
     const recurrent = metadata.get(`${architecture}.attention.recurrent_layers`);
     return { inspectionVersion: GGUF_INSPECTION_VERSION, version, architecture, generalType: typeof metadata.get("general.type") === "string" ? metadata.get("general.type") as string : undefined,
       name: typeof metadata.get("general.name") === "string" ? metadata.get("general.name") as string : undefined,
-      chatTemplate: Boolean(metadata.get("tokenizer.chat_template")), contextLength: number("context_length"),
+      chatTemplate: Boolean(metadata.get("tokenizer.chat_template")),
+      // A template that thinks before it answers, and lets a request switch that (Qwen3, Nemotron, DeepSeek-R1).
+      thinkingTemplate: typeof metadata.get("tokenizer.chat_template") === "string" && /enable_thinking|<think>/.test(metadata.get("tokenizer.chat_template") as string),
+      contextLength: number("context_length"),
       embeddingLength: number("embedding_length"), blockCount: number("block_count"), headCount: number("attention.head_count"), headCountKv: number("attention.head_count_kv"),
       attentionKeyLength: number("attention.key_length"), attentionValueLength: number("attention.value_length"), fullAttentionInterval: number("full_attention_interval"),
       recurrentLayers: Array.isArray(recurrent) ? recurrent.map(Boolean) : typeof recurrent === "number" ? Boolean(recurrent) : undefined,

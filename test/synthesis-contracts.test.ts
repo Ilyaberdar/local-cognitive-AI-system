@@ -101,11 +101,18 @@ test("a contract on rails: the engineer's tests fail the first candidate, the ex
 
   // The model reads the engineer's tests from the start, and the next prompt carries the exact failure.
   assert.ok(f.prompts[0].includes(`test("refills with the time that passed"`), "visible tests are in the prompt");
-  assert.ok(!f.prompts[0].includes("Feedback from trusted tests: 1."), "no feedback before the first evaluation");
-  const feedback = f.prompts[1].slice(f.prompts[1].indexOf("Feedback from trusted tests:"));
-  assert.match(feedback, /1\. behavior: refills with the time that passed/);
+  assert.ok(f.prompts[0].includes("# Result of the last check\nnone yet: this is the first attempt."), "no feedback before the first evaluation");
+  const feedback = f.prompts[1].slice(f.prompts[1].indexOf("# Result of the last check"), f.prompts[1].indexOf("# src/rateLimiter.ts now"));
+  assert.match(feedback, /\n5 of 6 tests passed; 4 of 5 required checks passed\.\n/, "how far the last candidate got");
+  assert.match(feedback, /In src\/rateLimiter\.ts, or in tests that use it:\n1\. behavior: refills with the time that passed/);
   assert.match(feedback, /expected 2, actual 0/);
   assert.match(feedback, /tests\/rateLimiter\.test\.ts:\d+/);
+  // The assertion that failed, as it reads, and the test around it.
+  assert.match(feedback, /\n {3}tests\/rateLimiter\.test\.ts:\d+ is: assert\.equal\(limiter\.available\(\), 2\);\n/);
+  assert.match(feedback, /\n {3}The test:\n {5}test\("refills with the time that passed", \(\) => \{\n/);
+  // The module's other files are code, never JSON strings; the file itself is shown as it failed.
+  assert.ok(!f.prompts[1].includes("Peer file context"));
+  assert.match(f.prompts[1], /# src\/rateLimiter\.ts now \(the version checked above: change what makes it fail, keep what works\)\n```ts\nexport class RateLimiter/);
   assert.ok(!feedback.includes(os.tmpdir()), "no absolute paths reach the model");
 });
 
@@ -143,7 +150,7 @@ test("a frozen interface is the engineer's: it must exist at checkout, the model
   await fs.writeFile(path.join(f.root, "answer/include/Answer.h"), header);
   const accepted = await f.service.wait((await f.service.start(f.project.id, "Answer")).id);
   assert.equal(accepted.status, "accepted", accepted.error);
-  assert.ok(f.prompts.at(-1)!.includes("--- include/Answer.h\n#pragma once"), "the model reads the frozen header");
+  assert.ok(f.prompts.at(-1)!.includes("--- include/Answer.h\n```cpp\n#pragma once"), "the model reads the frozen header");
 
   await fs.writeFile(path.join(f.root, module.flowPath), flow("include/Answer.h"));
   const rewrite = await f.service.wait((await f.service.start(f.project.id, "Answer")).id);

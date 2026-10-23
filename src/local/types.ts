@@ -107,6 +107,8 @@ export interface GGUFMetadata {
   generalType?: string;
   name?: string;
   chatTemplate?: boolean;
+  /** The chat template thinks before it answers (a <think> section, or an enable_thinking switch). */
+  thinkingTemplate?: boolean;
   contextLength?: number;
   embeddingLength?: number;
   blockCount?: number;

@@ -221,8 +221,12 @@ function interrupted(report: Report): string[] {
       !report.starts.some(other => other.startsWith(`${name} › `));
   });
 }
+/** Said when the values a failed comparison shows print alike: what differs is what printing hides. */
+export const SAME_PRINT_NOTE = "they print alike but differ in type or prototype, which a strict comparison checks (a number vs a string, an Object.create(null) object)";
 const caseFeedback = (item: CheckCase) => {
-  const values = item.expected !== undefined || item.actual !== undefined
+  const alike = item.expected !== undefined && item.actual !== undefined && oneLine(item.expected) === oneLine(item.actual);
+  const values = alike ? ` (expected and actual both print ${clip(oneLine(item.expected!), 60)}: ${SAME_PRINT_NOTE})`
+    : item.expected !== undefined || item.actual !== undefined
     ? ` (expected ${clip(oneLine(item.expected ?? "undefined"), 80)}, actual ${clip(oneLine(item.actual ?? "undefined"), 80)})` : "";
   const where = item.file ? ` [${item.file}${item.line ? `:${item.line}` : ""}]` : "";
   const head = `${clip(item.name, 100)}: `;

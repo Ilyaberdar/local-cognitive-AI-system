@@ -16,6 +16,19 @@ export interface ActivityEvent {
   waiting?: true;
   /** Tokens a running generation has streamed so far. */
   tokens?: number;
+  /** A finished model request of revise: how it was asked, so a run can be repeated and studied. */
+  generation?: GenerationRecord;
+}
+/** One model request: its seed and sampling, its thinking budget, a hash of its prompt, and what came
+ * back. `mode`: a file (write), a retry after an empty answer, or an escalation after a file came back
+ * unchanged (focus: one failure, thinking first; edit: SEARCH/REPLACE blocks; whole: an edit's fallback). */
+export interface GenerationRecord {
+  mode: "write" | "retry" | "focus" | "edit" | "whole";
+  seed: number; temperature?: number; topP?: number; topK?: number; minP?: number; repeatPenalty?: number;
+  thinking: number; budgetMessage?: string; maxTokens: number; promptHash: string; promptChars: number;
+  inputTokens?: number; outputTokens?: number; finish?: string; ms: number;
+  /** The answer, when it was a file: the same file as before. */
+  unchanged?: boolean;
 }
 export type VerdictStatus = "Pass" | "Fail" | "Unknown";
 export interface EvidenceCase { name: string; status: "pass" | "fail"; file?: string; line?: number; message?: string; expected?: string; actual?: string }
@@ -41,6 +54,8 @@ export interface SynthesisRun {
   usage: {inputTokens: number; outputTokens: number; calls: number};
   /** How the run's agents stand (agents-v1); each agent is read with the run's agents. */
   agents?: AgentCounts;
+  /** Every model request's seed derives from it; a restart keeps it. */
+  seed?: number;
 }
 export interface AgentCounts { total: number; queued: number; running: number; done: number; failed: number; cancelled: number }
 export interface RunRecord extends SynthesisRun {

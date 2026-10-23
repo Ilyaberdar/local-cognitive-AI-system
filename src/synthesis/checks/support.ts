@@ -23,15 +23,22 @@ const show = value => clip(inspect(value, { depth: 4, breakLength: Infinity, max
 // node reports a file as a test of its own only when its process ended abnormally or reported no tests.
 const fileLevel = data => data.nesting === 0 && typeof data.file === "string" && relative(data.name) === relative(data.file);
 const inWork = file => { const name = relative(file); return !!name && !name.startsWith("..") && !name.includes("node_modules/"); };
+// An error's stack frames in the work folder, innermost first.
+const framesOf = error => String(error?.stack ?? "").split("\n").map(item => item.match(/((?:file:\/\/)?\/[^():\s]+):(\d+):\d+\)?$/)).filter(match => match && inWork(match[1]));
 const describe = (error, testFile) => {
   // node wraps the test's own error (an AssertionError, a TypeError...) in ERR_TEST_FAILURE.
   const cause = error && typeof error.cause === "object" && error.cause !== null ? error.cause : error;
   if (!cause) return "failed";
   const message = String(cause.message ?? cause);
-  if (cause === error || !cause.name || cause.name === "AssertionError") return message;
-  // Any other error says where it came from in the code under test (an assertion points at the test).
-  const frame = String(cause.stack ?? "").split("\n").map(item => item.match(/((?:file:\/\/)?\/[^():\s]+):(\d+):\d+\)?$/)).find(match => match && inWork(match[1]));
-  return cause.name + ": " + message + (frame && relative(frame[1]) !== testFile ? " (" + relative(frame[1]) + ":" + frame[2] + ")" : "");
+  if (cause === error || !cause.name) return message;
+  // Where in the test it went wrong, as a test holds several checks: the assertion's line, or the
+  // line whose call threw.
+  const frames = framesOf(cause), inTest = frames.find(match => relative(match[1]) === testFile);
+  if (cause.name === "AssertionError" || cause.code === "ERR_ASSERTION") return message + (inTest ? " (at " + testFile + ":" + inTest[2] + ")" : "");
+  // Any other error says where it came from in the code under test, and which test line called it.
+  const frame = frames[0];
+  const source = frame && relative(frame[1]) !== testFile ? " (" + relative(frame[1]) + ":" + frame[2] + ")" : "";
+  return cause.name + ": " + message + source + (inTest ? (source ? ", called at " : " (at ") + testFile + ":" + inTest[2] + (source ? "" : ")") : "");
 };
 const assertion = error => [error?.cause, error].find(item => item && typeof item === "object" &&
   (item.code === "ERR_ASSERTION" || item.name === "AssertionError") && ("expected" in item || "actual" in item));
@@ -164,7 +171,15 @@ def described(kind, value, tb, test_file):
     text = traceback.format_exception_only(kind, value)[-1].strip()
     message = str(value) if issubclass(kind, AssertionError) and str(value) else text
     file, line = location(tb)
-    return message + (" (%s:%s)" % (file, line) if file and file != test_file else "")
+    # Where in the test it went wrong, as a test holds several checks: the assertion's line, or the
+    # line whose call raised.
+    at_file, at_line = location(tb, test_file)
+    at = "%s:%s" % (test_file, at_line) if test_file and at_file == test_file else None
+    if issubclass(kind, AssertionError):
+        return message + (" (at %s)" % at if at else "")
+    if file and file != test_file:
+        return message + " (%s:%s)" % (file, line) + (", called at %s" % at if at else "")
+    return message + (" (at %s)" % at if at else "")
 
 
 def capture(method):

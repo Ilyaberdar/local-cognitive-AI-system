@@ -93,7 +93,7 @@ function readPage(files: Record<string, string>): ParsedPage {
       if (scripts.length > 5) throw new CandidateError("The calculator adapter permits at most five script elements.");
     }
   }
-  if (calculatorScripts !== 1) throw new CandidateError("index.html must include calculator.js exactly once.");
+  if (calculatorScripts !== 1) throw new CandidateError(`index.html must load calculator.js exactly once, with <script src="calculator.js"></script> at the end of body; it loads it ${calculatorScripts === 0 ? "nowhere" : `${calculatorScripts} times`} instead.`);
   return { nodes, scripts, elements: nodes.map(node => {
     const attrs = attributes(node);
     const options = node.childNodes.filter((child): child is Element => "tagName" in child && child.tagName === "option");
@@ -127,23 +127,25 @@ function validateControls(page: ParsedPage): void {
   const byId = new Map(page.nodes.map(node => [attributes(node).id, node]));
   const requireControl = (id: string, tag: string) => {
     const node = byId.get(id);
-    if (!node || node.tagName !== tag) throw new CandidateError(`UI requires ${tag}#${id}.`);
+    // Each message says what index.html must hold, as HTML, and what it holds instead.
+    if (!node || node.tagName !== tag) throw new CandidateError(`index.html must have a <${tag}${tag === "input" ? ' type="number"' : ""} id="${id}"> element; it has ${node ? `<${node.tagName} id="${id}">` : `no element with id="${id}"`} instead.`);
     const attrs = attributes(node);
-    if ("disabled" in attrs || "hidden" in attrs || attrs["aria-hidden"] === "true") throw new CandidateError(`#${id} must be available to users.`);
+    if ("disabled" in attrs || "hidden" in attrs || attrs["aria-hidden"] === "true") throw new CandidateError(`index.html: <${tag} id="${id}"> must be usable; remove its ${["disabled", "hidden"].filter(name => name in attrs).concat(attrs["aria-hidden"] === "true" ? ["aria-hidden"] : []).join(" and ")} attribute.`);
     const label = attrs["aria-label"]?.trim() || attrs["aria-labelledby"]?.split(/\s+/).map(key => byId.get(key)).filter(Boolean).map(item => textOf(item!)).join(" ").trim()
       || page.nodes.find(item => item.tagName === "label" && attributes(item).for === id && textOf(item).trim())
       || (node.parentNode && "tagName" in node.parentNode && node.parentNode.tagName === "label" && textOf(node.parentNode).trim())
       || (tag === "button" && textOf(node).trim());
-    if (tag !== "output" && !label) throw new CandidateError(`#${id} needs a visible label or accessible name.`);
+    if (tag !== "output" && !label) throw new CandidateError(`index.html: <${tag} id="${id}"> needs a label: add <label for="${id}">…</label> with visible text (or an aria-label); it has none.`);
     return node;
   };
   for (const id of ["a", "b"]) {
-    if (attributes(requireControl(id, "input")).type !== "number") throw new CandidateError(`#${id} must be a number input.`);
+    const type = attributes(requireControl(id, "input")).type;
+    if (type !== "number") throw new CandidateError(`index.html: <input id="${id}"> must be <input type="number" id="${id}">; it has ${type === undefined ? "no type" : `type="${type}"`} instead.`);
   }
   const operation = requireControl("operation", "select");
   const values = operation.childNodes.filter((item): item is Element => "tagName" in item && item.tagName === "option")
     .map(item => attributes(item).value ?? textOf(item));
-  if (!["+", "-", "*", "/"].every(value => values.includes(value))) throw new CandidateError("#operation must provide +, -, * and / options.");
+  if (!["+", "-", "*", "/"].every(value => values.includes(value))) throw new CandidateError(`index.html: <select id="operation"> must have <option> values +, -, * and /; it has ${values.length ? values.map(value => JSON.stringify(value)).join(", ") : "none"} instead.`);
   for (const id of ["calculate", "clear"]) requireControl(id, "button");
   requireControl("result", "output");
   // The semantic harness builds its DOM before running scripts. Restrict the
@@ -156,7 +158,7 @@ function validateControls(page: ParsedPage): void {
     while (parent && "tagName" in parent && parent.tagName !== "body") parent = parent.parentNode;
     if (!parent || !("tagName" in parent) || parent.tagName !== "body" ||
       (script.sourceCodeLocation?.startOffset ?? -1) < controlsEnd) {
-      throw new CandidateError("Place calculator.js and every inline setup script at the end of body, after all required calculator controls.");
+      throw new CandidateError("index.html must place <script src=\"calculator.js\"> and every inline setup script at the end of body, after all the calculator's controls; a script comes before them instead.");
     }
   }
 }
@@ -218,16 +220,16 @@ function harnessSource(elements: ElementDescription[]): string {
     define(globalThis,"eval",{value:undefined,writable:false,configurable:false});
     define(globalThis,"Function",{value:undefined,writable:false,configurable:false});
     function arithmetic(calculate) {
-      if(typeof calculate !== "function") fail("calculator.js must define global calculate(a, b, operation).");
+      if(typeof calculate !== "function") fail("calculator.js must define a global function calculate(a, b, operation); it defines none.");
       const examples = [[2,3,"+",5],[10,4,"-",6],[-3,4,"*",-12],[7,2,"/",3.5],[0.1,0.2,"+",0.3],[-1,-3,"-",2],[0,9,"*",0],[0,2,"/",0]];
-      for(let i=0;i<examples.length;i++){ const e=examples[i]; if(!close(calculate(e[0],e[1],e[2]),e[3])) fail("Arithmetic example failed for " + e[0] + " " + e[2] + " " + e[1]); }
+      for(let i=0;i<examples.length;i++){ const e=examples[i], got=calculate(e[0],e[1],e[2]); if(!close(got,e[3])) fail("calculator.js: Arithmetic example failed: calculate(" + e[0] + ", " + e[1] + ", '" + e[2] + "') must return " + e[3] + "; it returns " + string(got) + " instead."); }
       for(let a=-7;a<=7;a++) for(let b=-5;b<=5;b++) {
-        if(!close(calculate(a,b,"+"),a+b) || !close(calculate(a,b,"-"),a-b) || !close(calculate(a,b,"*"),a*b)) fail("Arithmetic property checks failed.");
-        if(b !== 0 && !close(calculate(a,b,"/"),a/b)) fail("Division property checks failed.");
+        for(const op of ["+","-","*"]) { const want = op === "+" ? a+b : op === "-" ? a-b : a*b, got = calculate(a,b,op); if(!close(got,want)) fail("calculator.js: Arithmetic property checks failed: calculate(" + a + ", " + b + ", '" + op + "') must return " + want + "; it returns " + string(got) + " instead."); }
+        if(b !== 0) { const got = calculate(a,b,"/"); if(!close(got,a/b)) fail("calculator.js: Division property checks failed: calculate(" + a + ", " + b + ", '/') must return " + a/b + "; it returns " + string(got) + " instead."); }
       }
       let threw = false;
       try { calculate(1,0,"/"); } catch(error) { threw = error instanceof GuestError; }
-      if(!threw) fail("Division by zero must throw Error.");
+      if(!threw) fail("calculator.js: Division by zero must throw Error: calculate(1, 0, '/') returned instead of throwing.");
       return "Passed 653 finite arithmetic/property checks and division-by-zero behavior.";
     }
     function ui() {
@@ -241,15 +243,15 @@ function harnessSource(elements: ElementDescription[]): string {
         const e=examples[i]; a.value=string(e[0]); b.value=string(e[1]); op.value=e[2]; result.text=""; result.value="";
         click(ids.calculate);
         const text=trim(result.text) || trim(result.value);
-        if(!text || !close(number(text),e[3])) fail("Calculate button produced the wrong result for " + e[0] + " " + e[2] + " " + e[1] + ".");
+        if(!text || !close(number(text),e[3])) fail("calculator.js: clicking #calculate with " + e[0] + " " + e[2] + " " + e[1] + " must show " + e[3] + " in the <output id='result'>; it shows " + (text ? "'" + text + "'" : "nothing") + " instead.");
       }
       a.value="1"; b.value="0"; op.value="/"; result.text=""; result.value="";
       click(ids.calculate);
       const errorText=trim(result.text) || trim(result.value);
-      if(!errorText || finite(number(errorText)) || errorText === "Infinity" || errorText === "-Infinity" || errorText === "+Infinity" || errorText === "NaN") fail("Division by zero must display a readable error in #result.");
+      if(!errorText || finite(number(errorText)) || errorText === "Infinity" || errorText === "-Infinity" || errorText === "+Infinity" || errorText === "NaN") fail("calculator.js: after clicking #calculate with 1 / 0, the <output id='result'> must show a readable error text; it shows " + (errorText ? "'" + errorText + "'" : "nothing") + " instead.");
       a.value="13"; b.value="9"; result.text="117"; result.value="117";
       click(ids.clear);
-      if(a.value !== "" || b.value !== "" || result.text !== "" || result.value !== "") fail("Clear button must reset both inputs and result to empty strings.");
+      if(a.value !== "" || b.value !== "" || result.text !== "" || result.value !== "") fail("calculator.js: clicking #clear must set the values of #a and #b and the text of #result to empty strings; after the click they are '" + a.value + "', '" + b.value + "' and '" + (result.text || result.value) + "' instead.");
       return "Passed accessible controls, six calculate interactions, division-by-zero and clear in the semantic DOM harness; full-browser layout/behavior is a separate check.";
     }
     return {arithmetic:arithmetic,ui:ui};

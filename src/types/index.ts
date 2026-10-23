@@ -537,6 +537,9 @@ export interface LLMRequest {
   usageCall?: UsageAttemptHook;
   /** Per-request thinking token budget for the bundled llama.cpp runtime. */
   localReasoningBudget?: number;
+  /** What the bundled llama.cpp runtime writes into the thinking when that budget runs out, before it
+   * ends it: tells the model to answer now, instead of being cut off in mid-thought. */
+  localReasoningBudgetMessage?: string;
   prompt: string;
   images?: LLMImage[];
   systemPrompt?: string;

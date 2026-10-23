@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { ProjectStore } from "../projects/ProjectStore";
 import { LocalModelManagerRegistry } from "../llm/LocalModelManager";
 import { LLMService } from "../llm/LLMService";
@@ -9,7 +9,7 @@ import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { answerFileProblem, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram, terminalAllowsOf } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
-import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
+import { ActivityEvent, Evidence, EvidenceCase, GenerationRecord, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, MAX_SOURCE_BYTES, readOptional, readText, relativePath } from "./paths";
 import { calculatorTemplate, emptyModuleTemplate, ModuleFiles, ModuleTemplate, rateLimiterTemplate, repositoryReviewTemplate } from "./templates";
 import { discoverModules, moduleDirectory, moduleFolders, moduleName, moduleSources, sourceId } from "./modules";
@@ -24,6 +24,7 @@ import { AgentRunStore } from "../agents/runtime/AgentRunStore";
 import type { AgentCounts } from "./types";
 import type { ModelQueue } from "../local/types";
 import { quantQuality } from "../local/quantization";
+import { applyEditBlocks, implicatedFiles, RevisePromptInput, revisePrompt } from "./revisePrompt";
 
 interface Services {
   projects: ProjectStore;
@@ -75,8 +76,32 @@ const suiteFiles = (spec: SpecProgram): string[] => [...new Set([...(spec.tests 
 function violations(evidence: Evidence, generationErrors: string[]): string[] {
   const items = evidence.gates.filter(gate => gate.status !== "Pass" && !gate.skipped)
     .flatMap(gate => gate.feedback?.length ? gate.feedback.map(item => `${gate.id}: ${item}`) : [`${gate.id}: ${gate.message}`]);
-  return [...items, ...generationErrors].slice(0, 12).map(item => item.length > 300 ? `${item.slice(0, 299)}…` : item);
+  // A long item is shortened before its "[test:line]", which says where the failed case is.
+  return [...items, ...generationErrors].slice(0, 12).map(item => {
+    if (item.length <= 300) return item;
+    const ref = /\s\[[^\]\s]+:\d+\]$/.exec(item)?.[0] ?? "";
+    return `${item.slice(0, 299 - ref.length)}…${ref}`;
+  });
 }
+/** A candidate's standing by its visible evidence: required gates passed, then visible tests passed.
+ * Hidden gates never count: choosing by them would spend the holdout on selection. */
+export function visibleScore(evidence: Evidence, hiddenGates: ReadonlySet<string>): {value: number; passed: number; total: number; hardPassed: number; hardTotal: number} {
+  const hard = evidence.gates.filter(gate => gate.severity === "hard" && !hiddenGates.has(gate.id));
+  const tests = hard.filter(gate => gate.cases?.length);
+  const passed = tests.reduce((sum, gate) => sum + gate.cases!.filter(item => item.status === "pass").length, 0);
+  const total = tests.reduce((sum, gate) => sum + gate.cases!.length, 0);
+  const hardPassed = hard.filter(gate => gate.status === "Pass").length;
+  return {value: hardPassed * 100_000 + passed, passed, total, hardPassed, hardTotal: hard.length};
+}
+/** A request's seed: the run's, mixed with where in the run it is asked (iteration, file, request). */
+export const requestSeed = (runSeed: number, iteration: number, file: string, request: number) =>
+  createHash("sha256").update(`${runSeed}/${iteration}/${file}/${request}`).digest().readUInt32BE(0) % 2_147_483_647;
+/** What the bundled llama.cpp writes into a thinking that reached its budget, before it ends it: the
+ * model then writes its answer instead of being cut off in mid-thought. */
+export const BUDGET_MESSAGE = "\n\nTime is up. I will now write the complete corrected file.\n";
+/** How long a model thinks when asked again about the one failure of a file it returned unchanged. */
+const ESCALATION_THINKING = 1024;
+const MAX_SEED = 2_147_483_646;
 /** What each kind of file is, for a small model that writes one file at a time. */
 const LANGUAGE_HINTS: Array<[RegExp, string]> = [
   [/\.css$/, "This task is ONLY a short CSS stylesheet, at most 40 simple rules. Do not put JavaScript or HTML in CSS. Other files handle all behavior. Avoid repetition."],
@@ -160,7 +185,10 @@ function publicRun(record: RunRecord): SynthesisRun {
 }
 
 /** How a run is started: an id the caller reserved, and whether a paired device starts it. */
-export interface LaunchOptions { runId?: string; device?: {guard: () => Promise<string | undefined>} }
+export interface LaunchOptions { runId?: string; device?: {guard: () => Promise<string | undefined>};
+  /** The run's seed (1 to 2,147,483,646): every model request's seed derives from it. A new run draws
+   * one; a restart keeps its run's. */
+  seed?: number }
 
 /** Project source is read-only until Apply. Runs contain frozen sources and an isolated artifact tree. */
 export class SynthesisService {
@@ -393,7 +421,7 @@ export class SynthesisService {
     if (existing) return existing;
     const record = await this.read(id);
     if (activeStatus(record.status) || record.status === "accepted") throw new SynthesisError("Only unsuccessful or interrupted runs may be restarted.", 409);
-    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, options, record.suite);
+    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, {...options, seed: options.seed ?? record.seed}, record.suite);
   }
   /** A run, if one with this id exists. */
   async existing(id: string): Promise<SynthesisRun | undefined> {
@@ -414,7 +442,8 @@ export class SynthesisService {
     this.pendingStarts.add(pending);
     return pending;
   }
-  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, {runId: reservedId, device}: LaunchOptions, frozenSuite?: Record<string, string>): Promise<SynthesisRun> {
+  private async prepareLaunch(projectId: string, id: string, specSource: string, flowSource: string, restartedFrom: string | undefined, {runId: reservedId, device, seed}: LaunchOptions, frozenSuite?: Record<string, string>): Promise<SynthesisRun> {
+    if (seed !== undefined && (!Number.isInteger(seed) || seed < 1 || seed > MAX_SEED)) throw new SynthesisError(`A run's seed is a whole number from 1 to ${MAX_SEED.toLocaleString("en")}.`);
     const project = await this.project(projectId);
     if (this.disposed) throw new SynthesisError("Runtime is stopping.", 409);
     const compiled = compileProgram(specSource, flowSource);
@@ -433,7 +462,7 @@ export class SynthesisService {
       version: 1, id: reservedId ? runId(reservedId) : randomUUID(), projectId, moduleId: id, moduleName: compiled.spec.module,
       rootPath: project.rootPath, specSource, flowSource, specHash: hash(specSource), spec: compiled.spec, flow: compiled.flow,
       status: "queued", phase: "queued", iteration: 0, createdAt: stamp(), updatedAt: stamp(), restartedFrom, ...(device ? {startedBy: "device" as const} : {}),
-      files: {}, baseline: {}, events: [], models: [], usage: {inputTokens: 0, outputTokens: 0, calls: 0},
+      files: {}, baseline: {}, events: [], models: [], usage: {inputTokens: 0, outputTokens: 0, calls: 0}, seed: seed ?? randomInt(1, MAX_SEED + 1),
       frozen: {}, suite, ...(Object.keys(suite).length ? {suiteHash: filesHash(suite)} : {})
     };
     await this.save(record);
@@ -549,6 +578,11 @@ export class SynthesisService {
     let lastEvidence: Evidence | undefined;
     let generationErrors: string[] = [];
     let terminal: {status: RunStatus; evidence?: Evidence} | undefined;
+    // The last evaluation's standing, as the next revisions read it, and the best candidate so far
+    // (evaluate(..., keep = "best")): both by visible gates only.
+    const hiddenGates = new Set(record.spec.gates.filter(gate => gate.check?.kind === "tests" && gate.check.hidden).map(gate => gate.id));
+    let checked: ReturnType<typeof visibleScore> | undefined;
+    let best: {files: Record<string, string>; removed: string[]; evidence: Evidence; score: ReturnType<typeof visibleScore>; iteration: number} | undefined;
     const requireCandidate = (value: unknown) => { if (value !== candidate || !record.outputPath) throw new SynthesisError("Expected the checked-out candidate."); };
     const requireSpec = (value: unknown) => { if (value !== spec) throw new SynthesisError("Expected the frozen module specification."); };
     const evidenceMatches = (value: unknown): value is Evidence => value === lastEvidence && !!lastEvidence &&
@@ -840,7 +874,7 @@ export class SynthesisService {
         case "role.revise": {
           if (!receiver || typeof receiver !== "object" || !roles.has(receiver)) throw new SynthesisError("Expected a loaded model role.");
           requireCandidate(args[0]); requireSpec(args[1]);
-          generationErrors.push(...await this.revise(record, (receiver as {model: ManagedModel}).model, args.slice(2), signal, named));
+          generationErrors.push(...await this.revise(record, (receiver as {model: ManagedModel}).model, args.slice(2), signal, named, checked));
           lastEvidence = undefined; delete record.evidence;
           value = candidate; break;
         }
@@ -855,6 +889,7 @@ export class SynthesisService {
         }
         case "evaluate": {
           requireCandidate(args[0]); requireSpec(args[1]);
+          if (named.keep !== undefined && named.keep !== "best") throw new SynthesisError('keep is "best": evaluate(candidate, spec, keep = "best").');
           // Every gate judges one snapshot, and the evidence names that snapshot's hash.
           const files = {...record.files};
           const checkFiles = {candidate: files, frozen: record.frozen ?? {}, suite: record.suite ?? {}};
@@ -904,6 +939,17 @@ export class SynthesisService {
           lastEvidence = {candidateHash: filesHash(files), specHash: record.specHash, evaluatorVersion: EVALUATOR_VERSION,
             ...(record.suiteHash ? {suiteHash: record.suiteHash} : {}), status, gates};
           evaluationSignatures.push(hash(JSON.stringify(gates.map(gate => [gate.id, gate.status, gate.message]))));
+          // keep = "best": a candidate worse than the best one so far is set aside, and the run goes on
+          // from the best one with its evidence, so an iteration never loses what an earlier one had.
+          // A tie goes to the newer candidate.
+          const scored = visibleScore(lastEvidence, hiddenGates);
+          if (named.keep === "best" && best && scored.value < best.score.value) {
+            for (const file of Object.keys(record.files)) delete record.files[file];
+            Object.assign(record.files, best.files); record.removed = [...best.removed];
+            lastEvidence = best.evidence;
+            await this.event(record, "evaluate", `Kept the candidate of iteration ${best.iteration} (${best.score.hardPassed} of ${best.score.hardTotal} required checks, ${best.score.passed} of ${best.score.total} tests) over this one (${scored.hardPassed} of ${scored.hardTotal}, ${scored.passed} of ${scored.total})`, "ok");
+          } else best = {files: {...record.files}, removed: [...record.removed ?? []], evidence: lastEvidence, score: scored, iteration: record.iteration};
+          checked = visibleScore(lastEvidence, hiddenGates);
           record.evidence = lastEvidence; value = lastEvidence; break;
         }
         case "verify": {
@@ -1023,7 +1069,7 @@ export class SynthesisService {
   private usage(record: RunRecord, usage?: {inputTokens?: number; outputTokens?: number}): void {
     record.usage.calls++; record.usage.inputTokens += usage?.inputTokens ?? 0; record.usage.outputTokens += usage?.outputTokens ?? 0;
   }
-  private async revise(record: RunRecord, model: ManagedModel, feedback: unknown[], signal: AbortSignal, options: Record<string, unknown>): Promise<string[]> {
+  private async revise(record: RunRecord, model: ManagedModel, feedback: unknown[], signal: AbortSignal, options: Record<string, unknown>, checked?: ReturnType<typeof visibleScore>): Promise<string[]> {
     const selected = options.file;
     const format = options.format ?? "json";
     if (format !== "source" && format !== "json") throw new SynthesisError("revise format must be source or json.");
@@ -1033,35 +1079,24 @@ export class SynthesisService {
     const errors: string[] = [];
     // The rails a small model writes along: the engineer's frozen interfaces and visible tests.
     const frozen = Object.entries(record.frozen ?? {});
-    const visibleTests = record.spec.gates.flatMap(gate => gate.check?.kind === "tests" && !gate.check.hidden ? gate.check.files : [])
-      .filter(name => Object.hasOwn(record.suite ?? {}, name));
-    // The flow passes verdict.violations: exact items read best as a numbered list.
+    const tests = record.spec.gates.flatMap(gate => gate.check?.kind === "tests" && !gate.check.hidden ? gate.check.files : [])
+      .filter(name => Object.hasOwn(record.suite ?? {}, name)).map(name => [name, record.suite![name]!] as [string, string]);
+    // The flow passes verdict.violations: exact items, grouped by the file they point into.
     const items = feedback.flat(2).filter((item): item is string => typeof item === "string");
     const given = feedback.flat(2).some(item => item !== null && item !== undefined);
-    const feedbackText = items.length ? items.map((item, index) => `${index + 1}. ${item}`).join("\n").slice(0, 4500)
-      : given ? JSON.stringify(feedback).slice(0, 4500) : record.iteration <= 1 ? "none yet: this is the first attempt." : "none.";
-    const web = (name: string) => /\.(?:js|html|css)$/.test(name);
+    const instruction = typeof options.instruction === "string" && options.instruction ? options.instruction : undefined;
+    // A local model whose chat template thinks first is asked to think when it is asked again.
+    const thinks = model.providerId === "llamacpp" && (model as {metadata?: {thinkingTemplate?: boolean}}).metadata?.thinkingTemplate === true;
     for (const file of files) {
       signal.throwIfAborted();
       // Consent withdrawn while earlier files were written stops the next one.
       if (model.providerId !== "llamacpp") await this.provider(record, model.providerId);
       await this.event(record, "agent.generate", `Writing ${file}`, "running", {model: model.displayName, file});
-      const prompt = [
-        `Implement only the file ${file}. Other files: ${record.spec.artifacts.filter(item => item !== file).join(", ") || "none"}.`,
-        LANGUAGE_HINTS.find(([pattern]) => pattern.test(file))?.[1] ?? "Write only the requested file's contents; do not include other files or explanations.",
-        options.instruction ? `Module: ${record.spec.module}. This scoped task is supplied by the authored flow; the full contract is independently verified after generation.`
-          : `Contract: ${record.spec.description}`,
-        frozen.length ? `Frozen interface files, written by the engineer: implement them exactly and never change them.\n${frozen.map(([name, content]) => `--- ${name}\n${content}`).join("\n").slice(0, 8000)}` : "",
-        visibleTests.length ? `The engineer's tests that must pass (they import the module's files; do not copy them into the file):\n${visibleTests.map(name => `--- ${name}\n${record.suite![name]}`).join("\n").slice(0, 6000)}` : "",
-        format === "source" ? "Return ONLY the complete source code of this file. No JSON. No explanations. At most one code fence."
-          : "Return an object with exactly one key, content, containing the complete file text. No markdown fences inside content. Do not explain.",
-        `Current file:\n${(record.files[file] ?? "(empty)").slice(0, 10000)}`,
-        options.instruction ? "" : `Peer file context:\n${JSON.stringify(Object.fromEntries(Object.entries(record.files).filter(([name]) => name !== file).map(([name, content]) => [name, content.slice(0, 4000)]))).slice(0, 10000)}`,
-        `Feedback from trusted tests: ${feedbackText}`,
-        options.instruction ? `Your focused task for this file:\n${options.instruction}` : "",
-        `${web(file) ? "Use plain, minimal code under 100 lines." : "Keep the code plain and as short as the contract allows."} Finish ${format === "json" ? "the JSON object" : "the response"} as soon as this single file is complete. /no_think`
-      ].filter(Boolean).join("\n\n");
-      const systemPrompt = `You implement only ${file}, one small file of a software module. Follow the exact public interface in the contract. The contract describes the whole module; implement only this file's responsibility. ${format === "json" ? "Output only JSON with a content string." : "Output only source code, not JSON or explanations."}`;
+      const ask = (extra: Partial<RevisePromptInput>) => revisePrompt({file, artifacts: record.spec.artifacts, module: record.spec.module, description: record.spec.description,
+        hint: LANGUAGE_HINTS.find(([pattern]) => pattern.test(file))?.[1] ?? "Write only the requested file's contents; do not include other files or explanations.",
+        instruction, frozen, tests, files: record.files, feedback: items, ...(!items.length && given ? {other: feedback} : {}), first: record.iteration <= 1,
+        ...(items.length && checked ? {checked} : {}), reply: format, ...extra});
+      const {system: systemPrompt, prompt} = ask({});
       // Room to write the file in the model's context: a prompt that leaves too little is not sent.
       const window = model.providerId === "llamacpp" ? this.services.contextWindow?.(model) : undefined;
       const promptTokens = Math.ceil((prompt.length + systemPrompt.length) / 3);
@@ -1071,29 +1106,21 @@ export class SynthesisService {
         errors.push(message); await this.event(record, "agent.generate", message, "failed", {model: model.displayName, file});
         continue;
       }
-      let content: string | undefined;
-      let response: LLMResponse | undefined;
-      let problem: string | undefined;
-      // An empty answer (a thinking model that stopped before writing) is asked for once more, with
-      // room to think first; a cut-off or unusable answer is the model's attempt and is not retried.
-      for (const attempt of [1, 2]) {
-        const thinking = attempt === 2 ? 1024 : 0;
+      const before = record.files[file];
+      let requests = 0;
+      // One request, recorded with how it was asked: seed, sampling, thinking, a hash of the prompt.
+      const generate = async (mode: GenerationRecord["mode"], ask: {system: string; prompt: string}, thinking: number, reply: "source" | "json" | "edit") => {
         const maxTokens = Math.min(2600 + thinking, room);
+        const seed = requestSeed(record.seed ?? 0, record.iteration, file, ++requests);
+        const temperature = 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1;
         const request: LLMRequest = {
-          usagePurpose: "synthesis", model: model.id, signal, systemPrompt, maxTokens, localReasoningBudget: thinking, sampling: synthesisSampling,
-          prompt: attempt === 1 ? prompt : `${prompt.replace(/\s*\/no_think$/, "")}\n\nYour previous answer contained no code. Write the complete file now.`,
-          temperature: 0.2 + Math.min(3, Math.max(0, record.iteration - 1)) * 0.1,
+          usagePurpose: "synthesis", model: model.id, signal, systemPrompt: ask.system, maxTokens, localReasoningBudget: thinking,
+          ...(thinking ? {localReasoningBudgetMessage: BUDGET_MESSAGE} : {}), sampling: {...synthesisSampling, seed}, prompt: ask.prompt, temperature,
           ...this.progress(record, model, file, `Writing ${file}`)
         };
-        if (format === "source") {
-          response = await this.services.llm.generateText(request, model.providerId);
-          const text = response.text.trim();
-          // A language label may hold symbols: ```c++, ```c#, ```objective-c.
-          const fenced = /^```[\w+#.-]*\s*\n([\s\S]*?)\n```$/.exec(text);
-          const source = fenced ? fenced[1] : text;
-          // No extraction from prose or multiple files: ambiguous output remains a failed attempt.
-          content = !source.includes("```") && source && (!text.includes("```") || fenced) ? source : undefined;
-        } else {
+        const started = Date.now();
+        let content: string | undefined, response: LLMResponse;
+        if (reply === "json") {
           const result = await this.services.llm.generateObject<{content: string}>({...request,
             responseFormat: {type: "json_schema", name: "synthesis_file", strict: true, schema: {
               type: "object", properties: {content: {type: "string"}}, required: ["content"], additionalProperties: false
@@ -1101,14 +1128,53 @@ export class SynthesisService {
           }, model.providerId);
           response = result.response;
           content = typeof result.data?.content === "string" ? result.data.content : undefined;
+        } else {
+          response = await this.services.llm.generateText(request, model.providerId);
+          const text = response.text.trim();
+          if (reply === "edit") content = before === undefined ? undefined : applyEditBlocks(before, text);
+          else {
+            // A language label may hold symbols: ```c++, ```c#, ```objective-c.
+            const fenced = /^```[\w+#.-]*\s*\n([\s\S]*?)\n```$/.exec(text);
+            const source = fenced ? fenced[1] : text;
+            // No extraction from prose or multiple files: ambiguous output remains a failed attempt.
+            content = !source.includes("```") && source && (!text.includes("```") || fenced) ? source : undefined;
+          }
         }
         signal.throwIfAborted(); this.usage(record, response.usage);
-        const cutOff = (response.raw as {choices?: Array<{finish_reason?: string}>} | undefined)?.choices?.[0]?.finish_reason === "length";
-        problem = cutOff ? `The answer was cut off at the token limit (${maxTokens} tokens), so the file is incomplete. Write a shorter file.`
-          : response.error ?? (!content ? "The answer was not one complete file (no code, or code mixed with prose)." : Buffer.byteLength(content) > MAX_ARTIFACT_BYTES ? "The file is larger than allowed." : undefined);
+        const finish = (response.raw as {choices?: Array<{finish_reason?: string}>} | undefined)?.choices?.[0]?.finish_reason;
+        const cutOff = finish === "length";
+        const problem = cutOff ? `The answer was cut off at the token limit (${maxTokens} tokens), so the file is incomplete. Write a shorter file.`
+          : response.error ?? (!content ? (reply === "edit" ? "The answer was not SEARCH/REPLACE blocks that apply to the file." : "The answer was not one complete file (no code, or code mixed with prose).")
+            : Buffer.byteLength(content) > MAX_ARTIFACT_BYTES ? "The file is larger than allowed." : undefined);
+        const generation: GenerationRecord = {mode, seed, temperature, topP: synthesisSampling.topP, topK: synthesisSampling.topK, minP: synthesisSampling.minP,
+          repeatPenalty: synthesisSampling.repeatPenalty, thinking, ...(thinking ? {budgetMessage: BUDGET_MESSAGE} : {}), maxTokens,
+          promptHash: hash(`${ask.system}\n\n${ask.prompt}`).slice(0, 16), promptChars: ask.system.length + ask.prompt.length,
+          ...(response.usage?.inputTokens !== undefined ? {inputTokens: response.usage.inputTokens} : {}), ...(response.usage?.outputTokens !== undefined ? {outputTokens: response.usage.outputTokens} : {}),
+          ...(finish ? {finish} : {}), ms: Date.now() - started, ...(content !== undefined && !problem ? {unchanged: content === before} : {})};
+        await this.event(record, "agent.generate", `${file}: ${mode} request, seed ${seed}${thinking ? `, thinking ${thinking}` : ""}: ${problem ? "no usable file" : generation.unchanged ? "the same file" : `${Buffer.byteLength(content!)} bytes`}`,
+          problem ? "failed" : "ok", {model: model.displayName, file, generation});
+        return {content: problem ? undefined : content, response, problem, cutOff};
+      };
+      let result!: Awaited<ReturnType<typeof generate>>;
+      // An empty answer (a thinking model that stopped before writing) is asked for once more, with
+      // room to think first; a cut-off or unusable answer is the model's attempt and is not retried.
+      for (const attempt of [1, 2]) {
+        result = attempt === 1 ? await generate("write", {system: systemPrompt, prompt}, 0, format)
+          : await generate("retry", {system: systemPrompt, prompt: `${prompt.replace(/\s*\/no_think$/, "")}\n\nYour previous answer contained no code. Write the complete file now.`}, 1024, format);
         // Only an empty answer: a timeout or a provider error is not sent again.
-        if (content || cutOff || !/returned no final answer|returned an empty response/.test(response.error ?? "")) break;
+        if (result.content || result.cutOff || !/returned no final answer|returned an empty response/.test(result.response.error ?? "")) break;
       }
+      // The same file back while the checks point at it: a small model copies what it is shown when it
+      // cannot tell what to change. It is asked once more about the first failure in this file only,
+      // thinking first when its template can; otherwise for edits, then for the whole file.
+      if (result.content !== undefined && result.content === before && items.length && implicatedFiles(items, record.files, tests).has(file)) {
+        await this.event(record, "agent.generate", `${file} came back unchanged while the checks point at it: asking again about its first failure only${thinks ? `, thinking first (${ESCALATION_THINKING} tokens)` : ", as edits"}`, "running", {model: model.displayName, file});
+        let again = thinks ? await generate("focus", ask({focus: true, thinking: true, reply: "source"}), ESCALATION_THINKING, "source")
+          : await generate("edit", ask({focus: true, reply: "edit"}), 0, "edit");
+        if (!thinks && !again.content) again = await generate("whole", ask({focus: true, reply: "source"}), 0, "source");
+        if (again.content) result = again;
+      }
+      const {content, problem, response} = result;
       if (problem || !content) {
         const message = `${file}: ${problem ?? "Invalid or oversized artifact response."}`;
         errors.push(message); await this.event(record, "agent.generate", message, "failed", {model: model.displayName, file, detail: response?.text.slice(0, 4000)});

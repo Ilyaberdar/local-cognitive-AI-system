@@ -106,7 +106,7 @@ implement Calculator using "calculator-v1" {
             file = "style.css", format = "source",
             instruction = "Write only a tiny dark CSS stylesheet: dark body background, light text, centered main content, spaced labeled inputs, select, buttons and visible result. Use at most 12 rules. No JavaScript, no HTML, no imports, no url resources. Stop after the last closing brace.");
 
-        evidence = await evaluate(candidate, spec);
+        evidence = await evaluate(candidate, spec, keep = "best");
         verdict = verify(spec, evidence);
         checkpoint(candidate, evidence, verdict);
 
@@ -521,6 +521,7 @@ No eligible model is a runtime error, not `none`. Without a size limit, a model 
 | Function | Meaning |
 | --- | --- |
 | `await evaluate(candidate, spec [, tests])` | Run the contract's gates (registered evaluators and the built-in checks: `Tests`, `Exports`, `Imports`, `Forbid`) and return evidence. `supplemental = tests` is an alternative named argument. Tests a model proposes are **not executed**: only the engineer's tests run. |
+| `await evaluate(candidate, spec, keep = "best")` | The same, and a candidate worse than the best one this run has evaluated is set aside: the candidate goes back to the best one, and its evidence is returned (the activity says which iteration's it kept). Better means more of the contract's required gates passed, then more visible tests passed; hidden gates never count, so the holdout is not spent on choosing. A tie goes to the newer candidate. The templates use it: an iteration never loses what an earlier one had. |
 | `verify(spec, evidence)` | Validate evidence freshness and return `{status, violations}` as a runtime record. Stale evidence is a runtime error. |
 | `accepted(candidate, spec)` | Read acceptance state; this does not evaluate the candidate. In the usual repair loop, successful termination happens through `return accept(...)`. |
 | `checkpoint(value [, ...])` | Save the current run record and candidate snapshot. Takes 1–8 values. V1 does not separately serialize each argument as an arbitrary user checkpoint variable. |
@@ -577,6 +578,12 @@ Revisions replace the whole selected file in the candidate; they are not patches
 When `instruction` is supplied and nonempty, it replaces the full description and peer-file excerpts in that generation prompt. The model still receives the current file and bounded feedback. Include the relevant interface and integration requirements in the focused instruction. Trusted evaluation still uses the whole contract's registered gates.
 
 `revise` uses bounded prompts and responses: one request per file, with no tools. For models that read, search and change files themselves, see [Agents](#agents). Generation settings such as token limit and temperature are currently runtime-controlled, not DSL arguments.
+
+What the model reads for a file: the contract (or the focused instruction), the frozen files, the visible tests, the module's other files as they are now (each as code), the result of the last check and the file as it is now. The result groups the feedback into problems in this file (or in tests that use it) and the rest, with the line each item cites, the assertion that failed and the failing test's source, and how many visible tests and required checks passed; it takes at most 4,500 characters, as the feedback did before.
+
+A small model that cannot tell what to change copies the file it is shown. When a file comes back byte for byte as it was while the feedback points into it (an item names it, or a failed visible test uses it), `revise` asks once more about the first failure in that file only: a local model whose chat template thinks first (Qwen3, Nemotron and the like) thinks first, up to 1,024 tokens; any other model answers with SEARCH/REPLACE edits, and with the whole file if the edits do not apply. The activity says so. An answer that is no better is still the model's, and `evaluate(..., keep = "best")` keeps the run from losing ground.
+
+Every request has a seed derived from the run's seed (drawn when the run starts and kept by a restart), the iteration, the file and the request, and each one is recorded in the activity with its sampling, thinking budget, a hash of its prompt, its tokens, how it finished and how long it took. With the same seed, model and runtime, a local run repeats as it ran. When a thinking budget runs out, the app's llama.cpp is told to end the thinking with a line that says to write the file now.
 
 ### Advisory methods
 

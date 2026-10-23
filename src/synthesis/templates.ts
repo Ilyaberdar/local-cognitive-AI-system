@@ -41,7 +41,7 @@ export function rateLimiterTemplate(name = "RateLimiter"): ModuleFiles {
 
     while (!accepted(candidate, spec)) {
         candidate = await developer.revise(candidate, spec, feedback, file = "src/rateLimiter.ts", format = "source");
-        evidence = await evaluate(candidate, spec);
+        evidence = await evaluate(candidate, spec, keep = "best");
         verdict = verify(spec, evidence);
         checkpoint(candidate, evidence, verdict);
 
@@ -250,7 +250,7 @@ export function calculatorTemplate(name = "Calculator", mode: "focused" | "compa
 
     while (!accepted(candidate, spec)) {
 ${revisions}
-        evidence = await evaluate(candidate, spec);
+        evidence = await evaluate(candidate, spec, keep = "best");
         verdict = verify(spec, evidence);
         checkpoint(candidate, evidence, verdict);
 

@@ -183,7 +183,8 @@ test("unknown trusted evaluator becomes NeedsReview and never Pass", async (t) =
 });
 
 test("the global iteration budget terminates repeated failures as Unresolved", async (t) => {
-  const f = await fixture(t, {content: (file) => file === "calculator.js" ? "function calculate(){return 0;}" : workingFiles[file]});
+  const broken = (file: string) => file === "calculator.js" ? "function calculate(){return 0;}" : workingFiles[file];
+  const f = await fixture(t, {content: broken, source: broken});
   await f.writeSources({flow: f.module.flowSource!.replace("iterations 6", "iterations 2")});
   const result = await f.run();
   assert.equal(result.status, "unresolved");
@@ -191,6 +192,10 @@ test("the global iteration budget terminates repeated failures as Unresolved", a
   assert.match(result.error!, /Iteration budget exhausted/);
   assert.equal(result.evidence?.status, "Fail");
   assert.equal(f.requests.length, 6);
+  // The same broken file back while the checks name it: asked once more about its first failure, as
+  // edits (this model's template does not think), then as a whole file when the edits do not apply.
+  assert.ok(result.events.some(event => event.iteration === 2 && event.message === "calculator.js came back unchanged while the checks point at it: asking again about its first failure only, as edits"));
+  assert.deepEqual(result.events.filter(event => event.iteration === 2 && event.generation && event.file === "calculator.js").map(event => event.generation!.mode), ["write", "edit", "whole"]);
   await assert.rejects(f.service.apply(result.id), /fresh accepted/);
 });
 
@@ -722,7 +727,7 @@ test("an empty answer is asked for once more with room to think; a cut-off answe
 test("a candidate with none of its files is not evaluated gate by gate: one clear failure, and the flow goes on", async (t) => {
   let iteration1 = true;
   const f = await fixture(t, {templateMode: "focused", models: () => [tiny], source: (file, _call, request) => {
-    if (iteration1 && !request.prompt.includes("Feedback from trusted tests: 1.")) return {text: "", error: NO_TEXT};
+    if (iteration1 && request.prompt.includes("# Result of the last check\nnone yet: this is the first attempt.")) return {text: "", error: NO_TEXT};
     iteration1 = false;
     return workingFiles[file];
   }});
@@ -733,10 +738,10 @@ test("a candidate with none of its files is not evaluated gate by gate: one clea
   assert.deepEqual(first.filter(event => event.step === "evaluate" && event.status === "failed").map(event => event.message), ["Not evaluated: the model wrote none of the declared files"]);
   assert.ok(!first.some(event => /^gate\.(arithmetic|ui)$/.test(event.step)), "no gate ran on the missing files");
   assert.ok(first.some(event => event.step === "gate.artifacts" && event.status === "failed"));
-  const next = f.textRequests.find(item => item.request.prompt.includes("Feedback from trusted tests: 1."))!;
+  const next = f.textRequests.find(item => /# Result of the last check\n[\s\S]*\n1\. /.test(item.request.prompt))!;
   assert.ok(next.request.prompt.includes("artifacts:"));
   assert.ok(!/\b(arithmetic|ui): Not evaluated/.test(next.request.prompt), "a skipped gate is not feedback");
-  assert.ok(f.textRequests[0].request.prompt.includes("Feedback from trusted tests: none yet: this is the first attempt."));
+  assert.ok(f.textRequests[0].request.prompt.includes("# Result of the last check\nnone yet: this is the first attempt."));
 });
 
 test("a request waiting for its local model says who holds it, once, then writes again; its tokens show on the running event", async (t) => {
@@ -750,11 +755,13 @@ test("a request waiting for its local model says who holds it, once, then writes
   const result = await f.run();
   assert.equal(result.status, "accepted", result.error);
   const steps = result.events.filter(event => event.step === "agent.generate" && event.file === "calculator.js" && event.iteration === 1);
-  assert.deepEqual(steps.map(event => [event.message, event.waiting ?? false]), [
+  const bytes = Buffer.byteLength(workingFiles["calculator.js"]);
+  assert.deepEqual(steps.map(event => [event.message.replace(/seed \d+/, "seed N"), event.waiting ?? false]), [
     ["Writing calculator.js", false],
     ["Waiting for qwen2.5-1.5b: in use by Synthesis · Rate limiter", true],
     ["Writing calculator.js", false],
-    [`calculator.js: ${Buffer.byteLength(workingFiles["calculator.js"])} bytes`, false]
+    [`calculator.js: write request, seed N: ${bytes} bytes`, false],
+    [`calculator.js: ${bytes} bytes`, false]
   ]);
   assert.equal(steps[2].tokens, 42, "the token count is kept on the running event, not as new events");
 });

@@ -73,7 +73,7 @@ test("correct arithmetic alone cannot pass the calculator UI evaluator", async (
   const files = fixture(); files["calculator.js"] = calculate;
   assert.equal((await evaluateCalculator(files, "calculator-arithmetic-v1")).status, "Pass");
   const result = await evaluateCalculator(files, "calculator-ui-v1");
-  assert.equal(result.status, "Fail"); assert.match(result.message, /button/);
+  assert.equal(result.status, "Fail"); assert.match(result.message, /^calculator\.js: clicking #calculate with 12 \+ 7 must show 19 in the <output id='result'>; it shows nothing instead\.$/);
 });
 
 test("calculator UI accepts inline setup and DOMContentLoaded wiring", async () => {
@@ -88,14 +88,14 @@ test("calculator UI rejects synchronous head scripts that bind controls before b
   files["index.html"] = files["index.html"].replace('<script src="calculator.js"></script>', '')
     .replace('</head>', '<script src="calculator.js"></script></head>');
   const result = await evaluateCalculator(files, "calculator-ui-v1");
-  assert.equal(result.status, "Fail"); assert.match(result.message, /after all required calculator controls/);
+  assert.equal(result.status, "Fail"); assert.match(result.message, /^index\.html must place <script src="calculator\.js"> and every inline setup script at the end of body, after all the calculator's controls/);
 });
 
 test("calculator UI rejects inline setup before all controls even when calculator.js is at body end", async () => {
   const files = fixture(); files["calculator.js"] = calculate;
   files["index.html"] = files["index.html"].replace('<body>', `<body><script>${wiring}</script>`);
   const result = await evaluateCalculator(files, "calculator-ui-v1");
-  assert.equal(result.status, "Fail"); assert.match(result.message, /after all required calculator controls/);
+  assert.equal(result.status, "Fail"); assert.match(result.message, /^index\.html must place <script src="calculator\.js"> and every inline setup script at the end of body, after all the calculator's controls/);
 });
 
 test("calculator clear must empty values, not replace them with zero", async () => {
@@ -139,7 +139,7 @@ test("calculator clear cannot pass by replacing array membership checks", async 
   const files = fixture();
   files["calculator.js"] += "Array.prototype.includes = function(){return true;}; document.getElementById('clear').onclick = function(){};";
   const result = await evaluateCalculator(files, "calculator-ui-v1");
-  assert.equal(result.status, "Fail"); assert.match(result.message, /Clear/);
+  assert.equal(result.status, "Fail"); assert.match(result.message, /^calculator\.js: clicking #clear must set the values of #a and #b and the text of #result to empty strings; after the click they are '13', '9' and '117' instead\.$/);
 });
 
 test("calculator UI observer cannot be replaced with a candidate result getter", async () => {
@@ -160,4 +160,29 @@ test("calculator evaluator bounds input and distinguishes unsupported evaluators
   assert.equal((await evaluateCalculator(fixture(), "unknown-evaluator")).status, "Unknown");
   const files = fixture(); files["calculator.js"] = " ".repeat(128 * 1024 + 1);
   assert.equal((await evaluateCalculator(files, "calculator-arithmetic-v1")).status, "Fail");
+});
+
+test("calculator failures say what index.html or calculator.js must hold, in HTML, and what it holds instead", async () => {
+  const ui = async (change: (files: Record<string, string>) => void) => {
+    const files = fixture(); change(files);
+    const result = await evaluateCalculator(files, "calculator-ui-v1");
+    assert.equal(result.status, "Fail");
+    return result.message;
+  };
+  // What a 4B model kept writing for six iterations when told "UI requires output#result.".
+  assert.equal(await ui(files => { files["index.html"] = files["index.html"].replace('<output id="result" aria-live="polite"></output>', '<div id="result"></div>'); }),
+    'index.html must have a <output id="result"> element; it has <div id="result"> instead.');
+  assert.equal(await ui(files => { files["index.html"] = files["index.html"].replace('<label for="operation">Operation</label>', ""); }),
+    'index.html: <select id="operation"> needs a label: add <label for="operation">…</label> with visible text (or an aria-label); it has none.');
+  assert.equal(await ui(files => { files["index.html"] = files["index.html"].replace('<input type="number" id="b">', '<input type="text" id="b">'); }),
+    'index.html: <input id="b"> must be <input type="number" id="b">; it has type="text" instead.');
+  assert.equal(await ui(files => { files["index.html"] = files["index.html"].replace('<input type="number" id="a">', ""); }),
+    'index.html must have a <input type="number" id="a"> element; it has no element with id="a" instead.');
+  assert.equal(await ui(files => { files["index.html"] = files["index.html"].replace('<option value="/">Divide</option>', ""); }),
+    'index.html: <select id="operation"> must have <option> values +, -, * and /; it has "+", "-", "*" instead.');
+  assert.equal(await ui(files => { files["index.html"] = files["index.html"].replace('<script src="calculator.js"></script>', ""); }),
+    'index.html must load calculator.js exactly once, with <script src="calculator.js"></script> at the end of body; it loads it nowhere instead.');
+  const files = fixture(); files["calculator.js"] = files["calculator.js"].replace("if(operation === '*') return a*b;", "if(operation === '*') return a+b;");
+  const arithmetic = await evaluateCalculator(files, "calculator-arithmetic-v1");
+  assert.equal(arithmetic.message, "calculator.js: Arithmetic example failed: calculate(-3, 4, '*') must return -12; it returns 1 instead.");
 });

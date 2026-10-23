@@ -174,6 +174,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(dialect.thinking === "reasoning" && effort ? { reasoning: { effort } } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
+          // Only the app's own llama.cpp (b10809) takes a message for when the thinking budget runs out.
+          ...(this.id === "llamacpp" && localBudget && request.localReasoningBudgetMessage ? { reasoning_budget_message: request.localReasoningBudgetMessage } : {}),
           // Chat tool calls, one a turn (DeepSeek may send several anyway: the first runs).
           ...(nativeTools ? { tools: nativeTools.map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: chatSchema(tool) } })),
             ...(this.withoutToolChoice.has(model) ? {} : { tool_choice: request.toolChoice ?? "auto" }), parallel_tool_calls: false } : {}),

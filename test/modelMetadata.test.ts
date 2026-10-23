@@ -9,12 +9,12 @@ import { ModelLibraryStore } from "../src/local/ModelLibraryStore";
 import { LocalModelService } from "../src/local/LocalModelService";
 import { Logger } from "../src/utils/Logger";
 
-const fixture = () => {
+const fixture = (template = "{{ messages }}") => {
   const u32 = (value: number) => { const bytes = Buffer.alloc(4); bytes.writeUInt32LE(value); return bytes; };
   const u64 = (value: number) => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64LE(BigInt(value)); return bytes; };
   const string = (value: string) => Buffer.concat([u64(Buffer.byteLength(value)), Buffer.from(value)]);
   const entries: Record<string, string | number | boolean[]> = {
-    "general.architecture": "qwen35", "general.type": "model", "general.name": "Installed Qwen", "tokenizer.chat_template": "{{ messages }}",
+    "general.architecture": "qwen35", "general.type": "model", "general.name": "Installed Qwen", "tokenizer.chat_template": template,
     "qwen35.context_length": 262144, "qwen35.embedding_length": 5120, "qwen35.block_count": 65, "qwen35.nextn_predict_layers": 1,
     "qwen35.attention.head_count": 24, "qwen35.attention.head_count_kv": 4, "qwen35.attention.key_length": 256, "qwen35.attention.value_length": 256,
     "qwen35.attention.recurrent_layers": Array.from({ length: 65 }, (_, index) => index < 64 && (index + 1) % 4 !== 0),
@@ -34,6 +34,15 @@ test("GGUF inspection reads hybrid attention metadata and preserves recurrent ma
   assert.equal(Array.isArray(metadata.recurrentLayers) && metadata.recurrentLayers.filter(Boolean).length, 48);
   const result = evaluateCompatibility(16464440224, { contextSize: 4096, memoryLimitPercent: 75 }, metadata, undefined, true, { total: 48 * 1024 ** 3, free: 32 * 1024 ** 3 });
   assert.equal(result.canLoad, true); assert.equal(result.kvCacheBytes, 256 * 1024 ** 2); assert.equal(result.recurrentStateBytes, 149.625 * 1024 ** 2);
+});
+
+test("GGUF inspection says whether the chat template thinks first (Qwen3, Nemotron: a <think> section or an enable_thinking switch)", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "gguf-thinking-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const read = async (template: string) => { const file = path.join(directory, `${createHash("sha256").update(template).digest("hex")}.gguf`); await fs.writeFile(file, fixture(template)); return (await readGGUFMetadata(file)).thinkingTemplate; };
+  assert.equal(await read("{{ messages }}"), false);
+  assert.equal(await read("{%- if enable_thinking is defined and enable_thinking is false %}{{- '<think>\\n\\n</think>' }}{%- endif %}"), true);
+  assert.equal(await read("{{- '<|im_start|>assistant\\n<think>\\n' }}"), true);
 });
 
 test("existing installed models receive new metadata without replacing their files or IDs", async (t) => {
@@ -57,5 +66,5 @@ test("existing installed models receive new metadata without replacing their fil
   assert.equal(model.compatibility?.canLoad, true); assert.equal(model.compatibility?.kvCacheBytes, 256 * 1024 ** 2);
   assert.deepEqual(await fs.readFile(path.join(modelsDir, id, filename)), bytes);
   const persisted = JSON.parse(await fs.readFile(path.join(dataDir, "library.json"), "utf8"));
-  assert.equal(persisted.items[0].metadata.inspectionVersion, 2); assert.equal(persisted.items[0].files[0].sha256, sha256);
+  assert.equal(persisted.items[0].metadata.inspectionVersion, 3); assert.equal(persisted.items[0].files[0].sha256, sha256);
 });
