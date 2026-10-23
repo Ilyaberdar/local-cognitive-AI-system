@@ -226,35 +226,37 @@ internal static class LcSandbox
         return Run(options, self, innerArgs);
     }
 
-    // The folder's last command: empty it inside the container, then delete its AppContainer profile and
-    // package folder. The profile outlives a single command but not the folder.
+    // The folder's last command: empty it inside the container, then empty its real package folder and
+    // delete its AppContainer profile. The profile outlives a single command but not the folder.
     private static int Empty(string[] args)
     {
         Options options = Parse(args, 1);
         string profile = RequireProfile(options);
         string self = GetExecutablePath();
+        // The profile id is this run's capability id: exactly 16 lowercase hex characters.
+        string id = profile.Substring(ProfilePrefix.Length + 1);
+        if (id.Length != 16 || !IsLowerHex(id)) throw new SandboxError("the profile id must be 16 lowercase hex characters: " + id);
         int code = Run(options, self, new List<string> { "__empty", RequireRw(options) });
-        // Before deleting the profile, empty its real package folder (%LOCALAPPDATA%\Packages\<moniker>)
-        // with the no-reparse-point EmptyFolder, so DeleteAppContainerProfile never descends through a
-        // link. The sandboxed code cannot reach this folder (its LOCALAPPDATA is redirected into the work
-        // folder, and the real one is EPERM to it), so this is defence in depth; it runs as the user
-        // because the container has no access to empty it from inside.
+        // Before deleting the profile, empty its real package folder with a handle-based delete that never
+        // follows a reparse point, so the privileged delete cannot be led through a link. The sandboxed
+        // code cannot reach this folder (its LOCALAPPDATA is redirected into the work folder, and the real
+        // one is EPERM to it), so this is defence in depth. The path comes from the SID, not an env or the
+        // Shell Folders key, and must be a direct child of a "Packages" folder.
         try
         {
-            string real = RealLocalAppData();
-            if (real != null) { string pkg = Path.Combine(real, "Packages", profile.ToLowerInvariant()); if (Directory.Exists(pkg)) EmptyFolder(pkg); }
+            string pkg = Native.AppContainerFolderPath(Native.ContainerSid(profile));
+            if (pkg != null && Directory.Exists(pkg) && string.Equals(Path.GetFileName(Path.GetDirectoryName(pkg.TrimEnd('\\'))), "Packages", StringComparison.OrdinalIgnoreCase))
+                Native.DeleteTreeContents(pkg);
         }
         catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not empty the package folder of " + profile + ": " + error.Message); }
         try { Native.DeleteAppContainerProfile(profile); } catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not delete the profile " + profile + ": " + error.Message); }
         return code;
     }
 
-    // The user's real LocalAppData, read from the shell folders registry so the sandbox's redirected
-    // %LOCALAPPDATA% env does not mislead it; null if it cannot be read.
-    private static string RealLocalAppData()
+    private static bool IsLowerHex(string s)
     {
-        using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"))
-            return key == null ? null : key.GetValue("Local AppData") as string;
+        foreach (char c in s) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        return s.Length > 0;
     }
 
     private static int Run(Options options, string exe, List<string> exeArgs)
@@ -343,27 +345,53 @@ internal static class LcSandbox
     private static int InnerWrite(string[] args)
     {
         if (args.Length < 2) throw new SandboxError("__write needs a relative path");
-        // allowFinalReparse false: writing through a link the code planted at the target would write
-        // outside the folder, so a reparse-point final component is refused too.
-        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1], false);
+        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1]);
         string dir = Path.GetDirectoryName(target);
         if (dir != null && dir.Length > 0) Directory.CreateDirectory(dir);
-        using (Stream input = Console.OpenStandardInput())
-        using (FileStream output = new FileStream(target, FileMode.Create, FileAccess.Write))
+        // Hold the parent directory open (no share-delete) so it cannot be renamed under us, then open the
+        // final component without following a link (OPEN_REPARSE_POINT) and write through that same handle.
+        // A reparse point at the target is refused: writing through a link the code planted would write
+        // outside the folder.
+        IntPtr parent = Native.OpenDirHold(dir != null && dir.Length > 0 ? dir : Directory.GetCurrentDirectory());
+        try
         {
-            byte[] buffer = new byte[65536];
-            int read;
-            while ((read = input.Read(buffer, 0, buffer.Length)) > 0) output.Write(buffer, 0, read);
+            // Refuse an existing reparse point at the target up front (fail closed); the post-open check
+            // below is the backstop if one is swapped in during the open.
+            if (Native.IsReparsePoint(target)) throw new SandboxError("the target " + args[1] + " is a reparse point");
+            IntPtr handle = Native.OpenFinalForWrite(target);
+            try
+            {
+                if (Native.HandleIsReparse(handle)) throw new SandboxError("the target " + args[1] + " is a reparse point");
+                using (Stream input = Console.OpenStandardInput())
+                using (FileStream output = Native.StreamForWrite(handle))
+                {
+                    byte[] buffer = new byte[65536];
+                    int read;
+                    while ((read = input.Read(buffer, 0, buffer.Length)) > 0) output.Write(buffer, 0, read);
+                }
+            }
+            finally { Native.CloseRaw(handle); }
         }
+        finally { Native.CloseRaw(parent); }
         return 0;
     }
 
     private static int InnerRemove(string[] args)
     {
         if (args.Length < 2) throw new SandboxError("__remove needs a relative path");
-        // allowFinalReparse true: removing the link itself (not its target) is fine; File.Delete unlinks it.
-        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1], true);
-        if (File.Exists(target)) File.Delete(target);
+        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1]);
+        string dir = Path.GetDirectoryName(target);
+        IntPtr parent = Native.OpenDirHold(dir != null && dir.Length > 0 ? dir : Directory.GetCurrentDirectory());
+        try
+        {
+            // The final component may be a reparse point here — removing unlinks the link itself (opened
+            // with OPEN_REPARSE_POINT), never its target — and is deleted through its own handle.
+            IntPtr handle = Native.OpenFinalForRemove(target);
+            if (handle == (IntPtr)(-1)) return 0; // already gone
+            try { Native.Delete(handle); }
+            finally { Native.CloseRaw(handle); }
+        }
+        finally { Native.CloseRaw(parent); }
         return 0;
     }
 
@@ -401,33 +429,25 @@ internal static class LcSandbox
         }
     }
 
-    private static string ResolveInside(string root, string relative, bool allowFinalReparse)
+    private static string ResolveInside(string root, string relative)
     {
         if (Path.IsPathRooted(relative) || relative.Contains("..")) throw new SandboxError("a path inside the folder is relative and has no \"..\": " + relative);
         string rootFull = Path.GetFullPath(root).TrimEnd('\\');
         string full = Path.GetFullPath(Path.Combine(root, relative));
         if (!full.StartsWith(rootFull + "\\", StringComparison.OrdinalIgnoreCase)) throw new SandboxError("the path leaves the folder: " + relative);
-        // No component on the way to the target may be a reparse point (a junction or a symlink), so the
-        // operation never follows a link out of the folder even if the container boundary ever weakened.
-        // Each component is opened with FILE_FLAG_OPEN_REPARSE_POINT and its attributes read from the
-        // handle, closing the gap between a path check and the open. The final component may be a reparse
-        // point only for a remove (unlinking the link itself), never for a write.
+        // No folder on the way to the target (every component but the last) may be a reparse point, so the
+        // operation never descends through a junction or symlink out of the folder. Each is checked from a
+        // handle opened without following it; the check fails closed (any error but not-found is a refusal).
+        // The final component is opened and verified by the caller, through the handle it then writes or
+        // deletes with.
         string cursor = rootFull;
         string[] parts = full.Substring(rootFull.Length + 1).Split('\\');
-        for (int i = 0; i < parts.Length; i++)
+        for (int i = 0; i < parts.Length - 1; i++)
         {
             cursor = cursor + "\\" + parts[i];
-            bool last = i == parts.Length - 1;
-            if (IsReparsePoint(cursor) && !(last && allowFinalReparse))
-                throw new SandboxError((last ? "the target " : "a folder on the way to ") + relative + " is a reparse point");
+            if (Native.IsReparsePoint(cursor)) throw new SandboxError("a folder on the way to " + relative + " is a reparse point");
         }
         return full;
-    }
-
-    // Whether the component exists and is a reparse point, read from a handle opened without following it.
-    private static bool IsReparsePoint(string path)
-    {
-        return Native.IsReparsePoint(path);
     }
 
     private static void Say(string name, string value) { Console.Out.WriteLine(name + ": " + value); }
@@ -652,28 +672,51 @@ internal static class LcSandbox
             finally { CloseHandle(snapshot); }
         }
 
-        // "lcowner=<pid>:<startFileTime>" of the owning app process; "lcowner=0:0" if it cannot be read.
-        public static string OwnerTag()
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        private const int ERROR_INVALID_PARAMETER = 87;
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+
+        // The raw creation FILETIME (a 64-bit integer, no local-time round trip) of a process, or 0 if it
+        // cannot be read.
+        private static long ProcessCreationTime(uint pid)
         {
-            try
-            {
-                int pid = ParentPid();
-                long start = System.Diagnostics.Process.GetProcessById(pid).StartTime.ToFileTimeUtc();
-                return "lcowner=" + pid + ":" + start;
-            }
-            catch { return "lcowner=0:0"; }
+            IntPtr handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (handle == IntPtr.Zero) return 0;
+            try { long creation, exit, kernel, user; return GetProcessTimes(handle, out creation, out exit, out kernel, out user) ? creation : 0; }
+            finally { CloseHandle(handle); }
         }
 
-        // Whether the app process named in a profile's owner tag is still running (same PID, same start
-        // time). An unreadable or malformed tag counts as not alive, so the profile is treated as stale.
+        // "lcowner=<pid>:<creationFileTime>" of the owning app process; "lcowner=0:0" if it cannot be read
+        // (then the profile is always kept — never deleted as stale).
+        public static string OwnerTag()
+        {
+            int pid = ParentPid();
+            long creation = pid > 0 ? ProcessCreationTime((uint)pid) : 0;
+            return pid > 0 && creation != 0 ? "lcowner=" + pid + ":" + creation : "lcowner=0:0";
+        }
+
+        // Whether the app process in a profile's owner tag is still running. It is treated as DEAD only when
+        // the process plainly does not exist (OpenProcess → ERROR_INVALID_PARAMETER) or its creation time
+        // differs (a recycled PID). Access denied (an elevated owner a non-elevated instance cannot query),
+        // any other error, and an unreadable or old-format tag all count as ALIVE, so a live owner is never
+        // mistaken for a dead one and its profile is kept.
         public static bool OwnerAlive(string ownerTag)
         {
-            if (string.IsNullOrEmpty(ownerTag) || !ownerTag.StartsWith("lcowner=", StringComparison.Ordinal)) return false;
+            if (string.IsNullOrEmpty(ownerTag) || !ownerTag.StartsWith("lcowner=", StringComparison.Ordinal)) return true;
             string[] parts = ownerTag.Substring("lcowner=".Length).Split(':');
-            int pid; long start;
-            if (parts.Length != 2 || !int.TryParse(parts[0], out pid) || !long.TryParse(parts[1], out start) || pid == 0) return false;
-            try { return System.Diagnostics.Process.GetProcessById(pid).StartTime.ToFileTimeUtc() == start; }
-            catch { return false; }
+            int pid; long recorded;
+            if (parts.Length != 2 || !int.TryParse(parts[0], out pid) || !long.TryParse(parts[1], out recorded)) return true;
+            if (pid == 0 || recorded == 0) return true;
+            IntPtr handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)pid);
+            if (handle == IntPtr.Zero) return Marshal.GetLastWin32Error() != ERROR_INVALID_PARAMETER; // no such process ⇒ dead; anything else ⇒ keep
+            try
+            {
+                long creation, exit, kernel, user;
+                if (!GetProcessTimes(handle, out creation, out exit, out kernel, out user)) return true; // cannot tell ⇒ keep
+                return creation == recorded;
+            }
+            finally { CloseHandle(handle); }
         }
 
         // The capability SID for a name, copied into a small stable buffer so the group/capability arrays
@@ -751,6 +794,106 @@ internal static class LcSandbox
             finally { if (securityDescriptor != IntPtr.Zero) LocalFree(securityDescriptor); }
         }
 
+        [DllImport("userenv.dll", CharSet = CharSet.Unicode)] private static extern int GetAppContainerFolderPath(string sid, out IntPtr path);
+        [DllImport("ole32.dll")] private static extern void CoTaskMemFree(IntPtr p);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetFileInformationByHandle(IntPtr file, int cls, IntPtr info, uint size);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool GetFileInformationByHandleEx(IntPtr file, int cls, IntPtr info, uint size);
+
+        // The real package folder of a container, from its SID (not an env var or the Shell Folders key).
+        public static string AppContainerFolderPath(IntPtr sid)
+        {
+            IntPtr path;
+            int hr = GetAppContainerFolderPath(SidString(sid), out path);
+            if (hr != 0 || path == IntPtr.Zero) return null;
+            try { return Marshal.PtrToStringUni(path); }
+            finally { CoTaskMemFree(path); }
+        }
+
+        private const uint FILE_SHARE_READ_WRITE = 0x1 | 0x2; // never FILE_SHARE_DELETE
+        private const uint FLAG_BACKUP_OPEN_REPARSE = 0x02000000 | 0x00200000; // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        private const uint DELETE = 0x10000, FILE_LIST_DIRECTORY = 0x1, FILE_READ_ATTRIBUTES = 0x80;
+        private const int ERROR_FILE_NOT_FOUND = 2, ERROR_PATH_NOT_FOUND = 3, ERROR_NO_MORE_FILES = 18;
+
+        private static void DeleteViaHandle(IntPtr handle)
+        {
+            IntPtr info = Marshal.AllocHGlobal(1);
+            try { Marshal.WriteByte(info, 0, 1); if (!SetFileInformationByHandle(handle, 4 /*FileDispositionInfo*/, info, 1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "SetFileInformationByHandle (delete)"); }
+            finally { Marshal.FreeHGlobal(info); }
+        }
+
+        // The child names under a directory handle, read from the handle itself (FILE_FULL_DIR_INFO), so
+        // the names come from the held directory, not a fresh path lookup. "." and ".." are left out.
+        private static List<string> ChildNames(IntPtr dirHandle)
+        {
+            List<string> names = new List<string>();
+            int size = 64 * 1024;
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                int cls = 3; // FileFullDirectoryRestartInfo first, then FileFullDirectoryInfo (2)
+                while (GetFileInformationByHandleEx(dirHandle, cls, buffer, (uint)size))
+                {
+                    cls = 2;
+                    long at = buffer.ToInt64();
+                    while (true)
+                    {
+                        IntPtr entry = (IntPtr)at;
+                        int next = Marshal.ReadInt32(entry, 0);
+                        int nameLen = Marshal.ReadInt32(entry, 60); // FileNameLength, bytes
+                        string name = Marshal.PtrToStringUni((IntPtr)(at + 68), nameLen / 2);
+                        if (name != "." && name != "..") names.Add(name);
+                        if (next == 0) break;
+                        at += next;
+                    }
+                }
+                return names;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        // Empties a directory's contents by handle, failing closed: each child is opened without following
+        // a reparse point (OPEN_REPARSE_POINT) and its type read from that handle; a reparse point is
+        // unlinked, never descended into; a real sub-directory is emptied then removed; a file is removed —
+        // all through SetFileInformationByHandle on the child's own handle. The parent handle is held open
+        // (no share-delete) throughout. Any unexpected error stops the walk (the caller leaves the rest).
+        public static void DeleteTreeContents(string path)
+        {
+            IntPtr dir = CreateFileW(path, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+            if (dir == (IntPtr)(-1))
+            {
+                int err = Marshal.GetLastWin32Error();
+                if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return;
+                throw new Win32Exception(err, "open " + path);
+            }
+            try { DeleteContents(dir, path); }
+            finally { CloseHandle(dir); }
+        }
+
+        private static void DeleteContents(IntPtr dirHandle, string dirPath)
+        {
+            foreach (string name in ChildNames(dirHandle))
+            {
+                string full = dirPath + "\\" + name;
+                IntPtr child = CreateFileW(full, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+                if (child == (IntPtr)(-1))
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) continue; // already gone
+                    throw new Win32Exception(err, "open " + full);
+                }
+                try
+                {
+                    BY_HANDLE_FILE_INFORMATION info;
+                    if (!GetFileInformationByHandle(child, out info)) throw new Win32Exception(Marshal.GetLastWin32Error(), "stat " + full);
+                    bool reparse = (info.FileAttributes & 0x400) != 0;
+                    bool directory = (info.FileAttributes & 0x10) != 0;
+                    if (!reparse && directory) DeleteContents(child, full); // empty a real sub-directory first
+                    DeleteViaHandle(child); // unlink the reparse point, the now-empty directory, or the file
+                }
+                finally { CloseHandle(child); }
+            }
+        }
+
         public static string CurrentUserSid()
         {
             IntPtr token;
@@ -788,20 +931,73 @@ internal static class LcSandbox
             public uint FileAttributes; public long CreationTime, LastAccessTime, LastWriteTime;
             public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow; }
 
-        // Whether the component exists and is a reparse point, read from a handle opened without following
-        // it (FILE_FLAG_OPEN_REPARSE_POINT): a missing component, or one that cannot be opened, is not one.
+        // Whether the component is a reparse point, read from a handle opened without following it. Fails
+        // closed: a component that is not there is not a reparse point, but any other open or stat failure
+        // is thrown (never silently treated as "safe").
         public static bool IsReparsePoint(string path)
         {
-            IntPtr handle = CreateFileW(path, 0, 0x7, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x02000000 /*BACKUP_SEMANTICS*/ | 0x00200000 /*OPEN_REPARSE_POINT*/, IntPtr.Zero);
-            if (handle == (IntPtr)(-1)) return false;
+            IntPtr handle = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+            if (handle == (IntPtr)(-1))
+            {
+                int err = Marshal.GetLastWin32Error();
+                if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return false;
+                throw new Win32Exception(err, "open " + path);
+            }
             try
             {
                 BY_HANDLE_FILE_INFORMATION info;
-                if (!GetFileInformationByHandle(handle, out info)) return false;
+                if (!GetFileInformationByHandle(handle, out info)) throw new Win32Exception(Marshal.GetLastWin32Error(), "stat " + path);
                 return (info.FileAttributes & 0x400 /*FILE_ATTRIBUTE_REPARSE_POINT*/) != 0;
             }
             finally { CloseHandle(handle); }
         }
+
+        public static bool HandleIsReparse(IntPtr handle)
+        {
+            BY_HANDLE_FILE_INFORMATION info;
+            if (!GetFileInformationByHandle(handle, out info)) throw new Win32Exception(Marshal.GetLastWin32Error(), "stat handle");
+            return (info.FileAttributes & 0x400) != 0;
+        }
+
+        // Opens a directory and holds it open (no share-delete) so it cannot be renamed or deleted while a
+        // child under it is written or removed.
+        public static IntPtr OpenDirHold(string path)
+        {
+            IntPtr handle = CreateFileW(path, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+            if (handle == (IntPtr)(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "open directory " + path);
+            return handle;
+        }
+
+        // Opens (creating or truncating) the final component without following a link, sharing read only
+        // (no write or delete), so the write goes to that exact object and the caller can reject a reparse.
+        public static IntPtr OpenFinalForWrite(string path)
+        {
+            IntPtr handle = CreateFileW(path, GENERIC_WRITE | DELETE, 0x1 /*FILE_SHARE_READ*/, IntPtr.Zero, 2 /*CREATE_ALWAYS*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+            if (handle == (IntPtr)(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "open for write " + path);
+            return handle;
+        }
+
+        // Opens the final component for deletion without following a link; -1 (not an error) when it is not
+        // there, any other failure thrown.
+        public static IntPtr OpenFinalForRemove(string path)
+        {
+            IntPtr handle = CreateFileW(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+            if (handle == (IntPtr)(-1))
+            {
+                int err = Marshal.GetLastWin32Error();
+                if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return (IntPtr)(-1);
+                throw new Win32Exception(err, "open for remove " + path);
+            }
+            return handle;
+        }
+
+        public static FileStream StreamForWrite(IntPtr handle)
+        {
+            return new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(handle, false), FileAccess.Write);
+        }
+
+        public static void Delete(IntPtr handle) { DeleteViaHandle(handle); }
+        public static void CloseRaw(IntPtr handle) { if (handle != IntPtr.Zero && handle != (IntPtr)(-1)) CloseHandle(handle); }
 
         // The real, canonical path of a folder: the final path by handle (which resolves links and expands
         // 8.3 names), with the \\?\ prefix stripped and any trailing separator removed, so two spellings of
