@@ -72,6 +72,10 @@ jobs:
             whoami /groups /priv
             exit 1
           }
+      # TEMPORARY (release/0.1.9): pin the AppContainer child-spawn EPERM on the runner. Remove before release.
+      - name: DIAG spawn matrix inside the sandbox
+        continue-on-error: true
+        run: node scripts/diag-sandbox-spawn.mjs release/win-unpacked/resources
       - run: npx electron-fuses read --app "release/win-unpacked/Local Cognitive.exe"
       # Unsigned: a feed without publisherName makes the app announce versions instead of installing them.
       - name: The update feed names no publisher
