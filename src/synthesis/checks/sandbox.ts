@@ -573,8 +573,11 @@ const windows: SandboxProvider = {
         return tree ? `the Windows sandbox does not end what a command leaves running: ${tree}. Nothing runs without a sandbox.` : undefined;
       })() };
     }
-    const reason = await winCheck.result;
-    winCheck.passed = !reason;
+    // Hold this check in a local before awaiting, so a newer check started meanwhile never has its result
+    // overwritten by this older one.
+    const check = winCheck;
+    const reason = await check.result;
+    check.passed = !reason;
     return reason;
   },
   wrap: (executable, args, workDir, readable) => ({

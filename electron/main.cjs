@@ -102,10 +102,12 @@ const configureRuntimeEnvironment = async () => {
       // to the sandbox. This install is per-user (build.nsis.perMachine is false), so this folder is the
       // user's and writable here; the installer runs it too. A per-machine install (which a normal user
       // cannot change) would rely on the elevated installer's run, and this one would log and move on.
-      // uninstall first removes any sandbox profiles a crash left behind (only this app's own: the
-      // LocalCognitive.Sandbox* ones); the single-instance lock means no run of ours is active yet.
+      // clean-stale removes only sandbox profiles whose owning app process is gone (a crash left them);
+      // a second instance beside the user's app — a test, a capture or a dev window, each with its own
+      // data dir and single-instance lock — keeps its live runs, though the AppContainer registry is
+      // shared per user.
       const run = (args) => { try { require("child_process").execFileSync(helper, args, { stdio: "ignore", timeout: 30000 }); } catch (error) { console.error(`lc-sandbox ${args[0]} failed:`, error && error.message); } };
-      run(["uninstall"]);
+      run(["clean-stale"]);
       run(["grant-tools", sandboxDir]);
     }
   }

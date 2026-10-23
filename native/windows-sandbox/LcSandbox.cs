@@ -47,6 +47,7 @@ internal static class LcSandbox
                 case "remove": return Builtin(args, "__remove");
                 case "empty": return Empty(args);
                 case "grant-tools": return GrantTools(args);
+                case "clean-stale": return CleanStale();
                 case "uninstall": return Uninstall();
                 // Internal commands: this helper, re-launched inside the container, running as the
                 // AppContainer token. Never invoked from outside.
@@ -79,7 +80,8 @@ internal static class LcSandbox
             "  write   --profile NAME --run-cap NAME --roots DIRS --rw DIR [--granted] -- REL   (stdin is written to <rw>\\REL)\n" +
             "  remove  --profile NAME --run-cap NAME --roots DIRS --rw DIR [--granted] -- REL\n" +
             "  empty   --profile NAME --run-cap NAME --roots DIRS --rw DIR [--granted]  (last command of a folder; deletes the profile)\n" +
-            "  grant-tools DIR                                             (one time, at install)\n" +
+            "  grant-tools DIR                                             (one time, at install; only the helper's own folder)\n" +
+            "  clean-stale                                                 (app start: removes LocalCognitive.Sandbox* profiles whose owner is gone)\n" +
             "  uninstall                                                   (removes every LocalCognitive.Sandbox* profile)");
     }
 
@@ -136,38 +138,48 @@ internal static class LcSandbox
         return args[++i];
     }
 
-    // Whether a full path is one of the app's declared work roots or inside one. The helper changes an
-    // ACL only inside these: a tool folder outside them (an interpreter in Program Files) is left exactly
-    // as the system set it, so the sandbox never rewrites a shared folder's permissions.
+    // Whether a full path is strictly inside one of the app's declared work roots (never equal to one):
+    // a run folder is always a child, so --rw = %TEMP% or the data root, which would grant and low-label a
+    // whole tree, is refused. The helper changes an ACL only inside these.
     private static bool WithinRoots(string full, List<string> roots)
     {
         string path = full.TrimEnd('\\');
         foreach (string root in roots)
         {
             string r = Path.GetFullPath(root).TrimEnd('\\');
-            if (path.Equals(r, StringComparison.OrdinalIgnoreCase) || path.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase)) return true;
+            if (path.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase)) return true;
         }
         return false;
     }
 
-    // The per-work-folder profile name. It must carry the prefix, so the helper only ever creates or
-    // deletes a profile of the app's own.
+    // The per-work-folder profile name, tied to this run: it must be exactly
+    // "LocalCognitive.Sandbox." + the run capability's id, so a run can only ever create or delete its own
+    // container, never the bare prefix or another run's profile.
     private static string RequireProfile(Options options)
     {
-        if (string.IsNullOrEmpty(options.Profile) || !(options.Profile.Equals(ProfilePrefix, StringComparison.Ordinal) || options.Profile.StartsWith(ProfilePrefix + ".", StringComparison.Ordinal)))
-            throw new SandboxError("--profile " + ProfilePrefix + ".<id> is required");
+        string cap = RequireRunCap(options);
+        string expected = ProfilePrefix + "." + cap.Substring("LocalCognitive.Run.".Length);
+        if (options.Profile != expected) throw new SandboxError("--profile must be " + expected + " for this --run-cap");
         return options.Profile;
     }
 
-    // The work folder must be an absolute path inside one of the app's declared roots; a read-only
-    // folder must be an absolute, existing directory that is not a drive root, the Windows folder or a
-    // profile root. Both guard against a work/tool path the helper was handed by mistake.
+    // The per-run capability name; the folder's grant and its profile both derive from its id.
+    private static string RequireRunCap(Options options)
+    {
+        if (string.IsNullOrEmpty(options.RunCap) || !options.RunCap.StartsWith("LocalCognitive.Run.", StringComparison.Ordinal))
+            throw new SandboxError("--run-cap LocalCognitive.Run.<id> is required");
+        return options.RunCap;
+    }
+
+    // The work folder must be an absolute path strictly inside one of the app's declared roots; a
+    // read-only folder must be an absolute, existing directory that is not a drive root, the Windows folder
+    // or a profile root. Both guard against a work/tool path the helper was handed by mistake.
     private static string RequireRw(Options options)
     {
         if (options.Rw == null) throw new SandboxError("--rw is required");
         if (options.Roots.Count == 0) throw new SandboxError("--roots is required");
         string rw = Path.GetFullPath(options.Rw);
-        if (!WithinRoots(rw, options.Roots)) throw new SandboxError("the work folder is outside the app's work roots: " + rw);
+        if (!WithinRoots(rw, options.Roots)) throw new SandboxError("the work folder is not inside the app's work roots: " + rw);
         if (!Directory.Exists(rw)) throw new SandboxError("the work folder does not exist: " + rw);
         return rw;
     }
@@ -222,25 +234,44 @@ internal static class LcSandbox
         string profile = RequireProfile(options);
         string self = GetExecutablePath();
         int code = Run(options, self, new List<string> { "__empty", RequireRw(options) });
+        // Before deleting the profile, empty its real package folder (%LOCALAPPDATA%\Packages\<moniker>)
+        // with the no-reparse-point EmptyFolder, so DeleteAppContainerProfile never descends through a
+        // link. The sandboxed code cannot reach this folder (its LOCALAPPDATA is redirected into the work
+        // folder, and the real one is EPERM to it), so this is defence in depth; it runs as the user
+        // because the container has no access to empty it from inside.
+        try
+        {
+            string real = RealLocalAppData();
+            if (real != null) { string pkg = Path.Combine(real, "Packages", profile.ToLowerInvariant()); if (Directory.Exists(pkg)) EmptyFolder(pkg); }
+        }
+        catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not empty the package folder of " + profile + ": " + error.Message); }
         try { Native.DeleteAppContainerProfile(profile); } catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not delete the profile " + profile + ": " + error.Message); }
         return code;
+    }
+
+    // The user's real LocalAppData, read from the shell folders registry so the sandbox's redirected
+    // %LOCALAPPDATA% env does not mislead it; null if it cannot be read.
+    private static string RealLocalAppData()
+    {
+        using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"))
+            return key == null ? null : key.GetValue("Local AppData") as string;
     }
 
     private static int Run(Options options, string exe, List<string> exeArgs)
     {
         string work = RequireRw(options);
         string profile = RequireProfile(options);
+        string runCap = RequireRunCap(options);
         List<string> readOnly = ResolveReadOnly(options);
         // A profile (and so a container SID, a package folder and a named-object namespace) of this work
-        // folder's own, created on the first command and derived afterwards: another run's sandbox cannot
-        // reach this one's package folder or squat a named pipe it opens.
-        IntPtr containerSid = Native.ContainerSid(profile, !options.Granted);
+        // folder's own: another run's sandbox cannot reach this one's package folder or its named objects.
+        // Always created, never only derived — the create is idempotent (already-exists derives), so a
+        // command whose profile a crash or a prior "empty" removed brings it back instead of failing.
+        IntPtr containerSid = Native.ContainerSid(profile);
         string containerSidString = Native.SidString(containerSid);
         IntPtr toolsCapSid = Native.CapabilitySid(ToolsCapability);
         // The folder's grant goes to a capability of its own, never the shared package SID.
-        if (string.IsNullOrEmpty(options.RunCap) || !options.RunCap.StartsWith("LocalCognitive.Run.", StringComparison.Ordinal))
-            throw new SandboxError("--run-cap LocalCognitive.Run.<id> is required");
-        IntPtr runCapSid = Native.CapabilitySid(options.RunCap);
+        IntPtr runCapSid = Native.CapabilitySid(runCap);
         IntPtr grantee = runCapSid;
 
         // The work folder: read, write and delete for the run's capability, with inheritance, and a
@@ -312,7 +343,9 @@ internal static class LcSandbox
     private static int InnerWrite(string[] args)
     {
         if (args.Length < 2) throw new SandboxError("__write needs a relative path");
-        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1]);
+        // allowFinalReparse false: writing through a link the code planted at the target would write
+        // outside the folder, so a reparse-point final component is refused too.
+        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1], false);
         string dir = Path.GetDirectoryName(target);
         if (dir != null && dir.Length > 0) Directory.CreateDirectory(dir);
         using (Stream input = Console.OpenStandardInput())
@@ -328,7 +361,8 @@ internal static class LcSandbox
     private static int InnerRemove(string[] args)
     {
         if (args.Length < 2) throw new SandboxError("__remove needs a relative path");
-        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1]);
+        // allowFinalReparse true: removing the link itself (not its target) is fine; File.Delete unlinks it.
+        string target = ResolveInside(Directory.GetCurrentDirectory(), args[1], true);
         if (File.Exists(target)) File.Delete(target);
         return 0;
     }
@@ -367,30 +401,33 @@ internal static class LcSandbox
         }
     }
 
-    private static string ResolveInside(string root, string relative)
+    private static string ResolveInside(string root, string relative, bool allowFinalReparse)
     {
         if (Path.IsPathRooted(relative) || relative.Contains("..")) throw new SandboxError("a path inside the folder is relative and has no \"..\": " + relative);
         string rootFull = Path.GetFullPath(root).TrimEnd('\\');
         string full = Path.GetFullPath(Path.Combine(root, relative));
         if (!full.StartsWith(rootFull + "\\", StringComparison.OrdinalIgnoreCase)) throw new SandboxError("the path leaves the folder: " + relative);
-        // No component between the work folder and the target may be a reparse point (a junction or a
-        // symlink): __write and __remove then never follow a link out of the folder, even if the container
-        // boundary ever weakened. The final component may be a link only when removing it.
+        // No component on the way to the target may be a reparse point (a junction or a symlink), so the
+        // operation never follows a link out of the folder even if the container boundary ever weakened.
+        // Each component is opened with FILE_FLAG_OPEN_REPARSE_POINT and its attributes read from the
+        // handle, closing the gap between a path check and the open. The final component may be a reparse
+        // point only for a remove (unlinking the link itself), never for a write.
         string cursor = rootFull;
         string[] parts = full.Substring(rootFull.Length + 1).Split('\\');
         for (int i = 0; i < parts.Length; i++)
         {
             cursor = cursor + "\\" + parts[i];
-            try
-            {
-                FileAttributes attributes = File.GetAttributes(cursor);
-                bool last = i == parts.Length - 1;
-                if ((attributes & FileAttributes.ReparsePoint) != 0 && !last) throw new SandboxError("a folder on the way to " + relative + " is a reparse point");
-            }
-            catch (FileNotFoundException) { }
-            catch (DirectoryNotFoundException) { }
+            bool last = i == parts.Length - 1;
+            if (IsReparsePoint(cursor) && !(last && allowFinalReparse))
+                throw new SandboxError((last ? "the target " : "a folder on the way to ") + relative + " is a reparse point");
         }
         return full;
+    }
+
+    // Whether the component exists and is a reparse point, read from a handle opened without following it.
+    private static bool IsReparsePoint(string path)
+    {
+        return Native.IsReparsePoint(path);
     }
 
     private static void Say(string name, string value) { Console.Out.WriteLine(name + ": " + value); }
@@ -441,7 +478,11 @@ internal static class LcSandbox
     private static int GrantTools(string[] args)
     {
         if (args.Length < 2) throw new SandboxError("grant-tools needs a folder");
-        string dir = Path.GetFullPath(args[1]);
+        string dir = Path.GetFullPath(args[1]).TrimEnd('\\');
+        // Only the helper's own folder (where the shipped Node sits beside it) may be opened to the tools
+        // capability; grant-tools can never be pointed at another folder.
+        string own = Path.GetFullPath(Path.GetDirectoryName(GetExecutablePath())).TrimEnd('\\');
+        if (!dir.Equals(own, StringComparison.OrdinalIgnoreCase)) throw new SandboxError("grant-tools only grants the helper's own folder (" + own + ")");
         if (!Directory.Exists(dir)) throw new SandboxError("the folder does not exist: " + dir);
         IntPtr capSid = Native.CapabilitySid(ToolsCapability);
         // A no-op when the capability may already read and run the folder: the Node tree is not walked
@@ -456,22 +497,27 @@ internal static class LcSandbox
         return 0;
     }
 
-    // Removes every AppContainer profile this app made (prefix LocalCognitive.Sandbox), by reading the
-    // monikers from the user's AppContainer mappings; a profile with any other name is never touched. Run
-    // at app start (stale ones a crash left) and from the uninstaller.
-    private static int Uninstall()
+    // Removes AppContainer profiles this app made (prefix LocalCognitive.Sandbox), read from the user's
+    // AppContainer mappings; a profile with any other name is never touched. uninstall removes all of them
+    // (the NSIS uninstaller); clean-stale (app start) removes only those whose owning app process is gone,
+    // so a second instance's live runs — which share the user's registry — are left alone.
+    private static int RemoveProfiles(bool onlyStale)
     {
-        int removed = 0, failed = 0;
-        foreach (string moniker in Native.SandboxProfileMonikers(ProfilePrefix))
+        int removed = 0, kept = 0, failed = 0;
+        foreach (string[] profile in Native.SandboxProfiles(ProfilePrefix))
         {
+            string moniker = profile[0], owner = profile[1];
+            if (onlyStale && Native.OwnerAlive(owner)) { kept++; continue; }
             int hr = Native.DeleteAppContainerProfile(moniker);
             bool gone = hr == 0 || hr == unchecked((int)0x80070002) || hr == unchecked((int)0x80070490);
             if (gone) removed++;
             else { failed++; Console.Error.WriteLine("lc-sandbox: could not delete the profile " + moniker + " (hr=0x" + hr.ToString("X8") + ")"); }
         }
-        Console.Out.WriteLine("uninstall removed " + removed + " profile(s)" + (failed > 0 ? ", " + failed + " failed" : ""));
+        Console.Out.WriteLine((onlyStale ? "clean-stale" : "uninstall") + " removed " + removed + " profile(s)" + (kept > 0 ? ", kept " + kept + " in use" : "") + (failed > 0 ? ", " + failed + " failed" : ""));
         return failed > 0 ? 1 : 0;
     }
+    private static int Uninstall() { return RemoveProfiles(false); }
+    private static int CleanStale() { return RemoveProfiles(true); }
 
     private static string GetExecutablePath()
     {
@@ -567,24 +613,68 @@ internal static class LcSandbox
             return Marshal.PtrToStringUni(s);
         }
 
-        public static IntPtr ContainerSid(string name, bool create)
+        // Creates the profile, or derives its SID when it exists already (idempotent), so a command whose
+        // profile was removed re-creates it rather than failing. The display name records the owning app
+        // process (its parent), so a later app start can tell this run's live profile from a stale one.
+        public static IntPtr ContainerSid(string name)
         {
             IntPtr sid;
-            if (create)
-            {
-                int hr = CreateAppContainerProfile(name, name, "Local Cognitive sandbox", IntPtr.Zero, 0, out sid);
-                if (hr == unchecked((int)0x800700B7)) hr = DeriveAppContainerSidFromAppContainerName(name, out sid); // already exists
-                if (hr != 0) throw new Exception("CreateAppContainerProfile 0x" + hr.ToString("X8"));
-            }
-            else
-            {
-                int hr = DeriveAppContainerSidFromAppContainerName(name, out sid);
-                if (hr != 0) throw new Exception("DeriveAppContainerSidFromAppContainerName 0x" + hr.ToString("X8"));
-            }
+            int hr = CreateAppContainerProfile(name, OwnerTag(), "Local Cognitive sandbox", IntPtr.Zero, 0, out sid);
+            if (hr == unchecked((int)0x800700B7)) hr = DeriveAppContainerSidFromAppContainerName(name, out sid); // already exists
+            if (hr != 0) throw new Exception("CreateAppContainerProfile 0x" + hr.ToString("X8"));
             return sid;
         }
 
         public static int DeleteAppContainerProfile(string name) { return DeleteAppContainerProfileNative(name); }
+
+        [StructLayout(LayoutKind.Sequential)] private struct PROCESSENTRY32 {
+            public uint dwSize; public uint cntUsage, th32ProcessID; public IntPtr th32DefaultHeapID; public uint th32ModuleID, cntThreads, th32ParentProcessID; public int pcPriClassBase; public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile; }
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool Process32First(IntPtr snapshot, ref PROCESSENTRY32 entry);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool Process32Next(IntPtr snapshot, ref PROCESSENTRY32 entry);
+
+        // The id of this helper's parent — the app process that owns the run. A snapshot gives the parent
+        // PID; Process gives its start time, so a recycled PID is told apart.
+        public static int ParentPid()
+        {
+            int me = System.Diagnostics.Process.GetCurrentProcess().Id;
+            IntPtr snapshot = CreateToolhelp32Snapshot(0x2 /*SNAPPROCESS*/, 0);
+            if (snapshot == (IntPtr)(-1)) return 0;
+            try
+            {
+                PROCESSENTRY32 entry = new PROCESSENTRY32();
+                entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+                for (bool ok = Process32First(snapshot, ref entry); ok; ok = Process32Next(snapshot, ref entry))
+                    if (entry.th32ProcessID == (uint)me) return (int)entry.th32ParentProcessID;
+                return 0;
+            }
+            finally { CloseHandle(snapshot); }
+        }
+
+        // "lcowner=<pid>:<startFileTime>" of the owning app process; "lcowner=0:0" if it cannot be read.
+        public static string OwnerTag()
+        {
+            try
+            {
+                int pid = ParentPid();
+                long start = System.Diagnostics.Process.GetProcessById(pid).StartTime.ToFileTimeUtc();
+                return "lcowner=" + pid + ":" + start;
+            }
+            catch { return "lcowner=0:0"; }
+        }
+
+        // Whether the app process named in a profile's owner tag is still running (same PID, same start
+        // time). An unreadable or malformed tag counts as not alive, so the profile is treated as stale.
+        public static bool OwnerAlive(string ownerTag)
+        {
+            if (string.IsNullOrEmpty(ownerTag) || !ownerTag.StartsWith("lcowner=", StringComparison.Ordinal)) return false;
+            string[] parts = ownerTag.Substring("lcowner=".Length).Split(':');
+            int pid; long start;
+            if (parts.Length != 2 || !int.TryParse(parts[0], out pid) || !long.TryParse(parts[1], out start) || pid == 0) return false;
+            try { return System.Diagnostics.Process.GetProcessById(pid).StartTime.ToFileTimeUtc() == start; }
+            catch { return false; }
+        }
 
         // The capability SID for a name, copied into a small stable buffer so the group/capability arrays
         // DeriveCapabilitySidsFromName allocated (with LocalAlloc) can be freed instead of leaked.
@@ -604,12 +694,12 @@ internal static class LcSandbox
             finally { if (groups != IntPtr.Zero) LocalFree(groups); if (caps != IntPtr.Zero) LocalFree(caps); }
         }
 
-        // The monikers of the AppContainer profiles whose name carries the prefix, read from the user's
-        // AppContainer mappings. A profile with any other name is never returned, so uninstall cannot touch
-        // another application's container.
-        public static List<string> SandboxProfileMonikers(string prefix)
+        // The AppContainer profiles whose name carries the prefix, each with the owner tag stored in its
+        // display name, read from the user's AppContainer mappings. A profile with any other name is never
+        // returned, so cleanup cannot touch another application's container.
+        public static List<string[]> SandboxProfiles(string prefix)
         {
-            List<string> result = new List<string>();
+            List<string[]> result = new List<string[]>();
             string key = @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings";
             using (Microsoft.Win32.RegistryKey mappings = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(key))
             {
@@ -621,7 +711,7 @@ internal static class LcSandbox
                         string moniker = entry == null ? null : entry.GetValue("Moniker") as string;
                         if (!string.IsNullOrEmpty(moniker) &&
                             (moniker.Equals(prefix, StringComparison.OrdinalIgnoreCase) || moniker.StartsWith(prefix + ".", StringComparison.OrdinalIgnoreCase)))
-                            result.Add(moniker);
+                            result.Add(new string[] { moniker, (entry.GetValue("DisplayName") as string) ?? "" });
                     }
                 }
             }
@@ -629,7 +719,9 @@ internal static class LcSandbox
         }
 
         // Whether `path` already carries an access-allowed ACE for `sid` that includes `rights`, so a grant
-        // would add nothing.
+        // would add nothing. `rights` may be given in generic form (GENERIC_READ|GENERIC_EXECUTE); Windows
+        // stores a directory ACE with the mapped specific bits (FILE_GENERIC_READ|FILE_GENERIC_EXECUTE), so
+        // the match accepts either form.
         public static bool FolderGrants(string path, IntPtr sid, uint rights)
         {
             IntPtr dacl, securityDescriptor;
@@ -638,6 +730,11 @@ internal static class LcSandbox
             try
             {
                 if (dacl == IntPtr.Zero) return false;
+                // The specific bits a directory ACE carries once GENERIC_READ|GENERIC_EXECUTE is mapped.
+                uint mapped = 0;
+                if ((rights & GENERIC_READ) != 0) mapped |= 0x120089;    // FILE_GENERIC_READ
+                if ((rights & GENERIC_EXECUTE) != 0) mapped |= 0x1200A0; // FILE_GENERIC_EXECUTE
+                if ((rights & GENERIC_WRITE) != 0) mapped |= 0x120116;   // FILE_GENERIC_WRITE
                 int count = Marshal.ReadInt16(dacl, 4); // ACL.AceCount
                 for (int index = 0; index < count; index++)
                 {
@@ -647,7 +744,7 @@ internal static class LcSandbox
                     if (type != 0) continue; // ACCESS_ALLOWED_ACE_TYPE
                     uint mask = (uint)Marshal.ReadInt32(ace, 4); // ACCESS_ALLOWED_ACE.Mask
                     IntPtr aceSid = (IntPtr)(ace.ToInt64() + 8); // ACCESS_ALLOWED_ACE.SidStart
-                    if (EqualSid(aceSid, sid) && (mask & rights) == rights) return true;
+                    if (EqualSid(aceSid, sid) && ((mask & rights) == rights || (mapped != 0 && (mask & mapped) == mapped))) return true;
                 }
                 return false;
             }
@@ -684,11 +781,54 @@ internal static class LcSandbox
             SetAce(path, sid, rights, inherit, GRANT_ACCESS);
         }
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern uint GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, uint count, uint flags);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetFileInformationByHandle(IntPtr file, out BY_HANDLE_FILE_INFORMATION info);
+        [StructLayout(LayoutKind.Sequential)] private struct BY_HANDLE_FILE_INFORMATION {
+            public uint FileAttributes; public long CreationTime, LastAccessTime, LastWriteTime;
+            public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow; }
+
+        // Whether the component exists and is a reparse point, read from a handle opened without following
+        // it (FILE_FLAG_OPEN_REPARSE_POINT): a missing component, or one that cannot be opened, is not one.
+        public static bool IsReparsePoint(string path)
+        {
+            IntPtr handle = CreateFileW(path, 0, 0x7, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x02000000 /*BACKUP_SEMANTICS*/ | 0x00200000 /*OPEN_REPARSE_POINT*/, IntPtr.Zero);
+            if (handle == (IntPtr)(-1)) return false;
+            try
+            {
+                BY_HANDLE_FILE_INFORMATION info;
+                if (!GetFileInformationByHandle(handle, out info)) return false;
+                return (info.FileAttributes & 0x400 /*FILE_ATTRIBUTE_REPARSE_POINT*/) != 0;
+            }
+            finally { CloseHandle(handle); }
+        }
+
+        // The real, canonical path of a folder: the final path by handle (which resolves links and expands
+        // 8.3 names), with the \\?\ prefix stripped and any trailing separator removed, so two spellings of
+        // the same folder hash to one mutex name. Falls back to the normalized input if the handle cannot
+        // be opened.
+        private static string CanonicalPath(string path)
+        {
+            IntPtr handle = CreateFileW(path, 0, 0x7 /*share all*/, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x02000000 /*BACKUP_SEMANTICS, for a directory*/, IntPtr.Zero);
+            if (handle == (IntPtr)(-1)) return Path.GetFullPath(path).TrimEnd('\\');
+            try
+            {
+                StringBuilder buffer = new StringBuilder(600);
+                uint n = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+                if (n == 0 || n >= buffer.Capacity) return Path.GetFullPath(path).TrimEnd('\\');
+                string full = buffer.ToString();
+                if (full.StartsWith("\\\\?\\UNC\\", StringComparison.Ordinal)) full = "\\\\" + full.Substring(8);
+                else if (full.StartsWith("\\\\?\\", StringComparison.Ordinal)) full = full.Substring(4);
+                return full.TrimEnd('\\');
+            }
+            finally { CloseHandle(handle); }
+        }
+
         private static string AclMutexName(string path)
         {
             using (System.Security.Cryptography.MD5 md5 = System.Security.Cryptography.MD5.Create())
             {
-                byte[] hash = md5.ComputeHash(Encoding.Unicode.GetBytes(Path.GetFullPath(path).ToLowerInvariant()));
+                byte[] hash = md5.ComputeHash(Encoding.Unicode.GetBytes(CanonicalPath(path).ToLowerInvariant()));
                 StringBuilder name = new StringBuilder("Local\\lc-sandbox-acl-");
                 foreach (byte b in hash) name.Append(b.ToString("x2"));
                 return name.ToString();
@@ -719,12 +859,17 @@ internal static class LcSandbox
                     IntPtr newAcl = IntPtr.Zero;
                     try
                     {
+                        // A NULL DACL means "everyone, full control": the helper refuses to touch such a
+                        // folder rather than replace that with a single ACE (it only ever grants folders it
+                        // or the app created, which always have a DACL).
+                        if (currentDacl == IntPtr.Zero) throw new SandboxError("refusing to change the access of " + path + ": it has no DACL");
                         // Keep the object's protected/unprotected DACL state: writing it back the other way
-                        // would turn inheritance on or off under us.
+                        // would turn inheritance on or off under us. A failed read is fatal, so a protected
+                        // DACL is never written back unprotected by accident.
                         ushort control; uint revision;
-                        GetSecurityDescriptorControl(securityDescriptor, out control, out revision);
+                        if (!GetSecurityDescriptorControl(securityDescriptor, out control, out revision)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetSecurityDescriptorControl");
                         uint info = DACL_SECURITY_INFORMATION | ((control & SE_DACL_PROTECTED) != 0 ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION);
-                        // Merge the change into the current DACL (currentDacl may be null: no DACL present).
+                        // Merge the change into the current DACL.
                         error = SetEntriesInAclW(1, new EXPLICIT_ACCESS_W[] { access }, currentDacl, out newAcl);
                         if (error != 0) throw new Win32Exception((int)error, "SetEntriesInAcl");
                         error = SetNamedSecurityInfoW(path, SE_FILE_OBJECT, info, IntPtr.Zero, IntPtr.Zero, newAcl, IntPtr.Zero);
