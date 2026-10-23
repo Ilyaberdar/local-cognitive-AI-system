@@ -1,15 +1,29 @@
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { SandboxProvider } from "../checks/types";
 import type { EgressProxy } from "./AgentHttpProxy";
+import { nodeTestIsolationFlag } from "../checks/sandbox";
 import { runCommand } from "../../utils/runCommand";
 
 /** What an agent's terminal may run: build and test tools, read-only git, search and listing. */
 export const TERMINAL_COMMANDS = ["node", "npm", "npx", "python3", "git", "rg", "ls", "cat"] as const;
 export type TerminalCommand = typeof TERMINAL_COMMANDS[number];
+/** Windows runs no shell inside the sandbox in v1: an agent there uses the app's own Node (node, npm,
+ * npx), and git, ls and cat are refused. */
+const WINDOWS_TERMINAL_UNSUPPORTED = new Set(["git", "ls", "cat", "python3", "rg"]);
+/** The Node runtime the app ships for the Windows sandbox (never the user's). */
+const shippedSandboxNode = (): string | undefined => process.env.LC_SANDBOX_NODE && existsSync(process.env.LC_SANDBOX_NODE) ? process.env.LC_SANDBOX_NODE : undefined;
+/** What to run before the user's arguments on Windows: node runs its own, npm and npx run the shipped
+ * Node's cli scripts (their .cmd shims are batch files the sandbox refuses); git, ls, cat, python3 and rg
+ * are refused. The caller runs the shipped Node as the executable. */
+export function windowsTerminalPrefix(command: TerminalCommand, nodeDir: string): string[] {
+  if (WINDOWS_TERMINAL_UNSUPPORTED.has(command)) throw new Error(`${command} is not available in the Windows terminal yet; an agent there uses node, npm and npx.`);
+  if (command === "npm" || command === "npx") return [path.win32.join(nodeDir, "node_modules", "npm", "bin", command === "npm" ? "npm-cli.js" : "npx-cli.js")];
+  return [];
+}
 /** git only reads: history, differences, blame, search. */
 const GIT_READS = new Set(["log", "show", "diff", "blame", "status", "grep", "ls-files", "rev-parse", "branch", "shortlog", "describe"]);
 export const MAX_COMMAND_SECONDS = 120;
@@ -41,8 +55,7 @@ export interface TerminalHost {
 
 /** The proxy env a sandboxed tool reads to send its web requests through the egress proxy and nowhere
  * else (curl, git and python honour different casings; nothing is exempted). */
-const proxyEnv = (endpoint: { host: string; port: number }): Record<string, string> => {
-  const url = `http://${endpoint.host}:${endpoint.port}`;
+const proxyEnv = (url: string): Record<string, string> => {
   return { HTTP_PROXY: url, HTTPS_PROXY: url, ALL_PROXY: url, http_proxy: url, https_proxy: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 };
 
@@ -89,7 +102,11 @@ const CPU_SECONDS = MAX_COMMAND_SECONDS * 2;
  * folder), then removes the empty folder; never a recursive delete by the app itself. */
 export async function removeInSandbox(sandbox: SandboxProvider, folder: string): Promise<void> {
   try {
-    const wrapped = sandbox.wrap("/bin/sh", ["-c", 'trap "" TERM; kill -TERM 0 2>/dev/null; chmod -R u+rwx . 2>/dev/null; rm -rf -- ./* ./.[!.]* ./..?* 2>/dev/null; exit 0'], folder, []);
+    // Where the sandbox has no shell (Windows), its own built-in empties the folder (never following a
+    // reparse point a command left); elsewhere a /bin/sh in the sandbox does.
+    const wrapped = sandbox.empty
+      ? sandbox.empty(folder)
+      : sandbox.wrap("/bin/sh", ["-c", 'trap "" TERM; kill -TERM 0 2>/dev/null; chmod -R u+rwx . 2>/dev/null; rm -rf -- ./* ./.[!.]* ./..?* 2>/dev/null; exit 0'], folder, []);
     await runCommand(wrapped.executable, wrapped.args, folder, 30_000, undefined, undefined, { env: wrapped.env });
   } catch { /* No sandbox to empty it with: the folder stays, under the app's own data. */ }
   await fs.rmdir(folder).catch(() => undefined);
@@ -115,23 +132,26 @@ export class AgentTerminal {
   private proxy?: Promise<EgressProxy>;
   constructor(private readonly host: TerminalHost, private readonly view: TerminalView, private readonly name: string, private readonly allowed: string[], private readonly httpTargets: readonly string[] = []) {}
 
-  /** The loopback egress proxy this agent's commands go out through, or undefined when it has no web
+  /** The egress proxy this agent's commands go out through, or undefined when it has no web
    * targets or the platform's sandbox cannot route to one (the terminal then runs with no network). */
   private egress(): Promise<EgressProxy> | undefined {
     if (!this.host.egress || !this.host.sandbox.egressSupported || !this.httpTargets.length) return undefined;
-    return (this.proxy ??= this.host.egress(this.httpTargets));
+    // A failed start is tried again by the next command, not kept for the agent's whole run.
+    return (this.proxy ??= this.host.egress(this.httpTargets).catch(error => { this.proxy = undefined; throw error; }));
   }
 
   async run(command: string, args: string[], cwd: string, timeoutSeconds: number, signal?: AbortSignal): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> {
     if (!(TERMINAL_COMMANDS as readonly string[]).includes(command) || !this.allowed.includes(command)) {
       throw new Error(`${command} is not one of this agent's commands: ${this.allowed.join(", ")}.`);
     }
+    const windows = process.platform === "win32";
+    if (windows && WINDOWS_TERMINAL_UNSUPPORTED.has(command)) throw new Error(`${command} is not available in the Windows terminal yet; an agent there uses node, npm and npx.`);
     if (command === "git" && !GIT_READS.has(args[0] ?? "")) throw new Error(`git runs only to read: git ${[...GIT_READS].join(" | ")} ...`);
     if (command === "git" && !this.host.git) throw new Error("git history is not in this copy: the contract has hidden tests, which it could hold.");
     if (command === "npm" && !["test", "run", "ls", "list", "pkg"].includes(args[0] ?? "")) throw new Error("npm runs only npm test, npm run <script> and npm ls here.");
     if (args.length > 64 || args.some(arg => arg.length > 4000 || arg.includes("\0"))) throw new Error("A command takes at most 64 arguments of 4,000 characters.");
-    const executable = await program(command as TerminalCommand);
-    if (!executable) throw new Error(`${command} is not installed on this computer.`);
+    const executable = windows ? shippedSandboxNode() : await program(command as TerminalCommand);
+    if (!executable) throw new Error(windows ? "The sandbox's bundled Node runtime was not found in this install." : `${command} is not installed on this computer.`);
     const reason = await this.host.sandbox.unavailable();
     if (reason) throw new Error(`The terminal needs a sandbox: ${reason}`);
     let work = await this.prepare();
@@ -146,6 +166,27 @@ export class AgentTerminal {
     }
     const folder = path.resolve(work, cwd || ".");
     if (folder !== work && !folder.startsWith(`${work}${path.sep}`)) throw new Error("cwd is a folder of the project, such as src.");
+    const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
+    if (windows) {
+      // node runs the app's own runtime; npm and npx run it on their cli scripts (their .cmd shims are
+      // batch files the sandbox refuses). The Job object ends the whole tree when the command ends or
+      // when the helper is killed (a timeout), so there is no shell wrapper and no done-token.
+      const nodeDir = path.dirname(executable);
+      const inject = command === "node" && args.includes("--test") ? [await nodeTestIsolationFlag(executable)] : [];
+      const full = [...inject, ...windowsTerminalPrefix(command as TerminalCommand, nodeDir), ...args];
+      const wrapped = this.host.sandbox.wrap(executable, full, work, [nodeDir]);
+      // The per-process CPU bound that ulimit -t gives elsewhere: the helper's Job object enforces it.
+      if (wrapped.args[0] === "exec") wrapped.args.splice(1, 0, "--cpu", String(CPU_SECONDS));
+      const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
+        { env: { ...wrapped.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", npm_config_update_notifier: "false" } });
+      // The likeliest reason a command hangs here: a child process started over stdio pipes, which libuv
+      // cannot connect inside the sandbox (node --test starts one per file unless told otherwise, and that
+      // flag is not allowed in NODE_OPTIONS, so a project's own test script must pass it).
+      const note = result.timedOut
+        ? `\n[Timed out. In the Windows sandbox a process that starts child processes over stdio pipes can hang: node --test does unless its files run in one process, so a test script should run "node --test ${await nodeTestIsolationFlag(executable)}".]`
+        : "";
+      return { exitCode: result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout)), stderr: clip(hide(result.stderr) + note) };
+    }
     const real = await fs.realpath(executable).catch(() => executable);
     // The tool's folders, read-only: its own and its real place (Homebrew, nvm); their parents only
     // where they are a toolchain's (npm's own modules), never a folder of the user's; the project's
@@ -169,9 +210,8 @@ export class AgentTerminal {
     const result = await runCommand(wrapped.executable, wrapped.args, folder, Math.min(MAX_COMMAND_SECONDS, Math.max(1, timeoutSeconds)) * 1000, signal, undefined,
       // npm's scripts start under an absolute /bin/sh: looking sh up through the node_modules/.bin of every
       // parent folder (which the macOS sandbox refuses with EPERM, ending the search) would fail them.
-      { env: { ...wrapped.env, ...(proxy ? proxyEnv(proxy.endpoint) : {}), ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
+      { env: { ...wrapped.env, ...(proxy && wrapped.proxyUrl ? proxyEnv(wrapped.proxyUrl) : {}), ...(nodeDirs.length ? { PATH: [...nodeDirs, path.dirname(executable), wrapped.env.PATH].filter(Boolean).join(path.delimiter), npm_config_script_shell: "/bin/sh" } : {}), CI: "1", NO_COLOR: "1", FORCE_COLOR: "0", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", npm_config_update_notifier: "false" }, endWhen: stdout => done.test(stdout) });
     const status = done.exec(result.stdout);
-    const hide = (text: string) => text.split(work).join(".").split(this.view.root).join("<project>");
     return { exitCode: status ? Number(status[1]) : result.exitCode, timedOut: result.timedOut, stdout: clip(hide(result.stdout.replace(done, "\n"))), stderr: clip(hide(result.stderr)) };
   }
 
@@ -208,13 +248,17 @@ export class AgentTerminal {
         await fs.writeFile(target, content);
       }
       // Linked only when they are the project's own (a link elsewhere would open that folder to reading).
-      const root = await fs.realpath(this.view.root);
-      for (const [name, wanted] of [["node_modules", true], [".git", this.host.git]] as const) {
-        if (!wanted) continue;
-        const source = await fs.realpath(path.join(this.view.root, name)).catch(() => undefined);
-        if (!source || !source.startsWith(`${root}${path.sep}`) || !await fs.stat(source).then(stat => stat.isDirectory(), () => false)) continue;
-        await fs.symlink(source, path.join(work, name));
-        this.linked.push(source);
+      // Windows makes no links in v1 (a symlink needs a privilege a normal account lacks): the copy has
+      // neither the project's node_modules nor its git history there.
+      if (process.platform !== "win32") {
+        const root = await fs.realpath(this.view.root);
+        for (const [name, wanted] of [["node_modules", true], [".git", this.host.git]] as const) {
+          if (!wanted) continue;
+          const source = await fs.realpath(path.join(this.view.root, name)).catch(() => undefined);
+          if (!source || !source.startsWith(`${root}${path.sep}`) || !await fs.stat(source).then(stat => stat.isDirectory(), () => false)) continue;
+          await fs.symlink(source, path.join(work, name));
+          this.linked.push(source);
+        }
       }
       return work;
     })();
@@ -230,7 +274,11 @@ export class AgentTerminal {
     const changes: Array<[string, string | null]> = [...Object.entries(files).filter(([file, content]) => this.synced.get(file) !== content),
       ...removed.filter(file => this.synced.get(file) !== null).map(file => [file, null] as [string, null])];
     for (const [file, content] of changes) {
-      const wrapped = this.host.sandbox.wrap("/bin/sh", ["-c", content === null ? 'rm -f -- "$1"' : 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", file], work, []);
+      // Inside the sandbox, so a folder a command turned into a link out of the copy leads a write or a
+      // delete nowhere but the copy. Where the sandbox has no shell (Windows), its built-ins do it.
+      const wrapped = content === null
+        ? (this.host.sandbox.remove ? this.host.sandbox.remove(work, file) : this.host.sandbox.wrap("/bin/sh", ["-c", 'rm -f -- "$1"', "sh", file], work, []))
+        : (this.host.sandbox.write ? this.host.sandbox.write(work, file) : this.host.sandbox.wrap("/bin/sh", ["-c", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", file], work, []));
       const result = await runCommand(wrapped.executable, wrapped.args, work, 20_000, undefined, undefined, { env: wrapped.env, ...(content === null ? {} : { input: content }) });
       if (result.exitCode !== 0) throw new Error(`The terminal's copy could not take ${file}: ${result.stderr.trim().split("\n")[0] ?? "it refused"}.`);
       this.synced.set(file, content);

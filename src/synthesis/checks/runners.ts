@@ -1,10 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { removeInSandbox } from "../agents/Terminal";
 import { runCommand } from "../../utils/runCommand";
+import { nodeTestIsolationFlag } from "./sandbox";
 import { LC_NODE_REPORTER, LC_PYTHON_RUNNER, LC_TEST_HPP } from "./support";
 import type { CheckCase, CheckFiles, CheckResult, SandboxProvider } from "./types";
 
@@ -48,6 +49,10 @@ const underHome = (file: string) => file === os.homedir() || file.startsWith(`${
 const isExecutable = async (file: string) => {
   try { await fs.access(file, constants.X_OK); return (await fs.stat(file)).isFile(); } catch { return false; }
 };
+/** On Windows the executable is a file, not a mode bit: a program is any existing file (node.exe, python.exe). */
+const isProgram = async (file: string) => process.platform === "win32" ? fs.stat(file).then(stat => stat.isFile(), () => false) : isExecutable(file);
+/** The Node runtime the app ships for the Windows sandbox (never the user's), set by the app. */
+const shippedNode = (): string | undefined => process.env.LC_SANDBOX_NODE && existsSync(process.env.LC_SANDBOX_NODE) ? process.env.LC_SANDBOX_NODE : undefined;
 const answers = new Map<string, Promise<string | undefined>>();
 /** Asks a trusted tool outside the sandbox (xcrun, node --version). A success is kept for the app's lifetime. */
 function ask(executable: string, args: string[]): Promise<string | undefined> {
@@ -69,6 +74,13 @@ const atLeast = (version: string, major: number, minor: number) => {
 async function findNode(typescript: boolean): Promise<{ executable: string } | { problem: string }> {
   const [major, minor] = typescript ? [22, 18] : [22, 0];
   const problem = (seen?: string) => ({ problem: `${typescript ? "TypeScript" : "JavaScript"} contract tests need Node.js ${major}.${minor} or newer${seen ? `; found ${seen}` : ", which was not found"}.` });
+  // On Windows the app ships the sandbox's Node runtime; nothing of the user's PATH is run.
+  if (process.platform === "win32") {
+    const node = shippedNode();
+    if (!node) return { problem: "The sandbox's bundled Node runtime was not found in this install." };
+    const version = await ask(node, ["--version"]);
+    return version && atLeast(version, major, minor) ? { executable: node } : problem(version);
+  }
   if (!process.versions.electron) return atLeast(process.versions.node, major, minor) ? { executable: process.execPath } : problem(`v${process.versions.node}`);
   // The desktop app's own binary is Electron: look where people install node.
   const nvm = path.join(os.homedir(), ".nvm", "versions", "node");
@@ -84,6 +96,18 @@ async function findNode(typescript: boolean): Promise<{ executable: string } | {
   return problem(seen);
 }
 async function findPython(): Promise<string | undefined> {
+  // On Windows the sandbox can read a Python only where all application packages may (under Program
+  // Files); one installed elsewhere (the common C:\PythonNN) is unreadable there, so the check is Unknown.
+  if (process.platform === "win32") {
+    const programFiles = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.ProgramW6432]
+      .filter((dir): dir is string => Boolean(dir)).map(dir => path.resolve(dir));
+    const within = (file: string) => programFiles.some(root => file.toLowerCase().startsWith(`${root.toLowerCase()}${path.sep}`));
+    for (const dir of searchPath()) for (const name of ["python.exe", "python3.exe"]) {
+      const candidate = path.join(dir, name);
+      if (within(candidate) && await isProgram(candidate)) return candidate;
+    }
+    return undefined;
+  }
   for (const candidate of new Set([...searchPath().map(dir => path.join(dir, "python3")), "/usr/bin/python3"])) {
     // The sandbox cannot read the home folder (pyenv shims, virtual environments).
     if (underHome(candidate) || !await isExecutable(candidate)) continue;
@@ -106,6 +130,27 @@ async function findCompiler(): Promise<{ executable: string; flags: string[] } |
   return undefined;
 }
 const realDir = async (file: string) => path.dirname(await fs.realpath(file).catch(() => file));
+
+/** Turns the run's absolute paths in a message into relative ones, so none of the machine's folders
+ * leaves: the work folder (under either name a run folder has: on macOS /var is /private/var) becomes ".",
+ * the work root "..". Longest first, so a path is never cut by a shorter one inside it. On Windows the
+ * same paths come back with "\" or as file:///C:/… URLs with "/", which are stripped too. */
+export function pathCleaner(work: string, given: string, win = process.platform === "win32"): (text: string) => string {
+  // The paths are this platform's: on Windows they are parsed as Windows paths wherever this runs.
+  const P = win ? path.win32 : path;
+  const roots = [...[work, given].map(root => [root, "", "."] as const),
+    ...[P.dirname(work), P.dirname(given)].filter(root => root !== P.parse(root).root).map(root => [root, "../", ".."] as const)]
+    .sort((a, b) => b[0].length - a[0].length);
+  return (text: string) => roots.reduce((result, [root, inside, bare]) => {
+    const forward = root.replace(/\\/g, "/");
+    let out = result;
+    // The folder with a trailing separator (in each form a message may carry it) becomes `inside` first,
+    // so a Windows "<root>\" is cut before the bare "<root>" would turn its separator into part of ".".
+    for (const prefix of [`file://${root}/`, `${root}/`, ...(win ? [`${root}\\`, `file:///${forward}/`, `${forward}/`] : [])]) out = out.split(prefix).join(inside);
+    for (const bareForm of [root, ...(win ? [forward] : [])]) out = out.split(bareForm).join(bare);
+    return out;
+  }, text);
+}
 
 const safePath = (file: string) => file.length > 0 && file.length <= 512 && !file.startsWith("/") && !/[\\\0]/.test(file) &&
   file.split("/").every(part => part !== "" && part !== "." && part !== "..");
@@ -296,8 +341,14 @@ export async function runContractTests(request: TestRunRequest): Promise<CheckRe
     tool = { executable: node.executable, readable: [path.dirname(node.executable), await realDir(node.executable)], flags: [] };
   } else if (runner === "python") {
     const python = await findPython();
-    if (!python) return unknown(`Python contract tests need python3, which was not found${process.platform === "darwin" ? " (xcode-select --install provides it)" : ""}`);
-    tool = { executable: python, readable: [path.dirname(python), await realDir(python), path.dirname(await realDir(python))], flags: [] };
+    if (!python) return unknown(`Python contract tests need python3, which was not found${process.platform === "darwin" ? " (xcode-select --install provides it)" : process.platform === "win32" ? " under Program Files, where the sandbox can read it" : ""}`);
+    // On Windows the sandbox never opens up a folder outside the app's own roots, so the interpreter's
+    // parent (C:\Program Files) is not added — it is readable only through its own ALL APPLICATION
+    // PACKAGES inheritance. Elsewhere the parent is bound read-only so a shim can reach its real binary.
+    const parent = process.platform === "win32" ? [] : [path.dirname(await realDir(python))];
+    tool = { executable: python, readable: [path.dirname(python), await realDir(python), ...parent], flags: [] };
+  } else if (process.platform === "win32") {
+    return unknown("C++ contract tests are not supported in the Windows sandbox yet.");
   } else {
     const compiler = await findCompiler();
     if (!compiler) return unknown(`C++ contract tests need ${process.platform === "darwin" ? "clang++ (xcode-select --install provides it)" : "clang++ or g++"}, which was not found`);
@@ -309,13 +360,7 @@ export async function runContractTests(request: TestRunRequest): Promise<CheckRe
     await fs.mkdir(request.workRoot, { recursive: true });
     given = await fs.mkdtemp(path.join(request.workRoot, "run-"));
     const work = await fs.realpath(given);
-    // No absolute path leaves the run: the work folder (under either name: /var is /private/var) becomes ".",
-    // the work root "..". Longest first, so a path is never cut by a shorter one inside it.
-    const roots = [...[work, given].map(root => [root, "", "."]),
-      ...[path.dirname(work), path.dirname(given)].filter(root => root !== path.parse(root).root).map(root => [root, "../", ".."])]
-      .sort((a, b) => b[0]!.length - a[0]!.length);
-    const clean = (text: string) => roots.reduce((result, [root, inside, bare]) =>
-      result.split(`file://${root}/`).join(inside).split(`${root}/`).join(inside).split(root!).join(bare), text);
+    const clean = pathCleaner(work, given);
     for (const [file, content] of [...planned.entries, SUPPORT[runner]]) {
       const target = path.join(work, ...file.split("/"));
       await fs.mkdir(path.dirname(target), { recursive: true });
@@ -331,7 +376,10 @@ export async function runContractTests(request: TestRunRequest): Promise<CheckRe
     let run: Run;
     if (runner === "node") {
       const strip = tests.some(file => /\.m?ts$/.test(file)) ? ["--experimental-strip-types"] : [];
-      run = await execute(tool.executable, ["--test", ...strip, "--test-reporter=./lc-reporter.mjs", "--test-reporter-destination=stdout", ...tests.map(operand)], request.timeoutMs);
+      // On Windows the tests run in one process (isolation none) and symlinks are kept, or node fails to
+      // load a main script (lstat of a drive root is refused inside the sandbox).
+      const win = process.platform === "win32" ? ["--preserve-symlinks", "--preserve-symlinks-main", await nodeTestIsolationFlag(tool.executable)] : [];
+      run = await execute(tool.executable, [...win, "--test", ...strip, "--test-reporter=./lc-reporter.mjs", "--test-reporter-destination=stdout", ...tests.map(operand)], request.timeoutMs);
     } else if (runner === "python") {
       run = await execute(tool.executable, ["-I", "-B", "lc_unittest_runner.py", ...tests], request.timeoutMs);
     } else {

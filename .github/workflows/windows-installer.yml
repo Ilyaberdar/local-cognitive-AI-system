@@ -43,6 +43,9 @@ jobs:
         run: node scripts/prepare-llama-runtime.mjs --platform win32 --arch x64
       - name: whisper.cpp (C++ runtime linked in)
         run: node scripts/prepare-speech-runtime.mjs --platform win32 --arch x64
+      # The Synthesis sandbox: the helper (compiled with the .NET Framework csc) and its Node runtime.
+      - name: Synthesis sandbox helper
+        run: node scripts/prepare-sandbox-helper.mjs --arch x64
       - run: npm run build
       - name: Package
         run: |
@@ -56,6 +59,10 @@ jobs:
           node scripts/verify-packaged-runtime.mjs release/win-unpacked/resources --variant win32-x64 --check-libraries
           node scripts/verify-speech-runtime.mjs release/win-unpacked/resources
           node --input-type=module -e "const { missingImports } = await import('./scripts/lib/pe-imports.mjs'); const missing = await missingImports('release/win-unpacked/resources/speech/win32-x64'); if (missing.size) { console.error('whisper needs', [...missing.keys()].join(', ')); process.exit(1); }"
+      - name: The Synthesis sandbox imports only system DLLs and isolates
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/verify-sandbox-helper.mjs release/win-unpacked/resources
       - run: npx electron-fuses read --app "release/win-unpacked/Local Cognitive.exe"
       # Unsigned: a feed without publisherName makes the app announce versions instead of installing them.
       - name: The update feed names no publisher

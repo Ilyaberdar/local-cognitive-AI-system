@@ -7,7 +7,7 @@ import { LLMService } from "../llm/LLMService";
 import { LLMRequest, LLMResponse, ManagedModel, ProviderDescriptor, ProviderModel } from "../types";
 import { preciseLocalGenerationSettings, resolveLocalGenerationSettings } from "../local/GenerationSettings";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
-import { answerFileProblem, callsOf, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram } from "./language";
+import { answerFileProblem, compileProgram, httpTargetsOf, namedProviders, SourceSpan, SpecProgram, terminalAllowsOf } from "./language";
 import { BudgetExhausted, Interpreter } from "./Interpreter";
 import { ActivityEvent, Evidence, EvidenceCase, RunRecord, RunStatus, SynthesisError, SynthesisModule, SynthesisRun } from "./types";
 import { containedPath, filesHash, hash, MAX_ARTIFACT_BYTES, MAX_SOURCE_BYTES, readOptional, readText, relativePath } from "./paths";
@@ -290,13 +290,23 @@ export class SynthesisService {
         try { within = targetWithin(parseTarget(target), allowList); } catch { within = false; }
         if (!within) diagnostics.push({severity: "error", code: "SYNTHESIS_WEB_CONSENT", message: this.webConsentRefusal(project, [target]), file: flowPath, line: span.start.line, column: span.start.column});
       }
-      // A terminal where this platform has no sandbox at all (Windows): Run would stop at parallel_map.
-      // Whether a sandbox that exists isolates is checked at Run, which tries it.
+      // A terminal where this platform has no sandbox at all (an unsupported OS), or names a command the
+      // platform's sandbox does not run (Windows runs only node, npm and npx in v1): Run would stop at
+      // parallel_map. Whether a sandbox that exists isolates is checked at Run, which tries it.
       const sandbox = this.services.checks?.sandbox ?? platformSandbox();
-      const terminal = callsOf(compiled.flow, "terminal")[0];
-      if (terminal && sandbox.name === "none") {
+      const terminals = terminalAllowsOf(compiled.flow);
+      if (terminals.length && sandbox.name === "none") {
+        const terminal = terminals[0]!.span;
         diagnostics.push({severity: "error", code: "SYNTHESIS_SANDBOX", message: `Agents with a terminal need a sandbox: ${await sandbox.unavailable()} Remove terminal(...) from their tools to run here.`,
           file: flowPath, line: terminal.start.line, column: terminal.start.column});
+      } else if (sandbox.name === "appcontainer") {
+        const unsupported = ["git", "ls", "cat", "python3", "rg"];
+        for (const {commands, span} of terminals) {
+          const named = (commands ?? unsupported).filter(command => unsupported.includes(command));
+          if (named.length) diagnostics.push({severity: "error", code: "SYNTHESIS_SANDBOX",
+            message: `On Windows an agent's terminal runs only node, npm and npx; ${named.join(", ")} ${named.length === 1 ? "is" : "are"} not available here yet. Narrow terminal(allow = [...]) to those, or run the flow on a Mac or a Linux server.`,
+            file: flowPath, line: span.start.line, column: span.start.column});
+        }
       }
     }
     const folder = path.posix.dirname(specPath);
@@ -726,6 +736,10 @@ export class SynthesisService {
             // The injected client (a test seam) gets the SAME run budget, so it and the egress proxy share one count.
             httpClient ??= this.services.agents.httpClient?.(httpBudget) ?? new AgentHttpClient(httpBudget, undefined, consent);
           }
+          // Whether a terminal may reach its web targets on this platform: checked once an agent needs it.
+          const terminalWeb = wanted.length && agents.some(agent => agent.rights.terminal?.length && agent.rights.http?.length)
+            ? await sandbox.checkEgress?.() : undefined;
+          if (terminalWeb) await this.event(record, "agents", `Agents' terminals have no web access here (${terminalWeb}); http.request still reaches the allowed targets.`, "warning", {line: span.start.line});
           const call = ++mapCalls, earlier = record.agentRuns ?? [];
           await this.event(record, "agents", `${tasks.length} agents, ${Math.min(concurrency as number, tasks.length)} at a time`, "running", {line: span.start.line});
           // A provider that asks to slow down gets fewer requests at once; the run says so, at most every 30 s.
@@ -742,10 +756,10 @@ export class SynthesisService {
             // History is out of the copies when the contract has hidden tests: it could hold them.
             terminal: {sandbox, workRoot: path.join(this.directory, "..", "agents", record.id, "terminal", `map-${call}`),
               git: !record.spec.gates.some(gate => gate.check?.kind === "tests" && gate.check.hidden),
-              // An agent with both a terminal and the http right reaches its web targets through a loopback
-              // proxy, when the sandbox can route to one; it enforces the same allowlist, consent and budget.
+              // An agent with both a terminal and the http right reaches its web targets through the egress
+              // proxy, when the sandbox can route to it alone; it enforces the same allowlist, consent and budget.
               ...(wanted.length && sandbox.egressSupported && httpBudget && consent
-                ? {egress: (allow: readonly string[]) => createEgressProxy({allow, budget: httpBudget!, consent: consent!})} : {})},
+                ? {egress: (allow: readonly string[]) => createEgressProxy({allow, budget: httpBudget!, consent: consent!, unix: sandbox.egressTransport === "unix"})} : {})},
             admit: async spec => { await this.provider(record, spec.model.providerId); },
             update: current => { record.agentRuns = [...earlier, ...current]; record.agents = counts(record.agentRuns); saveSoon(); }});
           for (const summary of summaries) { record.usage.calls += summary.steps; record.usage.inputTokens += summary.inputTokens; record.usage.outputTokens += summary.outputTokens; }

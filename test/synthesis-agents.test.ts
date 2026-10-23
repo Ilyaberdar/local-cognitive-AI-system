@@ -775,7 +775,7 @@ test("terminal: a run refuses agents with a terminal where no sandbox isolates, 
   assert.equal(result.status, "blocked");
   assert.match(result.error!, /Agents with a terminal need a sandbox that works: bubblewrap does not isolate here/);
   assert.equal(f.agentRequests.length, 0);
-  // Where the platform has no sandbox at all (Windows), the module says so before Run.
+  // Where the platform has no sandbox at all (an OS other than macOS, Linux and Windows), the module says so before Run.
   service.services.checks = {sandbox: {name: "none", unavailable: async () => "This platform has no sandbox yet.", wrap: () => { throw new Error("never"); }}};
   const module = await f.service.module(f.project.id, "Review");
   assert.equal(module.valid, false);
@@ -784,6 +784,28 @@ test("terminal: a run refuses agents with a terminal where no sandbox isolates, 
   assert.equal(refusal?.file, "Synthesis/Review/Review.lcflow");
   assert.ok(refusal!.line > 1, "it points at terminal(...)");
   assert.ok(compileProgram(spec, flow(`t = terminal(allow = ["node"]);`).replace('policy = "agents-v1";', 'policy = "cloud-files-v1";')).diagnostics.some(item => item.code === "FLOW_POLICY_CAPABILITY"));
+});
+
+test("terminal: on Windows the module flags terminal commands the sandbox does not run, and passes node/npm/npx", async (t) => {
+  const f = await fixture(t, {script: writer});
+  const service = f.service as unknown as {services: {checks?: {sandbox: unknown}}};
+  service.services.checks = {sandbox: {name: "appcontainer", unavailable: async () => undefined, wrap: () => { throw new Error("never"); }}};
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcflow"), flow(`builder = agent(provider = "deepseek", model = "deepseek-flash", tools = [files.read("src/**"), terminal(allow = ["node", "git", "cat"])], steps = 2);
+    results = await parallel_map(builder, ["x"]);`));
+  const flagged = await f.service.module(f.project.id, "Review");
+  const refusal = flagged.diagnostics.find(item => item.code === "SYNTHESIS_SANDBOX");
+  assert.equal(flagged.valid, false);
+  assert.match(refusal?.message ?? "", /On Windows an agent's terminal runs only node, npm and npx; git, cat are not available here yet/);
+  assert.equal(refusal?.file, "Synthesis/Review/Review.lcflow");
+  assert.ok(refusal!.line > 1, "it points at terminal(...)");
+  // terminal() with no allow grants every command, so the five unsupported ones are named.
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcflow"), flow(`builder = agent(provider = "deepseek", model = "deepseek-flash", tools = [terminal()], steps = 2);
+    results = await parallel_map(builder, ["x"]);`));
+  assert.match((await f.service.module(f.project.id, "Review")).diagnostics.find(item => item.code === "SYNTHESIS_SANDBOX")?.message ?? "", /git, ls, cat, python3, rg are not available/);
+  // node, npm and npx alone raise nothing.
+  await fs.writeFile(path.join(f.root, "Synthesis", "Review", "Review.lcflow"), flow(`builder = agent(provider = "deepseek", model = "deepseek-flash", tools = [terminal(allow = ["node", "npm", "npx"])], steps = 2);
+    results = await parallel_map(builder, ["x"]);`));
+  assert.equal((await f.service.module(f.project.id, "Review")).diagnostics.find(item => item.code === "SYNTHESIS_SANDBOX"), undefined);
 });
 
 test("terminal, security: links a command plants in its copy lead nowhere: the app never writes through them, and they open nothing to reading", { skip: !sandboxed }, async (t) => {
