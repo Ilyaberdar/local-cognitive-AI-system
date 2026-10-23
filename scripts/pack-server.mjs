@@ -58,6 +58,15 @@ fs.copyFileSync(path.join(root, "apps", "cloud", "package.json"), path.join(stag
 console.log("Installing production packages…");
 execFileSync("npm", ["ci", "--omit=dev", "--ignore-scripts", "--workspaces=false", "--include-workspace-root", "--no-audit", "--no-fund"], { cwd: stage, stdio: "inherit" });
 fs.rmSync(path.join(stage, "apps"), { recursive: true, force: true });
+// Synthesis type-checks TypeScript in process with lib/typescript.js and its lib .d.ts files; the
+// compiler's command-line, language-server and translated-message files are left out (as in the app).
+const tsLib = path.join(stage, "node_modules", "typescript", "lib");
+if (!fs.existsSync(path.join(tsLib, "typescript.js"))) fail("typescript is a production dependency (Synthesis type-checks candidates): node_modules/typescript/lib/typescript.js is missing.");
+fs.rmSync(path.join(stage, "node_modules", "typescript", "bin"), { recursive: true, force: true });
+for (const entry of fs.readdirSync(tsLib, { withFileTypes: true })) {
+  const name = entry.name;
+  if (entry.isDirectory() ? fs.existsSync(path.join(tsLib, name, "diagnosticMessages.generated.json")) : /^(?:_.*\.js|tsserver.*|typingsInstaller.*|watchGuard\.js|typescript\.d\.ts)$/.test(name)) fs.rmSync(path.join(tsLib, name), { recursive: true, force: true });
+}
 
 // The pinned Node runtime, verified against nodejs.org's published digests.
 const nodeName = `node-v${nodeVersion}-${platform}-${arch}`;

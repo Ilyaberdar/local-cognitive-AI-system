@@ -72,6 +72,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "smol-toml": "^1.9.1",
+    "typescript": "^5.8.2",
     "ws": "^8.22.0",
     "zod": "^4.4.3"
   },
@@ -88,7 +89,6 @@
     "esbuild": "0.25.12",
     "jsdom": "26.1.0",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2",
     "vite": "^6.1.0"
   },
   "build": {
@@ -118,7 +118,14 @@
       "public/**/*",
       "package.json",
       "!**/.env",
-      "!**/.env.*"
+      "!**/.env.*",
+      "!node_modules/typescript/bin/**",
+      "!node_modules/typescript/lib/_*.js",
+      "!node_modules/typescript/lib/tsserver*",
+      "!node_modules/typescript/lib/typingsInstaller*",
+      "!node_modules/typescript/lib/watchGuard.js",
+      "!node_modules/typescript/lib/typescript.d.ts",
+      "!node_modules/typescript/lib/*/diagnosticMessages.generated.json"
     ],
     "mac": {
       "type": "distribution",

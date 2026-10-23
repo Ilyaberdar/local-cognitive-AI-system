@@ -386,3 +386,37 @@ test("the budget message goes to the app's own llama.cpp only, and only with a t
   assert.deepEqual(sent.map(body => body.reasoning_budget_message), [BUDGET_MESSAGE, undefined, undefined]);
   assert.deepEqual(sent.slice(0, 2).map(body => body.reasoning_budget_tokens), [1024, 0]);
 });
+
+test("TypeScript is type-checked as an implicit soft gate before the tests: its errors reach the model, never decide acceptance", async (t) => {
+  if (NO_RUNNER) return t.skip(NO_RUNNER);
+  // greet.ts runs (Node strips the types) but does not type-check: it never blocks Accepted.
+  const loose = `export function greet(name: string): string {\n  const label: number = "Hello, ";\n  return label + name;\n}\n`;
+  const f = await fixture(t, localModel("plain-coder", 4_000_000_000), (file, _request, asked) => file === "src/greet.ts" ? loose
+    : writes(asked, file).length === 1 ? add("return a - b;") : add("return a + b;"));
+  const id = await f.module("Typed", pairSpec("Typed"), pairFlow("Typed", 3), { "tests/pair.test.ts": pairTests });
+  const run = await f.service.wait((await f.service.start(f.project.id, id)).id);
+  assert.equal(run.status, "accepted", run.error);
+  assert.equal(run.iteration, 2);
+  assert.deepEqual(run.evidence?.gates.map(gate => [gate.id, gate.severity, gate.status]), [["types", "soft", "Fail"], ["behavior", "hard", "Pass"], ["artifacts", "hard", "Pass"]]);
+  assert.deepEqual(run.evidence?.gates[0]!.feedback, ["src/greet.ts:2: Type 'string' is not assignable to type 'number'. (TS2322)"]);
+  // In the next prompts: the file's own type error first for greet.ts, beside the failed test for math.ts.
+  const result = (file: string) => { const prompt = f.asked.find(item => item.file === file && item.request.prompt.includes("# Result of the last check\n1 of 2"))!.request.prompt; return prompt.slice(prompt.indexOf("# Result of the last check")); };
+  assert.match(result("src/greet.ts"), /In src\/greet\.ts, or in tests that use it:\n1\. types: src\/greet\.ts:2: Type 'string' is not assignable to type 'number'\. \(TS2322\)\n {3}src\/greet\.ts:2 is: const label: number = "Hello, ";/);
+  assert.match(result("src/math.ts"), /In src\/math\.ts, or in tests that use it:\n1\. behavior: adds: [\s\S]*Elsewhere \(the cause may still be in src\/math\.ts\):\n1\. types: src\/greet\.ts:2:/);
+  assert.ok(run.events.some(event => event.step === "gate.types" && event.message === "Fail: 1 type error in 1 file"));
+});
+
+test("keep = \"best\" never counts the type check: a candidate that type-checks but passes fewer visible tests is set aside", async (t) => {
+  if (NO_RUNNER) return t.skip(NO_RUNNER);
+  const fx = (body: string, typed: boolean) => `export function f(x: number): number {\n  ${typed ? "" : "const n: number = \"0\";\n  "}${body}\n}\n`;
+  // A: 2 of 3 visible tests, with a type error. B: 1 of 3, without one.
+  const answers = [fx("return x <= 2 ? x : 0;", false), fx("return x === 1 ? x : 0;", true)];
+  const f = await fixture(t, localModel("plain-coder", 4_000_000_000), (_file, _request, asked) => answers[Math.min(asked.length, answers.length) - 1]!);
+  const id = await f.module("KeepTyped", keepSpec.replace("module Keep ", "module KeepTyped "),
+    keepFlow.replace("implement Keep ", "implement KeepTyped ").replace("freeze(Keep.spec)", "freeze(KeepTyped.spec)").replace('checkout("keep")', 'checkout("keeptyped")').replace("limit iterations 3", "limit iterations 2"), keepTests);
+  const run = await f.service.wait((await f.service.start(f.project.id, id)).id);
+  assert.deepEqual(run.events.filter(event => event.message.startsWith("Kept the candidate")).map(event => [event.iteration, event.message]), [
+    [2, "Kept the candidate of iteration 1 (1 of 2 required checks, 2 of 3 tests) over this one (1 of 2, 1 of 3)"]
+  ]);
+  assert.equal(run.evidence?.gates.find(gate => gate.id === "types")?.status, "Fail", "the kept candidate's own type error");
+});

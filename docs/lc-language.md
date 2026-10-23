@@ -249,6 +249,8 @@ The runtime allows 1–12 files the model writes (or none with an area), up to 1
 
 Every declared file is part of the contract: a candidate missing one, or with an empty one, fails an implicit hard gate named `artifacts` even when every declared gate passes. A run cannot be accepted with part of its files.
 
+A candidate with TypeScript files (`.ts`, `.mts`, `.cts`) is also type-checked by an implicit soft gate named `types` (`typescript` when the contract has a gate called `types`), listed before the first `Tests` gate. Nothing runs and nothing is written: the compiler reads the candidate's files, the frozen files and the visible tests (never hidden ones), as the tests run them (ES modules, local imports with their `.ts` extension, a type imported with `import type`, erasable syntax only), with TypeScript's own library declarations and nothing from `node_modules`. Its findings are feedback items such as `src/router.ts:8: 'Pattern' cannot be used as a value because it was imported using 'import type'. (TS1361)` or, for a test's call, `tests/rateLimiter.test.ts:20: Expected 1 arguments, but got 0. (An argument for 'tokens' was not provided: src/rateLimiter.ts:23) (TS2554)`: at most six, those that fail when the code runs first. Being soft, it never decides acceptance, and `keep = "best"` never counts it. Errors about what it cannot see (Node's own modules and globals, packages) are left out; more than 512 KiB of TypeScript is not checked (Unknown).
+
 ### `evaluate`
 
 There must be exactly one acceptance group. Its name must match `using "..."` in the flow. At least one gate must be `hard`.

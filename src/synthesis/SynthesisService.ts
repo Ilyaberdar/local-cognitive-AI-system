@@ -25,6 +25,7 @@ import type { AgentCounts } from "./types";
 import type { ModelQueue } from "../local/types";
 import { quantQuality } from "../local/quantization";
 import { applyEditBlocks, implicatedFiles, RevisePromptInput, revisePrompt } from "./revisePrompt";
+import { checkTypes, hasTypeScript } from "./checks/typecheck";
 
 interface Services {
   projects: ProjectStore;
@@ -931,6 +932,19 @@ export class SynthesisService {
               ...(result.feedback?.length ? {feedback: result.feedback.slice(0, 8)} : {}), ...(result.cases?.length ? {cases: result.cases.slice(0, 100)} : {}),
               ...(result.grounded ? {grounded: {file: result.grounded.file, references: result.grounded.references.slice(0, 500)}} : {})});
             await this.event(record, `gate.${gate.id}`, `${result.status}: ${result.message}`, result.status === "Pass" ? "ok" : "failed");
+          }
+          // TypeScript the candidate holds is type-checked (never run): an implicit soft gate, so its
+          // errors reach the model as feedback but never decide acceptance or the best candidate. It
+          // comes before the tests, whose failures its errors often explain.
+          if (!empty && hasTypeScript(files)) {
+            signal.throwIfAborted();
+            const visible = record.spec.gates.flatMap(gate => gate.check?.kind === "tests" && !gate.check.hidden ? gate.check.files : []);
+            const result = checkTypes(checkFiles, visible);
+            const id = record.spec.gates.some(gate => gate.id === "types") ? "typescript" : "types";
+            const at = record.spec.gates.findIndex(gate => gate.check?.kind === "tests");
+            gates.splice(at < 0 ? gates.length : at, 0, {id, evaluator: "typescript-check-v1", severity: "soft", status: result.status, message: result.message,
+              ...(result.feedback.length ? {feedback: result.feedback} : {})});
+            await this.event(record, `gate.${id}`, `${result.status}: ${result.message}`, result.status === "Pass" ? "ok" : "failed");
           }
           if (!gates.some(gate => gate.severity === "hard")) gates.push({id: "acceptance", evaluator: "registry", severity: "hard", status: "Unknown", message: "At least one trusted hard evaluator is required."});
           // A candidate is complete only with every declared file: the gates may judge only some.

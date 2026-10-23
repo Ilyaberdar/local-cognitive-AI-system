@@ -93,7 +93,7 @@ test("a contract on rails: the engineer's tests fail the first candidate, the ex
   assert.equal(run.status, "accepted", run.error);
   assert.equal(run.iteration, 2);
   assert.deepEqual(run.evidence?.gates.map(gate => [gate.id, gate.status]), [
-    ["shape", "Pass"], ["dependencies", "Pass"], ["clock", "Pass"], ["behavior", "Pass"], ["artifacts", "Pass"]
+    ["shape", "Pass"], ["dependencies", "Pass"], ["clock", "Pass"], ["types", "Pass"], ["behavior", "Pass"], ["artifacts", "Pass"]
   ]);
   const behavior = run.evidence!.gates.find(gate => gate.id === "behavior")!;
   assert.equal(behavior.cases?.length, 6);
