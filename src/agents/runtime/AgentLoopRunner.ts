@@ -191,6 +191,8 @@ export class AgentLoopRunner {
       if(response.unsupportedFeature){
         const previous:NonNullable<AgentRun["protocol"]>=run.protocol;
         run.protocol=previous==="native"?(this.llm.supportsStructuredOutputs?.(input.target.providerId)?"schema":"json"):previous==="schema"?"json":"text";
+        // The refusal did no work: its turn is given back, so a switch on the last turn still leaves the answer one.
+        if(run.protocol!==previous&&run.steps>0)run.steps--;
         delete run.nativeContinuation;
         run.turns.push({type:"format_error",content:`The provider does not support ${response.unsupportedFeature}. Switched from ${previous} to ${run.protocol}; no action was executed.`,diagnostic:{
           responseId:response.responseId,preview:truncate(response.error??"[provider did not return details]",1200,"\n[TRUNCATED]\n"),outputTypes:[]

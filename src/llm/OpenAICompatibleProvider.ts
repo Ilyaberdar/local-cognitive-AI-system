@@ -35,6 +35,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
   /** Models that refused function tools (an OpenRouter model no endpoint serves with tools): their
    * agents act in JSON from then on, and a request with tools is answered as refused without sending it. */
   private readonly withoutTools = new Map<string, string>();
+  /** Models that refused the last turn's tool_choice "none" (but not tools): asked without a tool_choice from then on. */
+  private readonly withoutToolChoice = new Set<string>();
   readonly id: string;
   readonly name: string;
   readonly defaultModel: string;
@@ -173,7 +175,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
           // Chat tool calls, one a turn (DeepSeek may send several anyway: the first runs).
           ...(nativeTools ? { tools: nativeTools.map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: chatSchema(tool) } })),
-            tool_choice: request.toolChoice ?? "auto", parallel_tool_calls: false } : {}),
+            ...(this.withoutToolChoice.has(model) ? {} : { tool_choice: request.toolChoice ?? "auto" }), parallel_tool_calls: false } : {}),
           ...(!nativeTools && request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
             ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
             : request.responseFormat } : {})
@@ -199,7 +201,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(nativeTools ? {
             tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters: strictSchema(parameters), strict: true })),
             parallel_tool_calls: false,
-            ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+            ...(request.toolChoice && !this.withoutToolChoice.has(model) ? { tool_choice: request.toolChoice } : {}),
             store: false,
             ...(this.withoutEncrypted.has(model) ? {} : { include: ["reasoning.encrypted_content"] })
           } : {}),
@@ -235,6 +237,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const failed = request.outputPurpose === "agent-action" && response.status === 400 ? failedGeneration(body) : undefined;
         if (failed) return { provider: this.id, model, text: failed.text, protocolError: failed.reason };
         const unsupported = unsupportedFeature(response.status, detail, request);
+        // A refusal of the last turn's tool_choice "none" is not one of the tools: asked once more without a
+        // tool_choice (and so from then on), and only a refusal of that says the model has no tools.
+        if (nativeTools && request.toolChoice === "none" && !this.withoutToolChoice.has(model) && [400, 404, 422].includes(response.status) &&
+          (unsupported === "tools" || /tool.?choice/i.test(detail))) {
+          this.withoutToolChoice.add(model);
+          return this.generateText(request);
+        }
         if (unsupported === "tools" && nativeTools) this.withoutTools.set(model, detail);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         // The app's own llama.cpp server has no key a person enters.

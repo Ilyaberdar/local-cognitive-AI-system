@@ -404,6 +404,32 @@ test("agents act through each service's own function calls: chat tool calls for 
   for (const id of ["llamacpp", "lmstudio"]) assert.equal(dialectFor(id).nativeTools, undefined, id);
 });
 
+test("a service that refuses only the last turn's tool_choice none is asked again without it, and keeps its tools", async () => {
+  for (const id of ["deepseek", "perplexity"]) {
+    const refusal = { error: { message: "tool_choice 'none' is not supported for this model", type: "invalid_request_error" } };
+    const answer = id === "perplexity" ? Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "## Answer" }] }] })
+      : Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "## Answer" } }] });
+    const { calls, fetchImpl } = service(call => call.body.tool_choice === "none" ? Response.json(refusal, { status: 400 }) : answer.clone());
+    const provider = presetProvider(id, fetchImpl);
+    const reply = await provider.generateText(agentRequest({ toolChoice: "none" }));
+    assert.deepEqual(reply.agentAction, { type: "final", text: "## Answer" }, id);
+    assert.equal(calls.length, 2, id);
+    assert.equal(calls[1].body.tool_choice, undefined, `${id}: asked again without tool_choice`);
+    assert.ok(calls[1].body.tools.length, `${id}: with its tools`);
+    assert.equal(provider.toolsRefused(), false, `${id}: the model keeps its tools`);
+    // From then on its last turns are asked without the choice; its other turns keep it as they were.
+    await provider.generateText(agentRequest({ toolChoice: "none" }));
+    assert.equal(calls.length, 3, id);
+    assert.equal(calls[2].body.tool_choice, undefined, id);
+  }
+  // A refusal of the tools themselves, without the choice, is still one: once, then JSON.
+  const { calls, fetchImpl } = service(() => Response.json({ error: { message: "Tools are not supported by this model" } }, { status: 400 }));
+  const provider = presetProvider("deepseek", fetchImpl);
+  assert.equal((await provider.generateText(agentRequest({ toolChoice: "none" }))).unsupportedFeature, "tools");
+  assert.equal(calls.length, 2, "once more without the choice, never again");
+  assert.equal(provider.toolsRefused(), true);
+});
+
 test("a model that refuses tools acts in JSON from then on, and Groq's unreadable tool call costs a correction, not the run", async () => {
   // OpenRouter: a model no endpoint serves with tools.
   const refusal = { error: { message: "No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing", code: 404 } };

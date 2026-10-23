@@ -351,6 +351,32 @@ for (const id of ids) test(`${id}: the final permitted turn returns evidence wit
   else assert.equal(last.tool_choice, undefined);
 });
 
+// A service that refused tool_choice "none" was taken for one without tools: the switch to JSON spent the
+// turn kept for the answer, and the run ended at its step limit with none.
+test("openai: the last turn keeps its answer when the service refuses its tool_choice, or refuses tools then", async t => {
+  const f = await fixture(t, "openai");
+  f.replies.push(payload("openai", write), Response.json({ error: { message: "tool_choice 'none' is not supported" } }, { status: 400 }), payload("openai", finish));
+  const result = await new AgentLoopRunner(f.llm, f.operations, f.root, { maxSteps: 2 }).run({ id: "choice-refused", input: "Create result.js and summarize.", instructions: "", target: f.context.activeTarget, context: f.context });
+  assert.equal(result.error, undefined);
+  assert.equal(result.text, final);
+  assert.equal(f.calls[1].tool_choice, "none");
+  assert.equal(f.calls[2].tool_choice, undefined);
+  assert.ok(f.calls[2].tools.length, "still on its tools");
+  assert.equal(f.llm.supportsNativeTools("openai", "fixture"), true);
+
+  // A provider that refuses the tools themselves on the last turn: the run goes on in a schema, and the
+  // refusal, which did no work, does not spend the turn kept for the answer.
+  const g = await fixture(t, "openai");
+  const refused = () => Response.json({ error: { message: "Tools are not supported by this model" } }, { status: 400 });
+  g.replies.push(payload("openai", write), refused(), refused(), { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ action: finish }) }] }] });
+  const after = await new AgentLoopRunner(g.llm, g.operations, g.root, { maxSteps: 2 }).run({ id: "tools-refused-last", input: "Create result.js and summarize.", instructions: "", target: g.context.activeTarget, context: g.context });
+  assert.equal(after.error, undefined);
+  assert.equal(after.text, final);
+  assert.equal(g.calls[3].text.format.type, "json_schema");
+  const run = (await g.runner().store.get("tools-refused-last"))!;
+  assert.equal(run.steps, 2, "the refused request gave its turn back");
+});
+
 test("finalization respects an earlier schema downgrade", async t => {
   const f = await fixture(t, "lmstudio");
   f.replies.push(Response.json({ error: { message: "json_schema format is not supported by this model" } }, { status: 400 }),
