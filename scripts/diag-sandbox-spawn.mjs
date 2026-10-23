@@ -20,15 +20,15 @@ const { platformSandbox } = await import(pathToFileURL(path.join(root, 'dist', '
 const sandbox = platformSandbox();
 
 const code = `
-const cp=require('child_process');
+const cp=require('child_process'),fs=require('fs');
 const run=(label,opts)=>{try{const r=cp.spawnSync(process.execPath,['-e','process.exit(7)'],opts);console.log('SPAWN '+label+': '+(r.error?('ERR '+r.error.code+' '+(r.error.errno||'')):('status '+r.status)));}catch(e){console.log('SPAWN '+label+': THROW '+e.code);}};
 console.log('PARENT_PID '+process.pid);
-run('detached_ignore',{detached:true,stdio:'ignore'});
 run('plain_ignore',{stdio:'ignore'});
 run('plain_inherit',{stdio:'inherit'});
 run('plain_pipe',{stdio:'pipe'});
-run('windowshide',{windowsHide:true,stdio:'ignore'});
-try{const p=process.report?process.report.getReport():null;if(p&&p.header){console.log('DUMPABLE '+(p.header.dumpEventTime?'y':'y'));}}catch(e){}
+try{const out=fs.openSync('holder.log','w');run('detached_fileio',{detached:true,stdio:['inherit',out,out]});fs.closeSync(out);}catch(e){console.log('fileio THROW '+e.code);}
+run('detached_inherit',{detached:true,stdio:'inherit'});
+for(const name of ['\\\\\\\\.\\\\NUL','nul','NUL']){try{const f=fs.openSync(name,'r');fs.closeSync(f);console.log('NUL_OPEN '+JSON.stringify(name)+' ok');}catch(e){console.log('NUL_OPEN '+JSON.stringify(name)+' '+e.code+' '+(e.errno||''));}}
 console.log('DIAG_END');
 `;
 const work = path.join(os.tmpdir(), `lc-diag-${Date.now()}`);
