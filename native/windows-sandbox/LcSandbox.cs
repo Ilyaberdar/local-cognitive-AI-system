@@ -55,9 +55,12 @@ internal static class LcSandbox
                 case "__write": return InnerWrite(args);
                 case "__remove": return InnerRemove(args);
                 case "__empty": return InnerEmpty(args);
-                // Test-only (only with LC_SANDBOX_TEST=1): run the handle-based package-folder walk alone on
-                // a folder, so a live check can prove the walk itself deletes.
+#if LC_SANDBOX_TEST
+                // Compiled only into a test build (csc /define:LC_SANDBOX_TEST): run the handle-based
+                // package-folder walk alone on a folder, so a live check can prove the walk itself deletes.
+                // The release build from prepare-sandbox-helper.mjs leaves this out, so it is not a command.
                 case "__walk": if (Environment.GetEnvironmentVariable("LC_SANDBOX_TEST") == "1" && args.Length > 1) { Native.DeleteTreeContents(args[1]); return 0; } Usage(); return 2;
+#endif
                 default: Usage(); return 2;
             }
         }
@@ -273,12 +276,13 @@ internal static class LcSandbox
     // walked safely (unknown shape, enumeration error, a reparse point at the top).
     private static bool EmptyPackageFolder(IntPtr sid, string profile)
     {
-        // Test-only (LC_SANDBOX_TEST_FAIL_WALK=1): simulate an enumeration error, to prove a failed walk
-        // leaves the profile in place.
+#if LC_SANDBOX_TEST
+        // Test-only: simulate an enumeration error, to prove a failed walk leaves the profile in place.
         if (Environment.GetEnvironmentVariable("LC_SANDBOX_TEST_FAIL_WALK") == "1") throw new Exception("test-induced walk failure");
-        if (sid == IntPtr.Zero) return true; // the profile is gone; nothing to walk
+#endif
+        if (sid == IntPtr.Zero) return false; // SID could not be derived: do not hand an unknown folder to the recursive delete
         string ac = Native.AppContainerFolderPath(sid);
-        if (ac == null) return true; // no folder known
+        if (ac == null) return false; // the folder could not be located: keep the profile, a later clean-stale retries
         ac = ac.TrimEnd('\\');
         string pkg = Path.GetDirectoryName(ac);
         // The shape must be exactly …\Packages\<moniker>\AC, with <moniker> the profile name lowercased.
@@ -380,6 +384,18 @@ internal static class LcSandbox
         return 0;
     }
 
+    // Just before the final open, re-check (fail closed) that the held parent is a real directory and that
+    // no component inside the work folder on the way to the target has become a reparse point. This closes
+    // the window between ResolveInside's name checks and OpenDirHold, where an in-folder ancestor could be
+    // swapped for a junction. GetFinalPathNameByHandle cannot be used here (it returns nothing inside an
+    // AppContainer); components above the work folder are never opened, and the OS ACL keeps the write
+    // inside the folder regardless, so re-checking the in-folder chain is the practical defence.
+    private static void RequireParentInsideWork(IntPtr parent, string root, string rel)
+    {
+        if (Native.HandleIsReparse(parent)) throw new SandboxError("the parent of " + rel + " is a reparse point");
+        ResolveInside(root, rel); // throws if any in-folder ancestor is now a reparse point
+    }
+
     private static int InnerWrite(string[] args)
     {
         if (args.Length < 2) throw new SandboxError("__write needs a relative path");
@@ -393,8 +409,7 @@ internal static class LcSandbox
         IntPtr parent = Native.OpenDirHold(dir != null && dir.Length > 0 ? dir : Directory.GetCurrentDirectory());
         try
         {
-            // The held parent must be a real directory, not a reparse point.
-            if (Native.HandleIsReparse(parent)) throw new SandboxError("the parent of " + args[1] + " is a reparse point");
+            RequireParentInsideWork(parent, Directory.GetCurrentDirectory(), args[1]);
             // Refuse an existing reparse point at the target up front (fail closed); the post-open check
             // below is the backstop if one is swapped in during the open.
             if (Native.IsReparsePoint(target)) throw new SandboxError("the target " + args[1] + " is a reparse point");
@@ -424,7 +439,7 @@ internal static class LcSandbox
         IntPtr parent = Native.OpenDirHold(dir != null && dir.Length > 0 ? dir : Directory.GetCurrentDirectory());
         try
         {
-            if (Native.HandleIsReparse(parent)) throw new SandboxError("the parent of " + args[1] + " is a reparse point");
+            RequireParentInsideWork(parent, Directory.GetCurrentDirectory(), args[1]);
             // The final component may be a reparse point here — removing unlinks the link itself (opened
             // with OPEN_REPARSE_POINT), never its target — and is deleted through its own handle.
             IntPtr handle = Native.OpenFinalForRemove(target);
@@ -572,11 +587,20 @@ internal static class LcSandbox
         foreach (string[] profile in Native.SandboxProfiles(ProfilePrefix))
         {
             string moniker = profile[0], owner = profile[1];
-            long lastWrite; long.TryParse(profile[2], out lastWrite);
             if (onlyStale)
             {
                 bool tagged = !string.IsNullOrEmpty(owner) && owner.StartsWith("lcowner=", StringComparison.Ordinal);
-                if (tagged ? Native.OwnerAlive(owner) : lastWrite > dayAgo) { kept++; continue; }
+                if (tagged)
+                {
+                    if (Native.OwnerAlive(owner)) { kept++; continue; }
+                }
+                else
+                {
+                    // Untagged (from before owner tags): stale only if its key's last-write time read and is
+                    // more than a day old. An unreadable time ("err") keeps it, rather than reading it as old.
+                    long lastWrite;
+                    if (!long.TryParse(profile[2], out lastWrite) || lastWrite <= 0 || lastWrite > dayAgo) { kept++; continue; }
+                }
             }
             // Empty the package folder safely, then delete the profile; left in place if the walk is unsafe.
             if (DeleteProfileSafely(moniker, Native.DeriveContainerSid(moniker))) removed++; else left++;
@@ -813,9 +837,11 @@ internal static class LcSandbox
                         string moniker = entry == null ? null : entry.GetValue("Moniker") as string;
                         if (string.IsNullOrEmpty(moniker) ||
                             !(moniker.Equals(prefix, StringComparison.OrdinalIgnoreCase) || moniker.StartsWith(prefix + ".", StringComparison.OrdinalIgnoreCase))) continue;
-                        long lastWrite = 0;
-                        try { RegQueryInfoKey(entry.Handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out lastWrite); } catch { lastWrite = 0; }
-                        result.Add(new string[] { moniker, (entry.GetValue("DisplayName") as string) ?? "", lastWrite.ToString() });
+                        // The key's last-write FILETIME, or "err" when it cannot be read (so cleanup keeps
+                        // an untagged profile rather than reading an unknown age as old).
+                        string lastWrite = "err";
+                        try { long t; if (RegQueryInfoKey(entry.Handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out t) == 0 && t > 0) lastWrite = t.ToString(); } catch { lastWrite = "err"; }
+                        result.Add(new string[] { moniker, (entry.GetValue("DisplayName") as string) ?? "", lastWrite });
                     }
                 }
             }
@@ -872,7 +898,7 @@ internal static class LcSandbox
 
         private const uint FILE_SHARE_READ_WRITE = 0x1 | 0x2; // never FILE_SHARE_DELETE
         private const uint FLAG_BACKUP_OPEN_REPARSE = 0x02000000 | 0x00200000; // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
-        private const uint DELETE = 0x10000, FILE_LIST_DIRECTORY = 0x1, FILE_READ_ATTRIBUTES = 0x80;
+        private const uint DELETE = 0x10000, FILE_LIST_DIRECTORY = 0x1, FILE_READ_ATTRIBUTES = 0x80, FILE_WRITE_ATTRIBUTES = 0x100;
         private const int ERROR_FILE_NOT_FOUND = 2, ERROR_PATH_NOT_FOUND = 3, ERROR_NO_MORE_FILES = 18;
 
         // Deletes the object the handle names. Prefers FileDispositionInfoEx (so a read-only file goes, and
@@ -899,7 +925,8 @@ internal static class LcSandbox
         }
 
         // Clears the read-only attribute on a handle (FILE_BASIC_INFO, times left at 0 = unchanged), so the
-        // non-Ex disposition can delete it. Best effort.
+        // non-Ex disposition can delete it. The handle must carry FILE_WRITE_ATTRIBUTES; a failure stops the
+        // walk rather than letting a read-only file be silently skipped.
         private static void ClearReadOnly(IntPtr handle)
         {
             IntPtr basic = Marshal.AllocHGlobal(40);
@@ -907,7 +934,7 @@ internal static class LcSandbox
             {
                 for (int off = 0; off < 32; off += 8) Marshal.WriteInt64(basic, off, 0); // leave all four times unchanged
                 Marshal.WriteInt32(basic, 32, 0x80 /*FILE_ATTRIBUTE_NORMAL*/);
-                SetFileInformationByHandle(handle, 0 /*FileBasicInfo*/, basic, 40);
+                if (!SetFileInformationByHandle(handle, 0 /*FileBasicInfo*/, basic, 40)) throw new Win32Exception(Marshal.GetLastWin32Error(), "clear read-only");
             }
             finally { Marshal.FreeHGlobal(basic); }
         }
@@ -979,7 +1006,7 @@ internal static class LcSandbox
             foreach (string name in ChildNames(dirHandle))
             {
                 string full = dirPath + "\\" + name;
-                IntPtr child = CreateFileW(full, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+                IntPtr child = CreateFileW(full, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
                 if (child == (IntPtr)(-1))
                 {
                     int err = Marshal.GetLastWin32Error();
@@ -1086,7 +1113,7 @@ internal static class LcSandbox
         // there, any other failure thrown.
         public static IntPtr OpenFinalForRemove(string path)
         {
-            IntPtr handle = CreateFileW(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
+            IntPtr handle = CreateFileW(path, DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ_WRITE, IntPtr.Zero, 3 /*OPEN_EXISTING*/, FLAG_BACKUP_OPEN_REPARSE, IntPtr.Zero);
             if (handle == (IntPtr)(-1))
             {
                 int err = Marshal.GetLastWin32Error();
@@ -1112,17 +1139,21 @@ internal static class LcSandbox
         {
             IntPtr handle = CreateFileW(path, 0, 0x7 /*share all*/, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x02000000 /*BACKUP_SEMANTICS, for a directory*/, IntPtr.Zero);
             if (handle == (IntPtr)(-1)) return Path.GetFullPath(path).TrimEnd('\\');
-            try
-            {
-                StringBuilder buffer = new StringBuilder(600);
-                uint n = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
-                if (n == 0 || n >= buffer.Capacity) return Path.GetFullPath(path).TrimEnd('\\');
-                string full = buffer.ToString();
-                if (full.StartsWith("\\\\?\\UNC\\", StringComparison.Ordinal)) full = "\\\\" + full.Substring(8);
-                else if (full.StartsWith("\\\\?\\", StringComparison.Ordinal)) full = full.Substring(4);
-                return full.TrimEnd('\\');
-            }
+            try { return HandleFinalPath(handle) ?? Path.GetFullPath(path).TrimEnd('\\'); }
             finally { CloseHandle(handle); }
+        }
+
+        // The real path an open handle resolves to (links followed, 8.3 expanded, \\?\ stripped, trailing
+        // separator removed), or null if it cannot be read.
+        public static string HandleFinalPath(IntPtr handle)
+        {
+            StringBuilder buffer = new StringBuilder(600);
+            uint n = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (n == 0 || n >= buffer.Capacity) return null;
+            string full = buffer.ToString();
+            if (full.StartsWith("\\\\?\\UNC\\", StringComparison.Ordinal)) full = "\\\\" + full.Substring(8);
+            else if (full.StartsWith("\\\\?\\", StringComparison.Ordinal)) full = full.Substring(4);
+            return full.TrimEnd('\\');
         }
 
         private static string AclMutexName(string path)

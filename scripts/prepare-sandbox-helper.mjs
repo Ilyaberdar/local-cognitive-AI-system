@@ -20,6 +20,9 @@ const option = (name, fallback) => process.argv.includes(name) ? process.argv[pr
 const arch = option('--arch', process.arch);
 // The same major the server runtime ships (scripts/pack-server.mjs --node default).
 const nodeVersion = option('--node', '22.23.3');
+// A test build (--test) compiles the test-only commands (the __walk seam); the release build does not, so
+// they are not commands in what ships. dist:win and CI never pass --test.
+const test = process.argv.includes('--test');
 
 if (process.platform !== 'win32') {
   console.log('The Windows sandbox helper builds only on Windows (it needs the .NET Framework csc). Skipping.');
@@ -36,7 +39,8 @@ const csc = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'Microsoft.NET', 
 await fs.access(csc).catch(() => { throw new Error(`The .NET Framework compiler was not found at ${csc}.`); });
 const source = path.join(root, 'native', 'windows-sandbox', 'LcSandbox.cs');
 const exe = path.join(destination, 'lc-sandbox.exe');
-execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', `/platform:${arch === 'arm64' ? 'arm64' : 'x64'}`, '/unsafe', `/out:${exe}`, source], { stdio: 'inherit' });
+execFileSync(csc, ['/nologo', '/target:exe', '/optimize+', `/platform:${arch === 'arm64' ? 'arm64' : 'x64'}`, '/unsafe', ...(test ? ['/define:LC_SANDBOX_TEST'] : []), `/out:${exe}`, source], { stdio: 'inherit' });
+if (test) console.log('Built with the test-only commands (LC_SANDBOX_TEST).');
 console.log(`Compiled ${exe}`);
 
 // 2. The Node runtime it runs inside the sandbox, verified against nodejs.org's published digests.

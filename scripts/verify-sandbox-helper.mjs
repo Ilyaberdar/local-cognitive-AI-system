@@ -28,6 +28,12 @@ const stray = (await peImports(helper)).filter(dll => !allowed.has(dll) && !/^(a
 if (stray.length) fail(`lc-sandbox.exe imports non-system DLLs: ${stray.join(', ')}`);
 console.log('PE imports: system DLLs only.');
 
+// The release helper must not carry the test-only commands: __walk is refused (compiled out).
+const { spawnSync } = await import('node:child_process');
+const walk = spawnSync(helper, ['__walk', os.tmpdir()], { encoding: 'utf8', timeout: 30000, env: { ...process.env, LC_SANDBOX_TEST: '1' } });
+if (walk.status === 0) fail('the release helper accepts the test-only __walk command (it should be compiled out)');
+console.log('Test-only commands are not in the release helper (__walk refused).');
+
 // Let the sandbox read the helper and its Node, then check the app's own provider reports it isolating.
 execFileSync(helper, ['grant-tools', sandboxDir], { stdio: 'inherit', timeout: 30000 });
 process.env.LC_SANDBOX_HELPER = helper;
