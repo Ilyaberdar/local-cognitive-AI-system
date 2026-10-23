@@ -59,10 +59,19 @@ jobs:
           node scripts/verify-packaged-runtime.mjs release/win-unpacked/resources --variant win32-x64 --check-libraries
           node scripts/verify-speech-runtime.mjs release/win-unpacked/resources
           node --input-type=module -e "const { missingImports } = await import('./scripts/lib/pe-imports.mjs'); const missing = await missingImports('release/win-unpacked/resources/speech/win32-x64'); if (missing.size) { console.error('whisper needs', [...missing.keys()].join(', ')); process.exit(1); }"
+      # Checked here from the runner's D: drive, and again below where the installer puts the app (as on a
+      # user's computer). Until the D: failure (spawn EPERM inside the AppContainer) is understood, this one
+      # only reports, with the permissions along the Node runtime's path.
       - name: The Synthesis sandbox imports only system DLLs and isolates
+        continue-on-error: true
         run: |
-          $PSNativeCommandUseErrorActionPreference = $true
           node scripts/verify-sandbox-helper.mjs release/win-unpacked/resources
+          if ($LASTEXITCODE) {
+            $p = (Resolve-Path release/win-unpacked/resources/sandbox/win32-x64/node/node.exe).Path
+            while ($p) { icacls $p; $parent = Split-Path $p -Parent; if (-not $parent -or $parent -eq $p) { break }; $p = $parent }
+            whoami /groups /priv
+            exit 1
+          }
       - run: npx electron-fuses read --app "release/win-unpacked/Local Cognitive.exe"
       # Unsigned: a feed without publisherName makes the app announce versions instead of installing them.
       - name: The update feed names no publisher
@@ -78,6 +87,7 @@ jobs:
           $dir = Join-Path $env:LOCALAPPDATA 'Programs\Local Cognitive'
           node scripts/verify-packaged-runtime.mjs "$dir\resources" --variant win32-x64 --check-libraries
           node scripts/verify-speech-runtime.mjs "$dir\resources"
+          node scripts/verify-sandbox-helper.mjs "$dir\resources"
           Start-Process -FilePath "$dir\Uninstall Local Cognitive.exe" -ArgumentList '/S' -Wait
           for ($i = 0; $i -lt 120 -and (Test-Path "$dir\Local Cognitive.exe"); $i++) { Start-Sleep 1 }
           if (Test-Path "$dir\Local Cognitive.exe") { throw 'the uninstaller left the app' }
