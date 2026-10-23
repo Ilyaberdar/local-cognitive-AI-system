@@ -97,6 +97,14 @@ export async function verifyIsolation(provider: { wrap?: SandboxProvider["wrap"]
     // The helper names each network attempt on its own line (CONNECTED / RESOLVED); the shell probe prints
     // LC_REACHED. Any of them, or a connection that reached the listener, means the network was not closed.
     if (result.stdout.includes("LC_REACHED") || /: (?:CONNECTED|RESOLVED)\b/.test(result.stdout) || connections > 0) return "a sandboxed process reached the network";
+    // Windows only: the helper reports whether it could enumerate the user's windows on the interactive
+    // Default desktop (userWindows). A known residual is that on WinSta0 the run's alternate desktop does not
+    // by itself keep a process from opening Default (userDesktop: yes) — the Job object's handle limit and
+    // UIPI contain it — but if it could actually see the user's windows there, that limit has failed and this
+    // is no sandbox. A later restricted-token hardening is meant to make userDesktop read "no" too; this
+    // check already guards the dangerous part. The line is absent on macOS and Linux, so it never fires there.
+    const userWindows = /^userWindows: (\d+)/m.exec(result.stdout);
+    if (userWindows && Number(userWindows[1]) > 0) return "a sandboxed process could see the user's windows";
     return undefined;
   } catch (error) {
     return `the sandbox could not be checked (${error instanceof Error ? error.message : String(error)})`;

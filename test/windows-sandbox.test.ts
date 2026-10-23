@@ -121,4 +121,11 @@ test("verifyIsolation names a read, a write, a network reach, and a probe that d
   assert.equal(silent, "the sandbox did not run its check");
   const clean = await verifyIsolation(fakeProbe("console.log('readCanary: ERR');console.log('loopback: closed');console.log('dns: fail');console.log('LC_PROBE_RAN')"));
   assert.equal(clean, undefined);
+  // Windows residual: a process on the WinSta0 alternate desktop may open the user's Default desktop
+  // (userDesktop: yes), which is tolerated, but it must not be able to enumerate the user's windows there.
+  const sawWindows = await verifyIsolation(fakeProbe("console.log('userDesktop: yes');console.log('userWindows: 2');console.log('LC_PROBE_RAN')"));
+  assert.equal(sawWindows, "a sandboxed process could see the user's windows");
+  // The known-good shape on Windows: Default reachable but no windows visible there — not a failure.
+  const residualOk = await verifyIsolation(fakeProbe("console.log('userDesktop: yes');console.log('userWindows: 0');console.log('LC_PROBE_RAN')"));
+  assert.equal(residualOk, undefined);
 });

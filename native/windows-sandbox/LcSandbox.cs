@@ -380,6 +380,17 @@ internal static class LcSandbox
         Say("loopbackV6", TryConnect("::1", port));
         Say("internet", TryConnect("1.1.1.1", 443));
         Say("dns", TryResolve("example.com"));
+        // The desktop residual (see Native.CreateDesktop): on WinSta0 the run's alternate desktop does not by
+        // itself keep a process from opening the user's own Default desktop, so this records whether it can
+        // (userDesktop) and, if so, how many of the user's top-level windows it can enumerate there
+        // (userWindows). The Job object's handle limit must hold userWindows at 0 — a process that could
+        // enumerate the user's windows would be a real breach, which the launcher fails on. On the private
+        // window station (a service session) the user's Default desktop is not even on this station, so
+        // userDesktop reads no there. A later restricted-token hardening is meant to make userDesktop read no
+        // on WinSta0 too.
+        int userWindows;
+        Say("userDesktop", Native.ProbeUserDesktop(out userWindows));
+        Say("userWindows", userWindows.ToString(CultureInfo.InvariantCulture));
         Console.Out.WriteLine("LC_PROBE_RAN");
         Console.Out.Flush();
         return 0;
@@ -1272,10 +1283,24 @@ internal static class LcSandbox
         //    The private station carries the container's own grant, so the AppContainer reaches it.
         //
         // What the private window station used to give us, the Job object's UI restrictions give us on WinSta0
-        // (see Launch: read/write clipboard, global atoms, USER handles of objects outside the job, the
-        // desktop, exiting windows, the display and system parameters are all denied), and the alternate
-        // desktop keeps the sandbox's windows apart from the user's. If neither path can be taken, Run fails
-        // closed with a clear message rather than running a command on a desktop it could not isolate.
+        // (see Launch: read/write clipboard, global atoms, USER handles of objects outside the job, switching
+        // and creating desktops, exiting windows, the display and system parameters are all denied). If
+        // neither path can be taken, Run fails closed with a clear message rather than running a command on a
+        // desktop it could not isolate.
+        //
+        // RESIDUAL (WinSta0 path, by comparison with the private-window-station path): the alternate desktop
+        // is the run's own, so a process inside it enumerates no window of the user's and is not the input
+        // desktop — BUT WinSta0's own Default desktop grants ALL APPLICATION PACKAGES, so a sandboxed process
+        // CAN OpenDesktop("Default") and SetThreadDesktop onto it, and FindWindow then returns real handles
+        // (e.g. the taskbar). What keeps that from being a breach is the Job object, not the desktop: its
+        // JOB_OBJECT_UILIMIT_HANDLES stops the process using any USER handle created outside the job (verified:
+        // EnumDesktopWindows on Default returns 0, clipboard open/read is denied, the user's global atoms are
+        // invisible), it cannot SwitchDesktop its own desktop to the screen (UILIMIT_DESKTOP), and it is Low
+        // integrity so UIPI blocks input and most window messages to the user's higher-integrity windows. It
+        // cannot open protected desktops or other window stations (Winlogon, another station by name: access
+        // denied). The probe records this (userDesktop/userWindows) and the launcher fails if the process can
+        // actually enumerate the user's windows. Closing the residual fully (so Default cannot be opened at
+        // all) needs a restricted token under the AppContainer, a larger change tracked as follow-up.
         public static string CreateDesktop(string containerSid, string userSid)
         {
             string sddl = "D:(A;;GA;;;" + containerSid + ")(A;;GA;;;" + userSid + ")(A;;GA;;;SY)S:(ML;;NW;;;LW)";
@@ -1323,6 +1348,32 @@ internal static class LcSandbox
             // command, already gone) leaves it; the window station handle, when one was made, closes with the
             // process. No shared object's security was changed, so there is nothing to put back.
             if (desktopHandle != IntPtr.Zero) { CloseDesktop(desktopHandle); desktopHandle = IntPtr.Zero; }
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr OpenDesktopW(string name, uint flags, bool inherit, uint access);
+        private delegate bool EnumWindowsProc(IntPtr window, IntPtr param);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool EnumDesktopWindows(IntPtr desktop, EnumWindowsProc callback, IntPtr param);
+
+        // Run INSIDE the sandbox (the __probe built-in): whether this process can open the user's own Default
+        // desktop and, if so, how many of the user's top-level windows it can enumerate there. "no:ERR <n>"
+        // when Default cannot be opened (on a private window station it is not on this station at all; a
+        // future hardening is meant to make it unreachable on WinSta0 too), otherwise "yes" with the count in
+        // `windowCount`. The Job object's handle limit should hold the count at 0 even when the desktop opens.
+        public static string ProbeUserDesktop(out int windowCount)
+        {
+            windowCount = 0;
+            IntPtr def = OpenDesktopW("Default", 0, false, 0x1 /*DESKTOP_READOBJECTS*/ | 0x40 /*DESKTOP_ENUMERATE*/);
+            if (def == IntPtr.Zero) return "no:ERR " + Marshal.GetLastWin32Error();
+            try
+            {
+                int count = 0;
+                EnumWindowsProc tally = delegate { count++; return true; };
+                EnumDesktopWindows(def, tally, IntPtr.Zero);
+                GC.KeepAlive(tally);
+                windowCount = count;
+                return "yes";
+            }
+            finally { CloseDesktop(def); }
         }
 
         // The name of a window station or desktop handle (UOI_NAME), or null if it cannot be read.
