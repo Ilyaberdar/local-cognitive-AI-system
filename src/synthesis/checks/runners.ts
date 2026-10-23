@@ -221,16 +221,24 @@ function interrupted(report: Report): string[] {
       !report.starts.some(other => other.startsWith(`${name} › `));
   });
 }
-/** Said when the values a failed comparison shows print alike: what differs is what printing hides. */
-export const SAME_PRINT_NOTE = "they print alike but differ in type or prototype, which a strict comparison checks (a number vs a string, an Object.create(null) object)";
+/** Said when the values a failed comparison shows print exactly alike: what differs is what printing hides. */
+export const SAME_PRINT_NOTE = "they differ in type or prototype (a number vs a string, an Object.create(null) object)";
+/** A printed value that is not the whole value: clipped here or by the printer (more items or
+ * characters, an object or array past its depth). Two of them alike say nothing about the values. */
+const partial = (text: string) => /…|\.\.\. \d+ more (?:item|character)|\[(?:Object|Array|Circular)\b/.test(text);
 const caseFeedback = (item: CheckCase) => {
-  const alike = item.expected !== undefined && item.actual !== undefined && oneLine(item.expected) === oneLine(item.actual);
-  const values = alike ? ` (expected and actual both print ${clip(oneLine(item.expected!), 60)}: ${SAME_PRINT_NOTE})`
-    : item.expected !== undefined || item.actual !== undefined
-    ? ` (expected ${clip(oneLine(item.expected ?? "undefined"), 80)}, actual ${clip(oneLine(item.actual ?? "undefined"), 80)})` : "";
+  const alike = item.expected !== undefined && item.actual !== undefined && item.expected === item.actual && !partial(item.expected);
   const where = item.file ? ` [${item.file}${item.line ? `:${item.line}` : ""}]` : "";
   const head = `${clip(item.name, 100)}: `;
-  return clip(head + clip(oneLine(item.message ?? "failed"), Math.max(40, 300 - head.length - values.length - where.length)) + values + where, 300);
+  // The location always fits: it says which test failed, and where its source is.
+  const room = 300 - head.length - where.length;
+  // A value keeps its own spaces ('a  b' is not 'a b'); only its line breaks become spaces.
+  const flat = (text: string) => text.replace(/\s*\n\s*/g, " ").trim();
+  const printed = alike ? ` (expected and actual both print ${clip(flat(item.expected!), 40)}: ${SAME_PRINT_NOTE})`
+    : item.expected !== undefined || item.actual !== undefined
+    ? ` (expected ${clip(flat(item.expected ?? "undefined"), 80)}, actual ${clip(flat(item.actual ?? "undefined"), 80)})` : "";
+  const values = room - 40 > 1 ? clip(printed, room - 40) : "";
+  return clip(head + clip(oneLine(item.message ?? "failed"), Math.max(1, room - values.length)) + values + where, 300);
 };
 /** A value imported with `import type` is gone when the code runs, a trap small models fall into
  * ("ReferenceError: Pattern is not defined" six times over): said once, before the failed cases. */

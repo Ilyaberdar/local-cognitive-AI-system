@@ -34,11 +34,13 @@ const describe = (error, testFile) => {
   // Where in the test it went wrong, as a test holds several checks: the assertion's line, or the
   // line whose call threw.
   const frames = framesOf(cause), inTest = frames.find(match => relative(match[1]) === testFile);
-  if (cause.name === "AssertionError" || cause.code === "ERR_ASSERTION") return message + (inTest ? " (at " + testFile + ":" + inTest[2] + ")" : "");
-  // Any other error says where it came from in the code under test, and which test line called it.
+  // Any other error, and an assertion the code under test made, says where it came from in that code
+  // and which test line called it.
   const frame = frames[0];
   const source = frame && relative(frame[1]) !== testFile ? " (" + relative(frame[1]) + ":" + frame[2] + ")" : "";
-  return cause.name + ": " + message + source + (inTest ? (source ? ", called at " : " (at ") + testFile + ":" + inTest[2] + (source ? "" : ")") : "");
+  const assertion = cause.name === "AssertionError" || cause.code === "ERR_ASSERTION";
+  if (assertion && !source) return message + (inTest ? " (at " + testFile + ":" + inTest[2] + ")" : "");
+  return (assertion ? "" : cause.name + ": ") + message + source + (inTest ? (source ? ", called at " : " (at ") + testFile + ":" + inTest[2] + (source ? "" : ")") : "");
 };
 const assertion = error => [error?.cause, error].find(item => item && typeof item === "object" &&
   (item.code === "ERR_ASSERTION" || item.name === "AssertionError") && ("expected" in item || "actual" in item));
@@ -175,7 +177,8 @@ def described(kind, value, tb, test_file):
     # line whose call raised.
     at_file, at_line = location(tb, test_file)
     at = "%s:%s" % (test_file, at_line) if test_file and at_file == test_file else None
-    if issubclass(kind, AssertionError):
+    # An assertion in the test names its line; one raised in the code under test, also where (as any error).
+    if issubclass(kind, AssertionError) and not (file and file != test_file):
         return message + (" (at %s)" % at if at else "")
     if file and file != test_file:
         return message + " (%s:%s)" % (file, line) + (", called at %s" % at if at else "")

@@ -6,7 +6,9 @@ import test, { TestContext } from "node:test";
 import { ProjectStore } from "../src/projects/ProjectStore";
 import { LLMRequest, LLMResponse, ManagedModel } from "../src/types";
 import { BUDGET_MESSAGE, requestSeed, SynthesisService } from "../src/synthesis/SynthesisService";
-import { applyEditBlocks, FEEDBACK_CHARS, filesUsedByTest, implicatedFiles, revisePrompt, RevisePromptInput } from "../src/synthesis/revisePrompt";
+import { applyEditBlocks, FEEDBACK_CHARS, filesUsedByTest, implicatedFiles, pointsAt, revisePrompt, RevisePromptInput } from "../src/synthesis/revisePrompt";
+import { OpenAICompatibleProvider } from "../src/llm/OpenAICompatibleProvider";
+import { Logger } from "../src/utils/Logger";
 import { platformSandbox, unsandboxed } from "../src/synthesis/checks/sandbox";
 import { localModel } from "./fixtures/synthesisFixture";
 
@@ -171,7 +173,7 @@ const keepSpec = `module Keep version "1" {
     tests { file "tests/visible.test.ts"; file "tests/hidden.test.ts"; }
     evaluate "contract-v1" {
         hard behavior = Tests("tests/visible.test.ts", timeout = 30s);
-        soft holdout = Tests("tests/hidden.test.ts", hidden = true, timeout = 30s);
+        hard holdout = Tests("tests/hidden.test.ts", hidden = true, timeout = 30s);
     }
 }`;
 const keepFlow = `implement Keep using "contract-v1" {
@@ -193,6 +195,8 @@ const keepFlow = `implement Keep using "contract-v1" {
     return unresolved();
 }`;
 
+// The hidden gate is hard: only the rule that hidden gates never count keeps B (which passes it) from
+// being chosen over A.
 test("keep = \"best\" goes back to the best candidate by visible gates only, never by the hidden ones, and a tie goes to the newer", async (t) => {
   if (NO_RUNNER) return t.skip(NO_RUNNER);
   const fx = (body: string) => `export function f(x: number): number {\n  ${body}\n}\n`;
@@ -213,7 +217,7 @@ test("keep = \"best\" goes back to the best candidate by visible gates only, nev
   assert.equal(run.evidence?.gates.find(gate => gate.id === "behavior")?.message, "2 of 3 tests passed");
 });
 
-test("every request's seed derives from the run's seed, which a restart keeps, and each request is recorded", async (t) => {
+test("every request's seed derives from the run's seed, which only an interrupted run's restart keeps, and each request is recorded", async (t) => {
   if (NO_RUNNER) return t.skip(NO_RUNNER);
   const f = await fixture(t, localModel("plain-coder", 4_000_000_000), file => file === "src/greet.ts" ? greet : add("return a - b;"));
   const id = await f.module("Seeded", pairSpec("Seeded"), pairFlow("Seeded", 1), { "tests/pair.test.ts": pairTests });
@@ -232,11 +236,21 @@ test("every request's seed derives from the run's seed, which a restart keeps, a
     thinking: 0, maxTokens: 2600, promptHash: "", promptChars: recorded.promptChars, inputTokens: 50, outputTokens: 100, ms: 0, unchanged: false });
   assert.match(recorded.promptHash, /^[a-f0-9]{16}$/);
   assert.ok(recorded.promptChars > 1000 && recorded.ms >= 0);
-  // A restart repeats the run as it ran: the same seed, so the same request seeds and prompts.
-  const again = await f.service.wait((await f.service.restart(first.id)).id);
-  assert.equal(again.seed, 4242);
-  assert.deepEqual(again.events.filter(event => event.generation).map(event => [event.generation!.seed, event.generation!.promptHash]),
-    generations.map(event => [event.generation!.seed, event.generation!.promptHash]));
+  const requests = (run: typeof first) => run.events.filter(event => event.generation).map(event => [event.generation!.seed, event.generation!.promptHash]);
+  // Restarting an unresolved run tries again with new answers: a new seed, new request seeds.
+  const retried = await f.service.wait((await f.service.restart(first.id)).id);
+  assert.notEqual(retried.seed, 4242);
+  assert.notDeepEqual(requests(retried).map(([seed]) => seed), requests(first).map(([seed]) => seed));
+  // A seed named for the restart repeats the run as it ran: the same request seeds and prompts.
+  const repeated = await f.service.wait((await f.service.restart(first.id, { seed: 4242 })).id);
+  assert.equal(repeated.seed, 4242);
+  assert.deepEqual(requests(repeated), requests(first));
+  // An interrupted run goes on as it was asked: it keeps its seed.
+  const recordFile = path.join(f.root, "..", "app", "synthesis", "runs", `${first.id}.json`);
+  await fs.writeFile(recordFile, JSON.stringify({ ...JSON.parse(await fs.readFile(recordFile, "utf8")), status: "interrupted" }));
+  const resumed = await f.service.wait((await f.service.restart(first.id)).id);
+  assert.equal(resumed.seed, 4242);
+  assert.deepEqual(requests(resumed), requests(first));
   const drawn = await f.service.wait((await f.service.start(f.project.id, id)).id);
   assert.ok(Number.isInteger(drawn.seed) && drawn.seed! >= 1 && drawn.seed! <= 2_147_483_646);
 });
@@ -332,4 +346,43 @@ test("SEARCH/REPLACE edits apply where their text occurs once, exactly or line b
   assert.equal(applyEditBlocks(file, "<<<<<<< SEARCH\n  return 1;\n=======\n  return 3;\n>>>>>>> REPLACE"), undefined, "ambiguous");
   assert.equal(applyEditBlocks(file, "<<<<<<< SEARCH\nfunction c() {\n=======\nx\n>>>>>>> REPLACE"), undefined, "not in the file");
   assert.equal(applyEditBlocks(file, "The bug is in b."), undefined, "prose");
+});
+
+test("a feedback item points at the file it is about: its subject, a place it cites, or the only file it names; not a file named beside another", () => {
+  const files = ["index.html", "calculator.js", "style.css"];
+  const about = (item: string) => files.filter(file => pointsAt(item, file, files));
+  assert.deepEqual(about('ui: index.html must load calculator.js exactly once, with <script src="calculator.js"></script> at the end of body; it loads it 2 times instead.'), ["index.html"]);
+  assert.deepEqual(about("ui: calculator.js: clicking #calculate with 12 + 7 must show 19 in the <output id='result'>; it shows nothing instead."), ["calculator.js"]);
+  assert.deepEqual(about("behavior: adds: TypeError: x is not a function (calculator.js:3), called at tests/a.test.ts:8 [tests/a.test.ts:6]"), ["calculator.js"]);
+  assert.deepEqual(about('layering: The contract checks the imports of files matching "style.css", but no file matches it.'), ["style.css"]);
+  assert.deepEqual(about("ui: #operation needs a visible label or accessible name."), []);
+  assert.deepEqual(about("index.html: The answer was cut off at the token limit (2600 tokens)."), ["index.html"]);
+});
+
+test("SEARCH/REPLACE delimiters are whole lines: a ======= banner in the code does not end a block", () => {
+  const file = "// ==========\n// Section\n// ==========\nexport const a = 1;\n";
+  assert.equal(applyEditBlocks(file, "<<<<<<< SEARCH\n// ==========\n// Section\n// ==========\nexport const a = 1;\n=======\n// ==========\n// Section\n// ==========\nexport const a = 2;\n>>>>>>> REPLACE"),
+    "// ==========\n// Section\n// ==========\nexport const a = 2;\n");
+  assert.equal(applyEditBlocks("x = 1\n", "<<<<<<< SEARCH\nx = 1\n=========\nx = 2\n>>>>>>> REPLACE"), undefined, "nine = signs are not the separator");
+  assert.equal(applyEditBlocks("a\nb\n", "<<<<<<< SEARCH\nb\n=======\n>>>>>>> REPLACE"), "a\n\n", "an empty REPLACE removes the lines");
+});
+
+test("Python imports: one line each, relative ones, and a parenthesized list over several lines", () => {
+  const source = "from .router import Router\nimport unittest\nfrom src.query import (\n    parse_query,\n    QueryError,\n)\n\n\nclass T(unittest.TestCase):\n    def test_route(self):\n        self.assertTrue(Router())\n\n    def test_query(self):\n        self.assertEqual(parse_query(''), {})\n";
+  const candidates = ["src/router.py", "src/query.py"];
+  assert.deepEqual(filesUsedByTest(source, 11, candidates), ["src/router.py"], "the import ends with its line");
+  assert.deepEqual(filesUsedByTest(source, 14, candidates), ["src/query.py"]);
+});
+
+test("the budget message goes to the app's own llama.cpp only, and only with a thinking budget", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+  const provider = (id: string) => new OpenAICompatibleProvider({ id, name: id, model: "m", baseUrl: "http://127.0.0.1:9/v1", timeoutMs: 5000 }, new Logger(), fetchImpl);
+  const ask = (id: string, budget: number) => provider(id).generateText({ prompt: "x", model: "m", localReasoningBudget: budget, localReasoningBudgetMessage: BUDGET_MESSAGE });
+  await ask("llamacpp", 1024); await ask("llamacpp", 0); await ask("lmstudio", 1024);
+  assert.deepEqual(sent.map(body => body.reasoning_budget_message), [BUDGET_MESSAGE, undefined, undefined]);
+  assert.deepEqual(sent.slice(0, 2).map(body => body.reasoning_budget_tokens), [1024, 0]);
 });

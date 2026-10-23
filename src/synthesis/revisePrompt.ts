@@ -72,8 +72,12 @@ export function filesUsedByTest(source: string, line: number, candidates: string
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
     imports.push({ names: match[1]!.split(",").map(item => item.replace(/\btype\b/, "").split(/\s+as\s+/).pop()!.trim()).filter(Boolean), target: match[2]!.replace(/^(?:\.\.?\/)+/, "") });
   }
-  for (const match of source.matchAll(/^\s*from\s+([\w.]+)\s+import\s+([\w\s,()]+)$/gm)) {
-    imports.push({ names: match[2]!.replace(/[()]/g, "").split(",").map(item => item.split(/\s+as\s+/).pop()!.trim()).filter(Boolean), target: `${match[1]!.replace(/\./g, "/")}.py` });
+  // Python: "from src.router import Router", a relative "from .router import Router", and a
+  // parenthesized list over several lines; never past the end of its line otherwise.
+  for (const match of source.matchAll(/^[ \t]*from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[ \t\w,]+)/gm)) {
+    const module = match[1]!.replace(/^\.+/, "");
+    if (!module) continue;
+    imports.push({ names: match[2]!.replace(/[()]/g, "").split(",").map(item => item.trim().split(/\s+as\s+/).pop()!.trim()).filter(Boolean), target: `${module.replace(/\./g, "/")}.py` });
   }
   const used = new Set<string>();
   for (const { names, target } of imports) {
@@ -98,7 +102,7 @@ function citedLines(item: string, files: Record<string, string>): Array<{ file: 
   }
   return found.slice(0, 2);
 }
-/** Whether an item names a file ("src/a.ts:3", "src/a.ts imports", "index.html must"). */
+/** Whether an item mentions a file ("src/a.ts:3", "src/a.ts imports", "loads calculator.js once"). */
 const names = (item: string, file: string) => {
   const at = item.indexOf(file);
   if (at < 0) return false;
@@ -106,12 +110,25 @@ const names = (item: string, file: string) => {
   return (before === undefined || /[\s("'`[,]/.test(before)) && (after === undefined || /[\s:)"'`,.;]/.test(after));
 };
 
-/** The candidate files the feedback points at: an item names it, or a failed visible test uses it. */
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Whether a feedback item is about a file: the file is its subject ("index.html must …", "src/a.ts:3
+ * imports …", "calculator.js: …" after the gate's id), a place in it is cited ("(src/a.ts:12)"), or it
+ * is the only candidate file the item mentions. A file merely mentioned beside another ("index.html must
+ * load calculator.js once") is not: the fix is in the subject. */
+export function pointsAt(item: string, file: string, candidates: string[]): boolean {
+  const body = item.replace(/^[A-Za-z_]\w*: /, "");
+  if (body.startsWith(file) && /^(?:$|[\s:,])/.test(body.slice(file.length))) return true;
+  if (new RegExp(`(?<![\\w./-])${escaped(file)}:\\d+`).test(item)) return true;
+  const mentioned = candidates.filter(candidate => names(item, candidate));
+  return mentioned.length === 1 && mentioned[0] === file;
+}
+
+/** The candidate files the feedback points at: an item is about it, or a failed visible test uses it. */
 export function implicatedFiles(feedback: string[], files: Record<string, string>, tests: Array<[string, string]>): Set<string> {
   const found = new Set<string>();
   const candidates = Object.keys(files);
   for (const item of feedback) {
-    for (const file of candidates) if (names(item, file)) found.add(file);
+    for (const file of candidates) if (pointsAt(item, file, candidates)) found.add(file);
     const ref = caseRef.exec(item), test = ref && tests.find(([name]) => name === ref[1]);
     if (test) for (const file of filesUsedByTest(test[1], Number(ref![2]), candidates)) found.add(file);
   }
@@ -127,7 +144,8 @@ function problems(input: RevisePromptInput): Problem[] {
     const assertion = atTest?.[1].split("\n")[Number(at![2]) - 1]?.trim();
     if (assertion) context.push(`${at![1]}:${at![2]} is: ${assertion.slice(0, 160)}`);
     const found = test ? testAt(test[1], Number(ref![2])) : undefined;
-    const ours = names(item, input.file) || (!!test && filesUsedByTest(test[1], Number(ref![2]), Object.keys(input.files)).includes(input.file));
+    const candidates = Object.keys(input.files);
+    const ours = pointsAt(item, input.file, candidates) || (!!test && filesUsedByTest(test[1], Number(ref![2]), candidates).includes(input.file));
     return { item, context, ...(found ? { body: found.body } : {}), ours };
   });
 }
@@ -196,7 +214,8 @@ export function revisePrompt(input: RevisePromptInput): { system: string; prompt
 /** SEARCH/REPLACE blocks applied to a file: each SEARCH must occur exactly once (as written, or with
  * every line trimmed). Undefined when there is no block or one does not apply. */
 export function applyEditBlocks(current: string, reply: string): string | undefined {
-  const found = [...reply.matchAll(/<{7} ?SEARCH\r?\n([\s\S]*?)\r?\n?={7}\r?\n([\s\S]*?)\r?\n?>{7} ?REPLACE/g)];
+  // Each delimiter is a whole line: a "// ==========" banner inside the code never ends a block.
+  const found = [...reply.matchAll(/^<{7} ?SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n={7}[ \t]*\r?\n([\s\S]*?)(?:\r?\n)?^>{7} ?REPLACE[ \t]*$/gm)];
   if (!found.length) return undefined;
   let text = current;
   for (const [, search, replace] of found) {

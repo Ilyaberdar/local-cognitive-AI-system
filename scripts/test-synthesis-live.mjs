@@ -13,7 +13,7 @@
 // --keys: the keys file (~/.config/local-cognitive/provider-keys.env by default), or - for standard input.
 // --local: a GGUF file imported into a local llama.cpp runtime for the run (provider "llamacpp"), from
 //          this repository's resources/llama (or --runtime <folder>); local models need no keys.
-// --seed: the run's seed (1 to 2147483646): every request's seed derives from it, so a local run repeats.
+// --run-seed: the run's seed (1 to 2147483646): every request's seed derives from it, so a local run repeats.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -108,7 +108,7 @@ if (!module.valid) { console.error(module.diagnostics.map(item => `${item.file}:
 
 console.log(`Providers with keys: ${configured.join(", ")}. Module ${name}; project at ${project}.`);
 const started = Date.now();
-const run = await synthesis.start(created.id, module.id, option("seed") ? { seed: Number(option("seed")) } : {});
+const run = await synthesis.start(created.id, module.id, option("run-seed") ? { seed: Number(option("run-seed")) } : {});
 let shown = 0;
 const timer = setInterval(async () => {
   const current = await synthesis.get(run.id).catch(() => undefined);

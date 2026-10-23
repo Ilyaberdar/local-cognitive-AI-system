@@ -278,7 +278,29 @@ test("counts words", () => {
     const result = await check(t, provider, { candidate: { "src/counts.ts": source }, suite: { "tests/counts.test.ts": tests } }, ["tests/counts.test.ts"]);
     if (!result) return;
     assert.equal(result.status, "Fail");
-    assert.match(result.feedback[0]!, /\(expected and actual both print \{ a: 2, b: 1 \}: they print alike but differ in type or prototype, which a strict comparison checks \(a number vs a string, an Object\.create\(null\) object\)\) \[tests\/counts\.test\.ts:5\]$/);
+    assert.match(result.feedback[0]!, /\(expected and actual both print \{ a: 2, b: 1 \}: they differ in type or prototype \(a number vs a string, an Object\.create\(null\) object\)\) \[tests\/counts\.test\.ts:5\]$/);
+    noAbsolutePaths(result);
+  });
+
+  test(`TypeScript (${label}): values that differ are never said to print alike, though printing clips them or hides spaces, and the case's location always fits`, async t => {
+    const tests = `import assert from "node:assert/strict";
+import test from "node:test";
+import { list, words } from "../src/values.ts";
+
+test("lists twenty-five numbers", () => {
+  assert.deepEqual(list(), Array.from({ length: 25 }, (_, i) => i));
+});
+test("keeps the spacing", () => {
+  assert.equal(words(), "a  b");
+});
+`;
+    const source = "export const list = () => Array.from({ length: 25 }, (_, i) => i === 23 ? -1 : i);\nexport const words = () => \"a b\";\n";
+    const result = await check(t, provider, { candidate: { "src/values.ts": source }, suite: { "tests/values.test.ts": tests } }, ["tests/values.test.ts"]);
+    if (!result) return;
+    assert.equal(result.feedback.length, 2);
+    for (const item of result.feedback) assert.doesNotMatch(item, /print alike|both print/, item);
+    assert.match(result.feedback[0]!, /^lists twenty-five numbers: .+ \[tests\/values\.test\.ts:5\]$/);
+    assert.match(result.feedback[1]!, /^keeps the spacing: .+\(expected 'a  b', actual 'a b'\) \[tests\/values\.test\.ts:8\]$/);
     noAbsolutePaths(result);
   });
 
@@ -369,6 +391,23 @@ class LabelTest(unittest.TestCase):
     assert.equal(result.status, "Fail");
     const at = lineOf(tests, "label({})");
     assert.deepEqual(result.feedback, [`LabelTest › test_label: KeyError: 'name' (src/label.py:2), called at tests/test_label.py:${at} [tests/test_label.py:${at}]`]);
+    noAbsolutePaths(result);
+  });
+
+  test(`Python (${label}): an assertion raised in the code under test names its line there and the test line that called it`, async t => {
+    const tests = `import unittest
+from src.take import take
+
+
+class TakeTest(unittest.TestCase):
+    def test_take(self):
+        self.assertEqual(take(2), 2)
+        self.assertEqual(take(0), 0)
+`;
+    const result = await check(t, provider, { candidate: { "src/take.py": "def take(n):\n    assert n > 0, \"n must be positive\"\n    return n\n" }, suite: { "tests/test_take.py": tests } }, ["tests/test_take.py"]);
+    if (!result) return;
+    const at = lineOf(tests, "take(0)");
+    assert.deepEqual(result.feedback, [`TakeTest › test_take: n must be positive (src/take.py:2), called at tests/test_take.py:${at} [tests/test_take.py:${at}]`]);
     noAbsolutePaths(result);
   });
 

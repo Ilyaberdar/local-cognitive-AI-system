@@ -54,7 +54,7 @@ export interface SynthesisRun {
   usage: {inputTokens: number; outputTokens: number; calls: number};
   /** How the run's agents stand (agents-v1); each agent is read with the run's agents. */
   agents?: AgentCounts;
-  /** Every model request's seed derives from it; a restart keeps it. */
+  /** Every model request's seed derives from it; a restart keeps it only after an interruption. */
   seed?: number;
 }
 export interface AgentCounts { total: number; queued: number; running: number; done: number; failed: number; cancelled: number }

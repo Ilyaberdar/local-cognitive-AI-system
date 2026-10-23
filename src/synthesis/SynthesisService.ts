@@ -187,7 +187,7 @@ function publicRun(record: RunRecord): SynthesisRun {
 /** How a run is started: an id the caller reserved, and whether a paired device starts it. */
 export interface LaunchOptions { runId?: string; device?: {guard: () => Promise<string | undefined>};
   /** The run's seed (1 to 2,147,483,646): every model request's seed derives from it. A new run draws
-   * one; a restart keeps its run's. */
+   * one; a restart of an interrupted run keeps its run's, any other restart draws a new one. */
   seed?: number }
 
 /** Project source is read-only until Apply. Runs contain frozen sources and an isolated artifact tree. */
@@ -421,7 +421,10 @@ export class SynthesisService {
     if (existing) return existing;
     const record = await this.read(id);
     if (activeStatus(record.status) || record.status === "accepted") throw new SynthesisError("Only unsuccessful or interrupted runs may be restarted.", 409);
-    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id, {...options, seed: options.seed ?? record.seed}, record.suite);
+    // An interrupted run goes on as it was asked; any other is tried again with new answers (a new seed)
+    // unless the caller names the seed to repeat.
+    return this.launch(record.projectId, record.moduleId, record.specSource, record.flowSource, record.id,
+      {...options, seed: options.seed ?? (record.status === "interrupted" ? record.seed : undefined)}, record.suite);
   }
   /** A run, if one with this id exists. */
   async existing(id: string): Promise<SynthesisRun | undefined> {
