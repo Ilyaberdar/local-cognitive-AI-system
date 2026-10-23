@@ -25,7 +25,7 @@ function objectEnd(source: string, at: number): number {
 
 /** The JSON object a text starts with (after a code fence), whatever follows it; undefined when it starts otherwise. */
 export function leadingJsonObject(text: string): unknown {
-  const source = unfenced(text);
+  const source = escapeControlCharacters(unfenced(text));
   if (!source.startsWith("{")) return undefined;
   const end = objectEnd(source, 0);
   if (end < 0) return undefined;
@@ -34,7 +34,7 @@ export function leadingJsonObject(text: string): unknown {
 
 /** Whether the text (after a code fence) is one JSON object and nothing else. */
 export function wholeJsonObject(text: string): boolean {
-  try { const value = parseJsonDocument(text); return Boolean(value && typeof value === "object" && !Array.isArray(value)); } catch { return false; }
+  try { const value = JSON.parse(escapeControlCharacters(unfenced(text))); return Boolean(value && typeof value === "object" && !Array.isArray(value)); } catch { return false; }
 }
 
 /** The JSON objects of a text that holds several, one after another ({...}\n{...}), or undefined when

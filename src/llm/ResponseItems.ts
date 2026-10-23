@@ -37,12 +37,15 @@ function textEnvelope(text: string, tools: LLMFunctionTool[]): { toolCall: true 
   const value = leadingJsonObject(text);
   if (!record(value)) return undefined;
   const names = new Set(tools.flatMap(tool => [tool.name, tool.action]));
-  const toolCall = (item: Record<string, unknown>): boolean => item.type === "tool_call" || typeof item.tool === "string" ||
-    (typeof item.type === "string" && names.has(item.type)) || (typeof item.name === "string" && names.has(item.name) && ("arguments" in item || "parameters" in item));
   const action = Object.keys(value).length === 1 && record(value.action) ? value.action : value;
-  if (toolCall(action)) return { toolCall: true };
+  const whole = wholeJsonObject(text);
+  // A call: one that names a tool this agent has, whatever follows it; or the whole reply in a call's shape.
+  // A Markdown answer that only starts with JSON (a config with a "tool" key) stays the answer.
+  const named = [action.tool, action.type, action.name].some(name => typeof name === "string" && names.has(name));
+  const shaped = action.type === "tool_call" || typeof action.tool === "string" || (typeof action.name === "string" && ("arguments" in action || "parameters" in action));
+  if (named || shaped && whole) return { toolCall: true };
   // Only a whole reply that is exactly {"type":"final","text":…} is unwrapped; anything else stays the answer as written.
-  if (action.type === "final" && typeof action.text === "string" && action.text.trim() && Object.keys(action).length === 2 && wholeJsonObject(text)) return { final: action.text.trim() };
+  if (action.type === "final" && typeof action.text === "string" && action.text.trim() && Object.keys(action).length === 2 && whole) return { final: action.text.trim() };
   return undefined;
 }
 

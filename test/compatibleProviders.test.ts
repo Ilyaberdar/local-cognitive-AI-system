@@ -21,6 +21,7 @@ import { LLMService } from "../src/llm/LLMService";
 import { OutputSanitizer } from "../src/llm/OutputSanitizer";
 import { unsupportedFeature } from "../src/llm/provider-utils";
 import { agentFunctionTools } from "../src/tools/AgentTool";
+import { readNativeAgentResponse } from "../src/llm/ResponseItems";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { JSDOM } = require("jsdom");
@@ -417,6 +418,20 @@ test("a native reply's text is cleaned as JSON replies are: DSML call markup is 
   }
   assert.deepEqual((await provider.generateText(agentRequest())).agentAction, { type: "final", text: "## Findings\n\n- a.ts:1" });
   assert.equal((await provider.generateText(agentRequest())).agentAction?.type, "final", "an answer that quotes the markup's pattern is an answer");
+});
+
+test("a native answer that starts with JSON is refused only when it is a call: the whole reply, or naming a tool the agent has", () => {
+  const read = (text: string) => readNativeAgentResponse({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }] }, agentTools);
+  // A Markdown answer with a config example first stays the answer (on the last turn it would be lost).
+  const config = '{"tool":"eslint","rules":{"no-console":"warn"}}\n\nThis config makes ESLint warn on console calls.';
+  assert.deepEqual(read(config).agentAction, { type: "final", text: config });
+  // A call: the whole reply, or one naming the agent's own tool, whatever follows.
+  for (const text of ['{"tool":"eslint","arguments":{}}', '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}\n\nReading it now.',
+    '{"name":"file_read","arguments":{"path":"a.ts"}} then I will answer', '{"type":"file.read","arguments":{"path":"a.ts"}}}}']) {
+    assert.equal(read(text).textToolCall, true, text);
+  }
+  // A final answer in its envelope with raw line breaks (Gemini's) is unwrapped to its text.
+  assert.deepEqual(read('{"type":"final","text":"# Review\n\n- a.ts:1 throws"}'.replace(/\\n/g, "\n")).agentAction, { type: "final", text: "# Review\n\n- a.ts:1 throws" });
 });
 
 test("a service that refuses only the last turn's tool_choice none is asked again without it, and keeps its tools", async () => {
