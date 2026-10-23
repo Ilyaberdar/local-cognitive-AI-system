@@ -621,8 +621,10 @@ export async function verifyProcessTree(provider: Pick<SandboxProvider, "wrap" |
     const holder = Number.parseInt(fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8").trim() : "", 10);
     if (!holder) {
       try { child.kill("SIGKILL"); } catch { /* already gone */ }
-      // Why, in a few words: how the command ended (or that it never answered) and its last error line.
-      const last = err.split(/\r?\n/).map(line => line.trim()).filter(Boolean).pop()?.slice(0, 200);
+      // Why, in a few words: how the command ended (or that it never answered) and its error line (Node
+      // prints the error before the stack and ends with its version, so the error line comes first).
+      const lines = err.split(/\r?\n/).map(line => line.trim()).filter(line => line && !/^Node\.js v\d/.test(line));
+      const last = (lines.find(line => /^[A-Za-z]*Error\b/.test(line)) ?? lines.pop())?.slice(0, 200);
       const how = exit ?? (out.includes("HELD") ? "it wrote no process id in 15 s" : "it did not answer in 15 s");
       return `the check could not start a held process (${how}${last ? `: ${last}` : ""})`;
     }
