@@ -335,8 +335,9 @@ internal static class LcSandbox
         // window between a grant and a revoke, and no shared folder is ever rewritten. They are still
         // validated (ResolveReadOnly) as a guard on what the helper was handed.
 
-        // A window station and desktop of the run's own, opened to this run's container SID (the per-folder
-        // profile's), so node, curl and git start; the caller's desktop refuses them.
+        // A desktop of the run's own (on the current window station, or a private one in a service session),
+        // opened to this run's container SID, so node, curl and git start somewhere the caller's desktop does
+        // not refuse them, and see no window of the user's. See Native.CreateDesktop for the two paths.
         string userSid = Native.CurrentUserSid();
         string desktop = Native.CreateDesktop(containerSidString, userSid);
 
@@ -626,7 +627,7 @@ internal static class LcSandbox
         public const uint FILE_MODIFY_NO_DAC = 0x1301FF;
         private const uint EXTENDED_STARTUPINFO_PRESENT = 0x80000, CREATE_SUSPENDED = 0x4, CREATE_NO_WINDOW = 0x08000000;
         private static readonly IntPtr ATTR_SECURITY_CAPABILITIES = (IntPtr)0x20009, ATTR_HANDLE_LIST = (IntPtr)0x20002;
-        private const int SE_FILE_OBJECT = 1;
+        private const int SE_FILE_OBJECT = 1, SE_WINDOW_OBJECT = 7;
         private const uint DACL_SECURITY_INFORMATION = 0x4, LABEL_SECURITY_INFORMATION = 0x10;
         private const uint PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000, UNPROTECTED_DACL_SECURITY_INFORMATION = 0x20000000;
         private const ushort SE_DACL_PROTECTED = 0x1000;
@@ -695,8 +696,13 @@ internal static class LcSandbox
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateWindowStationW(string name, uint flags, uint access, ref SECURITY_ATTRIBUTES sa);
         [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr GetProcessWindowStation();
         [DllImport("user32.dll", SetLastError = true)] private static extern bool SetProcessWindowStation(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool GetUserObjectInformationW(IntPtr obj, int index, StringBuilder buffer, int length, out int needed);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateDesktopW(string name, IntPtr dev, IntPtr dm, uint flags, uint access, ref SECURITY_ATTRIBUTES sa);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool CloseDesktop(IntPtr h);
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string sddl, uint rev, out IntPtr sd, IntPtr size);
+        // Handle-based DACL read, for a window station handle (GetNamedSecurityInfo is path-based, for files).
+        // Read only: the helper never writes a shared window station's security, so a crash can leave nothing behind.
+        [DllImport("advapi32.dll", SetLastError = true)] private static extern uint GetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr securityDescriptor);
 
         public static string SidString(IntPtr sid)
         {
@@ -1240,6 +1246,36 @@ internal static class LcSandbox
         private static IntPtr windowStation = IntPtr.Zero;
         private static IntPtr desktopHandle = IntPtr.Zero;
 
+        // The run's own desktop, so node, curl and git start somewhere the caller's desktop does not refuse
+        // them, and so a sandboxed process sees and drives no window of the user's (EnumWindows and the input
+        // desktop are per-desktop). Both the desktop and, where used, the window station carry only this run's
+        // container SID, the user and SYSTEM, at low integrity — nothing of another run or of the user's shell.
+        //
+        // Two shapes, chosen by what the process's CURRENT window station allows — never by changing a shared
+        // window station's own security, which a crash, a kill or two overlapping runs could leave altered on
+        // an object the whole session shares:
+        //
+        //  - When the current station grants ALL APPLICATION PACKAGES (S-1-15-2-1) — WinSta0, the interactive
+        //    station — a per-run ALTERNATE DESKTOP on it (the model Chromium's sandbox uses). An AppContainer
+        //    is a member of ALL APPLICATION PACKAGES, so it reaches WinSta0 through WinSta0's own existing ACE,
+        //    and we add nothing to WinSta0. This is the path a normal user takes: at the interactive desktop a
+        //    normal (Medium-integrity) user — the default for every account, UAC admins included — may create
+        //    a desktop on WinSta0 but NOT a window station (CreateWindowStation fails ACCESS_DENIED, even with
+        //    a NULL security descriptor; verified on Windows 11 26200). The old private-window-station design
+        //    therefore shut every non-elevated user out of the sandbox: the release blocker. An interactive
+        //    console session (such as CI's) takes this path too.
+        //
+        //  - Otherwise — a service/non-interactive station (the one an ssh or service logon lands on in
+        //    session 0), which does not grant ALL APPLICATION PACKAGES — a PRIVATE window station of the run's
+        //    own, as before. The container cannot reach the service station, so an alternate desktop on it
+        //    would not run; but such a logon is elevated (High integrity), where CreateWindowStation succeeds.
+        //    The private station carries the container's own grant, so the AppContainer reaches it.
+        //
+        // What the private window station used to give us, the Job object's UI restrictions give us on WinSta0
+        // (see Launch: read/write clipboard, global atoms, USER handles of objects outside the job, the
+        // desktop, exiting windows, the display and system parameters are all denied), and the alternate
+        // desktop keeps the sandbox's windows apart from the user's. If neither path can be taken, Run fails
+        // closed with a clear message rather than running a command on a desktop it could not isolate.
         public static string CreateDesktop(string containerSid, string userSid)
         {
             string sddl = "D:(A;;GA;;;" + containerSid + ")(A;;GA;;;" + userSid + ")(A;;GA;;;SY)S:(ML;;NW;;;LW)";
@@ -1249,9 +1285,29 @@ internal static class LcSandbox
             sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
             sa.lpSecurityDescriptor = sd;
             sa.bInheritHandle = 0;
+
+            IntPtr current = GetProcessWindowStation();
+            if (StationGrantsAllAppPackages(current))
+            {
+                // Alternate desktop on the current (interactive) window station; WinSta0 itself is untouched.
+                string currentName = UserObjectName(current);
+                if (string.IsNullOrEmpty(currentName)) throw new SandboxError("the current window station has no name");
+                string deskName = "lcdesk-" + Guid.NewGuid().ToString("N").Substring(0, 12);
+                desktopHandle = CreateDesktopW(deskName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, ref sa);
+                if (desktopHandle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateDesktop");
+                return currentName + "\\" + deskName;
+            }
+
+            // A private window station of the run's own (service/non-interactive session, which is elevated).
             string stationName = "lcws-" + Guid.NewGuid().ToString("N").Substring(0, 12);
             windowStation = CreateWindowStationW(stationName, 0, 0x37F /*WINSTA_ALL_ACCESS*/, ref sa);
-            if (windowStation == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateWindowStation");
+            if (windowStation == IntPtr.Zero)
+            {
+                int err = Marshal.GetLastWin32Error();
+                // Fail closed with a plain reason: the station grants no app packages and a private one cannot
+                // be made here (a Medium-integrity logon on such a station — not the normal desktop case).
+                throw new SandboxError("this window station does not admit the sandbox and a private one could not be created (CreateWindowStation error " + err + ")");
+            }
             IntPtr previous = GetProcessWindowStation();
             if (!SetProcessWindowStation(windowStation)) throw new Win32Exception(Marshal.GetLastWin32Error(), "SetProcessWindowStation");
             desktopHandle = CreateDesktopW("lcdesk", IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, ref sa);
@@ -1263,7 +1319,50 @@ internal static class LcSandbox
 
         public static void CloseDesktop()
         {
-            // The desktop and window-station handles close with the process; nothing to free per run.
+            // Close the desktop handle so the desktop is torn down once its last process (the sandboxed
+            // command, already gone) leaves it; the window station handle, when one was made, closes with the
+            // process. No shared object's security was changed, so there is nothing to put back.
+            if (desktopHandle != IntPtr.Zero) { CloseDesktop(desktopHandle); desktopHandle = IntPtr.Zero; }
+        }
+
+        // The name of a window station or desktop handle (UOI_NAME), or null if it cannot be read.
+        private static string UserObjectName(IntPtr obj)
+        {
+            StringBuilder buffer = new StringBuilder(256);
+            int needed;
+            return GetUserObjectInformationW(obj, 2 /*UOI_NAME*/, buffer, buffer.Capacity * 2, out needed) ? buffer.ToString() : null;
+        }
+
+        // Whether a window station's DACL carries an access-allowed ACE for ALL APPLICATION PACKAGES
+        // (S-1-15-2-1) — the group every AppContainer belongs to. WinSta0 does; a service/non-interactive
+        // station does not. Read only (GetSecurityInfo), so nothing on the shared object is changed. Fails
+        // closed: any error reading the DACL is treated as "does not grant it" (so the run takes the private
+        // window station, which proves access by actually creating the station).
+        private static bool StationGrantsAllAppPackages(IntPtr station)
+        {
+            IntPtr allAppPkgs;
+            if (!ConvertStringSidToSidW("S-1-15-2-1", out allAppPkgs)) return false;
+            try
+            {
+                IntPtr dacl, securityDescriptor;
+                uint error = GetSecurityInfo(station, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION, IntPtr.Zero, IntPtr.Zero, out dacl, IntPtr.Zero, out securityDescriptor);
+                if (error != 0 || dacl == IntPtr.Zero) return false;
+                try
+                {
+                    int count = Marshal.ReadInt16(dacl, 4); // ACL.AceCount
+                    for (int index = 0; index < count; index++)
+                    {
+                        IntPtr ace;
+                        if (!GetAce(dacl, index, out ace)) continue;
+                        if (Marshal.ReadByte(ace, 0) != 0) continue; // ACCESS_ALLOWED_ACE_TYPE
+                        IntPtr aceSid = (IntPtr)(ace.ToInt64() + 8); // ACCESS_ALLOWED_ACE.SidStart
+                        if (EqualSid(aceSid, allAppPkgs)) return true;
+                    }
+                    return false;
+                }
+                finally { if (securityDescriptor != IntPtr.Zero) LocalFree(securityDescriptor); }
+            }
+            finally { LocalFree(allAppPkgs); }
         }
 
         public static int Launch(IntPtr containerSid, IntPtr[] capabilities, string exe, List<string> exeArgs, string cwd, string desktop, int cpuSeconds)
