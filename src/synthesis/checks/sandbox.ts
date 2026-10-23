@@ -612,8 +612,15 @@ export async function verifyProcessTree(provider: Pick<SandboxProvider, "wrap" |
   if (!node) return undefined;
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-tree-"));
   try {
+    // The held child's stdout and stderr go to a file in the work folder, never "ignore". "ignore" opens the
+    // NUL device for the child, and an AppContainer cannot open NUL on some Windows hosts — the GitHub
+    // windows-2025 runner among them (verified: a child spawned with stdio:"ignore" fails CreateProcess with
+    // ACCESS_DENIED → EPERM, while stdio:"inherit" and a file in the work folder succeed; win-pc opens NUL
+    // fine). That is incidental to this check, which tests kill-on-close, so it avoids NUL: stdin is inherited
+    // and the two outputs go to holder.log, which the run may write and which the work folder carries away.
     const code = 'const cp=require("child_process"),fs=require("fs");' +
-      'const h=cp.spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",detached:true});' +
+      'const out=fs.openSync("holder.log","w");' +
+      'const h=cp.spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["inherit",out,out],detached:true});' +
       'fs.writeFileSync("holder.pid",String(h.pid));process.stdout.write("HELD\\n");setInterval(()=>{},1000);';
     const wrapped = provider.wrap(node, ["-e", code], work, [path.dirname(node)]);
     const child = (await import("node:child_process")).spawn(wrapped.executable, wrapped.args, { cwd: work, env: wrapped.env });
