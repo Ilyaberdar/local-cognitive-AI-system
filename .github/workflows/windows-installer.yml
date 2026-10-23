@@ -60,22 +60,13 @@ jobs:
           node scripts/verify-speech-runtime.mjs release/win-unpacked/resources
           node --input-type=module -e "const { missingImports } = await import('./scripts/lib/pe-imports.mjs'); const missing = await missingImports('release/win-unpacked/resources/speech/win32-x64'); if (missing.size) { console.error('whisper needs', [...missing.keys()].join(', ')); process.exit(1); }"
       # Checked here from the runner's D: drive, and again below where the installer puts the app (as on a
-      # user's computer). Until the D: failure (spawn EPERM inside the AppContainer) is understood, this one
-      # only reports, with the permissions along the Node runtime's path.
+      # user's computer). Both are blocking: the earlier D: failure was the process-tree check opening the NUL
+      # device for its held child (stdio:"ignore"), which an AppContainer cannot do on this runner — fixed in
+      # verifyProcessTree (it uses a file in the work folder instead), not a D:-drive artifact.
       - name: The Synthesis sandbox imports only system DLLs and isolates
-        continue-on-error: true
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           node scripts/verify-sandbox-helper.mjs release/win-unpacked/resources
-          if ($LASTEXITCODE) {
-            $p = (Resolve-Path release/win-unpacked/resources/sandbox/win32-x64/node/node.exe).Path
-            while ($p) { icacls $p; $parent = Split-Path $p -Parent; if (-not $parent -or $parent -eq $p) { break }; $p = $parent }
-            whoami /groups /priv
-            exit 1
-          }
-      # TEMPORARY (release/0.1.9): pin the AppContainer child-spawn EPERM on the runner. Remove before release.
-      - name: DIAG spawn matrix inside the sandbox
-        continue-on-error: true
-        run: node scripts/diag-sandbox-spawn.mjs release/win-unpacked/resources
       - run: npx electron-fuses read --app "release/win-unpacked/Local Cognitive.exe"
       # Unsigned: a feed without publisherName makes the app announce versions instead of installing them.
       - name: The update feed names no publisher
