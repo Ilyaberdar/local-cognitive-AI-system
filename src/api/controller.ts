@@ -22,6 +22,7 @@ import { isReasoningEffort } from "../llm/ReasoningEffort";
 import { PROVIDER_PRESETS } from "../llm/providerCatalog";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { compatibleDialect, isProviderDialect } from "../llm/ProviderDialect";
+import { answersToolCalls } from "../llm/toolProbe";
 import { Logger } from "../utils/Logger";
 import { checkProvider, currentStatuses, ProviderStatus, ProviderStatusStore, statusFingerprint } from "../llm/providerStatus";
 
@@ -630,7 +631,9 @@ export const createRuntimeReloadController =
   };
 
 /** Settings → Add provider: the models an OpenAI-compatible service lists for an address and key, read
- * before anything is saved. It is the first check of both; nothing is kept. */
+ * before anything is saved. It is the first check of both; nothing is kept. A service added as Other is
+ * also asked for one tool call with the model it will use (its first): `nativeTools: "chat"` when it
+ * answered one properly, so that its agents act through tool calls instead of JSON. */
 export const createProviderDiscoverController =
   () =>
   async (req: Request, res: Response): Promise<void> => {
@@ -646,7 +649,9 @@ export const createProviderDiscoverController =
       dialect: compatibleDialect(dialect as string | undefined) }, new Logger());
     try {
       const models = (await provider.listModels({ strict: true })).map(model => model.id);
-      res.status(200).json({ models });
+      const other = dialect === undefined || dialect === "chat";
+      const tools = other && models.length ? await answersToolCalls({ baseUrl: String(baseUrl).replace(/\/+$/, ""), apiKey: apiKey.trim(), model: models[0]!, dialect: compatibleDialect(dialect as string | undefined) }) : false;
+      res.status(200).json({ models, ...(tools ? { nativeTools: "chat" } : {}) });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "The service did not answer.";
       res.status(502).json({ error: /status 40[13]/.test(detail) ? "The service refused this key." : /status 404/.test(detail) ? "No models at this address. Check it." : `The service did not answer: ${detail.replace(apiKey.trim(), "<key>")}` });

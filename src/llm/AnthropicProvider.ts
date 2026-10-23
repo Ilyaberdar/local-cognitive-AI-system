@@ -3,8 +3,8 @@ import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
 import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
-import { anthropicAgentResponse, anthropicContinuation } from "./NativeToolTransport";
-import { countedFetch, fetchWithRetries, unsupportedFeature } from "./provider-utils";
+import { anthropicAgentResponse, anthropicContinuation, withTurn } from "./NativeToolTransport";
+import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -112,7 +112,8 @@ export class AnthropicProvider implements LLMProvider {
           max_tokens: request.maxTokens ?? this.options.maxTokens,
           system: request.systemPrompt,
           ...(tools?.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })),
-            tool_choice: { type: "auto", disable_parallel_tool_use: true } }
+            // The last turn: no tool may be called, so the answer is text.
+            tool_choice: request.toolChoice === "none" ? { type: "none" } : { type: "auto", disable_parallel_tool_use: true } }
             : request.responseFormat?.type === "json_schema" ? { output_config: { format: { type: "json_schema", schema: request.responseFormat.schema } } } : {}),
           messages: [
             {
@@ -121,10 +122,11 @@ export class AnthropicProvider implements LLMProvider {
                 ...images.map(image => { const decoded = decodeImage(image); return {
                   type: "image", source: { type: "base64", media_type: decoded.mimeType, data: decoded.data }
                 }; }),
-                { type: "text", text: request.prompt }
-              ] : request.prompt
+                { type: "text", text: request.inputItems?.length ? request.prompt : promptWithTurn(request) }
+              ] : request.inputItems?.length ? request.prompt : promptWithTurn(request)
             },
-            ...anthropicContinuation(request.inputItems)
+            // The turn's guidance after the tool results, in their user turn (text comes after tool_result blocks).
+            ...withTurn(anthropicContinuation(request.inputItems), request.inputItems?.length ? request.turnPrompt : undefined)
           ]
         }),
         signal: resolveAbortSignal(timeoutMs, request.signal)

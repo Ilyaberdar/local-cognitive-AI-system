@@ -8,6 +8,7 @@ import { currentInferenceImages, validateImages } from "./InferenceImages";
 import { currentLocalThinkingBudget, currentReasoningEffort } from "./InferenceThinking";
 import { localThinkingBudgetForEffort } from "./ReasoningEffort";
 import { parseJsonDocument, validateStructuredObject } from "./StructuredOutput";
+import { withoutDsmlTrailer, withoutLeadingThinking } from "./ResponseItems";
 import { UsageCall, UsageRecorder } from "../usage/UsageCall";
 import { currentUsageScope } from "../usage/UsageScope";
 
@@ -33,8 +34,10 @@ export class LLMService {
     return this.registry.get(providerId).getContextWindow?.(modelId);
   }
 
-  supportsNativeTools(providerId: string): boolean {
-    return this.registry.get(providerId).getDescriptor().capabilities?.nativeTools === true;
+  /** With a model: false also for one that refused function tools earlier (its agents act in JSON). */
+  supportsNativeTools(providerId: string, model?: string): boolean {
+    const provider = this.registry.get(providerId);
+    return provider.getDescriptor().capabilities?.nativeTools === true && !provider.toolsRefused?.(model);
   }
 
   supportsStructuredOutputs(providerId: string): boolean {
@@ -70,9 +73,9 @@ export class LLMService {
     request.signal?.throwIfAborted();
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
     const text = request.outputPurpose === "agent-action"
-      ? response.text.trim().replace(/^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "")
-        // DeepSeek sometimes adds its own tool-call markup (<｜DSML｜…>) after the JSON action: never an action itself.
-        .replace(/\s*<｜+DSML｜+[\s\S]*$/u, "")
+      // DeepSeek sometimes adds its own tool-call markup (<｜DSML｜…>, or only its closers </｜｜DSML｜｜ parameter>)
+      // after the JSON action: never an action itself. Markup inside a JSON string is the answer's own text.
+      ? withoutDsmlTrailer(withoutLeadingThinking(response.text.trim()))
       : this.sanitizer.sanitize(response.text);
 
     return {

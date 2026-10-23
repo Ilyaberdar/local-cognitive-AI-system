@@ -49,6 +49,8 @@ export interface CompatibleProviderConfig extends ProviderHttpConfig {
   preset?: string;
   /** Set in the environment (a server's environment file): its address and key come only from there. */
   source?: "environment";
+  /** It answered a tool call when it was added: its agents act through chat tool calls. */
+  nativeTools?: "chat";
 }
 
 export interface AppConfig {

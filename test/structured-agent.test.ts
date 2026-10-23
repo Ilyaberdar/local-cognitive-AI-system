@@ -6,6 +6,7 @@ import test from "node:test";
 import Ajv from "ajv";
 import { AgentLoopRunner } from "../src/agents/runtime/AgentLoopRunner";
 import { OpenAICompatibleProvider } from "../src/llm/OpenAICompatibleProvider";
+import { CHAT_DIALECT, withChatTools } from "../src/llm/ProviderDialect";
 import { AnthropicProvider } from "../src/llm/AnthropicProvider";
 import { GeminiProvider } from "../src/llm/GeminiProvider";
 import { OllamaProvider } from "../src/llm/OllamaProvider";
@@ -136,6 +137,27 @@ test("native write approval survives a runner rebuild and preserves tool call id
   assert.ok(f.calls[1].input.some((item: any) => item.type === "function_call_output" && item.call_id === "call-1"));
 });
 
+test("a call waiting for approval keeps the reply's other calls through a rebuild, and they are answered not run", async t => {
+  const f = await fixture(t, "openai");
+  f.context.sessionSettings.defaultAccessMode = "ask";
+  f.context.execution = { workspace: f.context.workspace!, accessMode: "ask", agentRunId: "agent", pauseForApproval: true };
+  const several = payload("openai", write);
+  several.output.push({ ...several.output.at(-1), call_id: "call-2", arguments: JSON.stringify({ ...write.arguments, path: "second.js" }) });
+  f.replies.push(several);
+  const waiting = await f.run(); assert.ok(waiting.pendingApproval);
+  assert.deepEqual((await f.runner().store.get("agent"))!.pending?.skippedCallIds, ["call-2"], "saved with the waiting call");
+  // A new runner (the app restarted) resumes the saved call after approval.
+  f.context.execution.approval = { id: waiting.pendingApproval.id, approved: true };
+  f.replies.push(payload("openai", finish));
+  assert.equal((await f.run()).error, undefined);
+  assert.equal(await fs.readFile(path.join(f.work, "result.js"), "utf8"), code);
+  await assert.rejects(fs.stat(path.join(f.work, "second.js")));
+  const outputs = f.calls[1].input.filter((item: any) => item.type === "function_call_output");
+  assert.deepEqual(outputs.map((item: any) => item.call_id), ["call-1", "call-2"]);
+  assert.match(outputs[1].output, /^Not run: one function call per turn/);
+  assert.equal(f.calls.length, 2);
+});
+
 test("unsupported local schema downgrades within the same run without replaying an operation", async t => {
   const f = await fixture(t, "lmstudio");
   f.replies.push(Response.json({ error: { message: "json_schema format is not supported by this model" } }, { status: 400 }),
@@ -159,15 +181,86 @@ test("authentication failures never trigger protocol downgrade or automatic resu
   assert.match((await f.run()).error!, /401/); assert.equal(f.calls.length, 1);
 });
 
-test("multiple native calls are rejected without executing any, and diagnostic evidence is saved", async t => {
+// DeepSeek's chat sends two to four calls at once whatever parallel_tool_calls says; refusing them all
+// cost 29% of its steps. The first runs as it would have alone; the others are answered "not run", since
+// OpenAI and Perplexity refuse a continuation with a call left unanswered.
+for (const id of ["openai", "anthropic", "gemini"]) test(`${id}: several native calls in one reply: the first runs, the others are answered not run, and the model hears why`, async t => {
+  const f = await fixture(t, id);
+  const several = payload(id, write);
+  const second = { ...write.arguments, path: "second.js" };
+  if (id === "openai") several.output.push({ ...several.output.at(-1), call_id: "call-2", arguments: JSON.stringify(second) });
+  if (id === "anthropic") several.content.push({ type: "tool_use", id: "call-2", name: "file_write", input: second });
+  if (id === "gemini") several.candidates[0].content.parts.push({ functionCall: { id: "call-2", name: "file_write", args: second } });
+  f.replies.push(several, payload(id, finish));
+  const result = await f.run();
+  assert.equal(result.error, undefined);
+  assert.equal(result.tools.length, 1);
+  assert.equal(await fs.readFile(path.join(f.work, "result.js"), "utf8"), code);
+  await assert.rejects(fs.stat(path.join(f.work, "second.js")), "the second call never runs");
+  const next = f.calls[1];
+  if (id === "openai") {
+    const outputs = next.input.filter((item: any) => item.type === "function_call_output");
+    assert.deepEqual(outputs.map((item: any) => item.call_id), ["call-1", "call-2"]);
+    assert.match(outputs[1].output, /^Not run: one function call per turn/);
+    assert.match(next.input[0].content[0].text, /held 2 function calls; only the first runs now/);
+  } else if (id === "anthropic") {
+    // Both results in the one user turn after the calls.
+    const results = next.messages.at(-1).content.filter((item: any) => item.type === "tool_result");
+    assert.deepEqual(results.map((item: any) => [item.type, item.tool_use_id]), [["tool_result", "call-1"], ["tool_result", "call-2"]]);
+    assert.match(results[1].content, /^Not run/);
+  } else {
+    const parts = next.contents.at(-1).parts;
+    assert.deepEqual(parts.map((part: any) => [part.functionResponse.name, part.functionResponse.id]), [["file_write", "call-1"], ["file_write", "call-2"]]);
+  }
+  const run = (await f.runner().store.get("agent"))!;
+  assert.equal(run.repairs, 0, "not a malformed reply");
+});
+
+test("a native call that cannot run is refused without executing anything, and diagnostic evidence is saved", async t => {
   const f = await fixture(t, "openai");
-  const malformed = payload("openai", write); malformed.output.push({ ...malformed.output.at(-1), call_id: "call-2" });
+  const malformed = payload("openai", write); malformed.output.at(-1).name = "file_unknown";
   f.replies.push(malformed, malformed, malformed);
-  assert.match((await f.run()).error!, /multiple calls/);
+  assert.match((await f.run()).error!, /Unknown function: file_unknown/);
   await assert.rejects(fs.stat(path.join(f.work, "result.js")));
   const run = (await f.runner().store.get("agent"))!;
   assert.equal(run.repairs, 3); assert.equal(run.turns[0].diagnostic?.responseId, "response-1");
   assert.ok(run.turns[0].diagnostic!.outputTypes.includes("function_call"));
+});
+
+// Native agents sent each tool result twice, in the transcript and as the function's output: 243k input
+// tokens against 136k in JSON for the same work.
+for (const id of ["openai", "anthropic", "gemini"]) test(`${id}: a result the continuation carries is not written out again in the transcript`, async t => {
+  const f = await fixture(t, id);
+  await fs.writeFile(path.join(f.work, "notes.txt"), "Distinctive evidence 4242");
+  const read = { type: "tool_call" as const, tool: "file.read", arguments: { path: "notes.txt" } };
+  const first = payload(id, read as any);
+  if (id === "openai") first.output.at(-1).name = "file_read";
+  if (id === "anthropic") first.content.at(-1).name = "file_read";
+  if (id === "gemini") first.candidates[0].content.parts[0].functionCall.name = "file_read";
+  f.replies.push(first, payload(id, finish));
+  assert.equal((await f.run()).error, undefined);
+  const next = f.calls[1];
+  const prompt = id === "openai" ? next.input[0].content[0].text : id === "anthropic" ? next.messages[0].content : next.contents[0].parts[0].text;
+  const history = JSON.stringify(next.input ?? next.messages ?? next.contents);
+  assert.equal(history.split("Distinctive evidence 4242").length - 1, 1, "the result is sent once");
+  assert.doesNotMatch(prompt, /Distinctive evidence 4242/);
+  assert.match(prompt, /results of your latest function call follow this message/);
+  // The turn's guidance comes after the latest result, where JSON agents read it too (Gemini: in the prompt).
+  const turn = /Choose the next action or final answer\.\s+You have \d+ turns remaining/;
+  if (id === "openai") { assert.deepEqual(next.input.at(-1).role, "user"); assert.match(next.input.at(-1).content[0].text, turn); assert.doesNotMatch(prompt, turn); }
+  if (id === "anthropic") { const last = next.messages.at(-1).content; assert.equal(last[0].type, "tool_result"); assert.match(last.at(-1).text, turn); assert.doesNotMatch(prompt, turn); }
+  if (id === "gemini") assert.match(prompt, turn);
+  assert.doesNotMatch(JSON.stringify(f.calls[0]), /results of your latest/, "the first turn has no continuation");
+  assert.match(id === "openai" ? f.calls[0].input[0].content[0].text : id === "anthropic" ? f.calls[0].messages[0].content : f.calls[0].contents[0].parts[0].text, turn);
+});
+
+test("a JSON agent keeps every result in its transcript", async t => {
+  const f = await fixture(t, "lmstudio");
+  await fs.writeFile(path.join(f.work, "notes.txt"), "Distinctive evidence 4242");
+  f.replies.push(payload("lmstudio", { type: "tool_call", tool: "file.read", arguments: { path: "notes.txt" } } as any), payload("lmstudio", finish));
+  assert.equal((await f.run()).error, undefined);
+  assert.match(f.calls[1].messages.at(-1).content, /Distinctive evidence 4242/);
+  assert.doesNotMatch(f.calls[1].messages.at(-1).content, /follow this message/);
 });
 
 test("structured data uses only the final message and preserves the requested schema", async t => {
@@ -272,6 +365,62 @@ for (const id of ids) test(`${id}: the final permitted turn returns evidence wit
   assert.equal(result.text, final);
   assert.equal(result.tools.length, 1);
   assert.equal(f.calls.length, 2);
+  // Native tools stay offered on the last turn with the choice "none": the model answers in text.
+  const [first, last] = f.calls;
+  if (id === "openai") { assert.equal(first.tool_choice, undefined); assert.equal(last.tool_choice, "none"); assert.ok(last.tools.length); }
+  else if (id === "anthropic") { assert.equal(first.tool_choice.type, "auto"); assert.deepEqual(last.tool_choice, { type: "none" }); }
+  else if (id === "gemini") { assert.equal(first.toolConfig.functionCallingConfig.mode, "AUTO"); assert.equal(last.toolConfig.functionCallingConfig.mode, "NONE"); }
+  else assert.equal(last.tool_choice, undefined);
+});
+
+// A service that refused tool_choice "none" was taken for one without tools: the switch to JSON spent the
+// turn kept for the answer, and the run ended at its step limit with none.
+test("openai: the last turn keeps its answer when the service refuses its tool_choice, or refuses tools then", async t => {
+  const f = await fixture(t, "openai");
+  f.replies.push(payload("openai", write), Response.json({ error: { message: "tool_choice 'none' is not supported" } }, { status: 400 }), payload("openai", finish));
+  const result = await new AgentLoopRunner(f.llm, f.operations, f.root, { maxSteps: 2 }).run({ id: "choice-refused", input: "Create result.js and summarize.", instructions: "", target: f.context.activeTarget, context: f.context });
+  assert.equal(result.error, undefined);
+  assert.equal(result.text, final);
+  assert.equal(f.calls[1].tool_choice, "none");
+  assert.equal(f.calls[2].tool_choice, undefined);
+  assert.ok(f.calls[2].tools.length, "still on its tools");
+  assert.equal(f.llm.supportsNativeTools("openai", "fixture"), true);
+
+  // A provider that refuses the tools themselves on the last turn: the run goes on in a schema, and the
+  // refusal, which did no work, does not spend the turn kept for the answer.
+  const g = await fixture(t, "openai");
+  const refused = () => Response.json({ error: { message: "Tools are not supported by this model" } }, { status: 400 });
+  g.replies.push(payload("openai", write), refused(), refused(), { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ action: finish }) }] }] });
+  const after = await new AgentLoopRunner(g.llm, g.operations, g.root, { maxSteps: 2 }).run({ id: "tools-refused-last", input: "Create result.js and summarize.", instructions: "", target: g.context.activeTarget, context: g.context });
+  assert.equal(after.error, undefined);
+  assert.equal(after.text, final);
+  assert.equal(g.calls[3].text.format.type, "json_schema");
+  const run = (await g.runner().store.get("tools-refused-last"))!;
+  assert.equal(run.steps, 2, "the refused request gave its turn back");
+});
+
+// A model or proxy that ignores the tools (the service answered the tool check, another model does not)
+// writes its calls as JSON text: refused every turn as "call the function itself", the run failed after
+// its corrections. After two in a row it goes on in JSON, as for a provider that refuses tools.
+test("an agent whose model writes its tool calls as text goes on in JSON, and none of those texts runs", async t => {
+  const f = await fixture(t, "openai");
+  f.registry.register(new OpenAICompatibleProvider({ id: "other", name: "Other", baseUrl: "https://other.test/v1", model: "m", timeoutMs: 2000, apiKey: "k", dialect: withChatTools(CHAT_DIALECT) }, new Logger()));
+  const text = (content: string) => ({ choices: [{ finish_reason: "stop", message: { role: "assistant", content } }] });
+  const call = JSON.stringify(write);
+  f.replies.push(text(call), text(call), text(call), text(JSON.stringify(finish)));
+  const target = { providerId: "other", model: "m" };
+  const result = await f.runner().run({ id: "ignored-tools", input: "Create result.js and report the result.", instructions: "", target, context: { ...f.context, activeTarget: target } });
+  assert.equal(result.error, undefined);
+  assert.equal(result.text, final);
+  assert.equal(result.tools.length, 1, "only the call made in JSON runs");
+  assert.ok(f.calls[0].tools.length && f.calls[1].tools.length);
+  assert.equal(f.calls[2].tools, undefined);
+  assert.equal(f.calls[2].response_format.type, "json_object");
+  assert.equal(await fs.readFile(path.join(f.work, "result.js"), "utf8"), code);
+  const run = (await f.runner().store.get("ignored-tools"))!;
+  assert.equal(run.protocol, "json");
+  assert.equal(run.repairs, 1, "the first text call is a correction; the second switches");
+  assert.match(run.turns.find(turn => /Switched from native to json/.test(turn.content))!.content, /wrote its tool calls as text/);
 });
 
 test("finalization respects an earlier schema downgrade", async t => {

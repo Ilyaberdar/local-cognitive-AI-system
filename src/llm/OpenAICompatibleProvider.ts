@@ -1,4 +1,4 @@
-import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
+import { LLMFunctionTool, LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { answerStream, finalAnswerSoFar } from "./AnswerStream";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
@@ -6,6 +6,7 @@ import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
 import { validateImages } from "./InferenceImages";
 import { readLocalChatStream } from "./LocalChatStream";
 import { readNativeAgentResponse, responseMessages } from "./ResponseItems";
+import { chatAgentResponse } from "./NativeToolTransport";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -18,7 +19,8 @@ import {
   readUsage,
   fetchWholeWithRetries,
   fetchWithRetries,
-  countedFetch
+  countedFetch,
+  promptWithTurn
 } from "./provider-utils";
 import { unsupportedFeature } from "./provider-utils";
 import { dialectFor, type ProviderDialect } from "./ProviderDialect";
@@ -30,6 +32,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly effortCap = new Set<string>();
   /** Models that refused encrypted reasoning items (not reasoning models). */
   private readonly withoutEncrypted = new Set<string>();
+  /** Models that refused function tools (an OpenRouter model no endpoint serves with tools): their
+   * agents act in JSON from then on, and a request with tools is answered as refused without sending it. */
+  private readonly withoutTools = new Map<string, string>();
+  /** Models that refused the last turn's tool_choice "none" (but not tools): asked without a tool_choice from then on. */
+  private readonly withoutToolChoice = new Set<string>();
   readonly id: string;
   readonly name: string;
   readonly defaultModel: string;
@@ -48,6 +55,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   isConfigured(): boolean {
     return this.options.enabled !== false && Boolean(this.options.baseUrl && this.options.model && (!this.dialect.requiresKey || this.options.apiKey));
+  }
+
+  /** Whether this model refused function tools in this session. */
+  toolsRefused(model?: string): boolean {
+    return this.withoutTools.has(model ?? this.options.model);
   }
 
   getDescriptor(): ProviderDescriptor {
@@ -113,7 +125,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const useChat = Boolean(dialect.chatOnly) || stream || (images.length > 0 && !dialect.allOnResponses) || localBudget !== undefined ||
         Boolean(localSampling && Object.values(localSampling).some(value => value !== undefined)) ||
         (!dialect.allOnResponses && (request.responseFormat !== undefined || request.outputPurpose === "agent-action"));
-      const nativeTools = dialect.nativeTools === "responses" && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
+      const nativeTools = dialect.nativeTools && request.outputPurpose === "agent-action" && request.tools?.length ? request.tools : undefined;
+      const refusedTools = nativeTools ? this.withoutTools.get(model) : undefined;
+      if (refusedTools !== undefined) return { provider: this.id, model, text: "", error: refusedTools, unsupportedFeature: "tools" };
       const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
       // A cloud service is retried on overload and rate limits as its SDK does; a local server is not.
       const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
@@ -141,9 +155,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
           messages: [
             ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
             { role: "user", content: images.length ? [
-              { type: "text", text: request.prompt },
+              { type: "text", text: promptWithTurn(request) },
               ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
-            ] : request.prompt }
+            ] : promptWithTurn(request) }
           ],
           // With thinking on, Qwen takes at most 32768 here.
           ...(typeof request.maxTokens === "number" ? { max_tokens: thinking ? Math.min(request.maxTokens, 32_768) : request.maxTokens } : {}),
@@ -159,16 +173,21 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(dialect.thinking === "reasoning" && effort ? { reasoning: { effort } } : {}),
           ...(localBudget === undefined ? {} : { reasoning_budget_tokens: localBudget,
             ...(localBudget === 0 ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}) }),
-          ...(request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
+          // Chat tool calls, one a turn (DeepSeek may send several anyway: the first runs).
+          ...(nativeTools ? { tools: nativeTools.map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: chatSchema(tool) } })),
+            ...(this.withoutToolChoice.has(model) ? {} : { tool_choice: request.toolChoice ?? "auto" }), parallel_tool_calls: false } : {}),
+          ...(!nativeTools && request.responseFormat ? { response_format: request.responseFormat.type === "json_schema"
             ? { type: "json_schema", json_schema: { name: request.responseFormat.name, strict: true, schema: request.responseFormat.schema } }
             : request.responseFormat } : {})
         } : {
           // An agent's next action is about its own tools and files: web results would only stand in for them.
           ...(dialect.presets?.includes(model) ? { preset: model } : { model, ...(dialect.presets && request.outputPurpose !== "agent-action" ? { tools: [{ type: "web_search" }] } : {}) }),
+          // The turn's guidance follows the continuation: the last thing the model reads, after its latest results.
           input: images.length || nativeTools || request.inputItems?.length ? [{ role: "user", content: [
-            { type: "input_text", text: request.prompt },
+            { type: "input_text", text: request.inputItems?.length ? request.prompt : promptWithTurn(request) },
             ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "auto" }))
-          ] }, ...(request.inputItems ?? [])] : request.prompt,
+          ] }, ...(request.inputItems ?? []),
+          ...(request.inputItems?.length && request.turnPrompt ? [{ role: "user", content: [{ type: "input_text", text: request.turnPrompt }] }] : [])] : promptWithTurn(request),
           instructions: request.systemPrompt,
           previous_response_id: request.previousResponseId,
           ...(effort ? { reasoning: { effort } } : {}),
@@ -182,6 +201,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           ...(nativeTools ? {
             tools: nativeTools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters: strictSchema(parameters), strict: true })),
             parallel_tool_calls: false,
+            ...(request.toolChoice && !this.withoutToolChoice.has(model) ? { tool_choice: request.toolChoice } : {}),
             store: false,
             ...(this.withoutEncrypted.has(model) ? {} : { include: ["reasoning.encrypted_content"] })
           } : {}),
@@ -212,7 +232,19 @@ export class OpenAICompatibleProvider implements LLMProvider {
           this.withoutEncrypted.add(model);
           return this.generateText(request);
         }
+        // Groq reads the tool call (or the JSON) a model wrote and refuses one that does not parse, with what it
+        // wrote: a malformed reply that costs the agent a correction, not its run.
+        const failed = request.outputPurpose === "agent-action" && response.status === 400 ? failedGeneration(body) : undefined;
+        if (failed) return { provider: this.id, model, text: failed.text, protocolError: failed.reason };
         const unsupported = unsupportedFeature(response.status, detail, request);
+        // A refusal of the last turn's tool_choice "none" is not one of the tools: asked once more without a
+        // tool_choice (and so from then on), and only a refusal of that says the model has no tools.
+        if (nativeTools && request.toolChoice === "none" && !this.withoutToolChoice.has(model) && [400, 404, 422].includes(response.status) &&
+          (unsupported === "tools" || /tool.?choice/i.test(detail))) {
+          this.withoutToolChoice.add(model);
+          return this.generateText(request);
+        }
+        if (unsupported === "tools" && nativeTools) this.withoutTools.set(model, detail);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         // The app's own llama.cpp server has no key a person enters.
         const refused = this.id === "llamacpp" ? undefined : refusalMessage(this.name, response.status, body.slice(0, 1500));
@@ -241,7 +273,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         : (await response.json()) as Record<string, unknown>;
       if (streamPhase === "thinking") emitNote();
       const text = readResponseText(payload);
-      const action = nativeTools ? readNativeAgentResponse(payload, nativeTools) : undefined;
+      const action = nativeTools ? useChat ? chatAgentResponse(payload, nativeTools) : readNativeAgentResponse(payload, nativeTools) : undefined;
       const ambiguousJson = !nativeTools && request.responseFormat && responseMessages(payload).length > 1
         ? "The provider returned multiple final messages for one JSON response; they were not concatenated." : undefined;
       // A bounded prose answer is usable; truncated JSON/tool actions must still fail closed.
@@ -280,11 +312,38 @@ export class OpenAICompatibleProvider implements LLMProvider {
 }
 
 /** A tool schema as OpenAI's strict mode takes it: string length limits are not supported there
- * (the arguments are still checked here against the full schema). */
+ * (the arguments are still checked here against the full schema). A bound that bounds nothing (zod's
+ * integer maximum, 2^53 − 1) is left out: it is only tokens in every request. */
 function strictSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(strictSchema);
   if (!schema || typeof schema !== "object") return schema;
-  return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== "minLength" && key !== "maxLength").map(([key, value]) => [key, strictSchema(value)]));
+  return Object.fromEntries(Object.entries(schema).filter(([key, value]) => key !== "minLength" && key !== "maxLength" &&
+    !(key === "maximum" && value === Number.MAX_SAFE_INTEGER) && !(key === "minimum" && value === Number.MIN_SAFE_INTEGER)).map(([key, value]) => [key, strictSchema(value)]));
+}
+
+/** A tool schema for chat completions, which have no strict mode: an optional argument is optional (not
+ * required and nullable, which Groq checks a call against and some models fill with every default). */
+function chatSchema(tool: LLMFunctionTool): unknown {
+  const schema = strictSchema(tool.parameters) as { properties?: Record<string, { anyOf?: Array<{ type?: string }> }>; required?: string[] };
+  if (!schema.properties) return schema;
+  const optional = new Set(tool.optionalArguments);
+  const properties = Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => {
+    const choices = value.anyOf;
+    return [key, optional.has(key) && choices?.length === 2 && choices[1]?.type === "null" ? choices[0] : value];
+  }));
+  return { ...schema, properties, ...(schema.required ? { required: schema.required.filter(key => !optional.has(key)) } : {}) };
+}
+
+/** Groq's refusal of a tool call or JSON the model wrote that did not parse (400 tool_use_failed or
+ * json_validate_failed): what the model wrote, and what to send instead. */
+function failedGeneration(body: string): { text: string; reason: string } | undefined {
+  let error: Record<string, unknown> | undefined;
+  try { error = JSON.parse(body)?.error; } catch { return undefined; }
+  if (!error || typeof error !== "object" || !["tool_use_failed", "json_validate_failed"].includes(String(error.code))) return undefined;
+  const text = typeof error.failed_generation === "string" ? error.failed_generation : "";
+  return { text, reason: error.code === "tool_use_failed"
+    ? "Your function call could not be read, so nothing ran. Call one function, with its arguments as one JSON object."
+    : "Your reply was not valid JSON, so nothing ran. Send only the one JSON object." };
 }
 
 /** Why an answer has no text: only reasoning, or the model stopped at once. The words before the colon

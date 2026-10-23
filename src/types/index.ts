@@ -132,6 +132,8 @@ export interface ProviderRuntimeSettings {
   preset?: string;
   /** Set in the environment (a server's environment file): its address and key are read from there, never saved here. */
   source?: "environment";
+  /** A service added as Other that answered a tool call when it was added: its agents act through chat tool calls. */
+  nativeTools?: "chat";
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -543,8 +545,13 @@ export interface LLMRequest {
   previousResponseId?: string;
   responseFormat?: LLMResponseFormat | null;
   tools?: LLMFunctionTool[];
+  /** Native tools: "none" on an agent's last turn, so that it answers in text instead of calling one. */
+  toolChoice?: "auto" | "none";
   /** Complete Responses output items and their matching tool results, never flattened into text. */
   inputItems?: Record<string, unknown>[];
+  /** With inputItems: the turn's guidance (its remaining turns), sent after them where the provider can,
+   * so the model reads it after its latest results; otherwise after the prompt. */
+  turnPrompt?: string;
 }
 
 export interface LLMResponse {
@@ -561,6 +568,10 @@ export interface LLMResponse {
   agentAction?: { type: "tool_call"; tool: string; arguments: Record<string, unknown> } | { type: "final"; text: string };
   toolCallId?: string;
   outputItems?: Record<string, unknown>[];
+  /** A native reply that wrote a tool call as text (JSON, DeepSeek's markup) instead of calling the function. */
+  textToolCall?: boolean;
+  /** Function calls after the first of one reply, not run: their ids are answered "not run" in the continuation. */
+  extraCalls?: { count: number; callIds: string[] };
 }
 
 export interface ExecutionContext {

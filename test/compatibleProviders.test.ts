@@ -16,6 +16,12 @@ import { RemoteOperationError, type OperationContext } from "../src/remote/host/
 import { createSettingsOperations } from "../src/runtime/settingsOperations";
 import type { AppSettingsPatch, LLMRequest } from "../src/types";
 import { Logger } from "../src/utils/Logger";
+import { LLMRegistry } from "../src/llm/LLMRegistry";
+import { LLMService } from "../src/llm/LLMService";
+import { OutputSanitizer } from "../src/llm/OutputSanitizer";
+import { unsupportedFeature } from "../src/llm/provider-utils";
+import { agentFunctionTools } from "../src/tools/AgentTool";
+import { readNativeAgentResponse } from "../src/llm/ResponseItems";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { JSDOM } = require("jsdom");
@@ -97,7 +103,7 @@ test("Qwen: retried on an overload that says when, not configured without a key,
   const response = await qwen(wrongRegion.fetchImpl).generateText({ prompt: "Say hi" });
   assert.match(response.error!, /HTTP 401.*Incorrect API key provided/);
   const descriptor = qwen(overloaded.fetchImpl).getDescriptor();
-  assert.deepEqual(descriptor.capabilities, { local: false, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: false, reasoning: true, vision: true });
+  assert.deepEqual(descriptor.capabilities, { local: false, managed: false, jsonMode: true, nativeTools: true, structuredOutputs: false, reasoning: true, vision: true });
 });
 
 test("Qwen lists its chat models, and its known models when the list cannot be read", async () => {
@@ -167,6 +173,7 @@ test("every installation has Qwen as an OpenAI-compatible provider in Singapore,
 test("a provider that is data is validated: a safe id, a known dialect, a short name, a web address", () => {
   validateSettingsPatch({ providers: { qwen: { apiKey: "sk-x", model: "qwen3.8-max", baseUrl: "https://dashscope-us.aliyuncs.com/compatible-mode/v1" } } });
   validateSettingsPatch({ providers: { "my-groq": { kind: "openai-compatible", dialect: "chat", name: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "m", enabled: true } } });
+  validateSettingsPatch({ providers: { "my-vllm": { kind: "openai-compatible", dialect: "chat", name: "vLLM", baseUrl: "https://llm.example/v1", model: "m", enabled: true, nativeTools: "chat" } } });
   const refused: Array<[unknown, RegExp]> = [
     [{ openai: { kind: "openai-compatible" } }, /built in/],
     [{ "Bad Id": { kind: "openai-compatible", dialect: "chat" } }, /provider id/],
@@ -176,7 +183,9 @@ test("a provider that is data is validated: a safe id, a known dialect, a short 
     [{ custom: { kind: "openai-compatible", name: "x".repeat(81) } }, /name/],
     [{ qwen: { baseUrl: "ftp://dashscope.example/v1" } }, /baseUrl/],
     [{ qwen: { baseUrl: "https://user:secret@dashscope.example/v1" } }, /baseUrl/],
-    [{ custom: { kind: "openai-compatible", baseUrl: "not a url" } }, /baseUrl/]
+    [{ custom: { kind: "openai-compatible", baseUrl: "not a url" } }, /baseUrl/],
+    [{ custom: { kind: "openai-compatible", nativeTools: "responses" } }, /nativeTools/],
+    [{ openai: { nativeTools: "chat" } }, /built in/]
   ];
   for (const [providers, message] of refused) assert.throws(() => validateSettingsPatch({ providers } as AppSettingsPatch), message, JSON.stringify(providers));
 });
@@ -292,6 +301,244 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
   }
 });
 
+const agentTools = agentFunctionTools(false, { only: ["file.read", "file.write"] });
+const presetProvider = (id: string, fetchImpl: typeof fetch, model?: string) => {
+  const preset = providerPreset(id)!;
+  return new OpenAICompatibleProvider({ id, name: preset.name, baseUrl: preset.id === "qwen" ? SINGAPORE : preset.baseUrl, model: model ?? preset.model, timeoutMs: 1000, apiKey: "sk-test-1234", dialect: compatibleDialect(preset.dialect) }, new Logger(), fetchImpl);
+};
+const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } });
+const chatCalls = (...calls: unknown[]) => Response.json({ id: "chat-1", choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: calls } }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } });
+const agentRequest = (extra: Partial<LLMRequest> = {}): LLMRequest => ({ prompt: "Read a.ts", systemPrompt: "You are an agent.", outputPurpose: "agent-action", tools: agentTools, ...extra });
+
+// From live runs of Synthesis agents: in JSON, gpt-5.4-nano through Perplexity had 24% of its steps refused
+// and DeepSeek 21%; through the services' own function calls, none.
+test("agents act through each service's own function calls: chat tool calls for DeepSeek, Groq, OpenRouter and Qwen, function tools for Perplexity", async () => {
+  for (const id of ["deepseek", "groq", "openrouter"]) {
+    const { calls, fetchImpl } = service(() => chatCalls(toolCall("call_1", "file_read", { path: "a.ts", startLine: null, endLine: null })));
+    const provider = presetProvider(id, fetchImpl);
+    assert.equal(provider.getDescriptor().capabilities?.nativeTools, true, id);
+    assert.equal(compatibleDialect(id).nativeTools, "chat", id);
+    const response = await provider.generateText(agentRequest());
+    assert.match(calls[0].url, /\/chat\/completions$/, id);
+    const body = calls[0].body;
+    assert.deepEqual(body.tools.map((tool: any) => tool.function.name), ["file_read", "file_write"], id);
+    assert.equal(body.tools[0].type, "function");
+    assert.equal(body.tools[0].function.strict, undefined, `${id}: no strict field on chat tools`);
+    assert.doesNotMatch(JSON.stringify(body.tools), /minLength|maxLength/, id);
+    // No strict mode on chat completions: an optional argument is optional, not required and nullable.
+    assert.deepEqual(body.tools[0].function.parameters.required, ["path"], id);
+    assert.deepEqual(body.tools[0].function.parameters.properties.startLine, { type: "integer", minimum: 1 }, id);
+    assert.equal(body.tool_choice, "auto", id);
+    assert.equal(body.parallel_tool_calls, false, id);
+    assert.equal(body.response_format, undefined, `${id}: no JSON mode beside tools`);
+    assert.deepEqual(response.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts" } }, id);
+    assert.equal(response.toolCallId, "call_1");
+    assert.equal(response.outputItems, undefined, `${id}: stateless, nothing kept for a continuation`);
+    assert.equal(response.protocolError, undefined);
+    assert.equal(response.error, undefined);
+    // The last turn asks for an answer in text.
+    await provider.generateText(agentRequest({ toolChoice: "none" }));
+    assert.equal(calls[1].body.tool_choice, "none", id);
+    // A prose request has no tools.
+    await provider.generateText({ prompt: "Say hi" });
+    assert.equal(calls[2].body.tools, undefined, id);
+  }
+  // A reply in text is the final answer; several calls at once (DeepSeek's chat sends them whatever
+  // parallel_tool_calls says): the first runs and the others are named.
+  const replies = [
+    Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "## Findings\n\n- a.ts:1 swallows an error" } }] }),
+    chatCalls(toolCall("call_1", "file_read", { path: "a.ts", startLine: 1, endLine: null }), toolCall("call_2", "file_read", { path: "b.ts", startLine: null, endLine: null })),
+    Response.json({ choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: "", tool_calls: [{ id: "call_3", type: "function", function: { name: "file_list", arguments: "{}" } }] } }] }),
+    Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}' } }] })
+  ];
+  const deepseek = presetProvider("deepseek", service((_call, index) => replies[index]!).fetchImpl);
+  assert.deepEqual((await deepseek.generateText(agentRequest())).agentAction, { type: "final", text: "## Findings\n\n- a.ts:1 swallows an error" });
+  const several = await deepseek.generateText(agentRequest());
+  assert.deepEqual(several.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts", startLine: 1 } });
+  assert.deepEqual(several.extraCalls, { count: 1, callIds: ["call_2"] });
+  assert.match((await deepseek.generateText(agentRequest())).protocolError!, /Unknown function: file_list/, "a tool it was not given never runs");
+  const written = await deepseek.generateText(agentRequest());
+  assert.equal(written.agentAction, undefined, "a tool call written as text never runs");
+  assert.match(written.protocolError!, /wrote a tool call as text, so nothing ran.*call the function itself/);
+
+  // Qwen streams its tool calls: the id and name once, the arguments in pieces.
+  const qwenStream = service(() => sse(
+    { choices: [{ index: 0, delta: { reasoning_content: "I should read it." } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_q", type: "function", function: { name: "file_read", arguments: "" } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "{\"path\":" } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\"a.ts\",\"startLine\":null,\"endLine\":null}" } }] }, finish_reason: "tool_calls" }] },
+    { choices: [], usage: { prompt_tokens: 20, completion_tokens: 9, total_tokens: 29 } }));
+  const qwenReply = await presetProvider("qwen", qwenStream.fetchImpl).generateText(agentRequest({ reasoningEffort: "medium" }));
+  assert.equal(qwenStream.calls[0].body.stream, true);
+  assert.equal(qwenStream.calls[0].body.tool_choice, "auto");
+  assert.equal(qwenStream.calls[0].body.messages[0].content, "You are an agent.", "no JSON word beside tools");
+  assert.deepEqual(qwenReply.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts" } });
+  assert.equal(qwenReply.toolCallId, "call_q");
+
+  // Perplexity's Agent API: function tools on the Responses API, strict, never web search beside them.
+  const perplexity = service(() => Response.json({ id: "resp_p", status: "completed", model: "openai/gpt-5.4-nano",
+    output: [{ type: "function_call", call_id: "call_p", name: "file_read", arguments: "{\"path\":\"a.ts\",\"startLine\":null,\"endLine\":null}", status: "completed" }] }));
+  const sonar = presetProvider("perplexity", perplexity.fetchImpl);
+  assert.equal(sonar.getDescriptor().capabilities?.nativeTools, true);
+  assert.equal(sonar.getDescriptor().capabilities?.structuredOutputs, false, "its JSON schema reorders the keys");
+  const action = await sonar.generateText(agentRequest());
+  await sonar.generateText(agentRequest({ model: "openai/gpt-5.4-nano", toolChoice: "none" }));
+  assert.equal(perplexity.calls[0].url, "https://api.perplexity.ai/v1/responses");
+  assert.equal(perplexity.calls[0].body.preset, "fast");
+  assert.deepEqual(perplexity.calls[0].body.tools.map((tool: any) => [tool.type, tool.name, tool.strict]), [["function", "file_read", true], ["function", "file_write", true]]);
+  assert.equal(perplexity.calls[0].body.parallel_tool_calls, false);
+  assert.equal(perplexity.calls[0].body.tool_choice, undefined);
+  assert.equal(perplexity.calls[1].body.model, "openai/gpt-5.4-nano");
+  assert.ok(perplexity.calls[1].body.tools.every((tool: any) => tool.type === "function"), "a hosted model gets no web search beside its tools");
+  assert.equal(perplexity.calls[1].body.tool_choice, "none");
+  assert.deepEqual(action.agentAction, { type: "tool_call", tool: "file.read", arguments: { path: "a.ts" } });
+  assert.equal(action.toolCallId, "call_p");
+  assert.ok(action.outputItems?.length, "the Responses API continues with its own items");
+
+  // A service added as Other acts in JSON: nothing here says it reads tool calls.
+  const other = service(() => Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "{}" } }] }));
+  const custom = new OpenAICompatibleProvider({ id: "custom", name: "Custom", baseUrl: "https://llm.example/v1", model: "m", timeoutMs: 1000, apiKey: "k", dialect: CHAT_DIALECT }, new Logger(), other.fetchImpl);
+  await custom.generateText(agentRequest());
+  assert.equal(custom.getDescriptor().capabilities?.nativeTools, false);
+  assert.equal(other.calls[0].body.tools, undefined);
+  // The app's own runtimes never get chat tools.
+  for (const id of ["llamacpp", "lmstudio"]) assert.equal(dialectFor(id).nativeTools, undefined, id);
+});
+
+// DeepSeek writes its own function-call markup (DSML) into the content now and then, without tool_calls; a
+// reasoning model may put a <think> block before its answer. Neither is an answer.
+test("a native reply's text is cleaned as JSON replies are: DSML call markup is a tool call written as text, a think block is not the answer", async () => {
+  const dsml = '<｜｜DSML｜｜function_calls>\n<｜｜DSML｜｜invoke name="file_read">\n<｜｜DSML｜｜parameter name="path" string="true">a.ts</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜function_calls>';
+  const texts = [dsml, `I will read it.\n\n${dsml}`, "<think>Read a.ts first.</think>\n\n## Findings\n\n- a.ts:1", "## Review of LLMService.ts\n\nIt strips `/\\s*<\\/?｜+DSML｜+[\\s\\S]*$/u` from an action."];
+  const provider = presetProvider("deepseek", service((_call, index) => Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: texts[index] } }] })).fetchImpl);
+  for (const index of [0, 1]) {
+    const reply = await provider.generateText(agentRequest());
+    assert.equal(reply.agentAction, undefined, `${index}: the markup never completes the agent`);
+    assert.match(reply.protocolError!, /wrote a tool call as text, so nothing ran/, String(index));
+  }
+  assert.deepEqual((await provider.generateText(agentRequest())).agentAction, { type: "final", text: "## Findings\n\n- a.ts:1" });
+  assert.equal((await provider.generateText(agentRequest())).agentAction?.type, "final", "an answer that quotes the markup's pattern is an answer");
+});
+
+// An answer about this app's own code quotes DSML markup (its tests hold some): quoted in code, it is text.
+test("DSML markup in an answer's code is quoted, not a call; in its prose it is a call; native strips only think blocks", async () => {
+  const closer = '{"path":"."}</｜｜DSML｜｜ parameter>';
+  const texts = [
+    `## Review\n\nDeepSeek ends its arguments as in \`${closer}\`; LLMService cuts that off.`,
+    `## Review\n\nThe test's reply:\n\n\`\`\`text\n${closer}\n</｜｜DSML｜｜ invoke>\n\`\`\`\n\nIt is cut after the JSON.`,
+    `## Review\n\n~~~\n<｜｜DSML｜｜function_calls>\n~~~`,
+    `Reading it.\n\n${closer}\n</｜｜DSML｜｜ invoke>`,
+    "<analysis>Root cause: a.ts:3 swallows the error.</analysis>\n\nFixed it.",
+    "<analysis>The whole answer: a.ts:3 swallows the error.</analysis>",
+    "<thinking>Plan.</thinking>\n<think>More.</think>\n\nDone: a.ts:3."
+  ];
+  const provider = presetProvider("deepseek", service((_call, index) => Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: texts[index] } }] })).fetchImpl);
+  const replies = [];
+  for (let index = 0; index < texts.length; index++) replies.push(await provider.generateText(agentRequest()));
+  for (const index of [0, 1, 2]) assert.deepEqual(replies[index]!.agentAction, { type: "final", text: texts[index] }, `${index}: markup in code is quoted`);
+  assert.equal(replies[3]!.textToolCall, true, "markup in prose is a call written as text");
+  assert.deepEqual(replies[4]!.agentAction, { type: "final", text: texts[4] }, "an <analysis> block is part of a native answer");
+  assert.deepEqual(replies[5]!.agentAction, { type: "final", text: texts[5] });
+  assert.deepEqual(replies[6]!.agentAction, { type: "final", text: "Done: a.ts:3." });
+});
+
+test("Add provider's tool check fits in the time the window waits for it, and gives up at its own limit", async () => {
+  const { answersToolCalls, TOOL_CHECK_TIMEOUT_MS } = await import("../src/llm/toolProbe");
+  const wait = Number(/discoverModels:[^\n]*timeoutMs: (\d+)/.exec(await fs.readFile("public/assets/settings-data.js", "utf8"))![1]);
+  // The models are listed first (at most 5 s), then the check: both with room under the window's wait.
+  assert.ok(5_000 + TOOL_CHECK_TIMEOUT_MS <= wait - 10_000, `${TOOL_CHECK_TIMEOUT_MS} ms`);
+  const hanging = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+  const started = Date.now();
+  const awake = setTimeout(() => undefined, 5_000); // AbortSignal.timeout alone does not keep the test running
+  assert.equal(await answersToolCalls({ baseUrl: "https://slow.example/v1", apiKey: "k", model: "m", dialect: CHAT_DIALECT, timeoutMs: 50 }, hanging), false);
+  clearTimeout(awake);
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test("a native answer that starts with JSON is refused only when it is a call: the whole reply, or naming a tool the agent has", () => {
+  const read = (text: string) => readNativeAgentResponse({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }] }, agentTools);
+  // A Markdown answer with a config example first stays the answer (on the last turn it would be lost).
+  const config = '{"tool":"eslint","rules":{"no-console":"warn"}}\n\nThis config makes ESLint warn on console calls.';
+  assert.deepEqual(read(config).agentAction, { type: "final", text: config });
+  // A call: the whole reply, or one naming the agent's own tool, whatever follows.
+  for (const text of ['{"tool":"eslint","arguments":{}}', '{"type":"tool_call","tool":"file.read","arguments":{"path":"a.ts"}}\n\nReading it now.',
+    '{"name":"file_read","arguments":{"path":"a.ts"}} then I will answer', '{"type":"file.read","arguments":{"path":"a.ts"}}}}']) {
+    assert.equal(read(text).textToolCall, true, text);
+  }
+  // A final answer in its envelope with raw line breaks (Gemini's) is unwrapped to its text.
+  assert.deepEqual(read('{"type":"final","text":"# Review\n\n- a.ts:1 throws"}'.replace(/\\n/g, "\n")).agentAction, { type: "final", text: "# Review\n\n- a.ts:1 throws" });
+});
+
+test("a service that refuses only the last turn's tool_choice none is asked again without it, and keeps its tools", async () => {
+  for (const id of ["deepseek", "perplexity"]) {
+    const refusal = { error: { message: "tool_choice 'none' is not supported for this model", type: "invalid_request_error" } };
+    const answer = id === "perplexity" ? Response.json({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "## Answer" }] }] })
+      : Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "## Answer" } }] });
+    const { calls, fetchImpl } = service(call => call.body.tool_choice === "none" ? Response.json(refusal, { status: 400 }) : answer.clone());
+    const provider = presetProvider(id, fetchImpl);
+    const reply = await provider.generateText(agentRequest({ toolChoice: "none" }));
+    assert.deepEqual(reply.agentAction, { type: "final", text: "## Answer" }, id);
+    assert.equal(calls.length, 2, id);
+    assert.equal(calls[1].body.tool_choice, undefined, `${id}: asked again without tool_choice`);
+    assert.ok(calls[1].body.tools.length, `${id}: with its tools`);
+    assert.equal(provider.toolsRefused(), false, `${id}: the model keeps its tools`);
+    // From then on its last turns are asked without the choice; its other turns keep it as they were.
+    await provider.generateText(agentRequest({ toolChoice: "none" }));
+    assert.equal(calls.length, 3, id);
+    assert.equal(calls[2].body.tool_choice, undefined, id);
+  }
+  // A refusal of the tools themselves, without the choice, is still one: once, then JSON.
+  const { calls, fetchImpl } = service(() => Response.json({ error: { message: "Tools are not supported by this model" } }, { status: 400 }));
+  const provider = presetProvider("deepseek", fetchImpl);
+  assert.equal((await provider.generateText(agentRequest({ toolChoice: "none" }))).unsupportedFeature, "tools");
+  assert.equal(calls.length, 2, "once more without the choice, never again");
+  assert.equal(provider.toolsRefused(), true);
+});
+
+test("a model that refuses tools acts in JSON from then on, and Groq's unreadable tool call costs a correction, not the run", async () => {
+  // OpenRouter: a model no endpoint serves with tools.
+  const refusal = { error: { message: "No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing", code: 404 } };
+  const openrouter = service(call => call.body.model === "meta/no-tools" ? Response.json(refusal, { status: 404 }) : chatCalls(toolCall("call_1", "file_read", { path: "a.ts", startLine: null, endLine: null })));
+  const provider = presetProvider("openrouter", openrouter.fetchImpl, "meta/no-tools");
+  const refused = await provider.generateText(agentRequest());
+  assert.equal(refused.unsupportedFeature, "tools");
+  assert.match(refused.error!, /No endpoints found that support tool use/);
+  assert.equal(provider.toolsRefused("meta/no-tools"), true);
+  assert.equal(provider.toolsRefused("openai/gpt-5-mini"), false);
+  const again = await provider.generateText(agentRequest());
+  assert.equal(again.unsupportedFeature, "tools");
+  assert.equal(openrouter.calls.length, 1, "not asked again with tools");
+  assert.equal((await provider.generateText(agentRequest({ model: "openai/gpt-5-mini" }))).agentAction?.type, "tool_call", "another model keeps its tools");
+  const registry = new LLMRegistry(); registry.register(provider);
+  const llm = new LLMService(registry, "openrouter", new Logger(), new OutputSanitizer());
+  assert.equal(llm.supportsNativeTools("openrouter", "meta/no-tools"), false);
+  assert.equal(llm.supportsNativeTools("openrouter", "openai/gpt-5-mini"), true);
+  assert.equal(llm.supportsNativeTools("openrouter"), false, "the provider's own model is meta/no-tools");
+  // vLLM without its tool parser, and OpenRouter's words, fall back; a refused key never does.
+  const tools = agentRequest();
+  assert.equal(unsupportedFeature(400, "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set", tools), "tools");
+  assert.equal(unsupportedFeature(404, "No endpoints found that support tool use.", tools), "tools");
+  assert.equal(unsupportedFeature(401, "No endpoints found that support tool use.", tools), undefined);
+  assert.equal(unsupportedFeature(400, "Invalid API key", tools), undefined);
+
+  // Groq refuses a tool call it could not read, with what the model wrote.
+  const failed = { error: { message: "Failed to call a function. Please adjust your prompt. See 'failed_generation' for more details.", type: "invalid_request_error", code: "tool_use_failed",
+    failed_generation: "<function=file_read>{\"path\": \"a.ts\"}</function>" } };
+  const groq = service(() => Response.json(failed, { status: 400 }));
+  const reply = await presetProvider("groq", groq.fetchImpl).generateText(agentRequest());
+  assert.equal(reply.error, undefined);
+  assert.equal(reply.agentAction, undefined);
+  assert.match(reply.protocolError!, /function call could not be read, so nothing ran/);
+  assert.equal(reply.text, failed.error.failed_generation);
+  const json = { error: { message: "Failed to generate JSON.", type: "invalid_request_error", code: "json_validate_failed", failed_generation: "{\"type\":\"tool_call\"," } };
+  const jsonMode = await presetProvider("groq", service(() => Response.json(json, { status: 400 })).fetchImpl).generateText({ prompt: "Next action", outputPurpose: "agent-action", responseFormat: { type: "json_object" } });
+  assert.match(jsonMode.protocolError!, /not valid JSON, so nothing ran/);
+  // Anything else than an agent's action stays an error.
+  const chat = await presetProvider("groq", service(() => Response.json(json, { status: 400 })).fetchImpl).generateText({ prompt: "Classify", responseFormat: { type: "json_object" } });
+  assert.match(chat.error!, /HTTP 400.*Failed to generate JSON/);
+  assert.equal(chat.protocolError, undefined);
+});
+
 test("an added provider is saved, registered with its preset's catalog, and removed; the built-ins and the default stay", async t => {
   const { RuntimeManager } = await import("../src/app/RuntimeManager");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "added-provider-"));
@@ -317,6 +564,17 @@ test("an added provider is saved, registered with its preset's catalog, and remo
   await assert.rejects(manager.updateSettings({ providers: { qwen: null } }), /cannot be removed/);
   await assert.rejects(manager.updateSettings({ providers: { openai: null } }), /cannot be removed/);
   await assert.rejects(manager.updateSettings({ providers: { other: { ...added, preset: "nonsense" } } }), /preset/);
+  // A service added as Other acts through tool calls only when it answered one when it was added, and
+  // only at that address.
+  const other = { kind: "openai-compatible" as const, dialect: "chat", name: "My vLLM", baseUrl: "https://llm.example/v1", apiKey: "k-other-123", model: "m", enabled: true, timeoutMs: 300000 };
+  const plain = await manager.updateSettings({ providers: { "my-vllm": other, "my-tools": { ...other, name: "Tools", nativeTools: "chat" } } });
+  assert.equal(plain.runtime.providerDescriptors.find(item => item.id === "my-vllm")?.capabilities?.nativeTools, false);
+  assert.equal(plain.runtime.providerDescriptors.find(item => item.id === "my-tools")?.capabilities?.nativeTools, true);
+  const renamed = await manager.updateSettings({ providers: { "my-tools": { name: "Tools (renamed)", baseUrl: "https://llm.example/v1" } } });
+  assert.equal(renamed.settings.providers["my-tools"]?.nativeTools, "chat", "the same address keeps it");
+  const moved = await manager.updateSettings({ providers: { "my-tools": { baseUrl: "https://other.example/v1" } } });
+  assert.equal(moved.settings.providers["my-tools"]?.nativeTools, undefined);
+  assert.equal(moved.runtime.providerDescriptors.find(item => item.id === "my-tools")?.capabilities?.nativeTools, false);
   const removed = await manager.updateSettings({ providers: { "deepseek-2": null } });
   assert.equal(removed.settings.providers["deepseek-2"], undefined);
   assert.equal(removed.runtime.providerDescriptors.some(item => item.id === "deepseek-2"), false);
@@ -339,7 +597,7 @@ function settingsPage(t: TestContext, providers: Record<string, unknown>) {
     testProvider: async (...args: unknown[]) => { tests.push(args); return { ok: true, message: "Provider replied: ok", model: args[1] }; },
     discoverModels: async (body: Record<string, string>) => { discovered.push(body);
       if (body.apiKey.includes("wrong")) throw new Error("The service refused this key.");
-      return { models: body.dialect === "perplexity" ? ["fast", "low", "openai/gpt-6-luna"] : ["model-b", "model-a"] }; } };
+      return { models: body.dialect === "perplexity" ? ["fast", "low", "openai/gpt-6-luna"] : ["model-b", "model-a"], ...(body.baseUrl?.includes("tools") ? { nativeTools: "chat" } : {}) }; } };
   dom.window.confirm = () => true;
   const shell = dom.window.SettingsShell.createSettingsShell({ app: dom.window.document.getElementById("root"), getContext: () => ({ appSettings, providers: descriptors(), providerPresets }),
     data, renderModelControl: () => "<select></select>", applyPreferences() {}, captureScroll: () => ({}), restoreScroll() {}, onReturn() {} });
@@ -397,6 +655,14 @@ test("Add provider: a preset fills its fields, the provider is saved and tested,
   ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
   for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/my-vllm"); i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.deepEqual(ui.saves[2], { providers: { "my-vllm": { kind: "openai-compatible", dialect: "chat", name: "My vLLM", baseUrl: "https://llm.example.com/v1", apiKey: "right-key-123456", model: "model-b", enabled: true, timeoutMs: 300000 } } });
+  // One that answered a tool call while it was checked is saved as such.
+  ui.shell.route("#/settings/providers/new");
+  ui.content().querySelector("[data-add-provider-preset]").value = "";
+  ui.content().querySelector("[data-add-provider-preset]").dispatchEvent(new ui.dom.window.Event("change", { bubbles: true }));
+  field("name").value = "Tool server"; field("baseUrl").value = "https://tools.example.com/v1"; field("apiKey").value = "right-key-654321";
+  ui.content().querySelector("#add-provider-form").dispatchEvent(new ui.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  for (let i = 0; i < 50 && !ui.dom.window.location.hash.endsWith("/tool-server"); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(ui.saves[3].providers["tool-server"].nativeTools, "chat");
 });
 
 test("an added provider can be removed from its page; a built-in one cannot; a region fills Qwen's address", async t => {
@@ -441,4 +707,50 @@ test("adding a provider first reads the models the service lists for that addres
   assert.equal((await call({ baseUrl: "https://user:pw@x.example/v1", apiKey: "k" })).status, 400);
   assert.equal((await call({ baseUrl: base, apiKey: " " })).status, 400);
   assert.equal((await call({ baseUrl: base, apiKey: "good-key-123", dialect: "anthropic" })).status, 400);
+});
+
+test("adding a service as Other asks it for one tool call, and marks it only when it answers one properly", async t => {
+  const { createProviderDiscoverController } = await import("../src/api/controller");
+  const { default: http } = await import("node:http");
+  const requests: Array<{ url: string; body: any }> = [];
+  let answer: (body: any) => { status?: number; json: unknown } = () => ({ json: {} });
+  const server = http.createServer((request, response) => {
+    let raw = ""; request.on("data", chunk => { raw += chunk; });
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "GET") { response.end(JSON.stringify({ data: [{ id: "tool-model" }, { id: "other-model" }] })); return; }
+      const body = JSON.parse(raw); requests.push({ url: String(request.url), body });
+      const reply = answer(body); response.statusCode = reply.status ?? 200; response.end(JSON.stringify(reply.json));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+  const call = async (body: unknown) => {
+    let payload: any;
+    const res = { status() { return this; }, json(value: unknown) { payload = value; return this; } };
+    await createProviderDiscoverController()({ body } as never, res as never);
+    return payload;
+  };
+  const warnings: unknown[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args); });
+  answer = () => ({ json: { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "list_files", arguments: "{\"path\":\"src\"}" } }] } }] } });
+  assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123" }), { models: ["tool-model", "other-model"], nativeTools: "chat" });
+  assert.equal(requests[0].url, "/v1/chat/completions");
+  assert.equal(requests[0].body.model, "tool-model", "the model it will use");
+  assert.deepEqual(requests[0].body.tools.map((tool: any) => tool.function.name), ["list_files"]);
+  assert.equal(requests[0].body.parallel_tool_calls, false);
+  // Text instead of a call, a refusal of tools, or a call of something else: JSON, as before.
+  for (const reply of [() => ({ json: { choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"type":"tool_call","tool":"file.list"}' } }] } }),
+    () => ({ status: 400, json: { error: { message: "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set" } } }),
+    () => ({ status: 401, json: { error: { message: "Invalid key good-key-123" } } }),
+    () => ({ json: { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }] } }] } })]) {
+    answer = reply;
+    assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123", dialect: "chat" }), { models: ["tool-model", "other-model"] });
+  }
+  assert.deepEqual(warnings, [], "a failed check logs nothing, and never the key");
+  // A preset's service has its dialect's tools: it is not asked.
+  const before = requests.length;
+  assert.deepEqual(await call({ baseUrl: base, apiKey: "good-key-123", dialect: "deepseek" }), { models: ["tool-model", "other-model"] });
+  assert.equal(requests.length, before);
 });

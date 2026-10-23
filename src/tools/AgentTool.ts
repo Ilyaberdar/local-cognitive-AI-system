@@ -42,14 +42,27 @@ function checked<T>(schema: z.ZodType<T>, value: unknown, prefix?: string): T {
   throw new Error(`${problems.join("; ")}. No action was executed.`);
 }
 
+/** The tools whose arguments these are. */
+const fittingTools = (args: unknown): string[] => Object.entries(agentToolSchemas).filter(([, schema]) => schema.safeParse(args).success).map(([name]) => name);
+const fitHint = (fits: string[]) => fits.length ? `. These arguments fit ${fits.slice(0, 3).join(" or ")}: {"type":"tool_call","tool":"${fits[0]}","arguments":{…}}` : "";
+
+/** The tool a name means: its own (file.read) or its function's (file_read). */
+export const toolByName = (name: unknown): AgentToolName | undefined => typeof name !== "string" ? undefined
+  : (Object.keys(agentToolSchemas) as AgentToolName[]).find(tool => tool === name || tool.replaceAll(".", "_") === name);
+
+/** A reply that is only a tool's arguments, with neither "type" nor "tool" (DeepSeek's, before its DSML
+ * closers): the refusal that names the tools they fit, or undefined when they fit none. Never guessed. */
+export function bareArgumentsError(value: Record<string, unknown>): Error | undefined {
+  const fits = fittingTools(value);
+  return fits.length ? new Error(`Your reply was only a tool's arguments, with no "type" and "tool", so nothing ran: send the whole action${fitHint(fits)}. No action was executed.`) : undefined;
+}
+
 export function parseAgentAction(value: unknown): AgentAction {
   // A tool_call without its tool's name (DeepSeek sends {"type":"tool_call","arguments":{…}} now and then, and
   // sent the same again after "tool: expected string"): refused with the tools those arguments fit. Never guessed.
   const named = value && typeof value === "object" ? value as { tool?: unknown; arguments?: unknown } : undefined;
   if (named && named.tool === undefined && named.arguments && typeof named.arguments === "object") {
-    const fits = Object.entries(agentToolSchemas).filter(([, schema]) => schema.safeParse(named.arguments).success).map(([name]) => name);
-    throw new Error(`Your tool_call names no "tool": send it again with the tool's name beside "arguments"${fits.length
-      ? `. These arguments fit ${fits.slice(0, 3).join(" or ")}: {"type":"tool_call","tool":"${fits[0]}","arguments":{…}}` : ""}. No action was executed.`);
+    throw new Error(`Your tool_call names no "tool": send it again with the tool's name beside "arguments"${fitHint(fittingTools(named.arguments))}. No action was executed.`);
   }
   const shape = checked(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) }).strict(), value);
   if (!Object.hasOwn(agentToolSchemas, shape.tool)) throw new Error(`Unknown tool: ${shape.tool}`);
@@ -58,7 +71,12 @@ export function parseAgentAction(value: unknown): AgentAction {
     throw new Error(`${tool} requires arguments.expectedVersion. For a NEW file pass the exact string "missing". For an existing file, read it first and copy its returned version. No action was executed.`);
   }
   const args = { ...shape.arguments };
-  for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) if (args[key] === null && field.isOptional()) delete args[key];
+  // An optional argument left null, or a text one left empty where empty text is never valid (a search's
+  // path ""), takes its default. Only text: an empty list or number is refused, never taken as unset
+  // (file.revert without paths reverts every change).
+  for (const [key, field] of Object.entries(agentToolSchemas[tool].shape)) {
+    if (field.isOptional() && (args[key] === null || args[key] === "" && field.safeParse("x").success && !field.safeParse("").success)) delete args[key];
+  }
   return { tool, arguments: checked(agentToolSchemas[tool] as z.ZodType<Record<string, unknown>>, args, "arguments") };
 }
 // plugins.call is a dispatcher; PluginManager enforces read-only against the actual tool.

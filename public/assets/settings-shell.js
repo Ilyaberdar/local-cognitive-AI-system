@@ -714,8 +714,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       submit.disabled = true;
       // The service's own list is the first check of the address and key; nothing is saved before it.
       status(server ? 'Checking the key…' : 'Checking the address and key…');
-      let models;
-      try { models = (await store.discoverModels(server ? { preset: preset?.id, apiKey } : { baseUrl, apiKey, ...(preset ? { dialect: preset.dialect } : {}) })).models; }
+      let models, nativeTools;
+      // A service added as Other is also asked for one tool call: when it answers one, its agents act through tool calls.
+      try { ({ models, nativeTools } = await store.discoverModels(server ? { preset: preset?.id, apiKey } : { baseUrl, apiKey, ...(preset ? { dialect: preset.dialect } : {}) })); }
       catch (error) { submit.disabled = false; status(error.message || 'The service did not answer.', true); return; }
       if (!models?.length) { submit.disabled = false; status('The service lists no models at this address.', true); return; }
       const model = models.includes(preset?.model) ? preset.model : models[0];
@@ -724,7 +725,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
         // A server chooses the id (and keeps the address); here it is made from the preset or the name.
         if (server) id = (await store.addProvider({ preset: preset?.id, apiKey, model, name })).id;
         else await store.save({ providers: { [id]: { kind: 'openai-compatible', dialect: preset?.dialect ?? 'chat', ...(preset ? { preset: preset.id } : {}), name,
-          baseUrl, apiKey, model, enabled: true, timeoutMs: 300000 } } });
+          baseUrl, apiKey, model, enabled: true, timeoutMs: 300000, ...(!preset && nativeTools === 'chat' ? { nativeTools: 'chat' } : {}) } } });
       } catch (error) {
         submit.disabled = false;
         status(`Not added. ${error.message}`, true);

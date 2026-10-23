@@ -14,8 +14,9 @@ export interface ProviderDialect {
   /** JSON, agent actions and images go to the Responses API too (OpenAI). Otherwise they use
    * chat completions, and only plain prose goes to Responses. */
   readonly allOnResponses?: boolean;
-  /** Agent actions use the Responses API's function tools. */
-  readonly nativeTools?: "responses";
+  /** Agent actions are the service's own function calls: the Responses API's function tools, or chat
+   * completions' tool calls (read without continuation: each turn is one request with the transcript). */
+  readonly nativeTools?: "responses" | "chat";
   /** Reasoning effort: every level up to max, levels above high lowered to high, or none sent. */
   readonly effort: "full" | "capped" | "ignored";
   /** Chat completions carry the effort as reasoning_effort (LM Studio's gpt-oss). */
@@ -74,39 +75,44 @@ export const LLAMACPP_DIALECT: ProviderDialect = {
 
 /** Qwen through Alibaba Cloud Model Studio (QwenCloud, formerly DashScope): its OpenAI-compatible
  * chat completions. Thinking is switched by the effort (low or none: off), and its chat is streamed
- * because some Qwen models think only when streamed. JSON mode wants the word in the messages. Tools
- * run through the JSON protocol until chat tool calls are read. */
+ * because some Qwen models think only when streamed. JSON mode wants the word in the messages. Agents
+ * act through its chat tool calls, read from the stream. */
 export const QWEN_DIALECT: ProviderDialect = {
-  id: "qwen", requiresKey: true, retries: true, chatOnly: true, streamChat: true, effort: "capped", thinking: "enable_thinking", jsonKeyword: true,
+  id: "qwen", requiresKey: true, retries: true, chatOnly: true, streamChat: true, effort: "capped", thinking: "enable_thinking", jsonKeyword: true, nativeTools: "chat",
   models: {
     fallback: ["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash", "qwen3.7-flash", "qwen3-coder-plus", "qwen3-coder-flash", "qwen3-vl-plus"],
     exclude: /embed|rerank|tts|asr|audio|speech|image|wanx?\d|video|realtime|livetranslate|ocr/i
   },
-  capabilities: { local: false, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: false, reasoning: true, vision: true }
+  capabilities: { local: false, managed: false, jsonMode: true, nativeTools: true, structuredOutputs: false, reasoning: true, vision: true }
 };
 
-/** Any OpenAI-compatible cloud service: chat completions with a key, retried, JSON mode. */
+/** Any OpenAI-compatible cloud service: chat completions with a key, retried, JSON mode. Its agents act
+ * in JSON unless the service answered a tool call when it was added (`withChatTools`). */
 export const CHAT_DIALECT: ProviderDialect = {
   id: "chat", requiresKey: true, retries: true, chatOnly: true, effort: "capped",
   capabilities: { local: false, managed: false, jsonMode: true, nativeTools: false, structuredOutputs: false, reasoning: false, vision: false }
 };
 
-/** DeepSeek: JSON mode, like Qwen's, wants the word in the messages. */
-export const DEEPSEEK_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "deepseek", jsonKeyword: true,
+const CHAT_TOOLS = { ...CHAT_DIALECT.capabilities, nativeTools: true };
+/** DeepSeek: JSON mode, like Qwen's, wants the word in the messages. Agents act through chat tool calls;
+ * it may send several at once whatever parallel_tool_calls says (the first runs). */
+export const DEEPSEEK_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "deepseek", jsonKeyword: true, nativeTools: "chat", capabilities: CHAT_TOOLS,
   models: { fallback: ["deepseek-flash", "deepseek-v4-pro"] } };
 /** Groq: its reasoning models (gpt-oss, Qwen) take the effort as reasoning_effort; one that does not says so. */
-export const GROQ_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "groq", chatEffort: true,
-  capabilities: { ...CHAT_DIALECT.capabilities, reasoning: true },
+export const GROQ_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "groq", chatEffort: true, nativeTools: "chat",
+  capabilities: { ...CHAT_TOOLS, reasoning: true },
   models: { fallback: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"], exclude: /whisper|tts|orpheus|guard|playai|compound/i } };
-/** OpenRouter: hundreds of models behind one key, its reasoning asked for in one shape for all of them. */
-export const OPENROUTER_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "openrouter", thinking: "reasoning",
-  capabilities: { ...CHAT_DIALECT.capabilities, reasoning: true, vision: true } };
+/** OpenRouter: hundreds of models behind one key, its reasoning asked for in one shape for all of them.
+ * A model without tool calls answers 404 "No endpoints found that support tool use": its agents act in JSON. */
+export const OPENROUTER_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "openrouter", thinking: "reasoning", nativeTools: "chat",
+  capabilities: { ...CHAT_TOOLS, reasoning: true, vision: true } };
 /** Perplexity's Agent API (Sonar moved there in September 2026): Responses-shaped requests, a preset
- * (fast to xhigh) or a model it hosts, answers searched on the web. JSON comes only as a schema, so
- * agents use the JSON protocol in words. */
+ * (fast to xhigh) or a model it hosts, answers searched on the web. Agents act through its function
+ * tools, without web search beside them. A JSON schema is not used: it puts the keys in alphabetical
+ * order, so an action's "type" would come after its arguments. */
 const PERPLEXITY_PRESETS = ["fast", "low", "medium", "high", "xhigh"];
-export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity", chatOnly: false, allOnResponses: true, presets: PERPLEXITY_PRESETS, defaultOutputTokens: 16_000,
-  capabilities: { ...CHAT_DIALECT.capabilities, jsonMode: false, reasoning: true, vision: true },
+export const PERPLEXITY_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "perplexity", chatOnly: false, allOnResponses: true, nativeTools: "responses", presets: PERPLEXITY_PRESETS, defaultOutputTokens: 16_000,
+  capabilities: { ...CHAT_DIALECT.capabilities, jsonMode: false, nativeTools: true, reasoning: true, vision: true },
   models: { fallback: PERPLEXITY_PRESETS, pinned: PERPLEXITY_PRESETS } };
 
 const DIALECTS: Record<string, ProviderDialect> = { qwen: QWEN_DIALECT, chat: CHAT_DIALECT, deepseek: DEEPSEEK_DIALECT,
@@ -114,6 +120,10 @@ const DIALECTS: Record<string, ProviderDialect> = { qwen: QWEN_DIALECT, chat: CH
 export const isProviderDialect = (name: unknown): boolean => typeof name === "string" && Object.hasOwn(DIALECTS, name);
 /** The dialect a provider that is data names; an unknown name is a plain OpenAI-compatible service. */
 export const compatibleDialect = (name: string | undefined): ProviderDialect => (name && DIALECTS[name]) || CHAT_DIALECT;
+/** A dialect whose agents act through chat tool calls: a service added as Other that answered one when
+ * it was added (its record says `nativeTools: "chat"`). A dialect with its own tools keeps them. */
+export const withChatTools = (dialect: ProviderDialect): ProviderDialect => dialect.nativeTools ? dialect
+  : { ...dialect, nativeTools: "chat", capabilities: { ...dialect.capabilities, nativeTools: true } };
 
 /** The dialect of a provider constructed by id: the built-ins, or a plain OpenAI-compatible server. */
 export function dialectFor(id: string): ProviderDialect {
