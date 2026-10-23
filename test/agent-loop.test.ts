@@ -699,3 +699,17 @@ test("an optional argument left empty where empty is never valid takes its defau
   assert.throws(() => parseAgentAction({ tool: "file.search", arguments: { query: "x", limit: "" } }), /arguments\.limit/);
   assert.throws(() => parseAgentAction({ tool: "file.search", arguments: { query: "x", include: "" } }), /arguments\.include/);
 });
+
+// The JSON path cut everything from the first DSML tag, also one inside the final answer's text: the JSON
+// was cut short and the answer could never be delivered.
+test("DSML markup inside a JSON string is part of the answer; after the JSON object it is cut", async t => {
+  const f = await fixture(t);
+  const answer = 'DeepSeek ends its arguments with `</｜｜DSML｜｜ parameter>` and `<｜｜DSML｜｜function_calls>` opens its calls.';
+  const { llm } = replying([`${JSON.stringify({ type: "final", text: answer })}\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>`]);
+  const result = await new AgentLoopRunner(llm, f.operations, f.root).run({ id: "dsml-in-answer", input: "Explain the DSML cut.", instructions: "", context: f.context, target: f.context.activeTarget });
+  assert.equal(result.error, undefined);
+  assert.equal(result.text, answer);
+  // The JSON path keeps what it did before: reasoning blocks, <analysis> too, are not the action.
+  const { llm: thinking } = replying([`<analysis>Plan.</analysis>\n${JSON.stringify({ type: "final", text: "Done." })}`]);
+  assert.equal((await new AgentLoopRunner(thinking, f.operations, f.root).run({ id: "analysis-json", input: "Say done.", instructions: "", context: f.context, target: f.context.activeTarget })).text, "Done.");
+});

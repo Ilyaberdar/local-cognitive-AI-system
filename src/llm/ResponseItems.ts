@@ -3,10 +3,39 @@ import { leadingJsonObject, wholeJsonObject } from "./StructuredOutput";
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 
-/** Reasoning a model wrote before its answer in <think>, <thinking> or <analysis> blocks: never the answer. */
-export const withoutLeadingThinking = (text: string): string => text.replace(/^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "");
+/** Reasoning a model wrote before its answer in <think> or <thinking> blocks: never the answer. The JSON and
+ * local paths leave out <analysis> blocks too, as they always did; a native answer may hold its findings in one. */
+export const withoutLeadingThinking = (text: string, options: { analysis?: boolean } = {}): string =>
+  text.replace(options.analysis === false ? /^(?:\s*<(think|thinking)>[\s\S]*?<\/\1>\s*)+/i : /^(?:\s*<(think|thinking|analysis)>[\s\S]*?<\/\1>\s*)+/i, "");
 /** DeepSeek's own function-call markup (<｜DSML｜function_calls>, invoke, parameter; its bars doubled at times). */
 export const DSML_CALL = /<\/?｜+DSML｜+\s*(?:function_calls|calls|invoke|parameter)\b/u;
+const DSML_TAG = /<\/?｜+DSML｜+/uy;
+
+/** A Markdown text without its code: fenced blocks (``` or ~~~; one left open runs to the end) and inline
+ * code spans. Markup there is quoted (an answer about this very code), never the model's own call. */
+export function outsideCode(text: string): string {
+  const kept: string[] = []; let fence: string | undefined;
+  for (const line of text.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) { if (marker && marker[1]![0] === fence[0] && marker[1]!.length >= fence.length && !line.slice(marker[0].length).trim()) fence = undefined; continue; }
+    if (marker) { fence = marker[1]; continue; }
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ");
+}
+
+/** A JSON reply without DeepSeek's markup after it: cut from the first DSML tag outside a JSON string, so
+ * markup an answer's text quotes stays in the answer, and the markup after the object (its closers too) goes. */
+export function withoutDsmlTrailer(text: string): string {
+  let inString = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (inString) { if (char === "\\") index++; else if (char === "\"") inString = false; continue; }
+    if (char === "\"") { inString = true; continue; }
+    if (char === "<") { DSML_TAG.lastIndex = index; if (DSML_TAG.test(text)) return text.slice(0, index).trimEnd(); }
+  }
+  return text;
+}
 
 export const responseItems = (payload: Record<string, unknown>): Record<string, unknown>[] =>
   Array.isArray(payload.output) ? payload.output.filter(record) : [];
@@ -72,9 +101,10 @@ export function readNativeAgentResponse(payload: Record<string, unknown>, tools:
     const messages = responseMessages(payload);
     if (messages.length > 1) throw new Error(`Expected one final message; received ${messages.length}.`);
     // Cleaned as an agent's JSON reply is (LLMService): reasoning before the answer is not part of it.
-    const text = messages.length ? withoutLeadingThinking(messageText(messages[0]).trim()).trim() : "";
+    const text = messages.length ? withoutLeadingThinking(messageText(messages[0]).trim(), { analysis: false }).trim() : "";
     if (!text) throw new Error("The model returned no final answer or function call.");
-    const envelope = DSML_CALL.test(text) ? { toolCall: true as const } : textEnvelope(text, tools);
+    // DeepSeek's call markup in the answer's prose is a call written as text; in its code it is quoted.
+    const envelope = DSML_CALL.test(outsideCode(text)) ? { toolCall: true as const } : textEnvelope(text, tools);
     if (envelope && "toolCall" in envelope) return { textToolCall: true, protocolError: `Your reply wrote a tool call as text, so nothing ran. To act, call the function itself (${tools.slice(0, 3).map(tool => tool.name).join(", ")}…), not JSON in your answer; when you are done, answer in plain Markdown.` };
     return { agentAction: { type: "final", text: envelope?.final ?? text } };
   } catch (error) {

@@ -420,6 +420,28 @@ test("a native reply's text is cleaned as JSON replies are: DSML call markup is 
   assert.equal((await provider.generateText(agentRequest())).agentAction?.type, "final", "an answer that quotes the markup's pattern is an answer");
 });
 
+// An answer about this app's own code quotes DSML markup (its tests hold some): quoted in code, it is text.
+test("DSML markup in an answer's code is quoted, not a call; in its prose it is a call; native strips only think blocks", async () => {
+  const closer = '{"path":"."}</｜｜DSML｜｜ parameter>';
+  const texts = [
+    `## Review\n\nDeepSeek ends its arguments as in \`${closer}\`; LLMService cuts that off.`,
+    `## Review\n\nThe test's reply:\n\n\`\`\`text\n${closer}\n</｜｜DSML｜｜ invoke>\n\`\`\`\n\nIt is cut after the JSON.`,
+    `## Review\n\n~~~\n<｜｜DSML｜｜function_calls>\n~~~`,
+    `Reading it.\n\n${closer}\n</｜｜DSML｜｜ invoke>`,
+    "<analysis>Root cause: a.ts:3 swallows the error.</analysis>\n\nFixed it.",
+    "<analysis>The whole answer: a.ts:3 swallows the error.</analysis>",
+    "<thinking>Plan.</thinking>\n<think>More.</think>\n\nDone: a.ts:3."
+  ];
+  const provider = presetProvider("deepseek", service((_call, index) => Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: texts[index] } }] })).fetchImpl);
+  const replies = [];
+  for (let index = 0; index < texts.length; index++) replies.push(await provider.generateText(agentRequest()));
+  for (const index of [0, 1, 2]) assert.deepEqual(replies[index]!.agentAction, { type: "final", text: texts[index] }, `${index}: markup in code is quoted`);
+  assert.equal(replies[3]!.textToolCall, true, "markup in prose is a call written as text");
+  assert.deepEqual(replies[4]!.agentAction, { type: "final", text: texts[4] }, "an <analysis> block is part of a native answer");
+  assert.deepEqual(replies[5]!.agentAction, { type: "final", text: texts[5] });
+  assert.deepEqual(replies[6]!.agentAction, { type: "final", text: "Done: a.ts:3." });
+});
+
 test("Add provider's tool check fits in the time the window waits for it, and gives up at its own limit", async () => {
   const { answersToolCalls, TOOL_CHECK_TIMEOUT_MS } = await import("../src/llm/toolProbe");
   const wait = Number(/discoverModels:[^\n]*timeoutMs: (\d+)/.exec(await fs.readFile("public/assets/settings-data.js", "utf8"))![1]);

@@ -8,7 +8,7 @@ import { currentInferenceImages, validateImages } from "./InferenceImages";
 import { currentLocalThinkingBudget, currentReasoningEffort } from "./InferenceThinking";
 import { localThinkingBudgetForEffort } from "./ReasoningEffort";
 import { parseJsonDocument, validateStructuredObject } from "./StructuredOutput";
-import { withoutLeadingThinking } from "./ResponseItems";
+import { withoutDsmlTrailer, withoutLeadingThinking } from "./ResponseItems";
 import { UsageCall, UsageRecorder } from "../usage/UsageCall";
 import { currentUsageScope } from "../usage/UsageScope";
 
@@ -73,10 +73,9 @@ export class LLMService {
     request.signal?.throwIfAborted();
     // Machine actions cannot be extracted from examples, prose or an "Answer:" prefix.
     const text = request.outputPurpose === "agent-action"
-      ? withoutLeadingThinking(response.text.trim())
-        // DeepSeek sometimes adds its own tool-call markup (<｜DSML｜…>, or only its closers </｜｜DSML｜｜ parameter>)
-        // after the JSON action: never an action itself.
-        .replace(/\s*<\/?｜+DSML｜+[\s\S]*$/u, "")
+      // DeepSeek sometimes adds its own tool-call markup (<｜DSML｜…>, or only its closers </｜｜DSML｜｜ parameter>)
+      // after the JSON action: never an action itself. Markup inside a JSON string is the answer's own text.
+      ? withoutDsmlTrailer(withoutLeadingThinking(response.text.trim()))
       : this.sanitizer.sanitize(response.text);
 
     return {
