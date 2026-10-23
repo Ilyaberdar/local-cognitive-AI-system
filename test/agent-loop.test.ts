@@ -693,4 +693,9 @@ test("an optional argument left empty where empty is never valid takes its defau
   assert.deepEqual(parseAgentAction({ tool: "file.list", arguments: { path: null } }).arguments.path, ".");
   assert.throws(() => parseAgentAction({ tool: "file.read", arguments: { path: "" } }), /arguments\.path/);
   assert.equal(parseAgentAction({ tool: "http.request", arguments: { url: "https://a.example/x", body: "" } }).arguments.body, "", "an empty body is a body");
+  // Only text takes the rule: file.revert or file.submit without paths means all of them, so "" for the
+  // list is refused, never run as all.
+  for (const tool of ["file.revert", "file.submit"]) assert.throws(() => parseAgentAction({ tool, arguments: { paths: "" } }), /arguments\.paths/, tool);
+  assert.throws(() => parseAgentAction({ tool: "file.search", arguments: { query: "x", limit: "" } }), /arguments\.limit/);
+  assert.throws(() => parseAgentAction({ tool: "file.search", arguments: { query: "x", include: "" } }), /arguments\.include/);
 });
