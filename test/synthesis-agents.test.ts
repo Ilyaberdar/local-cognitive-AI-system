@@ -775,7 +775,7 @@ test("terminal: a run refuses agents with a terminal where no sandbox isolates, 
   assert.equal(result.status, "blocked");
   assert.match(result.error!, /Agents with a terminal need a sandbox that works: bubblewrap does not isolate here/);
   assert.equal(f.agentRequests.length, 0);
-  // Where the platform has no sandbox at all (Windows), the module says so before Run.
+  // Where the platform has no sandbox at all (an OS other than macOS, Linux and Windows), the module says so before Run.
   service.services.checks = {sandbox: {name: "none", unavailable: async () => "This platform has no sandbox yet.", wrap: () => { throw new Error("never"); }}};
   const module = await f.service.module(f.project.id, "Review");
   assert.equal(module.valid, false);
