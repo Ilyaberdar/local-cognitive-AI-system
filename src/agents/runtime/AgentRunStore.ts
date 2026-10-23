@@ -16,6 +16,8 @@ export interface AgentRun {
   pending?:{action:AgentAction;id:string;approval?:PendingApproval;callId?:string;outputItems?:Record<string,unknown>[];skippedCallIds?:string[]};
   nativeContinuation?: Record<string,unknown>[];
   consecutiveRepairs?: number;
+  /** Native replies in a row that wrote their tool call as text: two switch the run to JSON. */
+  textToolCalls?: number;
   protocol?: "native" | "schema" | "json" | "text";
   steps:number; repairs:number; activeMs:number; final?:string;error?:string;usage:TokenUsage;
   budgetId?: string;

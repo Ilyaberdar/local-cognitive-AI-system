@@ -568,6 +568,8 @@ export interface LLMResponse {
   agentAction?: { type: "tool_call"; tool: string; arguments: Record<string, unknown> } | { type: "final"; text: string };
   toolCallId?: string;
   outputItems?: Record<string, unknown>[];
+  /** A native reply that wrote a tool call as text (JSON, DeepSeek's markup) instead of calling the function. */
+  textToolCall?: boolean;
   /** Function calls after the first of one reply, not run: their ids are answered "not run" in the continuation. */
   extraCalls?: { count: number; callIds: string[] };
 }

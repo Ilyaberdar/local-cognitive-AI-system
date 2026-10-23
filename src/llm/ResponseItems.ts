@@ -49,7 +49,7 @@ function textEnvelope(text: string, tools: LLMFunctionTool[]): { toolCall: true 
 /** Only protocol-level function calls can authorize an action. Text is always a final answer. Several
  * calls in one reply (DeepSeek's chat sends them whatever parallel_tool_calls says): the first runs, as
  * it would have alone, and `extraCalls` names the others, which never run. */
-export function readNativeAgentResponse(payload: Record<string, unknown>, tools: LLMFunctionTool[]): Pick<LLMResponse, "agentAction" | "protocolError" | "toolCallId" | "outputItems" | "extraCalls"> {
+export function readNativeAgentResponse(payload: Record<string, unknown>, tools: LLMFunctionTool[]): Pick<LLMResponse, "agentAction" | "protocolError" | "toolCallId" | "outputItems" | "extraCalls" | "textToolCall"> {
   const outputItems = responseItems(payload);
   const calls = outputItems.filter(item => item.type === "function_call");
   try {
@@ -72,7 +72,7 @@ export function readNativeAgentResponse(payload: Record<string, unknown>, tools:
     const text = messages.length ? withoutLeadingThinking(messageText(messages[0]).trim()).trim() : "";
     if (!text) throw new Error("The model returned no final answer or function call.");
     const envelope = DSML_CALL.test(text) ? { toolCall: true as const } : textEnvelope(text, tools);
-    if (envelope && "toolCall" in envelope) throw new Error(`Your reply wrote a tool call as text, so nothing ran. To act, call the function itself (${tools.slice(0, 3).map(tool => tool.name).join(", ")}…), not JSON in your answer; when you are done, answer in plain Markdown.`);
+    if (envelope && "toolCall" in envelope) return { textToolCall: true, protocolError: `Your reply wrote a tool call as text, so nothing ran. To act, call the function itself (${tools.slice(0, 3).map(tool => tool.name).join(", ")}…), not JSON in your answer; when you are done, answer in plain Markdown.` };
     return { agentAction: { type: "final", text: envelope?.final ?? text } };
   } catch (error) {
     return { protocolError: error instanceof Error ? error.message : String(error) };

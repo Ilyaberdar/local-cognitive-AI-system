@@ -6,6 +6,7 @@ import test from "node:test";
 import Ajv from "ajv";
 import { AgentLoopRunner } from "../src/agents/runtime/AgentLoopRunner";
 import { OpenAICompatibleProvider } from "../src/llm/OpenAICompatibleProvider";
+import { CHAT_DIALECT, withChatTools } from "../src/llm/ProviderDialect";
 import { AnthropicProvider } from "../src/llm/AnthropicProvider";
 import { GeminiProvider } from "../src/llm/GeminiProvider";
 import { OllamaProvider } from "../src/llm/OllamaProvider";
@@ -375,6 +376,30 @@ test("openai: the last turn keeps its answer when the service refuses its tool_c
   assert.equal(g.calls[3].text.format.type, "json_schema");
   const run = (await g.runner().store.get("tools-refused-last"))!;
   assert.equal(run.steps, 2, "the refused request gave its turn back");
+});
+
+// A model or proxy that ignores the tools (the service answered the tool check, another model does not)
+// writes its calls as JSON text: refused every turn as "call the function itself", the run failed after
+// its corrections. After two in a row it goes on in JSON, as for a provider that refuses tools.
+test("an agent whose model writes its tool calls as text goes on in JSON, and none of those texts runs", async t => {
+  const f = await fixture(t, "openai");
+  f.registry.register(new OpenAICompatibleProvider({ id: "other", name: "Other", baseUrl: "https://other.test/v1", model: "m", timeoutMs: 2000, apiKey: "k", dialect: withChatTools(CHAT_DIALECT) }, new Logger()));
+  const text = (content: string) => ({ choices: [{ finish_reason: "stop", message: { role: "assistant", content } }] });
+  const call = JSON.stringify(write);
+  f.replies.push(text(call), text(call), text(call), text(JSON.stringify(finish)));
+  const target = { providerId: "other", model: "m" };
+  const result = await f.runner().run({ id: "ignored-tools", input: "Create result.js and report the result.", instructions: "", target, context: { ...f.context, activeTarget: target } });
+  assert.equal(result.error, undefined);
+  assert.equal(result.text, final);
+  assert.equal(result.tools.length, 1, "only the call made in JSON runs");
+  assert.ok(f.calls[0].tools.length && f.calls[1].tools.length);
+  assert.equal(f.calls[2].tools, undefined);
+  assert.equal(f.calls[2].response_format.type, "json_object");
+  assert.equal(await fs.readFile(path.join(f.work, "result.js"), "utf8"), code);
+  const run = (await f.runner().store.get("ignored-tools"))!;
+  assert.equal(run.protocol, "json");
+  assert.equal(run.repairs, 1, "the first text call is a correction; the second switches");
+  assert.match(run.turns.find(turn => /Switched from native to json/.test(turn.content))!.content, /wrote its tool calls as text/);
 });
 
 test("finalization respects an earlier schema downgrade", async t => {

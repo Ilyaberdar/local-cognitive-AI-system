@@ -187,15 +187,19 @@ export class AgentLoopRunner {
       });
       if(!generated.response){retract();run.error=generated.error;break;}
       const response=generated.response;
-      if(response.unsupportedFeature||response.error)retract();
-      if(response.unsupportedFeature){
+      // A model (or a proxy) that ignores the tools writes its calls as text: refused once as any malformed
+      // reply, and on the second in a row the run goes on without tools, as for a provider that refuses them.
+      run.textToolCalls=run.protocol==="native"&&response.textToolCall?(run.textToolCalls??0)+1:0;
+      const ignoredTools=run.textToolCalls>=2;
+      if(response.unsupportedFeature||response.error||ignoredTools)retract();
+      if(response.unsupportedFeature||ignoredTools){
         const previous:NonNullable<AgentRun["protocol"]>=run.protocol;
         run.protocol=previous==="native"?(this.llm.supportsStructuredOutputs?.(input.target.providerId)?"schema":"json"):previous==="schema"?"json":"text";
-        // The refusal did no work: its turn is given back, so a switch on the last turn still leaves the answer one.
-        if(run.protocol!==previous&&run.steps>0)run.steps--;
-        delete run.nativeContinuation;
-        run.turns.push({type:"format_error",content:`The provider does not support ${response.unsupportedFeature}. Switched from ${previous} to ${run.protocol}; no action was executed.`,diagnostic:{
-          responseId:response.responseId,preview:truncate(response.error??"[provider did not return details]",1200,"\n[TRUNCATED]\n"),outputTypes:[]
+        // A refusal did no work: its turn is given back, so a switch on the last turn still leaves the answer one.
+        if(response.unsupportedFeature&&run.protocol!==previous&&run.steps>0)run.steps--;
+        delete run.nativeContinuation;run.textToolCalls=0;
+        run.turns.push({type:"format_error",content:`${ignoredTools&&!response.unsupportedFeature?"The model wrote its tool calls as text instead of calling the functions":`The provider does not support ${response.unsupportedFeature}`}. Switched from ${previous} to ${run.protocol}; no action was executed.`,diagnostic:{
+          responseId:response.responseId,preview:truncate((response.unsupportedFeature?response.error:response.text)||"[provider did not return details]",1200,"\n[TRUNCATED]\n"),outputTypes:[]
         }});
         context.onProgress?.({phase:"correction",label:"Adapting model protocol",detail:`${previous} → ${run.protocol}`,agentRunId:input.id,at:new Date().toISOString()});
         await this.store.save(run);continue;
