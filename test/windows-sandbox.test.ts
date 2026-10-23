@@ -39,37 +39,46 @@ test("winExecArgs wraps the command, one capability per work folder granted once
   const work = "C:\\Users\\me\\AppData\\app\\synthesis\\run-7";
   const first = winExecArgs("exec", work, ["C:\\", "C:\\Windows", "C:\\tools\\node", "C:\\Program Files\\LC\\resources\\sandbox\\win32-x64\\node"], ["C:\\tools\\node\\node.exe", "--test", "a b.js"]);
   assert.equal(first[0], "exec");
-  assert.equal(first[1], "--run-cap");
-  assert.match(first[2]!, /^LocalCognitive\.Run\.[0-9a-f]{16}$/);
+  // A profile and a capability of this folder's own, carrying the same id.
+  assert.equal(first[1], "--profile");
+  const id = /^LocalCognitive\.Sandbox\.([0-9a-f]{16})$/.exec(first[2]!);
+  assert.ok(id, first[2]);
+  assert.equal(first[first.indexOf("--run-cap") + 1], `LocalCognitive.Run.${id![1]}`);
   const rootsAt = first.indexOf("--roots");
   assert.ok(first[rootsAt + 1]!.split(";").includes("C:\\Users\\me\\AppData\\app"), first[rootsAt + 1]);
   assert.equal(first[first.indexOf("--rw") + 1], work);
-  // C:\ is a drive root and C:\Windows is the system folder: neither is opened up; the tool folder is. The
-  // bundled Node is already open to the sandbox (grant-tools), so it is not granted again per run.
+  // C:\ is a drive root, C:\Windows the system folder, C:\Program Files a protected root: none is opened
+  // up; the tool folder is. The bundled Node is already open to the sandbox (grant-tools).
   const ro = first.filter((_, i) => first[i - 1] === "--ro");
   assert.deepEqual(ro, ["C:\\tools\\node"]);
   // Everything after -- is the command, verbatim (an argument with a space stays one argument).
   assert.deepEqual(first.slice(first.indexOf("--") + 1), ["C:\\tools\\node\\node.exe", "--test", "a b.js"]);
-  // The first command applies the folder's grant; the next ones, on the same folder and capability, do not.
+  // The first command applies the folder's grant; the next ones, on the same folder and profile, do not.
   assert.ok(!first.slice(0, first.indexOf("--")).includes("--granted"));
   const second = winExecArgs("exec", work, [], ["x.exe"]);
-  assert.equal(second[2], first[2], "one capability for every command of a folder");
+  assert.equal(second[2], first[2], "one profile and capability for every command of a folder");
+  assert.equal(second[first.indexOf("--run-cap") + 1], first[first.indexOf("--run-cap") + 1]);
   assert.ok(second.slice(0, second.indexOf("--")).includes("--granted"));
-  // Another run's folder has a capability of its own.
+  // Another folder has a profile and capability of its own.
   const other = winExecArgs("exec", "C:\\Users\\me\\AppData\\app\\synthesis\\run-8", [], ["x.exe"]);
   assert.notEqual(other[2], first[2]);
-  // empty takes no command, and is the folder's last: a folder made again later is granted afresh.
+  // empty takes no command, and is the folder's last: a folder made again later is profiled afresh.
   const empty = winExecArgs("empty", work, [], []);
   assert.ok(!empty.includes("--") && empty.includes("--granted"));
   assert.ok(!winExecArgs("exec", work, [], ["x.exe"]).includes("--granted"));
   delete process.env.LC_SANDBOX_HELPER;
 });
 
-test("winOpenable keeps tool folders and refuses drive roots, the Windows folder and the profile root", () => {
+test("winOpenable keeps tool folders and refuses drive roots, the Windows folder, the profile root and protected roots", () => {
   assert.equal(winOpenable("C:\\tools\\node"), true);
+  assert.equal(winOpenable("C:\\Program Files\\Python312"), true, "a specific tool folder under Program Files is fine");
   assert.equal(winOpenable("C:\\"), false);
   assert.equal(winOpenable("C:\\Windows"), false);
   assert.equal(winOpenable(process.env.SystemRoot ?? "C:\\Windows"), false);
+  // Program Files, Program Files (x86) and ProgramData themselves are never opened up.
+  assert.equal(winOpenable("C:\\Program Files"), false);
+  assert.equal(winOpenable("C:\\Program Files (x86)"), false);
+  assert.equal(winOpenable("C:\\ProgramData"), false);
 });
 
 test("pathCleaner turns a run's Windows paths, and its file:/// URLs, into relative ones", () => {

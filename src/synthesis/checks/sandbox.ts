@@ -71,7 +71,7 @@ export function darwinProfile(workDir: string, readable: string[], egress?: Egre
  * success means no sandbox, and nothing runs (a deprecated sandbox-exec that stopped enforcing its
  * profile, a bubblewrap that lost its namespaces). The probe's own run must succeed: a sandbox that
  * runs nothing is no answer either. */
-export async function verifyIsolation(provider: { wrap?: SandboxProvider["wrap"]; probe?: SandboxProvider["probe"] }): Promise<string | undefined> {
+export async function verifyIsolation(provider: { wrap?: SandboxProvider["wrap"]; probe?: SandboxProvider["probe"]; empty?: SandboxProvider["empty"] }): Promise<string | undefined> {
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-canary-"));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-probe-"));
   // Given to the sandbox to read only (as a tool's folder is): a write there tests the write rule alone.
@@ -102,6 +102,7 @@ export async function verifyIsolation(provider: { wrap?: SandboxProvider["wrap"]
     return `the sandbox could not be checked (${error instanceof Error ? error.message : String(error)})`;
   } finally {
     server.close();
+    await deleteSandboxProfile(provider, work);
     for (const dir of [outside, work, readOnly]) fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -446,9 +447,6 @@ export async function verifyEgress(provider: Pick<SandboxProvider, "wrap">, runt
 // any OS); on Windows path.win32 is path, so nothing changes there.
 
 const W = path.win32;
-/** The AppContainer profile the helper reuses; its package folder (the moniker) is the name lowercased,
- * where Windows reroutes the container's TEMP, so windowsEnv pre-creates it under the work folder. */
-const WINDOWS_MONIKER = "localcognitive.sandbox";
 const winHelper = (): string | undefined => process.env.LC_SANDBOX_HELPER && fs.existsSync(process.env.LC_SANDBOX_HELPER) ? process.env.LC_SANDBOX_HELPER : undefined;
 /** The Node runtime the app ships for the sandbox (never a copy of the user's): agents' node/npm/npx run
  * it, and the process-tree check needs it. */
@@ -460,14 +458,20 @@ const winRoots = (): string[] => [...new Set([...(process.env.LC_SANDBOX_ROOTS ?
 /** The Windows build number from os.release() ("10.0.26200" → 26200). AppContainers with a profile need
  * Windows 10 1703 (build 15063) or later. */
 const windowsBuild = (): number => Number.parseInt(os.release().split(".")[2] ?? "0", 10) || 0;
-/** A tool folder the sandbox may read: never a drive root, the Windows folder or the profile root (the
- * helper refuses those too). The home folder's own subtree is never opened up. */
+/** A tool folder the sandbox may be told to read: never a drive root, the Windows folder, the profile
+ * root, or a protected system root whose own permissions must stand (Program Files, ProgramData). The
+ * home folder's own subtree is never opened up. A second line of defence: the helper grants no read-only
+ * folder at all, and refuses to change an ACL outside the app's roots. */
+const winProtectedRoots = (): string[] => {
+  const drive = process.env.SystemDrive ?? "C:";
+  return [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.ProgramW6432, process.env.ProgramData, process.env.SystemRoot ?? "C:\\Windows",
+    W.join(drive, "Program Files"), W.join(drive, "Program Files (x86)"), W.join(drive, "ProgramData")]
+    .filter((dir): dir is string => Boolean(dir)).map(dir => W.resolve(dir).toLowerCase());
+};
 export const winOpenable = (dir: string): boolean => {
-  const full = W.resolve(dir), segments = full.split(/[\\/]/).filter(Boolean);
-  const home = W.resolve(os.homedir());
-  return segments.length >= 2 && full.toLowerCase() !== home.toLowerCase() &&
-    !(full.toLowerCase() + "\\").startsWith(home.toLowerCase() + "\\") &&
-    full.toLowerCase() !== W.resolve(process.env.SystemRoot ?? "C:\\Windows").toLowerCase();
+  const full = W.resolve(dir), lower = full.toLowerCase(), segments = full.split(/[\\/]/).filter(Boolean);
+  const home = W.resolve(os.homedir()).toLowerCase();
+  return segments.length >= 2 && lower !== home && !(lower + "\\").startsWith(home + "\\") && !winProtectedRoots().includes(lower);
 };
 /** The folder grant-tools opened to the sandbox once (the helper and its bundled Node): never granted
  * again per run, which would also walk npm's thousands of files on every command. */
@@ -477,11 +481,17 @@ const winReadable = (readable: string[]): string[] => {
   return [...new Set(readable.map(dir => W.resolve(dir)).filter(winOpenable)
     .filter(dir => !tools || !(dir.toLowerCase() === tools || dir.toLowerCase().startsWith(`${tools}\\`))))];
 };
-/** One capability per work folder, fresh for every run's folder and unguessable across app runs (an
- * HMAC under a key of this process): every command of a run, and its clean-up, reach the same folder. */
+/** An id of a work folder's own, unguessable across app runs (an HMAC under a key of this process): the
+ * folder's AppContainer profile, its package moniker and its capability all carry it, so every command of
+ * a run reaches the same folder and no other run shares its container or its package namespace. */
 const RUN_KEY = randomBytes(32);
 const winKey = (workDir: string) => W.resolve(workDir).toLowerCase();
-const winRunCap = (workDir: string): string => `LocalCognitive.Run.${createHmac("sha256", RUN_KEY).update(winKey(workDir)).digest("hex").slice(0, 16)}`;
+const winId = (workDir: string): string => createHmac("sha256", RUN_KEY).update(winKey(workDir)).digest("hex").slice(0, 16);
+const winRunCap = (workDir: string): string => `LocalCognitive.Run.${winId(workDir)}`;
+const winProfile = (workDir: string): string => `LocalCognitive.Sandbox.${winId(workDir)}`;
+/** The package folder Windows reroutes the container's TEMP into is the profile name lowercased, so
+ * windowsEnv pre-creates it under the work folder. */
+const winMoniker = (workDir: string): string => winProfile(workDir).toLowerCase();
 /** Work folders whose grant the helper has applied: set on the first command, before any code ran in
  * the folder. Later commands pass --granted, so the helper never re-propagates a grant over a tree the
  * sandboxed code may since have changed (a junction it planted, say). */
@@ -506,7 +516,7 @@ export function windowsEnv(executable: string, workDir: string): NodeJS.ProcessE
   const localAppData = W.join(tmp, "la");
   // The container's TEMP, rerouted under LOCALAPPDATA, must exist before it runs. Created only on Windows
   // (off it, these are Windows paths this host cannot make, and the env object is all the caller needs).
-  if (process.platform === "win32") fs.mkdirSync(W.join(localAppData, "Packages", WINDOWS_MONIKER, "AC", "Temp"), { recursive: true });
+  if (process.platform === "win32") fs.mkdirSync(W.join(localAppData, "Packages", winMoniker(work), "AC", "Temp"), { recursive: true });
   const windir = process.env.SystemRoot ?? "C:\\Windows";
   const system32 = W.join(windir, "System32");
   const node = winNode();
@@ -525,20 +535,28 @@ export function windowsEnv(executable: string, workDir: string): NodeJS.ProcessE
   };
 }
 
-/** The helper command that runs EXE inside the container: the per-run capability grants the work folder,
- * the tools capability (set once by grant-tools) the shipped Node and the helper itself. */
+/** The helper command that runs EXE in the work folder's own AppContainer: --profile and --run-cap carry
+ * the folder's id, so its container, package folder and capability are its alone; the tools capability
+ * (set once by grant-tools) opens the shipped Node and the helper. */
 export function winExecArgs(kind: "exec" | "probe" | "write" | "remove" | "empty", workDir: string, readable: string[], rest: string[]): string[] {
   const key = winKey(workDir);
-  const args = [kind, "--run-cap", winRunCap(workDir), "--roots", winRoots().join(";"), "--rw", W.resolve(workDir)];
+  const args = [kind, "--profile", winProfile(workDir), "--run-cap", winRunCap(workDir), "--roots", winRoots().join(";"), "--rw", W.resolve(workDir)];
   if (winGranted.has(key)) args.push("--granted");
   else winGranted.add(key);
-  // Emptying is the folder's last command: the app removes the empty folder next.
+  // Emptying is the folder's last command: the helper deletes the folder's profile, and the app removes
+  // the empty folder next. A folder made again later is granted and profiled afresh.
   if (kind === "empty") winGranted.delete(key);
   for (const dir of winReadable(readable)) args.push("--ro", dir);
   if (rest.length || kind !== "empty") args.push("--", ...rest);
   return args;
 }
 
+/** The Windows isolation and process-tree check, re-run on a schedule rather than cached for the whole
+ * process: if Windows Filtering Platform or the firewall service is turned off after a passing probe, a
+ * later run must notice. Hourly after a pass, every ten minutes after a failure, as the Linux egress
+ * check is. */
+let winCheck: { result: Promise<string | undefined>; at: number; passed: boolean } | undefined;
+const WIN_RECHECK_MS = 60 * 60_000, WIN_RETRY_MS = 10 * 60_000;
 const windows: SandboxProvider = {
   name: "appcontainer",
   // The sandbox itself (its Job object) ends everything the command started; the caller needs no shell.
@@ -547,10 +565,17 @@ const windows: SandboxProvider = {
     const helper = winHelper();
     if (!helper) return "Contract tests and agents' terminals need the Local Cognitive sandbox helper, which was not found in this install.";
     if (windowsBuild() < 15063) return `The sandbox needs Windows 10 version 1703 (build 15063) or later; this is build ${windowsBuild()}.`;
-    const leak = await isolated("appcontainer", windows);
-    if (leak) return `the Windows sandbox does not isolate here: ${leak}. Nothing runs without a sandbox.`;
-    const tree = await verifyProcessTree(windows);
-    return tree ? `the Windows sandbox does not end what a command leaves running: ${tree}. Nothing runs without a sandbox.` : undefined;
+    if (!winCheck || Date.now() - winCheck.at > (winCheck.passed ? WIN_RECHECK_MS : WIN_RETRY_MS)) {
+      winCheck = { at: Date.now(), passed: false, result: (async () => {
+        const leak = await verifyIsolation(windows);
+        if (leak) return `the Windows sandbox does not isolate here: ${leak}. Nothing runs without a sandbox.`;
+        const tree = await verifyProcessTree(windows);
+        return tree ? `the Windows sandbox does not end what a command leaves running: ${tree}. Nothing runs without a sandbox.` : undefined;
+      })() };
+    }
+    const reason = await winCheck.result;
+    winCheck.passed = !reason;
+    return reason;
   },
   wrap: (executable, args, workDir, readable) => ({
     executable: winHelper() ?? "lc-sandbox.exe",
@@ -571,7 +596,7 @@ const windows: SandboxProvider = {
  * (a run's timeout) — the Job object's kill-on-close. Run through the provider as a real command is: the
  * shipped Node starts a detached holder and writes its pid, this kills the helper, and the holder must be
  * gone. Skipped (not a failure) when the shipped Node is not present to drive it. */
-export async function verifyProcessTree(provider: Pick<SandboxProvider, "wrap">): Promise<string | undefined> {
+export async function verifyProcessTree(provider: Pick<SandboxProvider, "wrap" | "empty">): Promise<string | undefined> {
   const node = winNode();
   if (!node) return undefined;
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "lc-sandbox-tree-"));
@@ -598,8 +623,17 @@ export async function verifyProcessTree(provider: Pick<SandboxProvider, "wrap">)
   } catch (error) {
     return `it could not be checked (${error instanceof Error ? error.message : String(error)})`;
   } finally {
+    await deleteSandboxProfile(provider, work);
     fs.rmSync(work, { recursive: true, force: true });
   }
+}
+
+/** The check's own work folder got an AppContainer profile of its own; empty deletes it, so a check leaves
+ * no profile behind (a real run's last command does the same). Best effort. */
+async function deleteSandboxProfile(provider: { empty?: SandboxProvider["empty"] }, work: string): Promise<void> {
+  if (!provider.empty) return;
+  const wrapped = provider.empty(work);
+  await new Promise<void>(resolve => execFile(wrapped.executable, wrapped.args, { env: wrapped.env, timeout: 15_000 }, () => resolve()));
 }
 
 /** Said for contract tests and for agents' terminals alike: neither runs code without a sandbox. */

@@ -341,8 +341,12 @@ export async function runContractTests(request: TestRunRequest): Promise<CheckRe
     tool = { executable: node.executable, readable: [path.dirname(node.executable), await realDir(node.executable)], flags: [] };
   } else if (runner === "python") {
     const python = await findPython();
-    if (!python) return unknown(`Python contract tests need python3, which was not found${process.platform === "darwin" ? " (xcode-select --install provides it)" : ""}`);
-    tool = { executable: python, readable: [path.dirname(python), await realDir(python), path.dirname(await realDir(python))], flags: [] };
+    if (!python) return unknown(`Python contract tests need python3, which was not found${process.platform === "darwin" ? " (xcode-select --install provides it)" : process.platform === "win32" ? " under Program Files, where the sandbox can read it" : ""}`);
+    // On Windows the sandbox never opens up a folder outside the app's own roots, so the interpreter's
+    // parent (C:\Program Files) is not added — it is readable only through its own ALL APPLICATION
+    // PACKAGES inheritance. Elsewhere the parent is bound read-only so a shim can reach its real binary.
+    const parent = process.platform === "win32" ? [] : [path.dirname(await realDir(python))];
+    tool = { executable: python, readable: [path.dirname(python), await realDir(python), ...parent], flags: [] };
   } else if (process.platform === "win32") {
     return unknown("C++ contract tests are not supported in the Windows sandbox yet.");
   } else {

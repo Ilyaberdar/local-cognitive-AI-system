@@ -89,8 +89,8 @@ const configureRuntimeEnvironment = async () => {
   // Windows: the CUDA build the app downloads on request (resources are read-only and replaced by updates).
   if (process.platform === "win32") process.env.LLAMA_RUNTIMES_DIR = path.join(dataRoot, "runtimes", "llama");
   // Windows Synthesis sandbox: the helper, the Node runtime it runs there, and the folders a work folder
-  // may be inside (the app's data and the temporary folder). grant-tools (once, idempotent) lets the
-  // sandbox read the helper and that Node.
+  // may be inside (the app's data and the temporary folder). LC_SANDBOX_ROOTS also bounds which folders
+  // the helper may change the permissions of — never a tool folder outside them.
   if (process.platform === "win32") {
     const sandboxDir = path.join(resourceRoot, "sandbox", `win32-${process.arch}`);
     const helper = path.join(sandboxDir, "lc-sandbox.exe");
@@ -98,8 +98,15 @@ const configureRuntimeEnvironment = async () => {
       process.env.LC_SANDBOX_HELPER = helper;
       process.env.LC_SANDBOX_NODE = path.join(sandboxDir, "node", "node.exe");
       process.env.LC_SANDBOX_ROOTS = [dataRoot, require("os").tmpdir()].join(path.delimiter);
-      try { require("child_process").execFileSync(helper, ["grant-tools", sandboxDir], { stdio: "ignore", timeout: 30000 }); }
-      catch (error) { console.error("lc-sandbox grant-tools failed:", error && error.message); }
+      // grant-tools (a no-op once the capability is already on the folder) opens the helper and its Node
+      // to the sandbox. This install is per-user (build.nsis.perMachine is false), so this folder is the
+      // user's and writable here; the installer runs it too. A per-machine install (which a normal user
+      // cannot change) would rely on the elevated installer's run, and this one would log and move on.
+      // uninstall first removes any sandbox profiles a crash left behind (only this app's own: the
+      // LocalCognitive.Sandbox* ones); the single-instance lock means no run of ours is active yet.
+      const run = (args) => { try { require("child_process").execFileSync(helper, args, { stdio: "ignore", timeout: 30000 }); } catch (error) { console.error(`lc-sandbox ${args[0]} failed:`, error && error.message); } };
+      run(["uninstall"]);
+      run(["grant-tools", sandboxDir]);
     }
   }
   process.env.APP_DATA_DIR = path.join(dataRoot, "app");
