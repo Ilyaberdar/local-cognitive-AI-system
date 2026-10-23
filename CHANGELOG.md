@@ -16,6 +16,7 @@
 ### Desktop
 
 - **Progress bars look the part everywhere they appear:** the app's update, the CUDA runtime, model downloads and the voice model share one bar, with a rounded track and a fill in your accent colour. While the size is still unknown, a wave runs along the bar; a paused download is grey and a failed one red; with motion off the bar stays still. The update download shows what is downloading, then its sizes, speed and time left beside the percent, over a bar the width of its row. The microphone's level in Voice uses the same track.
+- **The CUDA download's buttons sit in one row:** in the dialog that offers the CUDA runtime, Cancel stays on the left and Close goes to the right, instead of one under the other.
 
 ## 0.1.8 — 2026-10-22
 

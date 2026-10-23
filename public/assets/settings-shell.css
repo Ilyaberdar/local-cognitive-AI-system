@@ -527,6 +527,9 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .gpu-runtime-status { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
 .gpu-runtime-license { margin: 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.45; }
 .gpu-runtime-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* In the offer dialog the state's buttons stay left and Close goes right, in one row. */
+.cuda-offer-progress > .gpu-runtime-actions { justify-self: stretch; }
+.cuda-offer [data-offer="close"] { margin-left: auto; }
 .cuda-offer { width: min(460px, calc(100vw - 32px)); box-sizing: border-box; padding: 20px; border: 1px solid var(--line-strong); border-radius: 16px;
   background: color-mix(in srgb, var(--bg-panel) 97%, transparent); color: var(--text); box-shadow: var(--popover-shadow); display: grid; gap: 12px; }
 .cuda-offer::backdrop { background: rgb(0 0 0 / 0.35); }

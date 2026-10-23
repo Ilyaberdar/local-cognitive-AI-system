@@ -35,6 +35,12 @@ test("GPU acceleration: each CUDA state says what happens, with NVIDIA's license
   assert.doesNotMatch(ui.cudaHtml(acceleration({ license: { name: "x", url: "javascript:alert(1)" } }), { confirming: true }), /javascript:/, "only an https license link");
   assert.match(ui.cudaHtml(acceleration({ state: "downloading", progress: { receivedBytes: 258 * MB, totalBytes: 516 * MB, bytesPerSecond: 8 * MB } })),
     /258 MB of 516 MB · 8\.0 MB\/s.*value="50".*data-gpu-action="cancel"/s);
+  // In the offer dialog, Close joins the state's buttons in one row (Cancel left, Close right), not a row of its own.
+  const close = '<button type="button" class="ghost-button" data-offer="close">Close</button>';
+  assert.match(ui.cudaHtml(acceleration({ state: "downloading", progress: { receivedBytes: 1, totalBytes: 2 } }), { actions: close }),
+    /<div class="gpu-runtime-actions"><button[^>]*data-gpu-action="cancel"[^>]*>Cancel<\/button><button[^>]*data-offer="close">Close<\/button><\/div>/);
+  assert.match(ui.cudaHtml(acceleration({ state: "installing" }), { actions: close }), /<div class="gpu-runtime-actions"><button[^>]*data-offer="close">Close<\/button><\/div>/);
+  assert.doesNotMatch(ui.cudaHtml(acceleration({ state: "installing" })), /gpu-runtime-actions/, "no empty row in Settings");
   assert.match(ui.cudaHtml(acceleration({ state: "installed" })), /is installed.*Remove CUDA runtime \(frees 0\.7 GB\)/s);
   assert.match(ui.cudaHtml(acceleration({ state: "failed", reason: "The CUDA runtime does not see the GPU." })), /does not see the GPU\. Models run on Vulkan\..*Try again/s);
   assert.match(ui.cudaHtml(acceleration({ state: "unavailable", reason: "Update the NVIDIA driver to 551.78 or newer to use CUDA (this computer has 537.58)." })), /Update the NVIDIA driver.*Check again/s);
