@@ -55,6 +55,9 @@ internal static class LcSandbox
                 case "__write": return InnerWrite(args);
                 case "__remove": return InnerRemove(args);
                 case "__empty": return InnerEmpty(args);
+                // Test-only (only with LC_SANDBOX_TEST=1): run the handle-based package-folder walk alone on
+                // a folder, so a live check can prove the walk itself deletes.
+                case "__walk": if (Environment.GetEnvironmentVariable("LC_SANDBOX_TEST") == "1" && args.Length > 1) { Native.DeleteTreeContents(args[1]); return 0; } Usage(); return 2;
                 default: Usage(); return 2;
             }
         }
@@ -163,11 +166,15 @@ internal static class LcSandbox
         return options.Profile;
     }
 
-    // The per-run capability name; the folder's grant and its profile both derive from its id.
+    // The per-run capability name; the folder's grant and its profile both derive from its id, which must
+    // be exactly 16 lowercase hex characters (every command enforces this, not only empty).
     private static string RequireRunCap(Options options)
     {
-        if (string.IsNullOrEmpty(options.RunCap) || !options.RunCap.StartsWith("LocalCognitive.Run.", StringComparison.Ordinal))
+        const string prefix = "LocalCognitive.Run.";
+        if (string.IsNullOrEmpty(options.RunCap) || !options.RunCap.StartsWith(prefix, StringComparison.Ordinal))
             throw new SandboxError("--run-cap LocalCognitive.Run.<id> is required");
+        string id = options.RunCap.Substring(prefix.Length);
+        if (id.Length != 16 || !IsLowerHex(id)) throw new SandboxError("the run capability id must be 16 lowercase hex characters: " + id);
         return options.RunCap;
     }
 
@@ -226,31 +233,62 @@ internal static class LcSandbox
         return Run(options, self, innerArgs);
     }
 
-    // The folder's last command: empty it inside the container, then empty its real package folder and
-    // delete its AppContainer profile. The profile outlives a single command but not the folder.
+    // The folder's last command: empty the work folder inside the container, then empty the run's real
+    // package folder by handle and delete the profile. The profile outlives a single command but not the
+    // folder.
     private static int Empty(string[] args)
     {
         Options options = Parse(args, 1);
         string profile = RequireProfile(options);
         string self = GetExecutablePath();
-        // The profile id is this run's capability id: exactly 16 lowercase hex characters.
-        string id = profile.Substring(ProfilePrefix.Length + 1);
-        if (id.Length != 16 || !IsLowerHex(id)) throw new SandboxError("the profile id must be 16 lowercase hex characters: " + id);
         int code = Run(options, self, new List<string> { "__empty", RequireRw(options) });
-        // Before deleting the profile, empty its real package folder with a handle-based delete that never
-        // follows a reparse point, so the privileged delete cannot be led through a link. The sandboxed
-        // code cannot reach this folder (its LOCALAPPDATA is redirected into the work folder, and the real
-        // one is EPERM to it), so this is defence in depth. The path comes from the SID, not an env or the
-        // Shell Folders key, and must be a direct child of a "Packages" folder.
-        try
-        {
-            string pkg = Native.AppContainerFolderPath(Native.ContainerSid(profile));
-            if (pkg != null && Directory.Exists(pkg) && string.Equals(Path.GetFileName(Path.GetDirectoryName(pkg.TrimEnd('\\'))), "Packages", StringComparison.OrdinalIgnoreCase))
-                Native.DeleteTreeContents(pkg);
-        }
-        catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not empty the package folder of " + profile + ": " + error.Message); }
-        try { Native.DeleteAppContainerProfile(profile); } catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not delete the profile " + profile + ": " + error.Message); }
+        DeleteProfileSafely(profile, Native.ContainerSid(profile));
         return code;
+    }
+
+    // Empties a profile's real package folder with the handle-based, reparse-safe walk, then deletes the
+    // profile. The package folder comes from the container SID (GetAppContainerFolderPath returns
+    // …\Packages\<moniker>\AC); its parent, the <moniker> folder, is what is emptied, and only when the
+    // shape is exactly Packages\<moniker>\AC. If the walk cannot be done safely the profile is LEFT in
+    // place (a later clean-stale retries) rather than handed to userenv's own recursive delete, which
+    // might follow a link. `sid` may be Zero for a profile being cleaned up (then it is derived).
+    // Returns true when the profile is gone afterwards, false when it was left in place (its package
+    // folder could not be emptied safely, or the delete failed).
+    private static bool DeleteProfileSafely(string profile, IntPtr sid)
+    {
+        bool safe;
+        try { safe = EmptyPackageFolder(sid == IntPtr.Zero ? Native.DeriveContainerSid(profile) : sid, profile); }
+        catch (Exception error) { safe = false; Console.Error.WriteLine("lc-sandbox: could not empty the package folder of " + profile + ": " + error.Message); }
+        if (!safe) { Console.Error.WriteLine("lc-sandbox: left the profile " + profile + " in place (its package folder could not be emptied safely); a later clean-stale will retry"); return false; }
+        int hr;
+        try { hr = Native.DeleteAppContainerProfile(profile); }
+        catch (Exception error) { Console.Error.WriteLine("lc-sandbox: could not delete the profile " + profile + ": " + error.Message); return false; }
+        // S_OK, or a profile that is not there (ERROR_FILE_NOT_FOUND / ERROR_NOT_FOUND): gone.
+        bool gone = hr == 0 || hr == unchecked((int)0x80070002) || hr == unchecked((int)0x80070490);
+        if (!gone) Console.Error.WriteLine("lc-sandbox: could not delete the profile " + profile + " (hr=0x" + hr.ToString("X8") + ")");
+        return gone;
+    }
+
+    // true when the package folder is (now) safely empty or absent; false when it exists but could not be
+    // walked safely (unknown shape, enumeration error, a reparse point at the top).
+    private static bool EmptyPackageFolder(IntPtr sid, string profile)
+    {
+        // Test-only (LC_SANDBOX_TEST_FAIL_WALK=1): simulate an enumeration error, to prove a failed walk
+        // leaves the profile in place.
+        if (Environment.GetEnvironmentVariable("LC_SANDBOX_TEST_FAIL_WALK") == "1") throw new Exception("test-induced walk failure");
+        if (sid == IntPtr.Zero) return true; // the profile is gone; nothing to walk
+        string ac = Native.AppContainerFolderPath(sid);
+        if (ac == null) return true; // no folder known
+        ac = ac.TrimEnd('\\');
+        string pkg = Path.GetDirectoryName(ac);
+        // The shape must be exactly …\Packages\<moniker>\AC, with <moniker> the profile name lowercased.
+        if (pkg == null ||
+            !string.Equals(Path.GetFileName(ac), "AC", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetFileName(pkg), profile.ToLowerInvariant(), StringComparison.Ordinal) ||
+            !string.Equals(Path.GetFileName(Path.GetDirectoryName(pkg)), "Packages", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (Directory.Exists(pkg)) Native.DeleteTreeContents(pkg); // throws on an unsafe walk
+        return true;
     }
 
     private static bool IsLowerHex(string s)
@@ -355,6 +393,8 @@ internal static class LcSandbox
         IntPtr parent = Native.OpenDirHold(dir != null && dir.Length > 0 ? dir : Directory.GetCurrentDirectory());
         try
         {
+            // The held parent must be a real directory, not a reparse point.
+            if (Native.HandleIsReparse(parent)) throw new SandboxError("the parent of " + args[1] + " is a reparse point");
             // Refuse an existing reparse point at the target up front (fail closed); the post-open check
             // below is the backstop if one is swapped in during the open.
             if (Native.IsReparsePoint(target)) throw new SandboxError("the target " + args[1] + " is a reparse point");
@@ -384,6 +424,7 @@ internal static class LcSandbox
         IntPtr parent = Native.OpenDirHold(dir != null && dir.Length > 0 ? dir : Directory.GetCurrentDirectory());
         try
         {
+            if (Native.HandleIsReparse(parent)) throw new SandboxError("the parent of " + args[1] + " is a reparse point");
             // The final component may be a reparse point here — removing unlinks the link itself (opened
             // with OPEN_REPARSE_POINT), never its target — and is deleted through its own handle.
             IntPtr handle = Native.OpenFinalForRemove(target);
@@ -520,21 +561,28 @@ internal static class LcSandbox
     // Removes AppContainer profiles this app made (prefix LocalCognitive.Sandbox), read from the user's
     // AppContainer mappings; a profile with any other name is never touched. uninstall removes all of them
     // (the NSIS uninstaller); clean-stale (app start) removes only those whose owning app process is gone,
-    // so a second instance's live runs — which share the user's registry — are left alone.
+    // so a second instance's live runs — which share the user's registry — are left alone. A profile from
+    // before owner tags existed (no "lcowner=" display name) is removed by clean-stale only once its
+    // registry key is more than a day old. Each removal first empties the package folder by handle, and a
+    // profile whose folder cannot be emptied safely is left for a later run.
     private static int RemoveProfiles(bool onlyStale)
     {
-        int removed = 0, kept = 0, failed = 0;
+        int removed = 0, kept = 0, left = 0;
+        long dayAgo = DateTime.UtcNow.AddDays(-1).ToFileTimeUtc();
         foreach (string[] profile in Native.SandboxProfiles(ProfilePrefix))
         {
             string moniker = profile[0], owner = profile[1];
-            if (onlyStale && Native.OwnerAlive(owner)) { kept++; continue; }
-            int hr = Native.DeleteAppContainerProfile(moniker);
-            bool gone = hr == 0 || hr == unchecked((int)0x80070002) || hr == unchecked((int)0x80070490);
-            if (gone) removed++;
-            else { failed++; Console.Error.WriteLine("lc-sandbox: could not delete the profile " + moniker + " (hr=0x" + hr.ToString("X8") + ")"); }
+            long lastWrite; long.TryParse(profile[2], out lastWrite);
+            if (onlyStale)
+            {
+                bool tagged = !string.IsNullOrEmpty(owner) && owner.StartsWith("lcowner=", StringComparison.Ordinal);
+                if (tagged ? Native.OwnerAlive(owner) : lastWrite > dayAgo) { kept++; continue; }
+            }
+            // Empty the package folder safely, then delete the profile; left in place if the walk is unsafe.
+            if (DeleteProfileSafely(moniker, Native.DeriveContainerSid(moniker))) removed++; else left++;
         }
-        Console.Out.WriteLine((onlyStale ? "clean-stale" : "uninstall") + " removed " + removed + " profile(s)" + (kept > 0 ? ", kept " + kept + " in use" : "") + (failed > 0 ? ", " + failed + " failed" : ""));
-        return failed > 0 ? 1 : 0;
+        Console.Out.WriteLine((onlyStale ? "clean-stale" : "uninstall") + " removed " + removed + " profile(s)" + (kept > 0 ? ", kept " + kept + " in use" : "") + (left > 0 ? ", left " + left + " for later" : ""));
+        return left > 0 ? 1 : 0;
     }
     private static int Uninstall() { return RemoveProfiles(false); }
     private static int CleanStale() { return RemoveProfiles(true); }
@@ -647,6 +695,14 @@ internal static class LcSandbox
 
         public static int DeleteAppContainerProfile(string name) { return DeleteAppContainerProfileNative(name); }
 
+        // The SID of an existing profile, or Zero when it does not exist. Never creates it (unlike
+        // ContainerSid), so cleanup can locate a stale profile's folder without reviving it.
+        public static IntPtr DeriveContainerSid(string name)
+        {
+            IntPtr sid;
+            return DeriveAppContainerSidFromAppContainerName(name, out sid) == 0 ? sid : IntPtr.Zero;
+        }
+
         [StructLayout(LayoutKind.Sequential)] private struct PROCESSENTRY32 {
             public uint dwSize; public uint cntUsage, th32ProcessID; public IntPtr th32DefaultHeapID; public uint th32ModuleID, cntThreads, th32ParentProcessID; public int pcPriClassBase; public uint dwFlags;
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile; }
@@ -737,9 +793,12 @@ internal static class LcSandbox
             finally { if (groups != IntPtr.Zero) LocalFree(groups); if (caps != IntPtr.Zero) LocalFree(caps); }
         }
 
-        // The AppContainer profiles whose name carries the prefix, each with the owner tag stored in its
-        // display name, read from the user's AppContainer mappings. A profile with any other name is never
-        // returned, so cleanup cannot touch another application's container.
+        [DllImport("advapi32.dll", SetLastError = true)] private static extern int RegQueryInfoKey(Microsoft.Win32.SafeHandles.SafeRegistryHandle key, IntPtr cls, IntPtr clsLen, IntPtr reserved, IntPtr subKeys, IntPtr maxSubKeyLen, IntPtr maxClassLen, IntPtr values, IntPtr maxValueNameLen, IntPtr maxValueLen, IntPtr securityDescriptor, out long lastWriteTime);
+
+        // The AppContainer profiles whose name carries the prefix. Each is {moniker, ownerTag, lastWrite},
+        // where ownerTag is the display name and lastWrite is the registry key's last-write FILETIME (a
+        // 64-bit integer, "0" if it cannot be read). Read from the user's AppContainer mappings; a profile
+        // with any other name is never returned, so cleanup cannot touch another application's container.
         public static List<string[]> SandboxProfiles(string prefix)
         {
             List<string[]> result = new List<string[]>();
@@ -752,9 +811,11 @@ internal static class LcSandbox
                     using (Microsoft.Win32.RegistryKey entry = mappings.OpenSubKey(sid))
                     {
                         string moniker = entry == null ? null : entry.GetValue("Moniker") as string;
-                        if (!string.IsNullOrEmpty(moniker) &&
-                            (moniker.Equals(prefix, StringComparison.OrdinalIgnoreCase) || moniker.StartsWith(prefix + ".", StringComparison.OrdinalIgnoreCase)))
-                            result.Add(new string[] { moniker, (entry.GetValue("DisplayName") as string) ?? "" });
+                        if (string.IsNullOrEmpty(moniker) ||
+                            !(moniker.Equals(prefix, StringComparison.OrdinalIgnoreCase) || moniker.StartsWith(prefix + ".", StringComparison.OrdinalIgnoreCase))) continue;
+                        long lastWrite = 0;
+                        try { RegQueryInfoKey(entry.Handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out lastWrite); } catch { lastWrite = 0; }
+                        result.Add(new string[] { moniker, (entry.GetValue("DisplayName") as string) ?? "", lastWrite.ToString() });
                     }
                 }
             }
@@ -814,15 +875,47 @@ internal static class LcSandbox
         private const uint DELETE = 0x10000, FILE_LIST_DIRECTORY = 0x1, FILE_READ_ATTRIBUTES = 0x80;
         private const int ERROR_FILE_NOT_FOUND = 2, ERROR_PATH_NOT_FOUND = 3, ERROR_NO_MORE_FILES = 18;
 
+        // Deletes the object the handle names. Prefers FileDispositionInfoEx (so a read-only file goes, and
+        // the name is freed at once), and falls back to FileDispositionInfo where Ex is not supported (an
+        // older Windows), first clearing the read-only attribute so that path works too.
         private static void DeleteViaHandle(IntPtr handle)
         {
-            IntPtr info = Marshal.AllocHGlobal(1);
-            try { Marshal.WriteByte(info, 0, 1); if (!SetFileInformationByHandle(handle, 4 /*FileDispositionInfo*/, info, 1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "SetFileInformationByHandle (delete)"); }
-            finally { Marshal.FreeHGlobal(info); }
+            IntPtr ex = Marshal.AllocHGlobal(4);
+            try
+            {
+                // FILE_DISPOSITION_FLAG_DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE.
+                Marshal.WriteInt32(ex, 0, 0x1 | 0x2 | 0x10);
+                if (SetFileInformationByHandle(handle, 21 /*FileDispositionInfoEx*/, ex, 4)) return;
+                int err = Marshal.GetLastWin32Error();
+                // Not on this Windows (pre-1709): fall back. Any other error is real.
+                if (err != ERROR_INVALID_PARAMETER && err != 50 /*ERROR_NOT_SUPPORTED*/ && err != 1 /*ERROR_INVALID_FUNCTION*/)
+                    throw new Win32Exception(err, "SetFileInformationByHandle (delete-ex)");
+                ClearReadOnly(handle);
+                IntPtr info = Marshal.AllocHGlobal(1);
+                try { Marshal.WriteByte(info, 0, 1); if (!SetFileInformationByHandle(handle, 4 /*FileDispositionInfo*/, info, 1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "SetFileInformationByHandle (delete)"); }
+                finally { Marshal.FreeHGlobal(info); }
+            }
+            finally { Marshal.FreeHGlobal(ex); }
+        }
+
+        // Clears the read-only attribute on a handle (FILE_BASIC_INFO, times left at 0 = unchanged), so the
+        // non-Ex disposition can delete it. Best effort.
+        private static void ClearReadOnly(IntPtr handle)
+        {
+            IntPtr basic = Marshal.AllocHGlobal(40);
+            try
+            {
+                for (int off = 0; off < 32; off += 8) Marshal.WriteInt64(basic, off, 0); // leave all four times unchanged
+                Marshal.WriteInt32(basic, 32, 0x80 /*FILE_ATTRIBUTE_NORMAL*/);
+                SetFileInformationByHandle(handle, 0 /*FileBasicInfo*/, basic, 40);
+            }
+            finally { Marshal.FreeHGlobal(basic); }
         }
 
         // The child names under a directory handle, read from the handle itself (FILE_FULL_DIR_INFO), so
-        // the names come from the held directory, not a fresh path lookup. "." and ".." are left out.
+        // the names come from the held directory, not a fresh path lookup. "." and ".." are left out. The
+        // enumeration fails closed: it stops only at ERROR_NO_MORE_FILES, and throws on any other error
+        // (never reads an error as an empty folder).
         private static List<string> ChildNames(IntPtr dirHandle)
         {
             List<string> names = new List<string>();
@@ -830,10 +923,16 @@ internal static class LcSandbox
             IntPtr buffer = Marshal.AllocHGlobal(size);
             try
             {
-                int cls = 3; // FileFullDirectoryRestartInfo first, then FileFullDirectoryInfo (2)
-                while (GetFileInformationByHandleEx(dirHandle, cls, buffer, (uint)size))
+                int cls = 15; // FileFullDirectoryRestartInfo, then FileFullDirectoryInfo (14)
+                while (true)
                 {
-                    cls = 2;
+                    if (!GetFileInformationByHandleEx(dirHandle, cls, buffer, (uint)size))
+                    {
+                        int err = Marshal.GetLastWin32Error();
+                        if (err == ERROR_NO_MORE_FILES) break;
+                        throw new Win32Exception(err, "enumerate directory");
+                    }
+                    cls = 14;
                     long at = buffer.ToInt64();
                     while (true)
                     {
@@ -865,7 +964,13 @@ internal static class LcSandbox
                 if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return;
                 throw new Win32Exception(err, "open " + path);
             }
-            try { DeleteContents(dir, path); }
+            try
+            {
+                // The top of the walk must be a real directory: if it is a reparse point, refuse rather than
+                // treat its target as the package folder.
+                if (HandleIsReparse(dir)) throw new SandboxError("the folder to empty is a reparse point: " + path);
+                DeleteContents(dir, path);
+            }
             finally { CloseHandle(dir); }
         }
 
