@@ -5496,18 +5496,22 @@ function getRuntimeProviderStatus(providerId) {
     };
   }
 
-  const apiKey = String(provider.apiKey || "").trim();
-  const isLocalAlias =
-    isLocalishUrl(provider.baseUrl) ||
-    apiKey.toLowerCase() === "local" ||
-    apiKey.toLowerCase() === "lm-studio";
+  // The settings say whether a key would be used (apiKeyState), never the key.
+  if (["unreadable", "address-changed", "environment-address-changed"].includes(provider.apiKeyState)) {
+    return {
+      label: "enter the key again",
+      tone: "danger"
+    };
+  }
 
-  if (!apiKey) {
+  if (!["set", "environment", "unprotected"].includes(provider.apiKeyState)) {
     return {
       label: "not configured",
       tone: "danger"
     };
   }
+
+  const isLocalAlias = isLocalishUrl(provider.baseUrl);
 
   if (isLocalAlias) {
     return {

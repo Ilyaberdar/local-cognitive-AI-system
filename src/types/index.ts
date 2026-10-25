@@ -115,10 +115,10 @@ export interface DebateSettings {
   judge: ProviderTarget;
 }
 
-export interface ProviderRuntimeSettings {
+/** A provider's settings, without its key. */
+export interface ProviderSettings {
   enabled: boolean;
   baseUrl: string;
-  apiKey?: string;
   model: string;
   timeoutMs: number;
   version?: string;
@@ -134,6 +134,19 @@ export interface ProviderRuntimeSettings {
   source?: "environment";
   /** A service added as Other that answered a tool call when it was added: its agents act through chat tool calls. */
   nativeTools?: "chat";
+}
+
+/** A provider with its key, as a settings patch sets it (the key is then saved in the credential vault). */
+export interface ProviderRuntimeSettings extends ProviderSettings {
+  apiKey?: string;
+}
+
+/** A provider as settings.json keeps it: `apiKeyRef` names its key's record in the credential vault
+ * (src/app/ProviderKeyStore.ts). `apiKey` is a key saved before keys were encrypted: it stays only
+ * while the vault cannot be used, and never reaches a client. */
+export interface StoredProviderSettings extends ProviderSettings {
+  apiKeyRef?: string;
+  apiKey?: string;
 }
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -242,6 +255,9 @@ export interface AppSettings {
   };
   telegram: {
     enabled: boolean;
+    /** The bot token's record in the credential vault; `botToken` is one saved before tokens were
+     * encrypted, kept only while the vault cannot be used. */
+    botTokenRef?: string;
     botToken?: string;
     ownerUserIds: string[];
     pollTimeoutSec: number;
@@ -257,7 +273,7 @@ export interface AppSettings {
       dbPath: string;
     };
   };
-  providers: Record<string, ProviderRuntimeSettings>;
+  providers: Record<string, StoredProviderSettings>;
   plugins: Record<string, PluginRuntimeSettings>;
 }
 

@@ -19,7 +19,8 @@ export const vaultForbiddenRoots = (config: AppConfig, extra: string[] = []): st
 
 export interface HeadlessVault { vault: EncryptedCredentialVault; configured: boolean; keyIds?: string[]; error?: string }
 
-const unavailable = (directory: string, reason: string) => new EncryptedCredentialVault(directory, {
+/** A vault that cannot be used, and says why (no plaintext fallback). */
+export const unavailableVaultAt = (directory: string, reason: string) => new EncryptedCredentialVault(directory, {
   available: () => false, unavailableReason: () => reason,
   encrypt: () => { throw new Error(reason); }, decrypt: () => { throw new Error(reason); }
 });
@@ -29,7 +30,7 @@ const unavailable = (directory: string, reason: string) => new EncryptedCredenti
 export const resolveHeadlessVault = (config: AppConfig, env: NodeJS.ProcessEnv = process.env, extraRoots: string[] = []): HeadlessVault => {
   const directory = headlessVaultDirectory(config.appDataDir);
   const file = env[VAULT_KEY_FILE_ENV]?.trim();
-  if (!file) return { vault: unavailable(directory, "Credential storage is not configured on this server. Run `local-cognitive-server init` and set LOCAL_COGNITIVE_VAULT_KEY_FILE."), configured: false };
+  if (!file) return { vault: unavailableVaultAt(directory, "Credential storage is not configured on this server. Run `local-cognitive-server init` and set LOCAL_COGNITIVE_VAULT_KEY_FILE."), configured: false };
   try {
     const roots = vaultForbiddenRoots(config, extraRoots);
     const keys: VaultKey[] = [loadVaultKey(file, { forbiddenRoots: roots })];
@@ -40,6 +41,6 @@ export const resolveHeadlessVault = (config: AppConfig, env: NodeJS.ProcessEnv =
     return { vault: new EncryptedCredentialVault(directory, createAeadVaultCipher(keys)), configured: true, keyIds: keys.map(key => key.id) };
   } catch (error) {
     const message = `Credential storage key could not be loaded: ${error instanceof Error ? error.message : String(error)}`;
-    return { vault: unavailable(directory, message), configured: true, error: message };
+    return { vault: unavailableVaultAt(directory, message), configured: true, error: message };
   }
 };

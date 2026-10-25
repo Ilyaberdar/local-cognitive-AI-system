@@ -21,11 +21,13 @@ Inside the data folder:
 | `models/` | Downloaded models |
 | `app/settings.json` | Settings |
 | `app/runtime/host.db` | Work in progress, the token ledger, Remote access (SQLite) |
-| `app/integrations/vault/` | Encrypted secrets: provider keys, sign-in, Remote keys, plugin tokens |
+| `app/integrations/vault/` (the app), `app/integrations/host-vault/` (a server) | Encrypted secrets: provider API keys and the Telegram bot token, sign-in, Remote keys, plugin and MCP tokens |
 | `app/diagnostics/` | A small technical log of event codes, without text from your chats |
 | `output/` | Files the app wrote for you |
 
-Secrets are encrypted. On a Mac the key is kept in the Keychain, on Windows by the system's data protection, and on a server in `/etc/local-cognitive/vault.key`.
+Secrets are encrypted, and `app/settings.json` names each provider key and the bot token only by a reference. On a Mac the encryption key is kept in the Keychain, on Windows by the system's data protection for your account, and on a server in `/etc/local-cognitive/vault.key`, outside the data folder. On a Mac, a run from source (the development window, `npm start`, `npm run mcp:stdio`) keeps its secrets in `app/integrations/dev-vault/`, with its key in `~/.config/local-cognitive/dev-vault.key`: any program running as you can read that file, and so the secrets. The encryption protects keys in a copy of the data folder or a backup without that key; a program running as your user on Windows, or as the server's account on Linux, can still decrypt them.
+
+A saved key is sent only to the host (origin: scheme, host and port) it was saved for: when you move a provider to another host, enter its key again; another path on the same host keeps it. Keys set in the environment (a server's `/etc/local-cognitive/server.env`, or `.env` for a run from source) stay there as written and are never copied into the settings; a key saved in Settings is used instead of one from the environment. Version 0.1.9 and earlier kept keys in `settings.json`: they move to the vault at the first start where it can be used, and are removed from the `settings.pre-*.json` archives of earlier updates too, but not from backups or copies made before. A Notion key saved by a development build from before the first release stays, in plain text, in `app/settings.pre-integrations.json`, the recovery copy of the change that replaced that plugin: delete the file if you do not need it.
 
 ## What reaches the Cloud
 

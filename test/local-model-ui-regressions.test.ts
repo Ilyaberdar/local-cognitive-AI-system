@@ -413,7 +413,8 @@ test("remote provider tests save the values currently entered in Settings before
   const payload = { providers: { anthropic: { apiKey: "draft-key", model: "claude-sonnet-test" } } };
   const saved = {
     providers: [{ id: "anthropic" }], plugins: [], tools: [],
-    settings: { providers: { anthropic: { apiKey: "draft-key" } } },
+    // The API answers with the key's state, never the key.
+    settings: { providers: { anthropic: { apiKeyState: "set" } } },
     availableModels: [{ providerId: "anthropic", id: "claude-sonnet-test" }]
   };
   const calls: unknown[][] = [];

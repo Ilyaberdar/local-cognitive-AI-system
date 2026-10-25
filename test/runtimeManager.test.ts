@@ -9,6 +9,7 @@ import { RuntimeManager } from "../src/app/RuntimeManager";
 import { Logger } from "../src/utils/Logger";
 import { LocalModelOptions } from "../src/local/types";
 import { LLMRequest, LocalGenerationSettings, ProcessProgressEvent } from "../src/types";
+import { keyVault } from "./fixtures/keyVault";
 
 const deferred = () => {
   let resolve!: () => void;
@@ -27,11 +28,12 @@ async function fixture(t: TestContext) {
     localModels: { ...config.localModels!, runtimeDir: path.join(root, "runtime"), executablePath: undefined,
       modelsDir: path.join(root, "models"), contextSize: 4096 }
   };
-  const store = new AppSettingsStore(options.appDataDir, options);
-  const manager = new RuntimeManager(options, store, new Logger());
+  const vault = keyVault();
+  const store = new AppSettingsStore(options.appDataDir, options, { vault });
+  const manager = new RuntimeManager(options, store, new Logger(), {}, { vault });
   const runtime = await manager.init();
   t.after(async () => { await manager.dispose(); await fs.rm(root, { recursive: true, force: true }); });
-  return { manager, store, service: runtime.localModelService, settingsPath: path.join(options.appDataDir, "settings.json") };
+  return { manager, store, vault, service: runtime.localModelService, settingsPath: path.join(options.appDataDir, "settings.json") };
 }
 
 test("settings commit only after local reconfiguration succeeds; failures preserve the prior settings", async (t) => {
@@ -172,21 +174,25 @@ test("local generation profiles persist and update a loaded service without a ru
 });
 
 test("entity edits preserve all neighboring configuration and explicit secrets remain cleared", async t => {
-  const { manager, store } = await fixture(t);
+  const { manager, store, vault } = await fixture(t);
   await manager.updateSettings({
     providers: { openai: { apiKey: "openai-fixture" }, anthropic: { apiKey: "anthropic-fixture", model: "preserve" } },
     filesystem: { outputDir: path.join((await store.get()).filesystem!.outputDir, "preserved") }
   });
   const previous = await store.get();
   const edited = await manager.updateSettings({ providers: { openai: { model: "new-model" } } });
-  assert.equal(edited.settings.providers.openai.apiKey, "openai-fixture");
+  assert.equal(edited.settings.providers.openai.apiKeyRef, previous.providers.openai.apiKeyRef, "the saved key is kept");
+  assert.equal(edited.runtime.config.providers.openai.apiKey, "openai-fixture");
+  assert.equal((await manager.providerKeys(edited.settings)).providers.openai?.key, "openai-fixture");
   for (const key of ["plugins", "mcp", "memory", "telegram", "localModels"] as const) assert.deepEqual(edited.settings[key], previous[key]);
   assert.deepEqual(edited.settings.providers.anthropic, previous.providers.anthropic);
   const removed = await manager.updateSettings({ providers: { openai: { apiKey: "" } } });
-  assert.equal(removed.runtime.config.providers.openai.apiKey, "");
+  assert.equal(removed.runtime.config.providers.openai.apiKey, undefined);
   assert.deepEqual(removed.settings.filesystem, previous.filesystem);
   await assert.rejects(manager.updateSettings({ plugins: { notion: { values: { apiKey: "obsolete" } } } }), /Legacy plugins/);
-  assert.equal((await store.get()).providers.openai.apiKey, "");
+  assert.equal((await store.get()).providers.openai.apiKeyRef, undefined);
+  assert.equal((await manager.providerKeys()).providers.openai?.state, "unset");
+  assert.deepEqual([...vault.values.keys()].filter(name => name.startsWith("provider-key/openai/")), [], "its record is gone");
 });
 
 test("invalid entity fields reject without publishing settings; serialized preference edits persist the latest value", async t => {

@@ -5,6 +5,7 @@ import path from "node:path";
 import test, { TestContext } from "node:test";
 import { buildSync } from "esbuild";
 import { AppSettingsStore } from "../src/app/AppSettingsStore";
+import { keyVault } from "./fixtures/keyVault";
 import type { RuntimeManager } from "../src/app/RuntimeManager";
 import { validateSettingsPatch } from "../src/app/settingsValidation";
 import { config } from "../src/config/config";
@@ -206,9 +207,9 @@ test("the catalog, the configuration and the environment agree about Qwen; its k
 test("a paired device sets Qwen's key and model, never its address, and sees only whether a key is saved", async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "compatible-remote-")));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const store = new AppSettingsStore(root, config);
+  const store = new AppSettingsStore(root, config, { vault: keyVault() });
   await store.update({ providers: { qwen: { apiKey: "" } } });
-  const runtimeManager = { getSettings: () => store.get(),
+  const runtimeManager = { getSettings: () => store.get(), providerKeys: async (settings?: never) => store.resolveKeys(settings ?? await store.get()),
     updateSettings: async (patch: AppSettingsPatch) => { validateSettingsPatch(patch); return { settings: await store.update(patch) }; },
     getRuntime: () => ({ llmService: { generateText: async () => ({ text: "ok" }) }, localModelService: { snapshot: () => ({ runtime: { status: "stopped" } }) } }) } as unknown as RuntimeManager;
   const ops = createSettingsOperations({ runtimeManager, isDraining: () => false });
@@ -216,7 +217,8 @@ test("a paired device sets Qwen's key and model, never its address, and sees onl
   const call = (op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<any>;
   await call("settings.update", { providers: { qwen: { apiKey: { set: "sk-qwen-remote-1234" }, model: "qwen3.8-flash" } } });
   const saved = (await store.get()).providers.qwen;
-  assert.equal(saved.apiKey, "sk-qwen-remote-1234");
+  assert.equal((await store.resolveKeys(await store.get())).providers.qwen?.key, "sk-qwen-remote-1234");
+  assert.equal((await fs.readFile(path.join(root, "settings.json"), "utf8")).includes("sk-qwen-remote-1234"), false, "the key is in the vault");
   assert.equal(saved.model, "qwen3.8-flash");
   await assert.rejects(call("settings.update", { providers: { qwen: { baseUrl: "https://elsewhere.example/v1" } } }), (error: unknown) => error instanceof RemoteOperationError);
   const view = JSON.stringify((await call("settings.get")).settings);
@@ -547,7 +549,8 @@ test("an added provider is saved, registered with its preset's catalog, and remo
     memory: { ...config.memory, adapter: "local-json" as const, baseDir: path.join(root, "memory") }, outputDir: path.join(root, "output"),
     plugins: { dir: path.join(root, "plugins"), overrides: {} }, telegram: { ...config.telegram, enabled: false, botToken: "" },
     localModels: { ...config.localModels!, runtimeDir: path.join(root, "runtime"), executablePath: undefined, modelsDir: path.join(root, "models"), contextSize: 4096 } };
-  const manager = new RuntimeManager(options, new AppSettingsStore(options.appDataDir, options), new Logger());
+  const vault = keyVault();
+  const manager = new RuntimeManager(options, new AppSettingsStore(options.appDataDir, options, { vault }), new Logger(), {}, { vault });
   await manager.init();
   t.after(async () => { await manager.dispose(); await fs.rm(root, { recursive: true, force: true }); });
 
@@ -575,8 +578,10 @@ test("an added provider is saved, registered with its preset's catalog, and remo
   const moved = await manager.updateSettings({ providers: { "my-tools": { baseUrl: "https://other.example/v1" } } });
   assert.equal(moved.settings.providers["my-tools"]?.nativeTools, undefined);
   assert.equal(moved.runtime.providerDescriptors.find(item => item.id === "my-tools")?.capabilities?.nativeTools, false);
+  assert.ok([...vault.values.keys()].some(name => name.startsWith("provider-key/deepseek-2/")));
   const removed = await manager.updateSettings({ providers: { "deepseek-2": null } });
   assert.equal(removed.settings.providers["deepseek-2"], undefined);
+  assert.equal([...vault.values.keys()].some(name => name.startsWith("provider-key/deepseek-2/")), false, "its key's record is removed with it");
   assert.equal(removed.runtime.providerDescriptors.some(item => item.id === "deepseek-2"), false);
   assert.ok(removed.settings.providers.qwen);
 });
@@ -589,11 +594,16 @@ function settingsPage(t: TestContext, providers: Record<string, unknown>) {
   const saves: Array<Record<string, any>> = [], tests: unknown[][] = [], discovered: Array<Record<string, string>> = [];
   const appSettings: Record<string, any> = { memory: { localProfileId: "local-1" }, profile: { displayName: "Mira" }, llm: { defaultProvider: "llamacpp" }, providers };
   const providerPresets = PROVIDER_PRESETS.map(({ env: _env, ...preset }) => preset);
-  const descriptors = () => Object.entries(appSettings.providers).map(([id, entry]: [string, any]) => ({ id, name: entry.name ?? id, configured: Boolean(entry.apiKey), defaultModel: entry.model,
+  const descriptors = () => Object.entries(appSettings.providers).map(([id, entry]: [string, any]) => ({ id, name: entry.name ?? id, configured: entry.apiKeyState === "set", defaultModel: entry.model,
     ...(providerPreset(entry.preset ?? id) ? { catalog: { keyUrl: providerPreset(entry.preset ?? id)!.keyUrl, models: providerPreset(entry.preset ?? id)!.models, regions: providerPreset(entry.preset ?? id)!.regions } } : {}) }));
   const data = { integrations: [],
+    // As the API answers: a saved key comes back as its state, never the key.
     save: async (patch: Record<string, any>) => { saves.push(JSON.parse(JSON.stringify(patch)));
-      for (const [id, entry] of Object.entries(patch.providers ?? {})) { if (entry === null) delete appSettings.providers[id]; else appSettings.providers[id] = { ...appSettings.providers[id], ...(entry as object) }; } },
+      for (const [id, entry] of Object.entries(patch.providers ?? {})) {
+        if (entry === null) { delete appSettings.providers[id]; continue; }
+        const { apiKey, ...fields } = entry as Record<string, unknown>;
+        appSettings.providers[id] = { ...appSettings.providers[id], ...fields, ...(apiKey === undefined ? {} : { apiKeyState: apiKey ? "set" : "unset" }) };
+      } },
     testProvider: async (...args: unknown[]) => { tests.push(args); return { ok: true, message: "Provider replied: ok", model: args[1] }; },
     discoverModels: async (body: Record<string, string>) => { discovered.push(body);
       if (body.apiKey.includes("wrong")) throw new Error("The service refused this key.");
@@ -668,7 +678,7 @@ test("Add provider: a preset fills its fields, the provider is saved and tested,
 test("an added provider can be removed from its page; a built-in one cannot; a region fills Qwen's address", async t => {
   const ui = settingsPage(t, {
     qwen: { kind: "openai-compatible", dialect: "qwen", name: "Qwen (Alibaba Cloud)", enabled: true, baseUrl: SINGAPORE, model: "qwen3.7-plus", timeoutMs: 300000 },
-    groq: { kind: "openai-compatible", dialect: "groq", preset: "groq", name: "Groq", enabled: true, baseUrl: "https://api.groq.com/openai/v1", apiKey: "gsk-x", model: "openai/gpt-oss-120b", timeoutMs: 300000 }
+    groq: { kind: "openai-compatible", dialect: "groq", preset: "groq", name: "Groq", enabled: true, baseUrl: "https://api.groq.com/openai/v1", apiKeyState: "set", model: "openai/gpt-oss-120b", timeoutMs: 300000 }
   });
   ui.shell.route("#/settings/providers/qwen");
   assert.equal(ui.content().querySelector("[data-remove-provider]"), null);
@@ -707,6 +717,18 @@ test("adding a provider first reads the models the service lists for that addres
   assert.equal((await call({ baseUrl: "https://user:pw@x.example/v1", apiKey: "k" })).status, 400);
   assert.equal((await call({ baseUrl: base, apiKey: " " })).status, 400);
   assert.equal((await call({ baseUrl: base, apiKey: "good-key-123", dialect: "anthropic" })).status, 400);
+});
+
+test("adding a provider masks every occurrence of its key in what the service said", async t => {
+  const { createProviderDiscoverController } = await import("../src/api/controller");
+  const key = "sk-echoed-key-1234567";
+  t.mock.method(globalThis, "fetch", async () => { throw new Error(`connect failed for ${key}; retried with ${key}`); });
+  let status = 0, payload: any;
+  const res = { status(code: number) { status = code; return this; }, json(value: unknown) { payload = value; return this; } };
+  await createProviderDiscoverController()({ body: { baseUrl: "https://llm.example/v1", apiKey: key, dialect: "chat" } } as never, res as never);
+  assert.equal(status, 502);
+  assert.equal(JSON.stringify(payload).includes(key), false, payload.error);
+  assert.match(payload.error, /for <key>; retried with <key>/);
 });
 
 test("adding a service as Other asks it for one tool call, and marks it only when it answers one properly", async t => {

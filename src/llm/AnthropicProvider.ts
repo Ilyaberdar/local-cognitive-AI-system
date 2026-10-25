@@ -1,7 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
-import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
+import { ProviderHttpError, refusalMessage, withoutKey } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { anthropicAgentResponse, anthropicContinuation, withTurn } from "./NativeToolTransport";
 import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
@@ -133,7 +133,8 @@ export class AnthropicProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        const detail = (await response.text()).slice(0, 1500);
+        // What the service said reaches chats, logs and the API: never with the key in it.
+        const detail = withoutKey(await response.text(), this.options.apiKey).slice(0, 1500);
         // Models that think by default accept their earlier thinking back only while the whole
         // conversation before it is unchanged; the agent's continuation is not, so it goes on with
         // the JSON protocol instead of failing at its second step.
@@ -175,14 +176,16 @@ export class AnthropicProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
+      // A request error can hold the header it could not send: never with the key in it.
+      const message = withoutKey(error instanceof Error ? error.message : "unknown_error", this.options.apiKey);
       this.logger.warn("Anthropic generation failed", {
-        error: error instanceof Error ? error.message : "unknown_error"
+        error: message
       });
       return buildFallbackResponse(
         request,
         this.id,
         model,
-        error instanceof Error ? error.message : "unknown_error"
+        message
       );
     }
   }

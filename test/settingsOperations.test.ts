@@ -13,7 +13,8 @@ import { createSettingsOperations } from "../src/runtime/settingsOperations";
 import { environmentProviders } from "../src/config/environmentProviders";
 import { providerPreset } from "../src/llm/providerCatalog";
 import http from "node:http";
-import type { AppSettingsPatch, LLMRequest } from "../src/types";
+import type { AppSettings, AppSettingsPatch, LLMRequest } from "../src/types";
+import { keyVault } from "./fixtures/keyVault";
 
 const KEY = "sk-saved-secret-key-1234567890";
 const code = (expected: string) => (error: unknown) => error instanceof RemoteOperationError && error.code === expected;
@@ -22,15 +23,21 @@ const context = (signal = new AbortController().signal): OperationContext => ({ 
 async function setup(t: TestContext, base = config) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "settings-ops-")));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const store = new AppSettingsStore(root, base);
+  const vault = keyVault();
+  const store = new AppSettingsStore(root, base, { vault });
   // Keys from this machine's environment are cleared: the fixture decides which keys are saved.
-  await store.update({ providers: { openai: { apiKey: KEY, baseUrl: "https://user:pass@api.example.com/v1?token=abc", enabled: true },
+  await store.update({ providers: { openai: { apiKey: KEY, baseUrl: "https://api.example.com/v1", enabled: true },
     anthropic: { apiKey: "" }, gemini: { apiKey: "" }, lmstudio: { apiKey: "" } },
     telegram: { botToken: "123456:telegram-secret-token" }, filesystem: { outputDir: path.join(root, "out"), allowedDirectories: [root, path.join(root, "more")] } });
+  // An address with credentials, as an older version saved it (a patch now refuses one): same host, so the key stays.
+  const saved = JSON.parse(await fs.readFile(path.join(root, "settings.json"), "utf8"));
+  saved.providers.openai.baseUrl = "https://user:pass@api.example.com/v1?token=abc";
+  await fs.writeFile(path.join(root, "settings.json"), JSON.stringify(saved));
   const state = { draining: false, generate: async (request: LLMRequest, providerId: string): Promise<any> => ({ provider: providerId, model: request.model, text: "ok",
     usage: { inputTokens: 3, outputTokens: 1 } }), requests: [] as Array<{ request: LLMRequest; providerId: string }> };
   const runtimeManager = {
     getSettings: () => store.get(),
+    providerKeys: async (settings?: AppSettings) => store.resolveKeys(settings ?? await store.get()),
     updateSettings: async (patch: AppSettingsPatch) => { validateSettingsPatch(patch); return { settings: await store.update(patch) }; },
     getRuntime: () => ({
       llmService: { generateText: (request: LLMRequest, providerId: string) => { state.requests.push({ request, providerId }); return state.generate(request, providerId); } },
@@ -40,7 +47,9 @@ async function setup(t: TestContext, base = config) {
   const ops = createSettingsOperations({ runtimeManager, isDraining: () => state.draining });
   const call = <T = any>(op: string, payload?: unknown, ctx = context()) => Promise.resolve(ops[op]!(payload, ctx)) as Promise<T>;
   const file = path.join(root, "settings.json");
-  return { root, store, state, call, file };
+  /** The key a provider would use on the host, read as the runtime reads it. */
+  const keyOf = async (id: string) => (await store.resolveKeys(await store.get())).providers[id]?.key;
+  return { root, store, vault, state, call, file, keyOf };
 }
 
 test("every settings operation is in the catalog, and none is a command", () => {
@@ -80,7 +89,7 @@ test("chat defaults, providers, runtime, agent limits and memory tuning change f
   assert.deepEqual([settings.providers.openai.model, settings.providers.openai.timeoutMs, settings.providers.anthropic.maxTokens], ["gpt-4.1-mini", 90_000, 4096]);
   assert.deepEqual([settings.localModels.contextSize, settings.agentLimits.maxSteps, settings.memory.topK, settings.memory.worldPartition.strategy, settings.memory.openMemory.enabled],
     [8192, 40, 12, "partitioned", true]);
-  assert.equal((await f.store.get()).providers.openai.apiKey, KEY, "a change without a key keeps the saved one");
+  assert.equal(await f.keyOf("openai"), KEY, "a change without a key keeps the saved one");
 });
 
 test("host-only, deferred and per-device settings are refused with the reason, and nothing is written", async t => {
@@ -114,10 +123,12 @@ test("a key is written or cleared from a device but never read back", async t =>
   const set = await f.call("settings.update", { providers: { anthropic: { apiKey: { set: "sk-ant-new-key-abcdef" } } } });
   assert.equal(set.settings.providers.anthropic.apiKeyState, "set");
   assert.equal(JSON.stringify(set).includes("sk-ant-new-key-abcdef"), false);
-  assert.equal((await f.store.get()).providers.anthropic.apiKey, "sk-ant-new-key-abcdef");
+  assert.equal(await f.keyOf("anthropic"), "sk-ant-new-key-abcdef");
+  assert.equal((await fs.readFile(f.file, "utf8")).includes("sk-ant-new-key-abcdef"), false, "the key is in the vault, not in settings.json");
   const cleared = await f.call("settings.update", { providers: { openai: { apiKey: { clear: true } } } });
   assert.equal(cleared.settings.providers.openai.apiKeyState, "unset");
-  assert.equal((await f.store.get()).providers.openai.apiKey ?? "", "");
+  assert.equal(await f.keyOf("openai"), undefined);
+  assert.equal([...f.vault.values.keys()].some(name => name.startsWith("provider-key/openai/")), false, "its record is removed");
 });
 
 test("a provider test uses the saved key on the host and answers without it", async t => {

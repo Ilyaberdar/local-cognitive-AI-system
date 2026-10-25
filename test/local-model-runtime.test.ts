@@ -70,15 +70,18 @@ test("provider transport errors remain errors without returning mock prompt dige
   assert.equal(response.error, "connection refused");
 });
 
-test("the provider connection check rejects explicit errors and empty final answers", async () => {
+test("the provider connection check rejects explicit errors and empty final answers, never with a key in them", async () => {
+  const key = "sk-lmstudio-saved-key-123";
   for (const response of [
     { provider: "lmstudio", model: "tiny", text: "", error: "connection refused" },
     { provider: "lmstudio", model: "tiny", text: "partial", error: "Response incomplete" },
-    { provider: "lmstudio", model: "tiny", text: "   " }
+    { provider: "lmstudio", model: "tiny", text: "   " },
+    { provider: "lmstudio", model: "tiny", text: "", error: `bad key ${key}, again ${key}` }
   ]) {
     const runtimeManager = {
       getRuntime: () => ({ llmService: { generateText: async () => response } }),
-      getSettings: async () => ({ providers: { lmstudio: { enabled: true, model: "tiny" } } })
+      getSettings: async () => ({ providers: { lmstudio: { enabled: true, model: "tiny" } } }),
+      providerKeys: async () => ({ providers: { lmstudio: { state: "set", key } }, telegram: { state: "unset" } })
     } as unknown as RuntimeManager;
     let result: { ok: boolean; message: string } | undefined;
     const res = {
@@ -91,7 +94,7 @@ test("the provider connection check rejects explicit errors and empty final answ
       (error) => { throw error; }
     );
     assert.equal(result?.ok, false);
-    assert.equal(result?.message, response.error || "Provider returned no usable final answer.");
+    assert.equal(result?.message, (response.error || "Provider returned no usable final answer.").split(key).join("<key>"));
   }
 });
 

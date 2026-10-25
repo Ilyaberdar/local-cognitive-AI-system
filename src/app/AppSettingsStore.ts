@@ -9,17 +9,40 @@ import { applyMcpConfigurationPatch, parseMcpConfiguration } from "../mcp/client
 import { validateSettingsPatch, defaultUiPreferences, readShortcuts, SettingsValidationError } from "./settingsValidation";
 import { normalizeAgentLimits } from "../agents/runtime/AgentLimits";
 import { defaultLocalGenerationSettings, normalizeLocalGenerationSettings } from "../local/GenerationSettings";
+import { CredentialVault, unavailableVault } from "../plugins/contracts";
+import type { Logger } from "../utils/Logger";
+import { KeyChanges, ProviderKeyStore, ResolvedKeys } from "./ProviderKeyStore";
+
+/** Archives of earlier migrations, kept for recovery: their keys are removed once keys are in the vault. */
+const ARCHIVES = ["settings.pre-integrations.json", "settings.pre-llamacpp.json"];
+/** What writeJsonAtomically leaves of settings.json or an archive when the process ends mid-write. */
+const LEFTOVER = /^settings(?:\.pre-[a-z]+)?\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
 
 export class AppSettingsStore {
   private readonly filePath: string;
   private readonly defaultMemoryProfileId = randomUUID();
+  private readonly keys: ProviderKeyStore;
+  private readonly logger?: Logger;
+  // Once per start: leftovers of interrupted writes go, and (when the vault can be used) keys left in
+  // settings.json move to it and leave the archives.
+  private started = false;
 
-  constructor(private readonly appDataDir: string, private readonly baseConfig: AppConfig) {
+  /** The vault keeps provider keys and the Telegram bot token: without a usable one (the default),
+   * keys cannot be saved, and keys already in settings.json stay there and keep working. */
+  constructor(private readonly appDataDir: string, private readonly baseConfig: AppConfig, options: { vault?: CredentialVault; logger?: Logger } = {}) {
     this.filePath = path.join(appDataDir, "settings.json");
+    this.keys = new ProviderKeyStore(options.vault ?? unavailableVault, baseConfig);
+    this.logger = options.logger;
   }
 
   async get(): Promise<AppSettings> {
     return withFileLock(this.filePath, () => this.read());
+  }
+
+  /** Each provider's key and the bot token for these settings, from the vault or the environment, with
+   * its state. Never throws; it holds no lock, so a transaction's build may call it. */
+  resolveKeys(settings: AppSettings): Promise<ResolvedKeys> {
+    return this.keys.resolve(settings);
   }
 
   /** Caller holds the shared file lock, including initialization and migration writes. */
@@ -61,20 +84,75 @@ export class AppSettingsStore {
       });
       await restrictToOwner(archive);
     }
-    if (!parsed.memory?.localProfileId || !parsed.profile || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem || migrateGpuLayers) await this.write(settings);
+    // Schema 6: keys move from settings.json into the credential vault, and then out of the archives
+    // (checked at every start, so an interrupted or refused rewrite is done later). Without a usable
+    // vault nothing changes here: the keys keep working, and this runs at the next start.
+    let moved: { changes: KeyChanges; changed: boolean; complete: boolean } | undefined;
+    if (!this.started) {
+      this.started = true;
+      await this.removeLeftovers();
+      if (this.keys.available()) {
+        moved = await this.keys.moveToVault(settings);
+        if (moved.complete && settings.schemaVersion! < 6) settings.schemaVersion = 6;
+      }
+    }
+    if (!parsed.memory?.localProfileId || !parsed.profile || requiresMigration || parsed.mcp?.client === undefined || parsed.agentLimits === undefined || migrateLegacyAnthropicOutput || migratePlugins || !parsed.filesystem || migrateGpuLayers
+      || moved?.changed || settings.schemaVersion !== parsed.schemaVersion) {
+      try { await this.write(settings); }
+      catch (error) { if (moved) await this.keys.remove(moved.changes.written); throw error; }
+    }
+    if (moved) {
+      await this.keys.remove(moved.changes.obsolete);
+      await this.scrubArchives();
+    }
     return settings;
   }
 
+  /** Temporary files of writes the process did not finish (a crash, a power loss): they may hold keys. */
+  private async removeLeftovers(): Promise<void> {
+    let names: string[];
+    try { names = await fs.readdir(this.appDataDir); } catch { return; }
+    for (const name of names.filter(item => LEFTOVER.test(item))) await fs.unlink(path.join(this.appDataDir, name)).catch(() => undefined);
+  }
+
+  /** Removes provider keys and the bot token from the archives that still hold any (rewritten
+   * atomically, owner-only). An archive that cannot be parsed is left as it is, and the log says so.
+   * Their legacy Notion keys stay: they never moved to the vault. */
+  private async scrubArchives(): Promise<void> {
+    for (const name of ARCHIVES) {
+      const file = path.join(this.appDataDir, name);
+      try {
+        let archive: Partial<AppSettings> | null;
+        try { archive = JSON.parse(await fs.readFile(file, "utf8")) as Partial<AppSettings> | null; }
+        catch (error) {
+          if (isMissingFile(error)) continue;
+          this.logger?.warn(`${name} could not be read: any provider keys in it were left there.`);
+          continue;
+        }
+        if (!archive || typeof archive !== "object") { this.logger?.warn(`${name} is not a settings file: any provider keys in it were left there.`); continue; }
+        let scrubbed = false;
+        for (const provider of Object.values(archive.providers ?? {})) {
+          if (provider && typeof provider === "object" && Object.hasOwn(provider, "apiKey")) { delete provider.apiKey; scrubbed = true; }
+        }
+        if (archive.telegram && typeof archive.telegram === "object" && Object.hasOwn(archive.telegram, "botToken")) { delete archive.telegram.botToken; scrubbed = true; }
+        if (scrubbed) await writeJsonAtomically(file, archive, { mode: 0o600 });
+      } catch (error) {
+        this.logger?.warn(`The provider keys in ${name} could not be removed.`, { message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
   async update(patch: AppSettingsPatch): Promise<AppSettings> {
-    return withFileLock(this.filePath, () => this.applyPatch(patch));
+    return withFileLock(this.filePath, () => this.commit(patch));
   }
 
   async restore(settings: AppSettings): Promise<void> {
     await withFileLock(this.filePath, () => this.write(this.normalize(settings)));
   }
 
+  /** The patched settings, not saved: a key in the patch is left out. */
   async preview(patch: AppSettingsPatch): Promise<AppSettings> {
-    return withFileLock(this.filePath, () => this.applyPatch(patch, false));
+    return withFileLock(this.filePath, async () => this.patch(await this.read(), patch));
   }
 
   /** Build/reconfigure against a snapshot, then atomically commit without losing another store's update. */
@@ -83,18 +161,28 @@ export class AppSettingsStore {
     apply: (settings: AppSettings, previous: AppSettings) => Promise<T>
   ): Promise<{ value: T; settings: AppSettings }> {
     return withFileLock(this.filePath, async () => {
-      const previous = await this.read();
-      const settings = this.patch(previous, patch);
-      const value = await apply(settings, previous);
-      await this.write(settings);
+      let value!: T;
+      const settings = await this.commit(patch, async (next, previous) => { value = await apply(next, previous); });
       return { value, settings };
     });
   }
 
-  private async applyPatch(patch: AppSettingsPatch, persist = true): Promise<AppSettings> {
-    const normalized = this.patch(await this.read(), patch);
-    if (persist) await this.write(normalized);
-    return normalized;
+  /** Caller holds the lock. A key in the patch is saved in the vault first, the settings naming it are
+   * committed next, and the record it replaces is removed last; a failure before the commit removes
+   * the new record, so the vault keeps no key the settings do not name. */
+  private async commit(patch: AppSettingsPatch, apply?: (settings: AppSettings, previous: AppSettings) => Promise<void>): Promise<AppSettings> {
+    const previous = await this.read();
+    const settings = this.patch(previous, patch);
+    const keys = await this.keys.patch(previous, settings, patch);
+    try {
+      await apply?.(settings, previous);
+      await this.write(settings);
+    } catch (error) {
+      await this.keys.remove(keys.written);
+      throw error;
+    }
+    await this.keys.remove(keys.obsolete);
+    return settings;
   }
 
   private patch(current: AppSettings, patch: AppSettingsPatch): AppSettings {
@@ -130,10 +218,10 @@ export class AppSettingsStore {
             patch.mcp?.server?.defaultSessionId ?? current.mcp.server.defaultSessionId
         }
       },
+      // The bot token is the key store's (commit).
       telegram: {
         ...current.telegram,
         enabled: patch.telegram?.enabled ?? current.telegram.enabled,
-        botToken: patch.telegram?.botToken ?? current.telegram.botToken,
         ownerUserIds: patch.telegram?.ownerUserIds ?? current.telegram.ownerUserIds,
         pollTimeoutSec: patch.telegram?.pollTimeoutSec ?? current.telegram.pollTimeoutSec
       },
@@ -179,7 +267,9 @@ export class AppSettingsStore {
         continue;
       }
       const previous = next.providers[providerId] ?? this.defaultProvider(providerId);
-      next.providers[providerId] = { ...previous, ...providerPatch };
+      // Its key is the key store's (commit): never kept here as it was given.
+      const { apiKey: _apiKey, ...fields } = providerPatch;
+      next.providers[providerId] = { ...previous, ...fields };
       // Tool calls were checked at the address the service was added at: another address acts in JSON.
       if (providerPatch.baseUrl !== undefined && providerPatch.baseUrl !== previous.baseUrl && providerPatch.nativeTools === undefined) delete next.providers[providerId]!.nativeTools;
     }
@@ -205,13 +295,14 @@ export class AppSettingsStore {
 
   private async write(settings: AppSettings): Promise<void> {
     await fs.mkdir(this.appDataDir, { recursive: true });
-    // Settings still hold provider keys until they move to the credential vault.
+    // Provider keys and the bot token are in the credential vault, named by ref; a key saved before
+    // that stays here only while the vault cannot be used.
     await writeJsonAtomically(this.filePath, settings, { mode: 0o600 });
   }
 
   private fromConfig(): AppSettings {
     return {
-      schemaVersion: 5,
+      schemaVersion: 6,
       filesystem: { outputDir: this.baseConfig.outputDir, ...this.baseConfig.filesystem },
       profile: this.defaultProfile(),
       localModels: this.localDefaults(),
@@ -229,7 +320,6 @@ export class AppSettingsStore {
       },
       telegram: {
         enabled: this.baseConfig.telegram.enabled,
-        botToken: this.baseConfig.telegram.botToken,
         ownerUserIds: this.baseConfig.telegram.ownerUserIds,
         pollTimeoutSec: this.baseConfig.telegram.pollTimeoutSec
       },
@@ -260,21 +350,18 @@ export class AppSettingsStore {
         lmstudio: {
           enabled: this.baseConfig.providers.lmstudio.enabled !== false,
           baseUrl: this.baseConfig.providers.lmstudio.baseUrl,
-          apiKey: this.baseConfig.providers.lmstudio.apiKey,
           model: this.baseConfig.providers.lmstudio.model,
           timeoutMs: this.baseConfig.providers.lmstudio.timeoutMs
         },
         openai: {
           enabled: this.baseConfig.providers.openai.enabled !== false,
           baseUrl: this.baseConfig.providers.openai.baseUrl,
-          apiKey: this.baseConfig.providers.openai.apiKey,
           model: this.baseConfig.providers.openai.model,
           timeoutMs: this.baseConfig.providers.openai.timeoutMs
         },
         anthropic: {
           enabled: this.baseConfig.providers.anthropic.enabled !== false,
           baseUrl: this.baseConfig.providers.anthropic.baseUrl,
-          apiKey: this.baseConfig.providers.anthropic.apiKey,
           model: this.baseConfig.providers.anthropic.model,
           timeoutMs: this.baseConfig.providers.anthropic.timeoutMs,
           version: this.baseConfig.providers.anthropic.version,
@@ -283,19 +370,19 @@ export class AppSettingsStore {
         gemini: {
           enabled: this.baseConfig.providers.gemini.enabled !== false,
           baseUrl: this.baseConfig.providers.gemini.baseUrl,
-          apiKey: this.baseConfig.providers.gemini.apiKey,
           model: this.baseConfig.providers.gemini.model,
           timeoutMs: this.baseConfig.providers.gemini.timeoutMs
         },
         // OpenAI-compatible services every installation has (Qwen), and those its environment sets:
-        // data, shaped by their dialect. An environment's key is never copied here (it is read at start).
+        // data, shaped by their dialect. No key of the environment is copied here: it is used as it is
+        // while no key is saved (src/app/ProviderKeyStore.ts).
         ...Object.fromEntries(Object.entries(this.baseConfig.compatibleProviders ?? {}).map(([id, provider]) => [id, {
           kind: "openai-compatible" as const,
           dialect: provider.dialect,
           name: provider.name,
           enabled: provider.enabled !== false,
           baseUrl: provider.baseUrl,
-          ...(provider.source === "environment" ? { source: "environment" as const } : { apiKey: provider.apiKey }),
+          ...(provider.source === "environment" ? { source: "environment" as const } : {}),
           ...(provider.preset ? { preset: provider.preset } : {}),
           model: provider.model,
           timeoutMs: provider.timeoutMs
@@ -339,7 +426,6 @@ export class AppSettingsStore {
       telegram: {
         ...input.telegram,
         enabled: input.telegram?.enabled ?? defaults.telegram.enabled,
-        botToken: input.telegram?.botToken ?? defaults.telegram.botToken,
         ownerUserIds: this.normalizeTelegramOwnerUserIds(
           input.telegram?.ownerUserIds,
           defaults.telegram.ownerUserIds
@@ -371,10 +457,13 @@ export class AppSettingsStore {
         ...(settings.providers[providerId] ?? this.defaultProvider(providerId)),
         ...provider
       };
+      if (typeof provider?.apiKeyRef !== "string") delete settings.providers[providerId]!.apiKeyRef;
     }
+    if (typeof settings.telegram.botTokenRef !== "string") delete settings.telegram.botTokenRef;
 
     // A service every installation has stays that service: its kind and dialect come from here, and
-    // one the environment sets keeps its address from there and no saved key.
+    // one the environment sets keeps its address and key from there. A key saved for it before is
+    // not used meanwhile, and stays for when the environment no longer sets it.
     for (const [providerId, provider] of Object.entries(defaults.providers)) {
       if (!provider.kind) continue;
       const current = { ...settings.providers[providerId], kind: provider.kind, dialect: provider.dialect };
@@ -382,14 +471,17 @@ export class AppSettingsStore {
       else delete current.source;
       settings.providers[providerId] = current;
     }
-    // One the environment no longer sets is gone: removing it there removes it here.
+    // One the environment no longer sets is gone: removing it there removes it here. One added here
+    // before the environment set it (it has a saved key) is the user's again.
     for (const [providerId, provider] of Object.entries(settings.providers)) {
-      if (provider.source === "environment" && defaults.providers[providerId]?.source !== "environment") delete settings.providers[providerId];
+      if (provider.source !== "environment" || defaults.providers[providerId]?.source === "environment") continue;
+      if (provider.apiKeyRef) delete provider.source; else delete settings.providers[providerId];
     }
 
     // The internal server chooses its own address and token on every launch.
     settings.providers.llamacpp.baseUrl = "";
     delete settings.providers.llamacpp.apiKey;
+    delete settings.providers.llamacpp.apiKeyRef;
     settings.providers.llamacpp.timeoutMs = settings.localModels!.generationTimeoutMs;
 
     for (const [pluginName, plugin] of Object.entries(input.plugins ?? {})) {
@@ -416,8 +508,7 @@ export class AppSettingsStore {
       enabled: true,
       baseUrl: "",
       model: "",
-      timeoutMs,
-      apiKey: providerId === "lmstudio" ? "lm-studio" : undefined
+      timeoutMs
     };
   }
 

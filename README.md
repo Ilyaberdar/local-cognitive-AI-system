@@ -173,7 +173,7 @@ Every platform uses the same pinned llama.cpp build, b10809, verified by checksu
 | Linux server | `/srv/local-cognitive` | `/opt/local-cognitive/current`, with previous releases kept for rollback |
 
 - **Inside the data folder:** chats, memory, models, settings, and `app/runtime/host.db` (work in progress and the usage ledger).
-- **Secrets** (provider keys, sign-in, Remote keys) are encrypted. On the desktop the key is kept by the system (Keychain on macOS). On a server it is kept in `/etc/local-cognitive/vault.key`.
+- **Secrets** (provider API keys and the Telegram bot token saved in Settings, sign-in, Remote keys, plugin account tokens and MCP secrets) are encrypted: in the app in `app/integrations/vault/`, with its key kept by the system (the Keychain on macOS, Windows data protection for your account); on a server in `app/integrations/host-vault/`, with its key in `/etc/local-cognitive/vault.key`. `settings.json` names each key only by a reference, and a saved key is sent only to the host (origin) it was saved for. Keys set in the environment (the server's `/etc/local-cognitive/server.env`, or `.env` for a run from source) stay there in plain text and are never copied into the settings. One exception stays as it was on purpose: a Notion key saved by a development build from before the first release is kept, in plain text, in `app/settings.pre-integrations.json`, the recovery copy of the change that replaced that plugin; delete the file if you do not need it.
 - **Error reports and crash dumps** go to Sentry (EU region) only if you turn them on in Settings → Data & Privacy, with personal data removed. **Report a bug** sends what you write in it.
 
 ## Development

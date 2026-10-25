@@ -2,7 +2,7 @@ import { LLMFunctionTool, LLMRequest, LLMResponse, ProviderDescriptor, ProviderM
 import { answerStream, finalAnswerSoFar } from "./AnswerStream";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
-import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
+import { ProviderHttpError, refusalMessage, withoutKey } from "./ProviderHttpError";
 import { validateImages } from "./InferenceImages";
 import { readLocalChatStream } from "./LocalChatStream";
 import { readNativeAgentResponse, responseMessages } from "./ResponseItems";
@@ -217,7 +217,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        const body = await response.text();
+        // What the service said reaches chats, logs and the API: never with the key in it.
+        const body = withoutKey(await response.text(), this.options.apiKey);
         let detail = body.slice(0, 1500);
         try { detail = readResponseError(JSON.parse(body)) ?? detail; } catch { /* Keep plain HTTP error details. */ }
         let param = "";
@@ -280,7 +281,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const choices = payload.choices as Array<Record<string, unknown>> | undefined;
       const boundedProse = dialect.local && text && !request.responseFormat && request.outputPurpose !== "agent-action" && choices?.[0]?.finish_reason === "length";
       const errorPayload = boundedProse ? { ...payload, choices: [{ ...choices![0], finish_reason: "stop" }] } : payload;
-      const error = readResponseError(errorPayload) || (!text && !action ? noFinalAnswer(payload, note) : undefined);
+      const said = readResponseError(errorPayload);
+      const error = (said && withoutKey(said, this.options.apiKey)) || (!text && !action ? noFinalAnswer(payload, note) : undefined);
 
       return {
         provider: this.id,
@@ -298,14 +300,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
+      // A request error can hold the header it could not send: never with the key in it.
+      const message = withoutKey(error instanceof Error ? error.message : "unknown_error", this.options.apiKey);
       this.logger.warn(`${this.id} generation failed`, {
-        error: error instanceof Error ? error.message : "unknown_error"
+        error: message
       });
       return buildFallbackResponse(
         request,
         this.id,
         model,
-        error instanceof Error ? error.message : "unknown_error"
+        message
       );
     }
   }

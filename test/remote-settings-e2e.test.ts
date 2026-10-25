@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { RemoteClient } from "../src/remote/client/RemoteClient";
 import { RemoteRuntime } from "../src/remote/client/RemoteRuntime";
@@ -35,6 +37,7 @@ test("a provider key is set on the server from a device, used there, kept across
     await server.restart("SIGTERM");
     await until(() => mac.status().state, state => state === "online", 30_000);
     assert.equal((await call("settings.get")).settings.providers.openai.apiKeyState, "set", "the key survives a restart");
+    assert.equal(fs.readFileSync(path.join(server.root, "app", "settings.json"), "utf8").includes(KEY), false, "the key is in the server's vault, not in its settings.json");
 
     for (const [patch, expected] of [[{ filesystem: { accessMode: "full" } }, "host_only"], [{ providers: { openai: { baseUrl: "http://127.0.0.1:1/v1" } } }, "host_only"],
       [{ ui: { theme: "light" } }, "client_setting"]] as const) {

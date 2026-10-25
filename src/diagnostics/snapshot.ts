@@ -61,7 +61,10 @@ export async function collectRuntimeDiagnostics(deps: { runtimeManager: RuntimeM
   } catch { /* The runtime is not built: its parts are left out. */ }
   try {
     const settings = await deps.runtimeManager.getSettings();
-    providers = Object.entries(settings.providers ?? {}).slice(0, 20).map(([id, provider]) => ({ id: code(id), enabled: provider.enabled !== false, hasKey: Boolean(provider.apiKey) }));
+    // Whether a key would be used (saved, from the environment, or kept from before), never which.
+    const keys = await deps.runtimeManager.providerKeys(settings);
+    providers = Object.entries(settings.providers ?? {}).slice(0, 20).map(([id, provider]) => ({ id: code(id), enabled: provider.enabled !== false,
+      hasKey: ["set", "environment", "unprotected"].includes(keys.providers[id]?.state ?? "unset") }));
   } catch { /* Settings unreadable: left out. */ }
   return runtimeDiagnosticsSchema.parse({
     runtimeKind: deps.runtimeKind,

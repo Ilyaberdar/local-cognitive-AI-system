@@ -6,6 +6,13 @@ export class ProviderHttpError extends Error {
   }
 }
 
+/** A service's text with every copy of the key it was sent replaced (a service may echo the key it
+ * refused, and a request error may hold the header). Too short a value is not a key to look for. */
+export const withoutKey = (text: string, key: string | undefined): string => {
+  const secret = key?.trim();
+  return secret && secret.length >= 8 ? text.split(secret).join("<key>") : text;
+};
+
 /** The service's own words about a refusal: `type: message` from the usual JSON error bodies. */
 function reasonOf(detail: string): string {
   try {

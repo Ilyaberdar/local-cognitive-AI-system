@@ -1,7 +1,7 @@
 import { LLMRequest, LLMResponse, ProviderDescriptor, ProviderModel } from "../types";
 import { Logger } from "../utils/Logger";
 import { LLMProvider } from "./LLMProvider";
-import { ProviderHttpError, refusalMessage } from "./ProviderHttpError";
+import { ProviderHttpError, refusalMessage, withoutKey } from "./ProviderHttpError";
 import { decodeImage, validateImages } from "./InferenceImages";
 import { geminiAgentResponse, geminiContinuation } from "./NativeToolTransport";
 import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
@@ -62,7 +62,7 @@ export class GeminiProvider implements LLMProvider {
 
       if (!response.ok) {
         // Gemini answers a key it does not take with 400 and says so in the body.
-        const reason = (await response.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+        const reason = withoutKey(await response.text().catch(() => ""), this.options.apiKey).replace(/\s+/g, " ").slice(0, 300);
         throw new ProviderHttpError(`Gemini models request failed with status ${response.status}${reason ? `: ${reason}` : ""}`, response.status);
       }
 
@@ -145,7 +145,8 @@ export class GeminiProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        const detail = (await response.text()).slice(0, 1500);
+        // What the service said reaches chats, logs and the API: never with the key in it.
+        const detail = withoutKey(await response.text(), this.options.apiKey).slice(0, 1500);
         const unsupported = unsupportedFeature(response.status, detail, request);
         if (unsupported) return { provider: this.id, model, text: "", error: detail, unsupportedFeature: unsupported };
         const refused = refusalMessage(this.name, response.status, detail);
@@ -183,14 +184,16 @@ export class GeminiProvider implements LLMProvider {
       if (request.signal?.aborted) {
         throw new Error("Request cancelled");
       }
+      // A request error can hold the header it could not send: never with the key in it.
+      const message = withoutKey(error instanceof Error ? error.message : "unknown_error", this.options.apiKey);
       this.logger.warn("Gemini generation failed", {
-        error: error instanceof Error ? error.message : "unknown_error"
+        error: message
       });
       return buildFallbackResponse(
         request,
         this.id,
         model,
-        error instanceof Error ? error.message : "unknown_error"
+        message
       );
     }
   }

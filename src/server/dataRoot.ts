@@ -7,7 +7,7 @@ import { CliError, ExitCode } from "./exitCodes";
 
 export const DATA_SUBDIRECTORIES = ["app", "memory", "sessions", "output", "models"] as const;
 
-// No secrets: provider keys go to the env file, credentials to the vault.
+// No secrets: keys saved in Settings and other credentials are in the vault; keys the owner sets stay in the env file.
 const serverConfigSchema = z.object({
   schemaVersion: z.literal(1),
   createdAt: z.string(),

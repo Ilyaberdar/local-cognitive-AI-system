@@ -15,6 +15,7 @@ import { HostDatabase } from "./runtime/db/HostDatabase";
 import { hostMigrations } from "./runtime/db/hostSchema";
 import { UsageLedger } from "./usage/UsageLedger";
 import { DiagnosticLog, setDiagnosticSink } from "./diagnostics/DiagnosticLog";
+import { resolveRunVault } from "./security/runVault";
 
 class StderrLogger extends Logger {
   override log(level: "info" | "warn" | "error" | "debug", message: string, meta?: Record<string, unknown>): void {
@@ -42,7 +43,12 @@ const bootstrapMcp = async (): Promise<void> => {
     }
     throw new Error(`${error.message} Run the MCP server with its own APP_DATA_DIR, SESSION_DIR, MEMORY_DIR and LOCAL_MODELS_DIR.`);
   }
-  const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
+  // The vault `npm start` uses too (runVault.ts): a server's key file when LOCAL_COGNITIVE_VAULT_KEY_FILE
+  // is set, else on a Mac the development vault. Without one, saved keys cannot be read here and only
+  // the environment's work.
+  const vault = resolveRunVault(config);
+  if (vault.error) { lock.release(); throw new Error(vault.error); }
+  const appSettingsStore = new AppSettingsStore(config.appDataDir, config, { vault: vault.vault, logger });
   const diagnosticLog = new DiagnosticLog(path.join(config.appDataDir, "diagnostics"));
   setDiagnosticSink(diagnosticLog);
   diagnosticLog.record("app.started", { runtimeKind: "mcp-stdio", previousShutdown: lock.previousShutdown });
@@ -50,7 +56,7 @@ const bootstrapMcp = async (): Promise<void> => {
   let database: HostDatabase | undefined;
   try { database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations); }
   catch (error) { logger.warn("Usage is not recorded: host.db could not be opened", { message: error instanceof Error ? error.message : String(error) }); }
-  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, database ? { usage: new UsageLedger(database, () => ({}), logger) } : {});
+  const runtimeManager = new RuntimeManager(config, appSettingsStore, logger, {}, { vault: vault.vault, ...(database ? { usage: new UsageLedger(database, () => ({}), logger) } : {}) });
   try { await runtimeManager.init(); }
   catch (error) { database?.close(); lock.release(); throw error; }
 

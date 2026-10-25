@@ -15,11 +15,13 @@ export interface ProviderStatus {
   /** The address and key the check used, as a short hash: a new key or address makes the result stale. */
   fingerprint: string;
 }
-interface ProviderSettings { enabled?: boolean; baseUrl?: string; apiKey?: string; source?: string }
+interface ProviderSettings { enabled?: boolean; baseUrl?: string; apiKeyRef?: string; apiKey?: string; source?: string }
 
-/** Never the key itself: 12 hex characters of a hash of the address and key. */
+/** Never derived from the key: 12 hex characters of a hash of the address (its origin and path) and
+ * the key's vault record, which a new key replaces (a key kept from before counts only as there). */
 export const statusFingerprint = (provider: ProviderSettings): string =>
-  createHash("sha256").update("local-cognitive/provider-status/v1\0").update(JSON.stringify([provider.baseUrl ?? "", provider.apiKey ?? "", provider.source ?? ""])).digest("hex").slice(0, 12);
+  createHash("sha256").update("local-cognitive/provider-status/v2\0")
+    .update(JSON.stringify([provider.baseUrl ?? "", provider.apiKeyRef ?? (provider.apiKey?.trim() ? "settings" : ""), provider.source ?? ""])).digest("hex").slice(0, 12);
 
 /** Lists the provider's models within `timeoutMs` and says what that shows about its key and address. */
 export async function checkProvider(list: () => Promise<unknown[]>, settings: ProviderSettings, timeoutMs = 10_000): Promise<ProviderStatus> {

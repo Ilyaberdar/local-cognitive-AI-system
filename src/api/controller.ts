@@ -25,6 +25,7 @@ import { compatibleDialect, isProviderDialect } from "../llm/ProviderDialect";
 import { answersToolCalls } from "../llm/toolProbe";
 import { Logger } from "../utils/Logger";
 import { checkProvider, currentStatuses, ProviderStatus, ProviderStatusStore, statusFingerprint } from "../llm/providerStatus";
+import { maskSecrets } from "../runtime/settingsDto";
 
 export const createProcessController =
   (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
@@ -186,7 +187,8 @@ export const createDashboardBootstrapController =
         workflowRuns,
         projects
       ] = await Promise.all([
-        runtimeManager.getSettings(),
+        // Without keys: a provider's has its state instead (settingsDto.ts).
+        runtimeManager.settingsView(),
         sessionIndexStore.list(),
         runtime.modelCatalog.listAll(),
         runtime.localModelManager.listLoadedModels(),
@@ -588,7 +590,8 @@ export const createGetAppSettingsController =
   (runtimeManager: RuntimeManager) =>
   async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      res.status(200).json(await runtimeManager.getSettings());
+      // Never a key or a bot token: each one's state (settingsDto.ts).
+      res.status(200).json(await runtimeManager.settingsView());
     } catch (error) {
       next(error);
     }
@@ -601,7 +604,7 @@ export const createUpdateAppSettingsController =
       const patch = req.body as AppSettingsPatch;
       const { settings, runtime } = await runtimeManager.updateSettings(patch);
       res.status(200).json({
-        settings,
+        settings: await runtimeManager.settingsView(settings),
         providers: runtime.providerDescriptors,
         tools: runtime.tools,
         plugins: runtime.plugins,
@@ -654,7 +657,8 @@ export const createProviderDiscoverController =
       res.status(200).json({ models, ...(tools ? { nativeTools: "chat" } : {}) });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "The service did not answer.";
-      res.status(502).json({ error: /status 40[13]/.test(detail) ? "The service refused this key." : /status 404/.test(detail) ? "No models at this address. Check it." : `The service did not answer: ${detail.replace(apiKey.trim(), "<key>")}` });
+      // Every occurrence of the key is masked, not only the first.
+      res.status(502).json({ error: /status 40[13]/.test(detail) ? "The service refused this key." : /status 404/.test(detail) ? "No models at this address. Check it." : `The service did not answer: ${detail.split(apiKey.trim()).join("<key>")}` });
     }
   };
 
@@ -687,11 +691,14 @@ export const createProviderTestController =
 
       const failed = response.error || !response.text.trim() ||
         response.text.startsWith(`Mock response from ${providerId}`);
+      // The service's words come back as they are, but never with a key the runtime holds.
+      const keys = Object.values((await runtimeManager.providerKeys(settings)).providers).map(item => item.key);
+      const masked = (text: string) => maskSecrets(text, keys);
       // The test is a check too: the list shows its result (a refused key, a working one).
       const refused = /refused the (?:API key|request) \(HTTP (\d{3})/.exec(response.error ?? "");
       if (!failed || refused) await new ProviderStatusStore(runtimeManager.dataDir()).write({ [providerId]: {
         checkedAt: new Date().toISOString(), fingerprint: statusFingerprint(providerSettings),
-        ...(failed ? { state: "rejected" as const, httpStatus: Number(refused![1]), message: `Key refused (HTTP ${refused![1]})` } : { state: "connected" as const, message: `Answered with ${response.model}` })
+        ...(failed ? { state: "rejected" as const, httpStatus: Number(refused![1]), message: `Key refused (HTTP ${refused![1]})` } : { state: "connected" as const, message: masked(`Answered with ${response.model}`) })
       } }, Object.keys(settings.providers)).catch(() => undefined);
 
       if (failed) {
@@ -699,7 +706,7 @@ export const createProviderTestController =
           ok: false,
           providerId,
           model: response.model,
-          message: response.error || "Provider returned no usable final answer."
+          message: masked(response.error || "Provider returned no usable final answer.")
         });
         return;
       }
@@ -708,7 +715,7 @@ export const createProviderTestController =
         ok: true,
         providerId,
         model: response.model,
-        message: `Provider responded successfully with model ${response.model}.`,
+        message: masked(`Provider responded successfully with model ${response.model}.`),
         usage: response.usage,
         rateLimit: response.rateLimit
       });

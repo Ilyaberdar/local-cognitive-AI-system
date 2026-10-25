@@ -3,7 +3,7 @@ import { isProviderDialect } from "../llm/ProviderDialect";
 import { BUILT_IN_PROVIDER_IDS, providerPreset } from "../llm/providerCatalog";
 
 const isWebAddress = (value: string): boolean => {
-  try { const url = new URL(value); return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password; }
+  try { const url = new URL(value); return (url.protocol === "https:" || url.protocol === "http:") && Boolean(url.hostname) && !url.username && !url.password; }
   catch { return false; }
 };
 
@@ -11,7 +11,8 @@ export const defaultUiPreferences: UiPreferences = {
   version: 1, theme: "dark", animations: true, fontScale: 100, codeFontSize: 12, language: "auto", outputStyle: "balanced", mode: "auto", sendKey: "enter"
 };
 
-export class SettingsValidationError extends Error { readonly statusCode = 400; }
+/** A refused settings change: 400, or 503 when a key cannot be saved because protected storage is unavailable. */
+export class SettingsValidationError extends Error { constructor(message: string, readonly statusCode = 400) { super(message); } }
 
 // A shortcut as public/assets/shortcuts.js writes it: modifiers in this order, then a physical key.
 const shortcutKeys = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Mod\+)?(?:Key[A-Z]|Digit[0-9]|Comma|Period|Slash|Backslash|BracketLeft|BracketRight|Semicolon|Quote|Backquote|Minus|Equal|Space|Escape|F(?:[1-9]|1[0-9]|2[0-4]))$/;
@@ -148,8 +149,9 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
       continue;
     }
     const value = object(provider, `providers.${id}`);
-    // Where a service comes from is the installation's to say, never a setting.
+    // Where a service comes from is the installation's to say, never a setting; its key's vault record is the store's.
     if (value.source !== undefined) throw new SettingsValidationError(`providers.${id}.source cannot be set.`);
+    if (value.apiKeyRef !== undefined) throw new SettingsValidationError(`providers.${id}.apiKeyRef cannot be set.`);
     check(value, `providers.${id}`, {
       enabled: "boolean", baseUrl: "string", apiKey: "string", model: "string", timeoutMs: [1000, 3600000],
       version: "string", maxTokens: [1, 1000000], kind: ["openai-compatible"], dialect: "string", name: "string", preset: "string", nativeTools: ["chat"]
@@ -161,7 +163,8 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     if (compatible && !/^[a-z][a-z0-9-]{1,63}$/.test(id)) throw new SettingsValidationError("Invalid provider id.");
     if (value.dialect !== undefined && !isProviderDialect(value.dialect)) throw new SettingsValidationError(`Invalid providers.${id}.dialect.`);
     if (typeof value.name === "string" && (!value.name.trim() || value.name.length > 80 || /[\u0000-\u001f\u007f]/.test(value.name))) throw new SettingsValidationError(`Invalid providers.${id}.name.`);
-    if ((compatible || providerPreset(id)) && typeof value.baseUrl === "string" && value.baseUrl !== "" && !isWebAddress(value.baseUrl)) throw new SettingsValidationError(`Invalid providers.${id}.baseUrl.`);
+    // Any provider's address (a key is kept for its host): a web address with a host and no credentials.
+    if (typeof value.baseUrl === "string" && value.baseUrl !== "" && !isWebAddress(value.baseUrl)) throw new SettingsValidationError(`Invalid providers.${id}.baseUrl.`);
   }
   if (patch.plugins !== undefined) for (const [id, plugin] of Object.entries(object(patch.plugins, "plugins"))) {
     if (["file", "notion", "vscode"].includes(id)) throw new SettingsValidationError("Legacy plugins were retired. Use Integrations or built-in filesystem settings.");
@@ -170,6 +173,11 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     if (value.values !== undefined) for (const field of Object.values(object(value.values, `plugins.${id}.values`))) {
       if (field !== undefined && !["string", "number", "boolean"].includes(typeof field)) throw new SettingsValidationError("Invalid plugin value.");
     }
+  }
+  if (patch.telegram !== undefined) {
+    const telegram = object(patch.telegram, "telegram");
+    if (telegram.botTokenRef !== undefined) throw new SettingsValidationError("telegram.botTokenRef cannot be set.");
+    check(telegram, "telegram", { enabled: "boolean", botToken: "string" });
   }
   if (patch.memory !== undefined) {
     const memory = object(patch.memory, "memory");

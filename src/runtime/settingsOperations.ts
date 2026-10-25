@@ -104,8 +104,18 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
   const runtimeStatus = () => {
     try { return deps.runtimeManager.getRuntime().localModelService.snapshot().runtime.status; } catch { return undefined; }
   };
+  const view = async () => {
+    const settings = await deps.runtimeManager.getSettings();
+    return hostSettingsView(settings, await deps.runtimeManager.providerKeys(settings));
+  };
+  /** A refused change says why; one refused because the server cannot keep keys says that. */
+  const refused = (error: unknown): never => {
+    // Validation messages name the field, never its value.
+    if (error instanceof SettingsValidationError) throw new RemoteOperationError(error.message, error.statusCode === 503 ? "unavailable" : "invalid_request");
+    throw error;
+  };
   return {
-    "settings.get": async () => ({ settings: hostSettingsView(await deps.runtimeManager.getSettings()), runtimeStatus: runtimeStatus(), presets: addablePresets() }),
+    "settings.get": async () => ({ settings: await view(), runtimeStatus: runtimeStatus(), presets: addablePresets() }),
 
     "settings.update": async payload => {
       refuseByField(payload);
@@ -139,13 +149,8 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
       }
       const { providers: _providers, ...other } = input;
       const patch = { ...other, ...(input.providers ? { providers } : {}) } as AppSettingsPatch;
-      try { await deps.runtimeManager.updateSettings(patch); }
-      catch (error) {
-        // Validation messages name the field, never its value.
-        if (error instanceof SettingsValidationError) throw new RemoteOperationError(error.message, "invalid_request");
-        throw error;
-      }
-      return { settings: hostSettingsView(await deps.runtimeManager.getSettings()) };
+      await deps.runtimeManager.updateSettings(patch).catch(refused);
+      return { settings: await view() };
     },
 
     /** Add provider, first step: the models a preset's service lists for this key, read on the server
@@ -176,14 +181,9 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
         id = `${preset.id}-${suffix}`;
       }
       const name = input.name ?? (id === preset.id ? preset.name : `${preset.name} ${id.slice(preset.id.length + 1)}`);
-      try {
-        await deps.runtimeManager.updateSettings({ providers: { [id]: { kind: "openai-compatible", dialect: preset.dialect, preset: preset.id, name, baseUrl,
-          apiKey: input.apiKey.set.trim(), model: input.model, enabled: true, timeoutMs: 300_000 } } });
-      } catch (error) {
-        if (error instanceof SettingsValidationError) throw new RemoteOperationError(error.message, "invalid_request");
-        throw error;
-      }
-      return { id, settings: hostSettingsView(await deps.runtimeManager.getSettings()) };
+      await deps.runtimeManager.updateSettings({ providers: { [id]: { kind: "openai-compatible", dialect: preset.dialect, preset: preset.id, name, baseUrl,
+        apiKey: input.apiKey.set.trim(), model: input.model, enabled: true, timeoutMs: 300_000 } } }).catch(refused);
+      return { id, settings: await view() };
     },
 
     /** Sends one short prompt with the provider's saved key on the host; the answer carries neither. */
@@ -195,7 +195,9 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
       const provider = Object.hasOwn(settings.providers, id) ? settings.providers[id] : undefined;
       if (!provider) throw new RemoteOperationError("The provider does not exist on the server.", "invalid_request");
       if (!provider.enabled) return { ok: false, providerId: id, message: "Provider is disabled." };
-      const secrets = [...Object.values(settings.providers).map(item => item.apiKey ?? "").filter(Boolean), ...environmentSecrets()];
+      // Every key the runtime may have used, read from the vault (and any kept from before), and the environment's.
+      const keys = await deps.runtimeManager.providerKeys(settings);
+      const secrets = [...Object.values(keys.providers).map(item => item.key ?? "").filter(Boolean), ...environmentSecrets()];
       try {
         const response = await deps.runtimeManager.getRuntime().llmService.generateText({ usagePurpose: "provider-test", model: model ?? provider.model, prompt: "Reply exactly with: ok",
           signal: AbortSignal.any([context.signal, AbortSignal.timeout(TEST_TIMEOUT_MS)]) }, id);

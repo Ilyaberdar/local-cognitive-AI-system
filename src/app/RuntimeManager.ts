@@ -5,8 +5,10 @@ import { SynthesisService } from "../synthesis/SynthesisService";
 import { buildRuntime, AppRuntime } from "./buildRuntime";
 import { AppConfig, localModelOptions } from "../config/config";
 import { Logger } from "../utils/Logger";
-import { AppSettings, AppSettingsPatch } from "../types";
+import { AppSettings, AppSettingsPatch, StoredProviderSettings } from "../types";
 import { AppSettingsStore } from "./AppSettingsStore";
+import { LMSTUDIO_PLACEHOLDER, ResolvedKeys } from "./ProviderKeyStore";
+import { localSettingsView } from "../runtime/settingsDto";
 import { BUILT_IN_PROVIDER_IDS } from "../llm/providerCatalog";
 import { PluginManager } from "../plugins/PluginManager";
 import { DirectIntegrationAdapter } from "../plugins/DirectIntegrationAdapter";
@@ -82,6 +84,17 @@ export class RuntimeManager {
     return this.settingsStore.get();
   }
 
+  /** Each provider's key and the bot token, with its state, for these settings (or the saved ones). */
+  async providerKeys(settings?: AppSettings): Promise<ResolvedKeys> {
+    return this.settingsStore.resolveKeys(settings ?? await this.settingsStore.get());
+  }
+
+  /** The settings as this computer's API returns them: no key, bot token or vault record. */
+  async settingsView(settings?: AppSettings) {
+    const current = settings ?? await this.settingsStore.get();
+    return localSettingsView(current, await this.providerKeys(current));
+  }
+
   async updateSettings(patch: AppSettingsPatch): Promise<{ runtime: AppRuntime; settings: AppSettings }> {
     validateSettingsPatch(patch);
     return this.enqueue(async () => {
@@ -133,7 +146,10 @@ export class RuntimeManager {
 
   private async build(settings: AppSettings): Promise<AppRuntime> {
     if (this.disposed) throw new Error("Runtime has been disposed");
-    const mergedConfig = this.applySettings(settings);
+    // Each key is read on its own: one that cannot be read leaves only that provider without a key.
+    const keys = await this.settingsStore.resolveKeys(settings);
+    for (const [id, key] of Object.entries(keys.providers)) if (key.state === "unreadable") this.logger.warn("A provider's saved key cannot be read on this computer: enter it again in Settings.", { provider: id });
+    const mergedConfig = this.applySettings(settings, keys);
     if (!this.plugins) {
       const ownerId = this.integrationOwner ?? `local:${settings.memory.localProfileId}`;
       this.direct = new DirectIntegrationAdapter(this.integrations.vault ?? unavailableVault, ownerId, this.mcpClients, this.integrations.oauthClients);
@@ -182,9 +198,15 @@ export class RuntimeManager {
     return this.disposing;
   }
 
-  private applySettings(settings: AppSettings): AppConfig {
+  private applySettings(settings: AppSettings, keys: ResolvedKeys): AppConfig {
     const { dataDir: _dataDir, enabled: _enabled, ...baseLocalModels } = localModelOptions(this.baseConfig);
     const local = settings.localModels;
+    // A provider's settings without its key's record (or a key kept from before): its key is `keys`'.
+    const fields = (provider: StoredProviderSettings | undefined) => {
+      const { apiKey: _apiKey, apiKeyRef: _apiKeyRef, ...rest } = provider ?? ({} as StoredProviderSettings);
+      return rest;
+    };
+    const key = (id: string) => keys.providers[id]?.key;
     return {
       ...this.baseConfig,
       // Saved forward-compatible fields must not override backend-only executable/ownership settings.
@@ -209,7 +231,7 @@ export class RuntimeManager {
       telegram: {
         ...this.baseConfig.telegram,
         enabled: settings.telegram.enabled,
-        botToken: settings.telegram.botToken ?? this.baseConfig.telegram.botToken,
+        botToken: keys.telegram.key,
         ownerUserIds: settings.telegram.ownerUserIds,
         pollTimeoutSec: settings.telegram.pollTimeoutSec
       },
@@ -241,24 +263,23 @@ export class RuntimeManager {
         },
         ollama: {
           ...this.baseConfig.providers.ollama,
-          ...settings.providers.ollama
+          ...fields(settings.providers.ollama)
         },
+        // LM Studio takes any key: without one it is sent its stand-in.
         lmstudio: {
           ...this.baseConfig.providers.lmstudio,
-          ...settings.providers.lmstudio,
-          apiKey:
-            settings.providers.lmstudio?.apiKey ?? this.baseConfig.providers.lmstudio.apiKey
+          ...fields(settings.providers.lmstudio),
+          apiKey: key("lmstudio") ?? LMSTUDIO_PLACEHOLDER
         },
         openai: {
           ...this.baseConfig.providers.openai,
-          ...settings.providers.openai,
-          apiKey: settings.providers.openai?.apiKey ?? this.baseConfig.providers.openai.apiKey
+          ...fields(settings.providers.openai),
+          apiKey: key("openai")
         },
         anthropic: {
           ...this.baseConfig.providers.anthropic,
-          ...settings.providers.anthropic,
-          apiKey:
-            settings.providers.anthropic?.apiKey ?? this.baseConfig.providers.anthropic.apiKey,
+          ...fields(settings.providers.anthropic),
+          apiKey: key("anthropic"),
           version:
             settings.providers.anthropic?.version ?? this.baseConfig.providers.anthropic.version,
           maxTokens:
@@ -267,11 +288,11 @@ export class RuntimeManager {
         },
         gemini: {
           ...this.baseConfig.providers.gemini,
-          ...settings.providers.gemini,
-          apiKey: settings.providers.gemini?.apiKey ?? this.baseConfig.providers.gemini.apiKey
+          ...fields(settings.providers.gemini),
+          apiKey: key("gemini")
         }
       },
-      // Every OpenAI-compatible service in the settings; a key from the environment fills a blank one.
+      // Every OpenAI-compatible service in the settings; a key from the environment is used while none is saved.
       compatibleProviders: Object.fromEntries(Object.entries(settings.providers)
         .filter(([id, provider]) => provider.kind === "openai-compatible" && !BUILT_IN_PROVIDER_IDS.includes(id))
         .map(([id, provider]) => {
@@ -283,7 +304,7 @@ export class RuntimeManager {
             baseUrl: (fromEnvironment ? base?.baseUrl : provider.baseUrl || base?.baseUrl) || "",
             model: provider.model || base?.model || "",
             timeoutMs: provider.timeoutMs ?? base?.timeoutMs ?? 300000,
-            apiKey: fromEnvironment ? base?.apiKey : provider.apiKey || base?.apiKey,
+            apiKey: key(id),
             name: provider.name || base?.name || id,
             dialect: provider.dialect || base?.dialect || "chat",
             ...(provider.preset ? { preset: provider.preset } : {}),

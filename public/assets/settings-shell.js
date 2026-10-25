@@ -95,14 +95,30 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     const date = new Date(at);
     return date.toDateString() === new Date().toDateString() ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
-  const hasKey = (provider, server) => server ? ['set', 'environment'].includes(provider?.apiKeyState) : Boolean(provider?.apiKey?.trim()) || provider?.source === 'environment';
+  // A key's state, as this computer and a server both say it (never the key): saved, none, from the
+  // environment, saved but unreadable here, kept unencrypted, or for another host (origin) than this one.
+  const hasKey = provider => ['set', 'environment', 'unprotected'].includes(provider?.apiKeyState);
+  const KEY_PROBLEMS = {
+    unreadable: ['The saved key can’t be read on this computer: enter it again', 'error'],
+    'address-changed': ['The address is on another host: enter the key again', 'warn'],
+    'environment-address-changed': ['The key from the environment is for another address: set the address back or enter a key for this one', 'warn']
+  };
+  /** What the API key field says about the saved key, beyond whether there is one. */
+  const KEY_NOTES = {
+    unreadable: 'The saved key can’t be read on this computer. Enter it again.',
+    unprotected: 'This key is saved without encryption: protected storage is unavailable here.',
+    'address-changed': 'The key was saved for another host (origin) and is not sent to this one. Enter it again.',
+    'environment-address-changed': 'The key from the environment is for another address: set the address back or enter a key for this one.',
+    environment: 'The key comes from the environment. A key entered here replaces it.'
+  };
   /** [text, tone] of a provider: off, no key, or how its last check went. */
   function providerState(id, provider, server) {
     if (!provider?.enabled) return ['Disabled', 'off'];
     if (id === 'llamacpp') return ['Built-in · load its models in Models', 'neutral'];
     const local = isLocalProvider(id);
-    if (!local && !hasKey(provider, server)) return ['No API key', 'warn'];
-    if (server) return [provider.apiKeyState === 'environment' ? "Key from the server's environment file" : 'Key saved', 'neutral'];
+    if (!local && KEY_PROBLEMS[provider.apiKeyState]) return KEY_PROBLEMS[provider.apiKeyState];
+    if (!local && !hasKey(provider)) return ['No API key', 'warn'];
+    if (server) return [provider.apiKeyState === 'environment' ? "Key from the server's environment file" : provider.apiKeyState === 'unprotected' ? 'Key saved without encryption' : 'Key saved', 'neutral'];
     const status = providerChecks.statuses[id];
     if (!status) return [providerChecks.checking ? 'Checking…' : local ? 'Enabled · not checked yet' : 'Key saved · not checked yet', 'pending'];
     const when = ` · checked ${checkedTime(status.checkedAt)}`;
@@ -197,7 +213,9 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
       return [bool(`providers.${id}.enabled`, 'Enabled'),
         ...(isAddedProvider(id, entry) ? [field(`providers.${id}.name`, 'Name', 'text', { description: 'Shown in Settings and where you choose a model.' })] : []),
         ...(id === 'llamacpp' ? [] : [
-        regions ? field(`providers.${id}.baseUrl`, 'Region', 'region-url', { regions, description: 'A key works only in the region it was created in.' }) : field(`providers.${id}.baseUrl`, 'Base URL', 'url'),
+        // A saved key is sent only to the host (origin) it was saved for.
+        regions ? field(`providers.${id}.baseUrl`, 'Region', 'region-url', { regions, description: 'A key works only in the region it was created in. Another region or host needs the key entered again.' })
+          : field(`providers.${id}.baseUrl`, 'Base URL', 'url', id === 'ollama' ? {} : { description: 'An address on another host (origin) removes the saved key: enter it again. Another path on the same host keeps it.' }),
         ...(id === 'ollama' ? [] : [field(`providers.${id}.apiKey`, 'API key', 'secret')])
       ]), field(`providers.${id}.model`, 'Default model', 'model', { provider: id }),
       ...(id === 'llamacpp' ? [] : [number(`providers.${id}.timeoutMs`, 'Timeout (ms)', 1000, 3600000)]),
@@ -294,7 +312,10 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     else if (spec.type === 'font-scale') control = `<div class="settings-font-scale"><input ${common} type="range" min="85" max="150" step="5" value="${value ?? 100}" aria-valuetext="${value ?? 100}%" /><output for="${id}">${value ?? 100}%</output></div>`;
     else if (spec.type === 'code-font-size') control = `<div class="settings-font-scale"><input ${common} type="range" min="10" max="20" step="1" value="${value ?? 12}" aria-valuetext="${value ?? 12} px" /><output for="${id}">${value ?? 12} px</output></div><pre class="settings-code-preview" aria-label="Code size preview"><code><span class="hljs-keyword">const</span> message = <span class="hljs-string">"Hello, world"</span>;</code></pre>`;
     else if (spec.type === 'select') control = `<select ${common}>${spec.choices.map(choice => { const [key, label] = Array.isArray(choice) ? choice : [choice, choice]; return `<option value="${escape(key)}" ${String(value) === key ? 'selected' : ''}>${escape(label)}</option>`; }).join('')}</select>`;
-    else if (spec.type === 'secret') control = `<div class="settings-secret"><input ${common} type="password" autocomplete="new-password" value="" placeholder="${get(settings(), spec.name) || get(settings(), `${spec.name}State`) === 'set' ? 'Saved key · leave blank to keep' : 'Enter API key'}" /><button type="button" class="ghost-button" data-clear="${escape(spec.name)}">Remove key</button><small data-secret-state="${escape(spec.name)}">${Object.hasOwn(draft, spec.name) ? draft[spec.name] === '' ? 'Key will be removed on Apply.' : 'Replacement key entered.' : 'Blank input keeps the existing key.'}</small></div>`;
+    else if (spec.type === 'secret') {
+      const keyState = get(settings(), `${spec.name}State`);
+      control = `<div class="settings-secret"><input ${common} type="password" autocomplete="new-password" value="" placeholder="${['set', 'unprotected'].includes(keyState) ? 'Saved key · leave blank to keep' : 'Enter API key'}" /><button type="button" class="ghost-button" data-clear="${escape(spec.name)}">Remove key</button><small data-secret-state="${escape(spec.name)}">${Object.hasOwn(draft, spec.name) ? draft[spec.name] === '' ? 'Key will be removed on Apply.' : 'Replacement key entered.' : escape(KEY_NOTES[keyState] ?? 'Blank input keeps the existing key.')}</small></div>`;
+    }
     else if (spec.type === 'model') {
       control = (serverFor(page)?.renderModelControl ?? renderModelControl)(spec.provider, value || '').replaceAll(`provider.${spec.provider}.model`, spec.name);
       // The existing model picker is reused with a unique accessible label.

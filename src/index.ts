@@ -90,7 +90,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const failed = (error: unknown) => { diagnosticLog.record("startup.failed", { category: errorCategory(error) }); diagnosticLog.flush(); };
   // A provider entry of the environment that was left out says why (never its key).
   for (const problem of config.providerProblems ?? []) logger.warn("A provider in the environment was left out", { problem });
-  const appSettingsStore = new AppSettingsStore(config.appDataDir, config);
+  // Provider keys and the bot token are in the same vault as the integrations' credentials.
+  const appSettingsStore = new AppSettingsStore(config.appDataDir, config, { vault: integrations.vault, logger });
   // host.db: the server's durable runs, and every runtime's usage ledger.
   let database: HostDatabase | undefined;
   try { database = HostDatabase.open(path.join(config.appDataDir, "runtime", "host.db"), hostMigrations); }
@@ -191,7 +192,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
 
   const telegramConfig = {
     enabled: appSettings.telegram.enabled,
-    botToken: appSettings.telegram.botToken ?? config.telegram.botToken,
+    botToken: (await runtimeManager.providerKeys(appSettings)).telegram.key,
     ownerUserIds: appSettings.telegram.ownerUserIds,
     pollTimeoutSec: appSettings.telegram.pollTimeoutSec
   };
@@ -282,10 +283,12 @@ const openHostServices = (database: HostDatabase, config: AppConfig, runtimeMana
 
 if (require.main === module) void (async () => {
   // Plain `npm start` (development headless run): the server CLI is local-cognitive-server.
-  const { resolveHeadlessVault } = await import("./security/headlessVault");
-  const vault = resolveHeadlessVault(defaultConfig);
+  // The key file a server uses when it is set; on a Mac otherwise the development window's vault
+  // (devVault.ts), as `npm run mcp:stdio` chooses (runVault.ts).
+  const { resolveRunVault } = await import("./security/runVault");
+  const vault = resolveRunVault(defaultConfig);
   if (vault.error) throw new Error(vault.error);
-  if (!vault.configured) logger.warn("Credential storage is not configured; account connections are unavailable.");
+  if (vault.kind === "none") logger.warn("Credential storage is not configured; provider keys and account connections cannot be saved. Set LOCAL_COGNITIVE_VAULT_KEY_FILE.");
   return startBackend(defaultConfig, { vault: vault.vault });
 })().then((backend) => {
   const stop = () => { void backend.dispose().then(() => process.exit(0), () => process.exit(1)); };

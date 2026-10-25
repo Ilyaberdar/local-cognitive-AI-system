@@ -15,7 +15,9 @@ const runtimeManager = {
     mcpClients: { list: () => [{ bindingId: CANARY, serverId: CANARY, enabled: true, state: "error", reconnectAttempt: 1, error: { code: "command_not_found", message: CANARY }, diagnostic: `/Users/${CANARY}/bin` },
       { bindingId: "b", serverId: "blender", enabled: true, state: "connected", reconnectAttempt: 0 }] }
   }),
-  getSettings: async () => ({ providers: { openai: { enabled: true, apiKey: `sk-${CANARY}`, baseUrl: `https://${CANARY}.example` }, ollama: { enabled: false } } })
+  getSettings: async () => ({ providers: { openai: { enabled: true, apiKeyRef: CANARY, baseUrl: `https://${CANARY}.example` }, ollama: { enabled: false } } }),
+  // The key as the runtime reads it from the vault: whether there is one may leave, never the key.
+  providerKeys: async () => ({ providers: { openai: { state: "set", key: `sk-${CANARY}` }, ollama: { state: "unset" } }, telegram: { state: "unset" } })
 } as never;
 const log = { tail: () => [
   { at: "2026-10-10T01:00:00.000Z", event: "app.started" as const, fields: {}, n: 1 },

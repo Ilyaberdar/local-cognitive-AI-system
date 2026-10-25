@@ -9,6 +9,16 @@ const HOST = "6f1c2c3e-58a4-4c55-9a0e-3c7f5b1d2e90";
 const T0 = "2026-10-01T10:00:00.000Z";
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 150)); await flush(10); };
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+/** Keys as the host's key store reads them: a key saved in `raw` is set, an empty one unset. */
+const keysOf = (raw: any) => ({ providers: Object.fromEntries(Object.entries<any>(raw.providers).map(([id, provider]) =>
+  [id, provider.source === "environment" ? { state: "environment" as const } : provider.apiKey ? { state: "set" as const, key: provider.apiKey } : { state: "unset" as const }])), telegram: { state: "unset" as const } });
+/** As this computer's API answers: a key comes back as its state, never the key. */
+const withKeyStates = (settings: any) => {
+  for (const provider of Object.values<any>(settings.providers ?? {})) {
+    if (typeof provider?.apiKey === "string") { provider.apiKeyState = provider.apiKey ? "set" : "unset"; delete provider.apiKey; }
+  }
+  return settings;
+};
 const merge = (target: any, patch: any): any => {
   for (const [key, value] of Object.entries(patch)) {
     target[key] = value && typeof value === "object" && !Array.isArray(value) && target[key] && typeof target[key] === "object" ? merge(target[key], value) : value;
@@ -23,7 +33,7 @@ export function localSettings() {
     llm: { defaultProvider: "ollama" },
     providers: {
       ollama: { enabled: true, baseUrl: "http://127.0.0.1:11434", model: "llama3.2", timeoutMs: 60000 },
-      openai: { enabled: true, baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o-mini", timeoutMs: 60000 },
+      openai: { enabled: true, baseUrl: "https://api.openai.com/v1", apiKeyState: "unset", model: "gpt-4o-mini", timeoutMs: 60000 },
       llamacpp: { enabled: true, model: "" }
     },
     localModels: { modelsDir: "/Users/me/models", contextSize: 4096, gpuLayers: "auto", memoryLimitPercent: 75, loadTimeoutMs: 300000, generationTimeoutMs: 600000, generation: { preset: "server" } },
@@ -43,7 +53,7 @@ export function localSettings() {
   const route = (method: string, url: string, body?: string): unknown => {
     if (url === "/dashboard/bootstrap") return bootstrap();
     if (url === "/app/settings" && method === "PUT") {
-      merge(settings, JSON.parse(body!));
+      withKeyStates(merge(settings, JSON.parse(body!)));
       return copy({ settings, providers: [], plugins: [], tools: [], availableModels: [] });
     }
     if (url === "/providers/openai/test") return { ok: true, providerId: "openai", model: "gpt-4o-mini", message: "ok" };
@@ -167,12 +177,12 @@ function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start"
     "sessions.list": () => [],
     "models.available": () => ({ providers: [], availableModels: [{ providerId: "openai", id: "gpt-4.1" }], loadedModels: [],
       allManagedModels: [{ providerId: "llamacpp", id: "qwen-14b", libraryId: "qwen-14b", displayName: "Qwen 14B", loaded: true }], appSettings: { llm: {}, providers: {} } }),
-    "settings.get": () => ({ settings: hostSettingsView(raw), runtimeStatus: "running", ...(presets ? { presets } : {}) }),
+    "settings.get": () => ({ settings: hostSettingsView(raw, keysOf(raw)), runtimeStatus: "running", ...(presets ? { presets } : {}) }),
     "providers.discover": () => ({ models: ["deepseek-v4-pro", "deepseek-flash"] }),
     "providers.add": payload => {
       raw.providers.deepseek = { kind: "openai-compatible", dialect: "deepseek", preset: payload.preset, name: payload.name, enabled: true, baseUrl: "https://api.deepseek.com",
         apiKey: payload.apiKey.set, model: payload.model, timeoutMs: 300000 };
-      return { id: "deepseek", settings: hostSettingsView(raw) };
+      return { id: "deepseek", settings: hostSettingsView(raw, keysOf(raw)) };
     },
     "settings.update": async payload => {
       if (gate.held) await new Promise<void>(resolve => gate.waiting.push(resolve));
@@ -180,7 +190,7 @@ function fedoraWithSettings({ name = "fedora", capabilities = ["chat.runs.start"
       for (const provider of Object.values<any>(patch.providers ?? {})) if (provider?.apiKey) provider.apiKey = provider.apiKey.set ?? "";
       for (const [id, provider] of Object.entries<any>(patch.providers ?? {})) if (provider === null) { delete raw.providers[id]; delete patch.providers[id]; }
       merge(raw, patch);
-      return { settings: hostSettingsView(raw) };
+      return { settings: hostSettingsView(raw, keysOf(raw)) };
     },
     "providers.test": payload => ({ ok: true, providerId: payload.providerId, model: payload.model, message: `Provider responded successfully with model ${payload.model}.` })
   };
@@ -450,9 +460,9 @@ test("an older fedora without Add provider says so", async t => {
 
 test("Models & Providers says which providers work: a refused key, a connected one, one without a key; it checks when it opens", async t => {
   const local = localSettings();
-  local.settings.providers.openai.apiKey = "sk-saved";
-  local.settings.providers.anthropic = { enabled: true, baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-saved", model: "claude-sonnet-4-5", timeoutMs: 60000 };
-  local.settings.providers.gemini = { enabled: true, baseUrl: "https://generativelanguage.googleapis.com", apiKey: "", model: "gemini-2.5-flash", timeoutMs: 60000 };
+  local.settings.providers.openai.apiKeyState = "set";
+  local.settings.providers.anthropic = { enabled: true, baseUrl: "https://api.anthropic.com", apiKeyState: "set", model: "claude-sonnet-4-5", timeoutMs: 60000 };
+  local.settings.providers.gemini = { enabled: true, baseUrl: "https://generativelanguage.googleapis.com", apiKeyState: "unset", model: "gemini-2.5-flash", timeoutMs: 60000 };
   const checkedAt = new Date().toISOString();
   const cached = { anthropic: { state: "rejected", httpStatus: 401, message: "Key refused (HTTP 401)", checkedAt, fingerprint: "a" } };
   const checked = { ...cached, openai: { state: "connected", models: 42, message: "42 models", checkedAt, fingerprint: "b" }, ollama: { state: "unreachable", message: "Not reachable", checkedAt, fingerprint: "c" } };
@@ -478,4 +488,27 @@ test("Models & Providers says which providers work: a refused key, a connected o
   assert.match(text(app, "[data-provider-detail-state]"), /^Key refused \(HTTP 401\): enter a new key/);
   open(app, "providers"); await settle();
   assert.equal(checks, 1, "not all again within a minute");
+});
+
+test("Models & Providers says when a saved key cannot be used: unreadable here, saved for another address, kept unencrypted", async t => {
+  const local = localSettings();
+  local.settings.providers.openai.apiKeyState = "unreadable";
+  local.settings.providers.anthropic = { enabled: true, baseUrl: "https://proxy.example", apiKeyState: "address-changed", model: "claude-sonnet-4-5", timeoutMs: 60000 };
+  local.settings.providers.gemini = { enabled: true, baseUrl: "https://generativelanguage.googleapis.com", apiKeyState: "unprotected", model: "gemini-2.5-flash", timeoutMs: 60000 };
+  local.settings.providers.qwen = { kind: "openai-compatible", dialect: "qwen", name: "Qwen", enabled: true, baseUrl: "https://dashscope-us.aliyuncs.com/compatible-mode/v1", apiKeyState: "environment-address-changed", model: "qwen3.7-plus", timeoutMs: 60000 };
+  const app = await bootApp({ ...local, route: (method, url, body) => url === "/providers/status" ? { providers: {} } : local.route(method, url, body) });
+  t.after(() => app.close());
+  open(app, "providers"); await settle();
+  const state = (id: string) => (app.document.querySelector(`#settings-root [data-provider-row="${id}"] [data-provider-state]`) as any).textContent;
+  assert.equal(state("openai"), "The saved key can’t be read on this computer: enter it again");
+  assert.equal(state("anthropic"), "The address is on another host: enter the key again");
+  assert.equal(state("qwen"), "The key from the environment is for another address: set the address back or enter a key for this one");
+  assert.doesNotMatch(state("gemini"), /No API key/, "a key kept unencrypted still works");
+  open(app, "providers/openai"); await settle();
+  assert.equal(inRoot(app, "#setting-providers-openai-apiKey").placeholder, "Enter API key");
+  assert.match(text(app, '[data-secret-state="providers.openai.apiKey"]'), /can’t be read on this computer/);
+  assert.match(text(app, '[data-setting="providers.openai.baseUrl"]'), /another host \(origin\) removes the saved key.*Another path on the same host keeps it/);
+  open(app, "providers/gemini"); await settle();
+  assert.equal(inRoot(app, "#setting-providers-gemini-apiKey").placeholder, "Saved key · leave blank to keep");
+  assert.match(text(app, '[data-secret-state="providers.gemini.apiKey"]'), /without encryption/);
 });

@@ -44,7 +44,7 @@ test("a chat with a refused key says so instead of the service's raw JSON", asyn
 });
 
 test("a provider's check lists its models: connected, a refused key, a service down, no answer", async () => {
-  const settings = { enabled: true, baseUrl: "https://api.example", apiKey: "sk-secret-value" };
+  const settings = { enabled: true, baseUrl: "https://api.example", apiKeyRef: "0f3c9a" };
   const connected = await checkProvider(async () => [{}, {}, {}], settings);
   assert.deepEqual([connected.state, connected.models, connected.message], ["connected", 3, "3 models"]);
   const refused = await checkProvider(async () => { throw new ProviderHttpError("Anthropic models request failed with status 401", 401); }, settings);
@@ -57,7 +57,9 @@ test("a provider's check lists its models: connected, a refused key, a service d
   const slow = await checkProvider(() => new Promise(() => undefined), settings, 20);
   assert.deepEqual([slow.state, slow.message], ["unreachable", "No answer"]);
   assert.equal(connected.fingerprint, statusFingerprint(settings));
-  assert.doesNotMatch(JSON.stringify(connected), /sk-secret-value/, "never the key");
+  // Never derived from a key: a key kept in settings.json from before counts only as there.
+  assert.equal(statusFingerprint({ ...settings, apiKeyRef: undefined, apiKey: "sk-secret-value" }), statusFingerprint({ ...settings, apiKeyRef: undefined, apiKey: "sk-other-value" }));
+  assert.notEqual(statusFingerprint({ ...settings, apiKeyRef: undefined, apiKey: "sk-secret-value" }), statusFingerprint({ ...settings, apiKeyRef: undefined }));
 });
 
 test("the last checks are kept without keys, and a new key or address makes its result stale", async t => {
@@ -65,19 +67,21 @@ test("the last checks are kept without keys, and a new key or address makes its 
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const store = new ProviderStatusStore(dir);
   assert.deepEqual(await store.read(), {});
-  const providers: Record<string, { enabled: boolean; baseUrl: string; apiKey?: string }> = {
-    anthropic: { enabled: true, baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-old" }, openai: { enabled: true, baseUrl: "https://api.openai.com/v1", apiKey: "sk-open" }
+  const providers: Record<string, { enabled: boolean; baseUrl: string; apiKeyRef?: string }> = {
+    anthropic: { enabled: true, baseUrl: "https://api.anthropic.com", apiKeyRef: "ref-ant-old" }, openai: { enabled: true, baseUrl: "https://api.openai.com/v1", apiKeyRef: "ref-open" }
   };
   const refused = await checkProvider(async () => { throw new ProviderHttpError("x", 401); }, providers.anthropic!);
   const ok = await checkProvider(async () => [{}], providers.openai!);
   await store.write({ anthropic: refused, openai: ok, gone: ok }, Object.keys(providers));
   const raw = await fs.readFile(path.join(dir, "provider-status.json"), "utf8");
-  assert.doesNotMatch(raw, /sk-ant-old|sk-open/);
+  assert.doesNotMatch(raw, /ref-ant-old|ref-open/, "not even the key's record");
   assert.equal(((await fs.stat(path.join(dir, "provider-status.json"))).mode & 0o777).toString(8), "600");
   assert.deepEqual(Object.keys(await store.read()).sort(), ["anthropic", "openai"], "a provider no longer set up is dropped");
   assert.deepEqual(Object.keys(currentStatuses(await store.read(), providers)).sort(), ["anthropic", "openai"]);
-  providers.anthropic!.apiKey = "sk-ant-new";
+  providers.anthropic!.apiKeyRef = "ref-ant-new";
   assert.deepEqual(Object.keys(currentStatuses(await store.read(), providers)), ["openai"], "the refusal was of the old key");
+  providers.openai!.baseUrl = "https://proxy.example/v1";
+  assert.deepEqual(Object.keys(currentStatuses(await store.read(), providers)), [], "and the check of the old address");
   await fs.writeFile(path.join(dir, "provider-status.json"), "{not json");
   assert.deepEqual(await store.read(), {}, "a damaged file reads as no checks yet");
 });
