@@ -1,5 +1,6 @@
 import path from "path";
 import { canonicalPath, isWorkspacePath } from "../../tools/AccessPolicy";
+import { assertNotProtected } from "../../security/protectedPaths";
 
 export class WorkflowPathPolicy {
   constructor(
@@ -17,6 +18,8 @@ export class WorkflowPathPolicy {
   }
 
   async assertAllowed(targetPath: string): Promise<void> {
+    // The app's own files, in full access too.
+    assertNotProtected(targetPath);
     if (this.accessMode === "full") {
       return;
     }

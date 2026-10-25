@@ -5,6 +5,7 @@ import { ProviderHttpError, refusalMessage, withoutKey } from "./ProviderHttpErr
 import { decodeImage, validateImages } from "./InferenceImages";
 import { geminiAgentResponse, geminiContinuation } from "./NativeToolTransport";
 import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
+import { sameOriginFetch } from "./sameOriginFetch";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -52,7 +53,7 @@ export class GeminiProvider implements LLMProvider {
       url.searchParams.set("pageSize", "1000");
       if (pageToken) url.searchParams.set("pageToken", pageToken);
 
-      const response = await fetch(url, {
+      const response = await sameOriginFetch()(url, {
         method: "GET",
         headers: {
           "x-goog-api-key": this.options.apiKey ?? ""
@@ -109,7 +110,7 @@ export class GeminiProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
-      const response = await fetchWithRetries(countedFetch(fetch, request), endpoint, {
+      const response = await fetchWithRetries(countedFetch(sameOriginFetch(), request), endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

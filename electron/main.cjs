@@ -178,7 +178,7 @@ const startBackend = async (appRoot, vault) => {
   let oauthClients = {};
   try { oauthClients = await loadOAuthClientRegistrations(oauthClientsFile); }
   catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
-  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount });
+  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount, userDataDir: app.getPath("userData") });
 };
 
 const createWindow = async (url) => {

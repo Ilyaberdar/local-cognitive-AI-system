@@ -89,6 +89,8 @@ const refuseLater = (fields: Record<string, unknown>, projects = false): void =>
 /** Tasks and schedules a device makes: their runs get no MCP tools of the host (`WorkflowRun.deviceOrigin`). */
 const DEVICE_ORIGIN = { deviceOrigin: true };
 const MCP_ON_HOST = "This step calls a tool of an application on the server (MCP). Approve it on the server; from here you can reject it.";
+/** A web step's page on the server's own computer or its local network: what is there is the host's. */
+const PAGE_ON_HOST = "This page is on the server's computer or its local network. Approve it on the server; from here you can reject it.";
 
 export const workflowLimits = (definition: unknown): string[] => {
   const value = record(definition), runDefaults = record(value.runDefaults), problems = new Set<string>();
@@ -385,7 +387,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
             // A waiting external MCP call would run in the host's own applications: only the host
             // approves it (a device may still reject it, which stops the step). Checked under the
             // run's lock, on the operation being approved.
-            beforeApprove: waiting => { if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST); } }));
+            beforeApprove: waiting => { if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST); if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST); } }));
       }, { target: input.runId, allowWhileDraining: true });
     }),
     "workflows.runs.resume": (payload, context) => known(async () => {

@@ -40,9 +40,16 @@ export class WebSearchNodeExecutor implements NodeExecutor {
       throw new Error("Web search query is empty.");
     }
 
+    // The SearXNG address is the host's (SEARXNG_URL): a step from a paired device may not name another,
+    // which could be any address on the host's own network.
+    const baseUrl = readConfigString(config, "baseUrl", this.options.searxngUrl ?? "");
+    if (provider !== "brave" && context.run.deviceOrigin && baseUrl.trim() && baseUrl.trim() !== (this.options.searxngUrl ?? "").trim()) {
+      throw new Error("A web search step from a device uses the server's own SearXNG address (SEARXNG_URL); set it on the server instead of in the step.");
+    }
+
     const results = provider === "brave"
       ? await this.searchBrave(query, limit, context.signal)
-      : await this.searchSearxng(query, limit, readConfigString(config, "baseUrl", this.options.searxngUrl ?? ""), context.signal);
+      : await this.searchSearxng(query, limit, baseUrl, context.signal);
 
     return {
       status: "ok",
@@ -60,10 +67,11 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
     url.searchParams.set("q", query);
     url.searchParams.set("count", String(limit));
+    // The subscription token goes only to Brave: a redirect anywhere is an error, not followed.
     const response = await this.fetchJson(url, {
       Accept: "application/json",
       "X-Subscription-Token": this.options.braveApiKey
-    }, signal);
+    }, signal, "error");
     const web = readRecord(response.web);
     const values = Array.isArray(web.results) ? web.results : [];
 
@@ -98,9 +106,10 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     }).filter((item) => Boolean(item.url));
   }
 
-  private async fetchJson(url: URL, headers: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  private async fetchJson(url: URL, headers: Record<string, string>, signal?: AbortSignal, redirect: RequestRedirect = "follow"): Promise<Record<string, unknown>> {
     const response = await this.fetchImpl(url, {
       headers,
+      redirect,
       signal: resolveAbortSignal(30_000, signal)
     });
 

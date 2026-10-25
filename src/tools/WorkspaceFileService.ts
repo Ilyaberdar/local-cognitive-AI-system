@@ -7,6 +7,7 @@ import { WorkspaceSnapshot } from "../workspace/types";
 import { canonicalPath, isWorkspacePath } from "./AccessPolicy";
 import { withFileLock } from "../utils/fileStore";
 import { searchFilter } from "./searchGlob";
+import { assertNotProtected, isProtectedEntry } from "../security/protectedPaths";
 
 const hash = (content: Buffer | string) => createHash("sha256").update(content).digest("hex");
 const maxReadBytes = 5 * 1024 * 1024;
@@ -21,6 +22,9 @@ export class WorkspaceFileService {
     const canonical = action.tool === "file.delete"
       ? path.join(await canonicalPath(path.dirname(target)), path.basename(target))
       : await canonicalPath(target);
+    // File tools never read or change the app's own files, whatever was approved (commands are not
+    // covered: their working folder is only where they start).
+    if (action.tool.startsWith("file.")) assertNotProtected(canonical);
     return { ...action, arguments: { ...action.arguments, [key]: canonical } };
   }
 
@@ -125,6 +129,8 @@ export class WorkspaceFileService {
       for (const item of (await fs.readdir(dir, { withFileTypes:true })).sort((a,b)=>a.name.localeCompare(b.name))) {
         if (excluded.has(item.name) || item.isSymbolicLink()) continue;
         const file = path.join(dir,item.name);
+        // The app's own folders and files are left out of a search from a folder above them.
+        if (isProtectedEntry(file)) continue;
         const relative = path.relative(root,file).split(path.sep).join("/");
         if(exclude.some(matches=>matches(relative)||matches(relative+"/"))) continue;
         if (item.isDirectory()) { queue.push(file); continue; }
@@ -145,7 +151,7 @@ export class WorkspaceFileService {
         if (matches.length >= limit) break;
       }
     }
-    return this.result("search",root,JSON.stringify({root,query,scannedFiles,matches,truncated:queue.length>0||matches.length>=limit||scannedFiles>=maxFiles,skipped:"Symbolic links, .git, node_modules, dist, release and files over 512 KB"}),{root,query,scannedFiles,results:matches});
+    return this.result("search",root,JSON.stringify({root,query,scannedFiles,matches,truncated:queue.length>0||matches.length>=limit||scannedFiles>=maxFiles,skipped:"Symbolic links, .git, node_modules, dist, release, the app's own data and files over 512 KB"}),{root,query,scannedFiles,results:matches});
   }
   private result(operation:string,filePath:string,output:string,extra:Record<string,unknown>={}):ToolExecutionResult {
     return {tool:"file",ok:true,output,metadata:{operation,filePath,...extra}};

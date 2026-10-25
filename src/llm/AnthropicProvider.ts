@@ -5,6 +5,7 @@ import { ProviderHttpError, refusalMessage, withoutKey } from "./ProviderHttpErr
 import { decodeImage, validateImages } from "./InferenceImages";
 import { anthropicAgentResponse, anthropicContinuation, withTurn } from "./NativeToolTransport";
 import { countedFetch, fetchWithRetries, promptWithTurn, unsupportedFeature } from "./provider-utils";
+import { sameOriginFetch } from "./sameOriginFetch";
 import {
   buildFallbackResponse,
   createDescriptor,
@@ -59,7 +60,7 @@ export class AnthropicProvider implements LLMProvider {
       url.searchParams.set("limit", "1000");
       if (afterId) url.searchParams.set("after_id", afterId);
 
-      const response = await fetch(url, {
+      const response = await sameOriginFetch()(url, {
         method: "GET",
         headers: {
           "x-api-key": this.options.apiKey ?? "",
@@ -100,7 +101,7 @@ export class AnthropicProvider implements LLMProvider {
     try {
       const images = validateImages(request.images);
       const tools = request.outputPurpose === "agent-action" ? request.tools : undefined;
-      const response = await fetchWithRetries(countedFetch(fetch, request), `${this.options.baseUrl}/v1/messages`, {
+      const response = await fetchWithRetries(countedFetch(sameOriginFetch(), request), `${this.options.baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

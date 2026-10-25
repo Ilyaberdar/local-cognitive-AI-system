@@ -1,4 +1,5 @@
 import os from "node:os";
+import { keyShapes } from "../security/keyPatterns";
 
 /** What leaves for Sentry (crash and error reports, bug reports), decided here, before sending.
  * Allowlists, not clean-up: only the listed contexts, the technical log's own breadcrumbs, stack
@@ -35,6 +36,7 @@ export const maskText = (value: unknown, limit = 300): string => String(value ??
   .replace(/eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, "<token>")
   .replace(/\b(?:Bearer|Basic)\s+\S+/gi, "<credential>")
   .replace(/\b(?:sk|pk|rk|ghp|gho|ghs|xox[abprs]|AKIA|AIza)[-_]?[A-Za-z0-9_-]{12,}/g, "<secret>")
+  .replace(keyShapes(), "<secret>")
   .replace(/[A-Za-z0-9+_-]{32,}={0,2}/g, "<secret>")
   .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "<email>")
   .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#'"]+[^\s'"]*/gi, (_match, scheme: string) => `${scheme}<host>`)
@@ -88,6 +90,27 @@ export const scrubSentryEvent = <T extends Json>(event: T, automatic: boolean): 
   }
   for (const thread of ((out.threads as { values?: Json[] } | undefined)?.values ?? [])) scrubFrames(thread.stacktrace);
   return out as T;
+};
+
+/** A crash report's hint, as the SDK hands it to beforeSend and then to the envelope it sends. */
+export interface SentryHint { attachments?: Array<{ attachmentType?: string; filename?: string }> }
+const NATIVE_PROCESS_KEEPS_DUMP = new Set(["renderer", "gpu", "utility", "zygote", "sandbox_helper"]);
+
+/** A native crash of the main process goes without its minidump: the backend runs in that process,
+ * so its memory holds decrypted keys, chats and files. The event (the process, the reason, the
+ * context) still goes, tagged so; a crash of a window or helper process keeps its dump. A crash
+ * whose process is not known counts as the main one. Changes the hint in place (the SDK sends the
+ * hint's attachments after beforeSend); true when a dump was withheld. */
+export const withholdMainProcessMinidump = (event: Json, hint: SentryHint | undefined): boolean => {
+  const dumps = hint?.attachments?.filter(item => item?.attachmentType === "event.minidump") ?? [];
+  if (!hint || !dumps.length) return false;
+  const tags = (event.tags ?? {}) as Json;
+  const electron = ((event.contexts as Json | undefined)?.electron ?? {}) as Json;
+  const crashed = String(tags["event.process"] ?? electron["crashpad.process_type"] ?? "").replace(/-process$/, "").toLowerCase();
+  if (NATIVE_PROCESS_KEEPS_DUMP.has(crashed)) return false;
+  hint.attachments = hint.attachments!.filter(item => item?.attachmentType !== "event.minidump");
+  event.tags = { ...tags, minidump: "withheld" };
+  return true;
 };
 
 /** A server's own files in stack frames as app:/// paths (as the desktop SDK does), so they keep

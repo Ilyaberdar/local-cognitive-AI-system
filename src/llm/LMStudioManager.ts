@@ -1,5 +1,6 @@
 import { ManagedModel } from "../types";
 import { LocalModelManager } from "./LocalModelManager";
+import { sameOriginFetch } from "./sameOriginFetch";
 
 interface LMStudioManagerOptions {
   baseUrl: string;
@@ -129,7 +130,8 @@ export class LMStudioManager implements LocalModelManager {
       timeoutMs?: number;
     }
   ): Promise<T> {
-    const response = await fetch(`${this.nativeBaseUrl}${pathname}`, {
+    // Its key goes only to LM Studio's own address, never along a redirect elsewhere.
+    const response = await sameOriginFetch()(`${this.nativeBaseUrl}${pathname}`, {
       method: options.method,
       headers: {
         "Content-Type": "application/json",

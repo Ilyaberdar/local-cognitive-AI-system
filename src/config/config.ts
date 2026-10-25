@@ -139,6 +139,10 @@ export interface AppConfig {
   };
 }
 
+/** The installed desktop app: Electron's main process, not started as `electron .` (process.defaultApp). */
+export const isPackagedApp = (proc: { versions: NodeJS.ProcessVersions; defaultApp?: boolean } = process): boolean =>
+  Boolean(proc.versions.electron) && !proc.defaultApp;
+
 const resolveDir = (dirPath: string, fallback: string): string => {
   const candidate = dirPath.trim() || fallback;
   return path.resolve(process.cwd(), candidate);
@@ -367,9 +371,11 @@ export const config: AppConfig = {
   filesystem: {
     accessMode:
       process.env.FILESYSTEM_ACCESS_MODE === "full" ? "full" : "restricted",
+    // The installed app's working folder is its own code (inside the app bundle): only a run from a
+    // checkout offers its folder to the file tools.
     allowedDirectories: [
       resolveDir(process.env.OUTPUT_DIR ?? "./data/output", "./data/output"),
-      process.cwd()
+      ...(isPackagedApp() ? [] : [process.cwd()])
     ]
   },
   outputDir: resolveDir(process.env.OUTPUT_DIR ?? "./data/output", "./data/output"),

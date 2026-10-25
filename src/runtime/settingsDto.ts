@@ -3,6 +3,7 @@ import { BUILT_IN_PROVIDER_IDS, providerPreset } from "../llm/providerCatalog";
 import type { ApiKeyState, ResolvedKeys } from "../app/ProviderKeyStore";
 import type { AppSettings } from "../types";
 import { publicError } from "./publicError";
+import { maskKeyShapes } from "../security/keyPatterns";
 
 /** Providers that take an API key on the host. */
 export const takesKey = (providerId: string): boolean => !["llamacpp", "ollama"].includes(providerId);
@@ -66,7 +67,6 @@ export const hostSettingsView = (settings: AppSettings, keys: ResolvedKeys) => {
   };
 };
 
-const KEY_SHAPES = /\b(?:sk-[A-Za-z0-9_\-*]{8,}|AIza[0-9A-Za-z_\-]{20,})/g;
 /** Text with every occurrence of these keys replaced (the longest first, so none is left in part). */
 export const maskSecrets = (text: unknown, secrets: Array<string | undefined>): string => {
   let value = String(text ?? "");
@@ -75,4 +75,4 @@ export const maskSecrets = (text: unknown, secrets: Array<string | undefined>): 
 };
 /** A provider's message for a device: saved keys and anything shaped like a key are replaced,
  * then reduced like every other error (first line, no paths, short). */
-export const withoutSecrets = (text: unknown, secrets: string[]): string => publicError(maskSecrets(text, secrets).replace(KEY_SHAPES, "<key>"));
+export const withoutSecrets = (text: unknown, secrets: string[]): string => publicError(maskKeyShapes(maskSecrets(text, secrets)));

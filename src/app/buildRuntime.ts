@@ -747,7 +747,8 @@ export const buildRuntime = async (
         braveApiKey: process.env.BRAVE_SEARCH_API_KEY,
         searxngUrl: process.env.SEARXNG_URL
       }),
-      new WebFetchNodeExecutor(),
+      // The app's own API is never a page a workflow reads.
+      new WebFetchNodeExecutor({ ownPort: config.server.port }),
       new ReadFileNodeExecutor(operationExecutor),
       new SaveFileNodeExecutor({
         accessMode: config.filesystem.accessMode,

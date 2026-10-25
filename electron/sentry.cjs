@@ -13,7 +13,7 @@ function startSentry() {
   // Tests and an explicit opt-out never load the SDK.
   if (process.env.LOCAL_COGNITIVE_TEST_DATA_DIR || process.env.LOCAL_COGNITIVE_SENTRY === "off") return disabled;
   const Sentry = require("@sentry/electron/main");
-  const { SENTRY_DSN, DIAGNOSTIC_BREADCRUMB, maskText, scrubSentryBreadcrumb, scrubSentryEvent } = require("../dist/src/diagnostics/sentryScrub.js");
+  const { SENTRY_DSN, DIAGNOSTIC_BREADCRUMB, maskText, scrubSentryBreadcrumb, scrubSentryEvent, withholdMainProcessMinidump } = require("../dist/src/diagnostics/sentryScrub.js");
   const file = path.join(app.getPath("userData"), "diagnostics-consent.json");
   const read = () => {
     try {
@@ -46,7 +46,9 @@ function startSentry() {
     attachScreenshot: false,
     maxBreadcrumbs: 50,
     initialScope: { tags: { runtime: "desktop" } },
-    beforeSend: event => {
+    beforeSend: (event, hint) => {
+      // Before the scrub (which drops the crash's process annotations): the main process's dump stays here.
+      withholdMainProcessMinidump(event, hint);
       const out = scrubSentryEvent(event, consent.automatic);
       if (out?.event_id) lastError = { id: out.event_id, at: Date.now() };
       return out;

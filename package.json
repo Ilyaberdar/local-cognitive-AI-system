@@ -107,6 +107,7 @@
     },
     "icon": "icon.png",
     "asar": false,
+    "afterPack": "scripts/after-pack.cjs",
     "directories": {
       "output": "release"
     },

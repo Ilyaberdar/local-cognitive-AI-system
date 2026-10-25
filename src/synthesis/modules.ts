@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { containedPath, relativePath } from "./paths";
 import { SynthesisError } from "./types";
+import { isProtectedEntry } from "../security/protectedPaths";
 
 export const MODULE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const ignoredFolders = new Set(["node_modules", "dist", "build", "release", "coverage", "vendor", "target", "Binaries", "Intermediate", "DerivedDataCache"]);
@@ -45,6 +46,7 @@ export async function discoverModules(root: string): Promise<string[]> {
     for (const item of await fs.readdir(folder, {withFileTypes: true})) {
       if (++entries > 20000) throw new SynthesisError("Module discovery reached 20,000 entries. Select a project folder closer to your DSL files.");
       const relative = directory ? `${directory}/${item.name}` : item.name;
+      if (isProtectedEntry(path.join(folder, item.name))) continue;
       if (item.isDirectory() && visibleDirectory(item.name)) {
         if (depth >= 12) continue;
         if (relative.length < 240) pending.push({directory: relative, depth: depth + 1});
@@ -64,6 +66,6 @@ export async function discoverModules(root: string): Promise<string[]> {
 export async function moduleFolders(root: string, directory: string): Promise<string[]> {
   const folder = directory ? await containedPath(root, directory) : root;
   return (await fs.readdir(folder, {withFileTypes: true}))
-    .filter(item => item.isDirectory() && visibleDirectory(item.name))
+    .filter(item => item.isDirectory() && visibleDirectory(item.name) && !isProtectedEntry(path.join(folder, item.name)))
     .map(item => item.name).sort();
 }

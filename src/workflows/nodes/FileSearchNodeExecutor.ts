@@ -11,6 +11,7 @@ import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 import { WorkflowPathPolicy } from "./WorkflowPathPolicy";
 import { OperationExecutor } from "../../tools/OperationExecutor";
 import { executeWorkflowOperation } from "./WorkflowOperation";
+import { isProtectedEntry } from "../../security/protectedPaths";
 
 interface FileSearchNodeExecutorOptions {
   accessMode: "restricted" | "full";
@@ -125,6 +126,8 @@ const collectFiles = async (
       const relative = path.relative(root, absolute).split(path.sep).join("/");
 
       if (excludeMatchers.some((matcher) => matcher.test(relative))) continue;
+      // The app's own data is left out of a search from a folder above it.
+      if (isProtectedEntry(absolute)) continue;
       if (entry.isDirectory()) queue.push(absolute);
       else if (entry.isFile() && includeMatchers.some((matcher) => matcher.test(relative))) files.push(absolute);
       if (files.length >= maxFiles) break;

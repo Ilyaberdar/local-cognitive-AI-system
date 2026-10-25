@@ -33,6 +33,8 @@ import type { ChatAttachment } from "./types";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
 import { loadSessionMessages } from "./conversations/sessionHistory";
+import { protectedPathsFor, setProtectedPaths } from "./security/protectedPaths";
+import { uiSecurityHeaders } from "./api/uiSecurityHeaders";
 
 const logger = new Logger();
 
@@ -77,12 +79,16 @@ export interface BackendOptions {
   runtimeKind?: RuntimeKind;
   /** The account signed in to this computer (desktop); a server's account is its owner. */
   usageAccount?: () => string | undefined;
+  /** The desktop app's data folder (Electron's userData): file tools never use it. */
+  userDataDir?: string;
 }
 
 export const startBackend = async (config: AppConfig = defaultConfig, integrations: IntegrationRuntimeOptions = {}, options: BackendOptions = {}): Promise<BackendHandle> => {
   // One runtime owns a data directory; a second backend or MCP server on it is refused.
   // The short wait covers restarts (tsx watch, app relaunch) of the previous owner.
   const lock = await DataRootLock.acquire(config.appDataDir, options.runtimeKind ?? "server", appVersion(), { waitMs: 3000 });
+  // The app's own files are out of reach of its file tools from here on (security/protectedPaths.ts).
+  setProtectedPaths(`backend:${config.appDataDir}`, protectedPathsFor(config, { userDataDir: options.userDataDir }));
   if (lock.previousShutdown === "unclean") logger.warn("The previous runtime did not shut down cleanly", { kind: lock.previousOwner?.kind });
   const diagnosticLog = new DiagnosticLog(path.join(config.appDataDir, "diagnostics"));
   setDiagnosticSink(diagnosticLog);
@@ -160,6 +166,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
       forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted) } : undefined));
     // The headless server has no UI: clients bring their own (desktop app).
     if (config.ui.serve !== false) {
+      app.use(uiSecurityHeaders);
       app.use(express.static(config.ui.publicDir));
       app.get("/", (_req, res) => {
         res.sendFile(path.join(config.ui.publicDir, "index.html"));

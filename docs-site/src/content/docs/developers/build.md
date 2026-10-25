@@ -41,6 +41,8 @@ npm run verify:release -- --team-id <team id>
 
 `verify:release` refuses to pass anything that isn't signed with the Developer ID, hardened, notarized and stapled.
 
+**Every desktop build is checked for credentials.** After electron-builder unpacks the app, and before it signs it or makes the dmg, zip or installer, its `afterPack` hook (`scripts/after-pack.cjs`) runs `scripts/verify-package-secrets.mjs` on the unpacked app (`Local Cognitive.app/Contents/Resources/app` on macOS, `resources/app` elsewhere). A credential file (`.env`, `settings.json`, a key) or a credential-like string (an OpenAI, Anthropic, Google, Groq, Perplexity, OpenRouter, xAI, Hugging Face, GitHub, Slack, AWS or Sentry key, a Telegram bot token, a private key) fails the build; the check names the file and the kind of key, never the value. To check a folder by hand: `npm run verify:package-secrets -- <app folder>`, or `node scripts/verify-package-secrets.mjs src public electron` for a checkout's own sources.
+
 **Windows.** The **Windows installer** workflow in GitHub Actions builds the NSIS installer with the Vulkan llama.cpp and the Visual C++ runtime beside it, checks that every runtime starts with all its libraries, and runs a silent install and uninstall. `npm run dist:win` builds the same on a Windows machine.
 
 ## Server releases

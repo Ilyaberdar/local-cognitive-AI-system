@@ -3,7 +3,8 @@ import type { UsageRecorder } from "../usage/UsageCall";
 import path from "path";
 import { SynthesisService } from "../synthesis/SynthesisService";
 import { buildRuntime, AppRuntime } from "./buildRuntime";
-import { AppConfig, localModelOptions } from "../config/config";
+import { AppConfig, isPackagedApp, localModelOptions } from "../config/config";
+import { protectedPathsFor, setProtectedPaths } from "../security/protectedPaths";
 import { Logger } from "../utils/Logger";
 import { AppSettings, AppSettingsPatch, StoredProviderSettings } from "../types";
 import { AppSettingsStore } from "./AppSettingsStore";
@@ -150,6 +151,9 @@ export class RuntimeManager {
     const keys = await this.settingsStore.resolveKeys(settings);
     for (const [id, key] of Object.entries(keys.providers)) if (key.state === "unreadable") this.logger.warn("A provider's saved key cannot be read on this computer: enter it again in Settings.", { provider: id });
     const mergedConfig = this.applySettings(settings, keys);
+    // The memory folder may be one Settings chose: it is the app's own too. The open folders are only the
+    // configuration's (an output folder chosen in Settings inside the data folder does not open it).
+    setProtectedPaths(`runtime:${this.baseConfig.appDataDir}`, { roots: protectedPathsFor(mergedConfig).roots, carveOuts: protectedPathsFor(this.baseConfig).carveOuts });
     if (!this.plugins) {
       const ownerId = this.integrationOwner ?? `local:${settings.memory.localProfileId}`;
       this.direct = new DirectIntegrationAdapter(this.integrations.vault ?? unavailableVault, ownerId, this.mcpClients, this.integrations.oauthClients);
@@ -237,7 +241,9 @@ export class RuntimeManager {
       },
       filesystem: {
         accessMode: settings.filesystem?.accessMode ?? this.baseConfig.filesystem.accessMode,
-        allowedDirectories: settings.filesystem?.allowedDirectories ?? this.baseConfig.filesystem.allowedDirectories
+        // Settings an installed app saved earlier hold its own code folder (the old default) as an allowed folder.
+        allowedDirectories: (settings.filesystem?.allowedDirectories ?? this.baseConfig.filesystem.allowedDirectories)
+          .filter(folder => !(isPackagedApp() && path.resolve(folder) === process.cwd()))
       },
       memory: {
         ...this.baseConfig.memory,

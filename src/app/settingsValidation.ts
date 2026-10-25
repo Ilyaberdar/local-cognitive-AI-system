@@ -1,6 +1,7 @@
 import { AppSettingsPatch, UiPreferences } from "../types";
 import { isProviderDialect } from "../llm/ProviderDialect";
 import { BUILT_IN_PROVIDER_IDS, providerPreset } from "../llm/providerCatalog";
+import { protectedPathReason } from "../security/protectedPaths";
 
 const isWebAddress = (value: string): boolean => {
   try { const url = new URL(value); return (url.protocol === "https:" || url.protocol === "http:") && Boolean(url.hostname) && !url.username && !url.password; }
@@ -57,6 +58,11 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
   if (patch.filesystem !== undefined) {
     check(object(patch.filesystem, "filesystem"), "filesystem", { outputDir: "string", accessMode: ["restricted", "full"] });
     if (patch.filesystem.allowedDirectories !== undefined && (!Array.isArray(patch.filesystem.allowedDirectories) || patch.filesystem.allowedDirectories.some(value => typeof value !== "string"))) throw new SettingsValidationError("Invalid filesystem.allowedDirectories.");
+    // A folder inside the app's own data is never one tools may use; one that holds it is (only the
+    // app's data in it stays out of reach).
+    for (const folder of [...(patch.filesystem.allowedDirectories ?? []), ...(typeof patch.filesystem.outputDir === "string" && patch.filesystem.outputDir.trim() ? [patch.filesystem.outputDir] : [])]) {
+      if (folder.trim() && protectedPathReason(folder)) throw new SettingsValidationError(`${folder} is inside the app's own data folder, which tools never use. Choose a folder outside it; a folder that holds it is fine.`);
+    }
   }
   if (patch.ui !== undefined) {
     const ui = object(patch.ui, "ui");

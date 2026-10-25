@@ -51,6 +51,8 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           npx electron-builder --win nsis --x64 --publish never
+      # electron-builder's afterPack hook (scripts/after-pack.cjs) already ran this check and would have
+      # failed Package; run again on the finished folder, which costs a second.
       - name: No credentials in the package
         run: node scripts/verify-package-secrets.mjs release/win-unpacked/resources/app
       - name: The runtimes start and bring every library they need

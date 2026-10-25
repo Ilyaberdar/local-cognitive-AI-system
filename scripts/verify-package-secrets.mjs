@@ -14,6 +14,15 @@ const patterns = [
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{36,}/],
   ["Notion token", /\b(?:ntn|secret)_[A-Za-z0-9]{40,}/],
   ["Telegram bot token", /\b\d{8,11}:[A-Za-z0-9_-]{35}\b/],
+  ["Groq key", /\bgsk_[A-Za-z0-9]{40,}/],
+  ["Perplexity key", /\bpplx-[A-Za-z0-9]{40,}/],
+  ["OpenRouter key", /\bsk-or-v1-[0-9a-f]{64}/],
+  ["xAI key", /\bxai-[A-Za-z0-9]{60,}/],
+  ["Hugging Face token", /\bhf_[A-Za-z0-9]{34,}/],
+  ["GitHub fine-grained token", /\bgithub_pat_[A-Za-z0-9_]{60,}/],
+  ["Slack token", /\bxox[abprs]-\d{10,13}-[A-Za-z0-9-]{10,}/],
+  ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["Sentry auth token", /\bsntry[su]_[A-Za-z0-9_=+/-]{40,}/],
   ["Private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/]
 ];
 // Third-party packages are scanned for file names only: their sources legitimately
@@ -38,6 +47,8 @@ const findAppDir = () => {
 
 const scan = (appDir) => {
   const findings = [];
+  // A folder that is not an unpacked app (src/, public/, electron/ of a checkout): all of it is content.
+  const wholeFolder = !fs.existsSync(path.join(appDir, "package.json"));
   const visit = (current, scanContent) => {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
@@ -56,10 +67,10 @@ const scan = (appDir) => {
   };
   for (const entry of fs.readdirSync(appDir, { withFileTypes: true })) {
     const full = path.join(appDir, entry.name);
-    if (entry.isDirectory()) visit(full, contentRoots.includes(entry.name));
+    if (entry.isDirectory()) visit(full, wholeFolder || contentRoots.includes(entry.name));
     else if (entry.isFile()) {
       if (forbiddenNames.some(pattern => pattern.test(entry.name)) && !allowedNames.has(entry.name)) findings.push(`${entry.name}: forbidden file`);
-      if (contentRoots.includes(entry.name)) {
+      if (wholeFolder || contentRoots.includes(entry.name)) {
         const text = fs.readFileSync(full, "utf8");
         for (const [name, pattern] of patterns) if (pattern.test(text)) findings.push(`${entry.name}: ${name}`);
       }
@@ -79,7 +90,7 @@ const scan = (appDir) => {
 
 const targets = process.argv.slice(2).length ? process.argv.slice(2).map(target => path.resolve(target)) : findAppDir();
 if (!targets.length) {
-  console.error("No unpacked app found. Pass the app directory (…/Resources/app or …/resources/app).");
+  console.error("No unpacked app found. Pass the app directory (…/Resources/app or …/resources/app), or folders to scan whole (src public electron).");
   process.exit(2);
 }
 let failed = false;
