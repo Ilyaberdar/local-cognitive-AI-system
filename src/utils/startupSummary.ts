@@ -48,7 +48,7 @@ export const formatStartupSummary = ({
     "",
     "Local Cognitive",
     "=========================",
-    // The API's key itself is never in the summary (it goes to the log).
+    // The API's key is never in the summary or the log: `npm start` prints its sign-in link once, on its own.
     line("HTTP API", config.server.enabled ? `${baseUrl} (needs this computer's API key)` : "off"),
     line("Web UI", config.server.enabled && config.ui.serve !== false ? baseUrl : "off"),
     line("Health", config.server.enabled ? `${baseUrl}/health` : "off"),

@@ -56,12 +56,12 @@ test("breadcrumbs: only the technical log's", () => {
   assert.deepEqual(scrubSentryBreadcrumb({ category: "lc", message: "mcp.connection_failed" }), { category: "lc", message: "mcp.connection_failed" });
 });
 
-test("a main-process crash is reported without its minidump; a window's or helper's keeps it", () => {
+test("a crash of the main or a utility process is reported without its minidump; a window's or the GPU's keeps it", () => {
   const dump = () => ({ attachmentType: "event.minidump", filename: "crash.dmp" });
   const log = { filename: "log.txt" };
   const native = (process?: string, annotation?: string) => ({ level: "fatal", platform: "native", tags: { "event.environment": "native", ...(process ? { "event.process": process } : {}) },
     contexts: annotation ? { electron: { "crashpad.process_type": annotation } } : {} });
-  for (const [process, annotation] of [["browser", undefined], [undefined, "browser"], ["unknown", undefined], [undefined, undefined], ["main", undefined]] as const) {
+  for (const [process, annotation] of [["browser", undefined], [undefined, "browser"], ["unknown", undefined], [undefined, undefined], ["main", undefined], ["utility", undefined], [undefined, "utility"], ["Utility", undefined], ["zygote", undefined]] as const) {
     const event = native(process, annotation), hint: SentryHint = { attachments: [dump(), log] };
     assert.equal(withholdMainProcessMinidump(event, hint), true, `${process}/${annotation}`);
     assert.deepEqual(hint.attachments, [log], "only the dump is withheld");
@@ -69,11 +69,27 @@ test("a main-process crash is reported without its minidump; a window's or helpe
     // The event itself still goes, scrubbed as any other.
     assert.ok(scrubSentryEvent(event, true));
   }
-  for (const process of ["renderer", "GPU", "utility"]) {
+  for (const process of ["renderer", "GPU", "gpu-process"]) {
     const hint: SentryHint = { attachments: [dump()] };
     assert.equal(withholdMainProcessMinidump(native(process), hint), false, process);
     assert.equal(hint.attachments?.length, 1);
   }
   assert.equal(withholdMainProcessMinidump(native("browser"), {}), false, "nothing to withhold");
   assert.equal(withholdMainProcessMinidump(native("browser"), undefined), false);
+});
+
+test("masking takes linear time: a long input is cut before the masks run, at a space", () => {
+  for (const input of ["a.".repeat(80000), "a".repeat(200000) + "@", `${"x-".repeat(60000)}@b.c`, "/a".repeat(100000)]) {
+    const started = process.hrtime.bigint();
+    const masked = maskText(input);
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 250, `${input.slice(0, 12)}…: ${masked.length}`);
+    assert.ok(masked.length <= 300);
+  }
+  // A token cut in two at the bound is not kept in part: the cut ends at the space before it. Masks
+  // shorten the text before it, so without that the token's first characters would show.
+  const text = `${`${"T".repeat(40)} `.repeat(29)}abc sk-proj-${"Z".repeat(40)}`;
+  assert.equal(text.indexOf("sk-proj"), 1193);
+  const masked = maskText(text, 300);
+  assert.match(masked, /<secret> abc$/);
+  assert.equal(masked.includes("sk-"), false);
 });

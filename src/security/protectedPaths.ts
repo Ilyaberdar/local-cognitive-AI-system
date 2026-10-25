@@ -99,6 +99,22 @@ class Checker {
     if (this.carveOuts.some(entry => entry.identity === id)) return "open";
     return undefined;
   }
+  /** Whether a protected place lies inside this folder (or is it): by spelling, and by device and inode
+   * of the folder against every folder above each protected place, so another spelling or a bind
+   * mount of a folder above the data is recognised too. */
+  holds(real: string): boolean {
+    const key = this.key(real), prefix = key.endsWith(path.sep) ? key : key + path.sep;
+    if (this.roots.some(entry => entry.key === key || entry.key.startsWith(prefix))) return true;
+    const id = identity(real);
+    if (!id) return false;
+    for (const entry of this.roots) {
+      for (let current = entry.path; ; current = path.dirname(current)) {
+        if (identity(current) === id) return true;
+        if (path.dirname(current) === current) break;
+      }
+    }
+    return false;
+  }
   /** The nearest of the place and its folders that is a carve-out or protected decides. */
   decide(real: string): boolean {
     for (let current = real; ; current = path.dirname(current)) {
@@ -155,6 +171,19 @@ export function protectedPathReason(target: string): string | undefined {
   if (platform === "win32" && /:/.test(path.resolve(target).replace(/^(?:\\\\[?.]\\)?[A-Za-z]:/, ""))) return STREAM_REASON;
   return active().decide(canonical(target)) ? PROTECTED_REASON : undefined;
 }
+
+/** Whether deleting or moving this folder would take some of the app's own data with it: a protected
+ * file or folder lies inside it (the folder holding the data folder, a checkout that holds ./data). */
+export function containsProtected(target: string): boolean {
+  return active().holds(canonical(target));
+}
+
+/** Why a recursive delete or a move of this path is refused: protectedPathReason's, or that it holds
+ * some of the app's own data. */
+export function protectedRemovalReason(target: string): string | undefined {
+  return protectedPathReason(target) ?? (containsProtected(target) ? HOLDS_REASON : undefined);
+}
+const HOLDS_REASON = "This folder holds the app's own data folder; tools never delete or move it.";
 
 /** Throws ProtectedPathError for a path protectedPathReason refuses. */
 export function assertNotProtected(target: string): void {

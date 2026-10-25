@@ -1,5 +1,5 @@
 import { resolveAbortSignal } from "../../llm/provider-utils";
-import { addressPlace, guardedGet, type GuardedGetOptions, type GuardedResponse, type Hooks } from "../../security/egress";
+import { describeAddress, guardedGet, type GuardedGetOptions, type GuardedResponse, type Hooks } from "../../security/egress";
 import { NodeResult } from "../types";
 import { readConfigNumber, readConfigString, renderWorkflowTemplate } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
@@ -35,21 +35,27 @@ export class WebFetchNodeExecutor implements NodeExecutor {
     const access = nodeAccess(context);
     const needsApproval = access.requireApproval || access.accessMode !== "full";
     if (needsApproval && !approved) {
-      const place = await addressPlace(url, this.options.hooks);
+      // Where the address is now, and the addresses it has now: the approval is for these.
+      const { place, addresses } = await describeAddress(url, this.options.hooks);
       return {
         status: "needs_input", event: "web_fetch.approval_required", summary: `Allow reading ${url.href} and its redirects?`,
-        data: { permissionRequired: true, approvalId, url: url.href, maxChars,
+        data: { permissionRequired: true, approvalId, url: url.href, maxChars, addresses,
           details: `HTTP GET · ${url.href}\nRead page text only; no scripts or credentials. Redirects are followed only to public addresses, or within this address.` +
             (place ? `\nThis address is on ${place}: allowing it lets this step read what is served there.` : ""),
           ...(place ? { place, warning: `This address is on ${place}.` } : {}) }
       };
     }
     if (approved?.approved === false) return { status: "failed", event: "web_fetch.rejected", summary: "Page access rejected.", data: {}, error: "Page access rejected." };
-    // The address the user named: approved in the prompt, or written in the step itself.
-    const named = approved ? url.origin : staticOrigin(template) === url.origin ? url.origin : undefined;
+    // The address the user named: approved in the prompt as one on this computer or the network (the
+    // prompt said so), or written in the step itself. One approved as public stays public: a name that
+    // points elsewhere since (DNS rebinding) is refused, and its hops go to the addresses it had then.
+    const approvedPlace = typeof approved?.place === "string";
+    const named = approved ? (approvedPlace ? url.origin : undefined) : staticOrigin(template) === url.origin ? url.origin : undefined;
+    const approvedAddresses = approved && Array.isArray(approved.addresses) ? approved.addresses.filter((item): item is string => typeof item === "string") : undefined;
     const page = await (this.options.get ?? guardedGet)(url, {
       headers: { Accept: "text/html, text/plain, application/json" }, signal: resolveAbortSignal(30000, context.signal),
-      maxBytes: 1_000_000, maxRedirects: 5, allowPrivateOrigin: named, ownPort: this.options.ownPort, hooks: this.options.hooks,
+      maxBytes: 1_000_000, maxRedirects: 5, allowPrivateOrigin: named, ownPort: this.options.ownPort, hooks: this.options.hooks, approvedAddresses,
+      privateRefusal: approved && !approvedPlace ? `${url.origin} now points to this computer or the local network; it was approved as a public address, so it is not read.` : undefined,
       onHop: hop => context.onProgress?.({ phase: "tools", label: "Reading webpage", detail: hop.href, at: new Date().toISOString() }),
       accept: (status, type) => status >= 200 && status < 300 && TEXT_TYPES.includes(type || "text/plain")
     });

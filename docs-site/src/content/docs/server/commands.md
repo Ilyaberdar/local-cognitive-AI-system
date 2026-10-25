@@ -39,10 +39,13 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | `sudo local-cognitive-server folders` | Folders on the server that connected computers may use for projects |
 | `sudo local-cognitive-server api-token` | The key of the server's own HTTP API on `127.0.0.1:3000` (new at every start) |
 
-The server's HTTP API listens only on the server itself (`127.0.0.1`, port 3000 unless `--http-port` sets another) and answers only requests with its key, except `/health`. A script running on the server sends it as a header:
+The server's HTTP API listens only on the server itself (`127.0.0.1`, port 3000 unless `--http-port` sets another) and answers only requests with its key, except `/health`. A script running on the server sends it as a header, and a request other than GET also sends `X-Local-Cognitive: 1`:
 
 ```bash
-curl -H "Authorization: Bearer $(sudo local-cognitive-server api-token)" http://127.0.0.1:3000/sessions
+KEY=$(sudo local-cognitive-server api-token)
+curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/sessions
+curl -X POST -H "Authorization: Bearer $KEY" -H "X-Local-Cognitive: 1" -H "Content-Type: application/json" \
+  -d '{"title":"From a script"}' http://127.0.0.1:3000/sessions
 ```
 
 The key changes at every start and is kept in `app/runtime/api-token` in the data folder, readable only by the server's user, until the server stops. Other users of the machine, and programs running as them, cannot use the API; a program running as the server's user can still read the key. Computers connected through Remote need no key.

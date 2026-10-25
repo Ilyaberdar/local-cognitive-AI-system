@@ -3,7 +3,8 @@ import http from "node:http";
 import zlib from "node:zlib";
 import test from "node:test";
 import { AddressInfo } from "node:net";
-import { guardedGet, hostOf, isBlockedAddress, isMetadataAddress, isOwnAddress, resolveAndPin } from "../src/security/egress";
+import os from "node:os";
+import { defaultHooks, guardedGet, hostOf, isBlockedAddress, isMetadataAddress, isOwnAddress, resolveAndPin } from "../src/security/egress";
 
 async function serve(handler: http.RequestListener): Promise<{ port: number; seen: http.IncomingHttpHeaders[]; close: () => Promise<void> }> {
   const seen: http.IncomingHttpHeaders[] = [];
@@ -14,6 +15,13 @@ async function serve(handler: http.RequestListener): Promise<{ port: number; see
 /** Any name resolves to the test server, whose address counts as public: only for the paths that read. */
 const asPublic = { resolve: async () => [{ address: "127.0.0.1", family: 4 }], blocked: () => false };
 
+test("every address of this machine's interfaces is refused by default, a public one too", () => {
+  const own = Object.values(os.networkInterfaces()).flatMap(items => items ?? []).map(item => item.address.split("%")[0]!);
+  assert.ok(own.length > 0);
+  for (const address of own) assert.equal(defaultHooks.blocked(address), true, address);
+  assert.equal(defaultHooks.blocked("1.1.1.1"), false);
+});
+
 test("an IPv6 literal is checked without its brackets, and its embedded IPv4 as that IPv4", async () => {
   assert.equal(hostOf(new URL("http://[::1]:8080/")), "::1");
   assert.equal(hostOf(new URL("http://[::ffff:7f00:1]/")), "::ffff:7f00:1");
@@ -22,6 +30,11 @@ test("an IPv6 literal is checked without its brackets, and its embedded IPv4 as 
   assert.equal(isOwnAddress("1.1.1.1"), false);
   for (const address of ["169.254.169.254", "fd00:ec2::254", "100.100.100.200", "fe80::1", "::ffff:169.254.169.254"]) assert.equal(isMetadataAddress(address), true, address);
   assert.equal(isMetadataAddress("10.0.0.1"), false);
+  // Ranges that lead elsewhere than their address says: site-local, discard-only, Teredo and local-use NAT64.
+  for (const address of ["fec0::1", "feff::1", "100::1", "100::ffff:1", "2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "64:ff9b:1::1", "64:ff9b:1:ffff::a01:203", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe"]) {
+    assert.equal(isBlockedAddress(address), true, address);
+  }
+  for (const address of ["1.1.1.1", "8.8.8.8", "64:ff9b::808:808", "2001:4860:4860::8888", "2606:4700:4700::1111", "2002:808:808::1"]) assert.equal(isBlockedAddress(address), false, address);
   // resolveAndPin takes the URL's hostname as it is: "[::1]" is the address ::1, not a name to look up.
   const pinned = await resolveAndPin("[::1]", { resolve: async () => { throw new Error("not a name"); }, blocked: () => false });
   assert.equal(pinned.address, "::1"); assert.equal(pinned.family, 6);

@@ -5,7 +5,7 @@ import { ModeResult, ToolExecutionRequest, ToolExecutionResult } from "../types"
 import { Tool } from "./Tool.interface";
 import { authorizeOperation, canonicalPath, isWorkspacePath } from "./AccessPolicy";
 import { isReviewEditRequest, readReviewSelection, reviewInputPath } from "../utils/reviewSelection";
-import { protectedPathReason } from "../security/protectedPaths";
+import { protectedPathReason, protectedRemovalReason } from "../security/protectedPaths";
 
 interface FileToolOptions {
   outputDir: string;
@@ -153,7 +153,8 @@ export class FileTool implements Tool {
   /** A refusal for any of these paths that is one of the app's own files or folders. */
   private protectedRefusal(operation: string, files: Array<{ path: string }>): ToolExecutionResult | undefined {
     for (const file of files) {
-      const reason = protectedPathReason(file.path);
+      // A delete is recursive: refused too for a folder that holds the app's data (its parent, a checkout).
+      const reason = operation === "delete" ? protectedRemovalReason(file.path) : protectedPathReason(file.path);
       if (reason) return { tool: this.name, ok: false, output: `${reason} Nothing was ${operation === "read" || operation === "list" ? "read" : "changed"}: ${file.path}`,
         metadata: { protectedPath: true, operation, filePath: file.path } };
     }
@@ -257,6 +258,9 @@ export class FileTool implements Tool {
   private async deletePath(targetPath: string): Promise<ToolExecutionResult> {
     const resolved = this.resolveTargetPath(targetPath);
     this.assertAllowed(resolved);
+    // Checked again right before the recursive delete, whatever called it.
+    const refusal = protectedRemovalReason(resolved);
+    if (refusal) throw new Error(refusal);
     await fs.rm(resolved, { recursive: true, force: true });
 
     return {

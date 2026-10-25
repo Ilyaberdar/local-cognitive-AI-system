@@ -192,7 +192,9 @@ npm run dev               # or the browser UI: open the link it prints
 
 Development runs keep their data in the operating system's user-data folder under `local-cognitive-ai-system`, separate from the installed app. The browser and headless runs read `.env`, while the desktop app keeps its settings in the app.
 
-The local HTTP API (`http://127.0.0.1:3000` for `npm start` and `npm run dev`) answers only requests with its key: `npm start` prints a link, `http://127.0.0.1:3000/?token=…`, that signs the browser in (an HttpOnly cookie) and keeps the key in `app/runtime/api-token` across restarts; other programs send `Authorization: Bearer <key>`. Only `/health` needs no key. The desktop app makes a new key at every launch and keeps it in memory; a server makes one at every start, and `sudo local-cognitive-server api-token` prints it.
+The local HTTP API (`http://127.0.0.1:3000` for `npm start` and `npm run dev`) answers only requests with its key: `npm start` prints a link, `http://127.0.0.1:3000/?token=…`, that signs the browser in (an HttpOnly cookie) and keeps the key in `app/runtime/api-token` across restarts (on Windows a run from source makes a new key at every start and keeps no file); other programs send `Authorization: Bearer <key>`, and a request other than GET also `X-Local-Cognitive: 1`. Only `/health` needs no key. The desktop app makes a new key at every launch and keeps it in memory; a server makes one at every start, and `sudo local-cognitive-server api-token` prints it.
+
+Two things to know about a run from source in a browser. The sign-in link stays in the browser's history, and the key in it works until `app/runtime/api-token` is removed (delete the file to get a new key at the next start). And a browser sends its cookies to any server on `127.0.0.1`, whatever its port, so another program listening on this computer that the browser opens could receive the sign-in cookie: on a computer you share, prefer the development window (`npm run electron`), or a browser profile used only for this.
 
 ### Tests
 

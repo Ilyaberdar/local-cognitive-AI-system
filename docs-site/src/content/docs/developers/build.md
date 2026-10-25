@@ -19,13 +19,18 @@ npm run dev               # or the browser UI: open the link it prints
 
 Development runs keep their data in the system's user-data folder under `local-cognitive-ai-system`, apart from an installed app. The browser UI and headless runs read `.env` (see `.env.example`); the desktop app keeps its settings in the app.
 
-The local HTTP API (`http://127.0.0.1:3000` for `npm start` and `npm run dev`) needs its key for every request but `/health`. `npm start` prints a link, `http://127.0.0.1:3000/?token=…`: opening it signs the browser in with an HttpOnly cookie, and the key stays the same across restarts (it is kept in `app/runtime/api-token` in the data folder). A script sends the key as `Authorization: Bearer <key>`:
+The local HTTP API (`http://127.0.0.1:3000` for `npm start` and `npm run dev`) needs its key for every request but `/health`. `npm start` prints a link, `http://127.0.0.1:3000/?token=…`: opening it signs the browser in with an HttpOnly cookie, and the key stays the same across restarts (it is kept in `app/runtime/api-token` in the data folder; on Windows there is no file and the key is new at every start). A script sends the key as `Authorization: Bearer <key>`, and a request other than GET also sends `X-Local-Cognitive: 1`:
 
 ```bash
-curl -H "Authorization: Bearer $(cat <data folder>/app/runtime/api-token)" http://127.0.0.1:3000/sessions
+KEY=$(cat <data folder>/app/runtime/api-token)
+curl -H "Authorization: Bearer $KEY" http://127.0.0.1:3000/sessions
+curl -X POST -H "Authorization: Bearer $KEY" -H "X-Local-Cognitive: 1" -H "Content-Type: application/json" \
+  -d '{"title":"From a script"}' http://127.0.0.1:3000/sessions
 ```
 
 The desktop app makes a new key at every launch and keeps it in memory; a server makes one at every start (`sudo local-cognitive-server api-token`).
+
+In a browser, keep two things in mind. The sign-in link stays in the browser's history, and its key works until `app/runtime/api-token` is removed (delete it for a new key at the next start). And a browser sends the sign-in cookie to any server on `127.0.0.1`, whatever its port, so another local program the browser opens could receive it: on a shared computer, prefer the development window (`npm run electron`) or a browser profile used only for this.
 
 ## Tests
 

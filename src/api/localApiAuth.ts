@@ -92,6 +92,22 @@ export const readApiTokenFile = (file: string): string | undefined => {
   return TOKEN_SHAPE.test(value) ? value : undefined;
 };
 
+/** The key of a run from source (`npm start`): on macOS and Linux the one in its file when only its
+ * owner can read that file, so a restart (tsx watch) keeps the browser's cookie, else a new one to be
+ * written there (`write`). On Windows the file's 0600 means nothing (it would be as readable as the
+ * folder it is in), so there is no file: a new key at every start, and one left by an earlier
+ * version is removed. */
+export const sourceRunApiToken = (file: string, platform: NodeJS.Platform = process.platform): { token: string; write: boolean; file?: string } => {
+  if (platform === "win32") {
+    fs.rmSync(file, { force: true });
+    return { token: createApiToken(), write: false };
+  }
+  try {
+    if (!(fs.statSync(file).mode & 0o077)) { const kept = readApiTokenFile(file); if (kept) return { token: kept, write: false, file }; }
+  } catch { /* None yet, or unreadable: a new one. */ }
+  return { token: createApiToken(), write: true, file };
+};
+
 /** Removes the file if it still holds this key (a later runtime's stays). */
 export const removeApiTokenFile = (file: string, token: string): void => {
   try { if (readApiTokenFile(file) === token) fs.unlinkSync(file); } catch { /* Already gone. */ }

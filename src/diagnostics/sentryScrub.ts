@@ -27,10 +27,20 @@ const literals = (() => {
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const literalPattern = literals.length ? new RegExp(literals.map(escapeRegExp).join("|"), "gi") : undefined;
 
+/** At most four times the limit, so the masks below take linear time on any input (the e-mail mask
+ * backtracks over a long run of word characters); a cut ends at a space, so no part of a token cut in
+ * two is kept unmasked. */
+const bounded = (text: string, limit: number): string => {
+  if (text.length <= limit * 4) return text;
+  const head = text.slice(0, limit * 4);
+  const space = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"), head.lastIndexOf("\t"));
+  return space > 0 ? head.slice(0, space) : head;
+};
+
 /** A text that may hold a path, an address, a token or a user's words: cut short, and the
  * recognisable parts masked, quoted text among them (a JSON error quotes the text it could not
  * read: a model's answer). Not a privacy guarantee on its own; it bounds what a message carries. */
-export const maskText = (value: unknown, limit = 300): string => String(value ?? "")
+export const maskText = (value: unknown, limit = 300): string => bounded(String(value ?? ""), limit)
   .replace(/"[^"\n]{12,}"|'[^'\n]{12,}'|`[^`\n]{12,}`/g, quoted => `${quoted[0]}…${quoted[0]}`)
   .replace(literalPattern ?? /$^/, "<name>")
   .replace(/eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, "<token>")
@@ -94,13 +104,15 @@ export const scrubSentryEvent = <T extends Json>(event: T, automatic: boolean): 
 
 /** A crash report's hint, as the SDK hands it to beforeSend and then to the envelope it sends. */
 export interface SentryHint { attachments?: Array<{ attachmentType?: string; filename?: string }> }
-const NATIVE_PROCESS_KEEPS_DUMP = new Set(["renderer", "gpu", "utility", "zygote", "sandbox_helper"]);
+/** The only processes whose dumps go: a window's and the GPU's. */
+const NATIVE_PROCESS_KEEPS_DUMP = new Set(["renderer", "gpu"]);
 
 /** A native crash of the main process goes without its minidump: the backend runs in that process,
- * so its memory holds decrypted keys, chats and files. The event (the process, the reason, the
- * context) still goes, tagged so; a crash of a window or helper process keeps its dump. A crash
- * whose process is not known counts as the main one. Changes the hint in place (the SDK sends the
- * hint's attachments after beforeSend); true when a dump was withheld. */
+ * so its memory holds decrypted keys, chats and files. So does one of a utility process (the network
+ * service among them, which sees request bodies and this computer's API key) and of any process not
+ * named: only a window's (renderer) and the GPU's dumps go. The event (the process, the reason, the
+ * context) still goes, tagged so. Changes the hint in place (the SDK sends the hint's attachments after
+ * beforeSend); true when a dump was withheld. */
 export const withholdMainProcessMinidump = (event: Json, hint: SentryHint | undefined): boolean => {
   const dumps = hint?.attachments?.filter(item => item?.attachmentType === "event.minidump") ?? [];
   if (!hint || !dumps.length) return false;

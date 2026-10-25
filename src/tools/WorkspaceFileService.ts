@@ -7,7 +7,7 @@ import { WorkspaceSnapshot } from "../workspace/types";
 import { canonicalPath, isWorkspacePath } from "./AccessPolicy";
 import { withFileLock } from "../utils/fileStore";
 import { searchFilter } from "./searchGlob";
-import { assertNotProtected, isProtectedEntry } from "../security/protectedPaths";
+import { assertNotProtected, containsProtected, isProtectedEntry, ProtectedPathError } from "../security/protectedPaths";
 
 const hash = (content: Buffer | string) => createHash("sha256").update(content).digest("hex");
 const maxReadBytes = 5 * 1024 * 1024;
@@ -25,6 +25,8 @@ export class WorkspaceFileService {
     // File tools never read or change the app's own files, whatever was approved (commands are not
     // covered: their working folder is only where they start).
     if (action.tool.startsWith("file.")) assertNotProtected(canonical);
+    // A folder that holds the app's data is never deleted (rmdir refuses a full one too; this says why).
+    if (action.tool === "file.delete" && containsProtected(canonical)) throw new ProtectedPathError("This folder holds the app's own data folder; tools never delete or move it.");
     return { ...action, arguments: { ...action.arguments, [key]: canonical } };
   }
 

@@ -4,7 +4,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { PROTECTED_REASON, protectedPathReason, protectedPathsFor, setProtectedPaths, setProtectedPathsPlatform } from "../src/security/protectedPaths";
+import { PROTECTED_REASON, containsProtected, protectedPathReason, protectedPathsFor, setProtectedPaths, setProtectedPathsPlatform } from "../src/security/protectedPaths";
 import { FileTool } from "../src/tools/FileTool";
 import { WorkspaceFileService } from "../src/tools/WorkspaceFileService";
 import { OperationExecutor } from "../src/tools/OperationExecutor";
@@ -91,6 +91,36 @@ test("the built-in file tool refuses the app's own files in every access mode, b
   }
   assert.equal(await fs.readFile(f.settingsFile, "utf8"), '{"marker":"SETTINGS_MARKER"}');
   assert.equal(fsSync.existsSync(path.join(f.appData, "x.md")) || fsSync.existsSync(path.join(f.appData, "created.txt")), false);
+});
+
+test("a folder holding the app's data is never deleted: the checkout that holds ./data, the folder above a desktop profile", async t => {
+  const f = await layout(t);
+  // A desktop profile: Electron's user data inside a folder of the user's.
+  const support = path.join(f.temp, "Application Support"), userData = path.join(support, "Local Cognitive");
+  await fs.mkdir(path.join(userData, "app"), { recursive: true });
+  await fs.writeFile(path.join(userData, "app", "settings.json"), "{}");
+  setProtectedPaths("test-desktop", protectedPathsFor({ appDataDir: path.join(userData, "app"), outputDir: path.join(userData, "output") }, { userDataDir: userData, env: {}, cwd: f.repo }));
+  t.after(() => setProtectedPaths("test-desktop", undefined));
+  for (const folder of [f.repo, f.temp, support, path.join(f.work, "..")]) assert.equal(containsProtected(folder), true, folder);
+  for (const folder of [path.join(f.repo, "src"), f.work, f.output, f.task]) assert.equal(containsProtected(folder), false, folder);
+
+  const tool = new FileTool({ outputDir: f.output, accessMode: "full", allowedDirectories: [f.temp] });
+  const context = { actor: { sessionId: "s", channel: "http" }, memory: [], conversation: [], providerId: "local", activeTarget: { providerId: "local" },
+    sessionSettings: settings("full") } as unknown as ExecutionContext;
+  for (const folder of [f.repo, support, f.temp]) {
+    const result = await tool.execute({ rawInput: `delete folder \`${folder}\``, title: "t", content: "c", context, result: { response: "", provider: "local", model: "m" } as never });
+    assert.equal(result.ok, false, folder);
+    assert.match(result.output, /holds the app's own data folder|app's own data folder/, folder);
+  }
+  const workspace: WorkspaceSnapshot = { version: 1, kind: "project", rootPath: f.temp, outputDir: f.temp, allowedDirectories: [f.temp], memoryScope: "project:p" };
+  await assert.rejects(new WorkspaceFileService().prepare({ tool: "file.delete", arguments: { path: "repo", expectedVersion: "directory" } }, workspace), /holds the app's own data folder/);
+  const operations = new OperationExecutor(path.join(f.temp, "operations"));
+  await assert.rejects(operations.execute({ id: "delete-repo", agentRunId: "agent", workspace, accessMode: "full", tool: "file.delete", arguments: { path: "repo", expectedVersion: "directory" } }), /holds the app's own data folder/);
+  assert.equal(fsSync.existsSync(f.settingsFile) && fsSync.existsSync(path.join(userData, "app", "settings.json")), true, "nothing was deleted");
+  // A folder of the user's that holds none of it is still deleted.
+  const scratch = path.join(f.work, "scratch"); await fs.mkdir(scratch);
+  assert.equal((await tool.execute({ rawInput: `delete folder \`${scratch}\``, title: "t", content: "c", context, result: { response: "", provider: "local", model: "m" } as never })).ok, true);
+  assert.equal(fsSync.existsSync(scratch), false);
 });
 
 test("agents' file tools: refused in full access, through a link, for a version check; a search from the checkout skips the data folder", async t => {

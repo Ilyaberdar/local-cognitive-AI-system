@@ -198,6 +198,31 @@ test("a public page's redirect to this computer is never followed, the app's own
   } finally { await pub.close(); await app.close(); }
 });
 
+test("an address approved as public stays public: a name that points to this computer since is not read (DNS rebinding)", async (t) => {
+  // The name answers with IPv6 loopback (treated as public here) when the prompt is made, then with IPv4 loopback.
+  let pub: Site;
+  try { pub = await serve(page("PUBLIC PAGE", "text/plain"), "::1", "rebind.test"); }
+  catch { t.skip("no IPv6 loopback here"); return; }
+  let answer: { address: string; family: number } = { address: "::1", family: 6 };
+  const hooks = { resolve: async () => [answer], blocked: (address: string) => address === "::1" ? false : isBlockedAddress(address) };
+  try {
+    const executor = new WebFetchNodeExecutor({ hooks });
+    const step = context({ urlTemplate: `${pub.origin}/` }); step.accessMode = "default";
+    const prompt = await executor.execute(step);
+    assert.equal(prompt.data.place, undefined, "a public address: no warning, so a device may approve it");
+    assert.deepEqual(prompt.data.addresses, ["::1"]);
+    step.approval = { ...prompt.data, approved: true };
+    answer = { address: "127.0.0.1", family: 4 };
+    // The approved address is the one connected to, whatever the name says now.
+    assert.equal((await executor.execute(step)).data.text, "PUBLIC PAGE");
+    // Without the approved addresses (an approval made before they were kept), the new answer is refused.
+    const { addresses: _addresses, ...older } = step.approval;
+    step.approval = older;
+    await assert.rejects(executor.execute(step), /now points to this computer or the local network; it was approved as a public address/);
+    assert.deepEqual(pub.hits, ["/"]);
+  } finally { await pub.close(); }
+});
+
 test("web search sends Brave's token with no redirect, and a device's step cannot choose the SearXNG address", async () => {
   const seen: RequestInit[] = [];
   const executor = new WebSearchNodeExecutor({ braveApiKey: "BSA-test-token", searxngUrl: "http://search.local", fetchImpl: async (_url, init) => {

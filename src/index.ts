@@ -18,7 +18,7 @@ import { DataRootLock, RuntimeKind } from "./runtime/db/DataRootLock";
 import { appVersion } from "./utils/appVersion";
 import { shellQuoteArg } from "./utils/shellQuote";
 import { createDrainGate } from "./api/drainGate";
-import { apiTokenFilePath, createApiToken, createLocalApiAuth, readApiTokenFile, removeApiTokenFile, writeApiTokenFile } from "./api/localApiAuth";
+import { apiTokenFilePath, createApiToken, createLocalApiAuth, removeApiTokenFile, sourceRunApiToken, writeApiTokenFile } from "./api/localApiAuth";
 import { processRunRegistry } from "./api/ProcessRunRegistry";
 import { WorkflowRunner } from "./workflows/WorkflowRunner";
 import { HostDatabase } from "./runtime/db/HostDatabase";
@@ -306,12 +306,6 @@ const openHostServices = (database: HostDatabase, config: AppConfig, runtimeMana
 };
 
 /** The key a development run left in its file, if only its owner can read the file. */
-const reusableApiToken = (file: string): string | undefined => {
-  try {
-    if (process.platform !== "win32" && (fs.statSync(file).mode & 0o077)) return undefined;
-    return readApiTokenFile(file);
-  } catch { return undefined; }
-};
 
 if (require.main === module) void (async () => {
   // Plain `npm start` (development headless run): the server CLI is local-cognitive-server.
@@ -323,17 +317,19 @@ if (require.main === module) void (async () => {
   if (vault.kind === "none") logger.warn("Credential storage is not configured; provider keys and account connections cannot be saved. Set LOCAL_COGNITIVE_VAULT_KEY_FILE.");
   // The API's key stays the same across restarts of a development run (tsx watch), so the browser
   // keeps its cookie: the file of the previous run, else a new key written once this run owns the
-  // data directory. It is printed once, never put into the startup summary or the log.
+  // data directory (on Windows no file: a new key at every start). It is printed once, never put into
+  // the startup summary or the log.
   const tokenFile = apiTokenFilePath(defaultConfig.appDataDir);
-  const previous = reusableApiToken(tokenFile);
-  const apiToken = previous ?? createApiToken();
+  const choice = sourceRunApiToken(tokenFile);
+  const apiToken = choice.token;
   const backend = await startBackend(defaultConfig, { vault: vault.vault }, { apiToken });
-  if (!previous) writeApiTokenFile(tokenFile, apiToken);
+  if (choice.write) writeApiTokenFile(tokenFile, apiToken);
   const http = backend.status().http;
   if (http) {
     const host = defaultConfig.server.host === "localhost" ? "localhost" : defaultConfig.server.host === "::1" ? "[::1]" : "127.0.0.1";
     process.stdout.write(`\nOpen the browser UI with this link (it holds this computer's API key: keep it to yourself):\n  http://${host}:${http.port}/?token=${apiToken}\n` +
-      `Other programs send the key as "Authorization: Bearer <key>"; it is in ${tokenFile}.\n\n`);
+      (choice.file ? `Other programs send the key as "Authorization: Bearer <key>"; it is in ${tokenFile}.\n\n`
+        : `Other programs send the key as "Authorization: Bearer <key>"; it is new at every start.\n\n`));
   }
   return backend;
 })().then((backend) => {

@@ -17,7 +17,11 @@ import type { Readable } from "node:stream";
 const blocked = new net.BlockList();
 for (const [net4, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
   ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4]] as [string, number][]) blocked.addSubnet(net4, bits, "ipv4");
-for (const [net6, bits] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32]] as [string, number][]) blocked.addSubnet(net6, bits, "ipv6");
+// Besides the unspecified, loopback, unique-local, link-local, multicast and documentation ranges: the
+// old site-local fec0::/10, the discard-only 100::/64, Teredo 2001::/32 (it hides an IPv4 behind a
+// relay) and the local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215), which a network may map anywhere.
+for (const [net6, bits] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8], ["2001:db8::", 32],
+  ["100::", 64], ["2001::", 32], ["64:ff9b:1::", 48]] as [string, number][]) blocked.addSubnet(net6, bits, "ipv6");
 // IPv4-mapped (::ffff:0:0/96) is not added as a subnet: net.BlockList.check cross-matches every IPv4 input
 // against it, which would block all IPv4. Embedded-IPv4 forms are decoded and checked as IPv4 instead.
 
@@ -36,8 +40,10 @@ export const hostOf = (url: URL | string): string => {
 };
 
 /** The IPv4 an IPv6 address embeds, if any — IPv4-mapped (::ffff:a.b.c.d / ::ffff:HHHH:HHHH), -compatible
- * (::a.b.c.d), 6to4 (2002:V4::) and NAT64 (64:ff9b::V4, 64:ff9b:1::V4) — as dotted decimal. These route
- * to the embedded IPv4, so a hex form such as ::ffff:7f00:1 (127.0.0.1) must be checked as that IPv4. */
+ * (::a.b.c.d), 6to4 (2002:V4::) and the well-known NAT64 prefix (64:ff9b::/96) — as dotted decimal. These
+ * route to the embedded IPv4, so a hex form such as ::ffff:7f00:1 (127.0.0.1) must be checked as that
+ * IPv4. The local-use NAT64 prefix 64:ff9b:1::/48 is blocked as a whole instead (its mapping is the
+ * network's own). */
 export function embeddedIpv4(address: string): string | undefined {
   if (!net.isIPv6(address)) return undefined;
   const parts = address.split("%")[0]!.split("::");
@@ -59,7 +65,7 @@ export function embeddedIpv4(address: string): string | undefined {
     return v4(h[6]!, h[7]!);
   }
   if (h[0] === 0x2002) return v4(h[1]!, h[2]!); // 6to4
-  if (h[0] === 0x64 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0) return v4(h[6]!, h[7]!); // NAT64 64:ff9b::/96 and 64:ff9b:1::/48
+  if (h[0] === 0x64 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) return v4(h[6]!, h[7]!); // NAT64 64:ff9b::/96
   return undefined;
 }
 
@@ -100,7 +106,9 @@ export function isOwnAddress(address: string): boolean {
 /** How a request's name is resolved and its addresses judged; tests replace them to reach a server
  * on this machine. */
 export interface Hooks { resolve(host: string): Promise<{ address: string; family: number }[]>; blocked(address: string): boolean }
-export const defaultHooks: Hooks = { resolve: host => dns.lookup(host, { all: true }), blocked: isBlockedAddress };
+// This machine's own addresses count as private even when public (a server's address on its interface):
+// a request from here to one reaches services a firewall keeps from the internet.
+export const defaultHooks: Hooks = { resolve: host => dns.lookup(host, { all: true }), blocked: address => isBlockedAddress(address) || isOwnAddress(address) };
 
 /** A name resolved to the one address a connection is pinned to, with a `lookup` that always returns it:
  * every address the name gives must pass the block check, and the first is pinned, so the socket connects
@@ -151,6 +159,12 @@ export interface GuardedGetOptions {
   onHop?: (url: URL) => void;
   /** Whether the body of a final answer is wanted (by its status and content type): without, it is not read. */
   accept?: (status: number, contentType: string) => boolean;
+  /** The addresses the first origin had when the user approved it: its hops connect to these, without
+   * a new lookup, so a name that changes after the prompt (DNS rebinding) cannot lead elsewhere. */
+  approvedAddresses?: string[];
+  /** What a private address at the first origin is refused with, when no private origin is allowed
+   * (an address approved as public that now points to this computer or the network). */
+  privateRefusal?: string;
 }
 
 export interface GuardedResponse {
@@ -177,8 +191,9 @@ function checkedUrl(input: string | URL): URL {
 
 /** The addresses of one hop, judged: the always-refused ones first, then private ones only at the
  * origin the user named, and never after a public hop. */
-async function judge(url: URL, hop: number, state: { hooks: Hooks; privateOrigin?: string; ownPort?: number; reachedPublic: boolean }): Promise<{ pinned: Pinned; private: boolean }> {
-  const records = await resolveAll(url.hostname, state.hooks);
+async function judge(url: URL, hop: number, state: { hooks: Hooks; privateOrigin?: string; ownPort?: number; reachedPublic: boolean; startOrigin: string; approvedAddresses?: string[]; privateRefusal?: string }): Promise<{ pinned: Pinned; private: boolean }> {
+  const approved = url.origin === state.startOrigin && state.approvedAddresses?.length ? state.approvedAddresses : undefined;
+  const records = approved ? approved.map(address => ({ address, family: net.isIPv6(address) ? 6 : 4 })) : await resolveAll(url.hostname, state.hooks);
   const port = portOf(url);
   for (const record of records) {
     if (isMetadataAddress(record.address)) throw new EgressRefusedError(`${url.host} is a link-local or cloud metadata address, which is never read.`);
@@ -190,6 +205,7 @@ async function judge(url: URL, hop: number, state: { hooks: Hooks; privateOrigin
     const where = "on this computer or the local network";
     if (hop > 0 && state.reachedPublic) throw new EgressRefusedError(`A redirect from a public address to ${url.origin}, ${where}, was not followed.`);
     if (url.origin !== state.privateOrigin) {
+      if (url.origin === state.startOrigin && state.privateRefusal) throw new EgressRefusedError(state.privateRefusal);
       throw new EgressRefusedError(hop > 0 ? `A redirect to ${url.origin}, ${where}, was not followed: redirects go only to public addresses, or within the address you named.`
         : `${url.origin} is ${where}. Such an address is read only when you approve it, or when the step names it itself.`);
     }
@@ -261,7 +277,9 @@ export async function guardedGet(input: string | URL, options: GuardedGetOptions
   const start = checkedUrl(input);
   let privateOrigin: string | undefined;
   if (options.allowPrivateOrigin) { try { privateOrigin = new URL(options.allowPrivateOrigin).origin; } catch { /* None. */ } }
-  const state = { hooks, privateOrigin, ownPort: options.ownPort, reachedPublic: false };
+  // Only addresses: anything else in an approval is ignored, and the name is looked up as usual.
+  const approvedAddresses = options.approvedAddresses?.map(hostOf).filter(address => net.isIP(address));
+  const state = { hooks, privateOrigin, ownPort: options.ownPort, reachedPublic: false, startOrigin: start.origin, approvedAddresses, privateRefusal: options.privateRefusal };
   const redirects: string[] = [];
   let current = start;
   for (let hop = 0; ; hop++) {
@@ -282,12 +300,22 @@ export async function guardedGet(input: string | URL, options: GuardedGetOptions
   }
 }
 
-/** Where an address is, for a prompt that asks to read it: on this computer, on the local network,
- * or neither (public, or a name that does not resolve now). Never throws. */
-export async function addressPlace(url: URL, hooks: Partial<Hooks> = {}): Promise<"this computer" | "the local network" | undefined> {
+export type AddressPlace = "this computer" | "the local network";
+
+/** Where an address is, for a prompt that asks to read it, and the addresses its name gives now (kept
+ * with the approval and connected to): on this computer, on the local network, or neither (public, or
+ * a name that does not resolve now, with no addresses). Never throws. */
+export async function describeAddress(url: URL, hooks: Partial<Hooks> = {}): Promise<{ place?: AddressPlace; addresses: string[] }> {
   const checks = { ...defaultHooks, ...hooks };
   let records: { address: string }[];
-  try { records = await resolveAll(url.hostname, checks); } catch { return undefined; }
-  if (records.some(record => isOwnAddress(record.address))) return "this computer";
-  return records.some(record => checks.blocked(record.address)) ? "the local network" : undefined;
+  try { records = await resolveAll(url.hostname, checks); } catch { return { addresses: [] }; }
+  const addresses = [...new Set(records.map(record => record.address))];
+  const private_ = records.filter(record => checks.blocked(record.address));
+  if (!private_.length) return { addresses };
+  return { place: private_.some(record => isOwnAddress(record.address)) ? "this computer" : "the local network", addresses };
+}
+
+/** Where an address is (describeAddress without the addresses). */
+export async function addressPlace(url: URL, hooks: Partial<Hooks> = {}): Promise<AddressPlace | undefined> {
+  return (await describeAddress(url, hooks)).place;
 }

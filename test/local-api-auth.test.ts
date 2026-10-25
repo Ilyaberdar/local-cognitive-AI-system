@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { createApiToken, createLocalApiAuth } from "../src/api/localApiAuth";
+import { createApiToken, createLocalApiAuth, sourceRunApiToken, writeApiTokenFile } from "../src/api/localApiAuth";
 import { AppConfig, config } from "../src/config/config";
 import { startBackend } from "../src/index";
 import { emptyMcpConfiguration } from "../src/mcp/client/configuration";
@@ -138,4 +138,25 @@ test("a key that could not be a cookie's value is refused at start", () => {
   assert.doesNotThrow(() => createLocalApiAuth({ token: createApiToken() }));
   assert.notEqual(createApiToken(), createApiToken());
   assert.match(createApiToken(), /^[A-Za-z0-9_-]{43}$/);
+});
+
+test("a run from source keeps its key in a file only its owner reads; on Windows a new key at every start and no file", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lc-source-token-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "runtime", "api-token");
+  const first = sourceRunApiToken(file, "darwin");
+  assert.equal(first.write, true, "none yet: a new key to write");
+  writeApiTokenFile(file, first.token);
+  const again = sourceRunApiToken(file, "linux");
+  assert.deepEqual([again.token, again.write], [first.token, false], "the same key across restarts");
+  if (process.platform !== "win32") {
+    fs.chmodSync(file, 0o644);
+    assert.notEqual(sourceRunApiToken(file, "darwin").token, first.token, "a file others can read is not reused");
+    fs.chmodSync(file, 0o600);
+  }
+  const windows = sourceRunApiToken(file, "win32");
+  assert.equal(windows.write, false); assert.equal(windows.file, undefined);
+  assert.notEqual(windows.token, first.token, "Windows: a new key");
+  assert.equal(fs.existsSync(file), false, "the file an earlier version left is removed");
+  assert.notEqual(sourceRunApiToken(file, "win32").token, windows.token, "and another at the next start");
 });
