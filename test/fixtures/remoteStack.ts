@@ -97,6 +97,13 @@ export async function startDaemon(t: TestContext, origin: string, extraEnv: Reco
   await launch();
   return {
     root, run, log: () => log,
+    /** A request to the daemon's loopback API with its key (`api-token`, new at every start). */
+    api: (pathname: string, init: RequestInit = {}): Promise<Response> => {
+      const issued = run("api-token", "--json");
+      assert.equal(issued.status, 0, issued.stderr);
+      const { token, url } = JSON.parse(issued.stdout) as { token: string; url: string };
+      return fetch(`${url}${pathname}`, { ...init, headers: { ...init.headers as Record<string, string>, authorization: `Bearer ${token}` } });
+    },
     connectKey: (): string => { const issued = run("connect-key", "--json"); assert.equal(issued.status, 0, issued.stderr); return JSON.parse(issued.stdout).key; },
     async restart(signal: NodeJS.Signals = "SIGTERM") {
       const exited = new Promise(resolve => daemon!.once("exit", resolve));

@@ -32,7 +32,9 @@ async function main() {
     localModels: {...config.localModels, modelsDir: path.join(root, 'models'),
       runtimeDir: path.resolve('resources/llama', `${process.platform}-${process.arch}`), contextSize: 8192, loadTimeoutMs: 300000, generationTimeoutMs: 600000}
   };
-  const backend = await startBackend(options);
+  // The API's key for this run (src/api/localApiAuth.ts): the printed link sets it in the browser.
+  const apiToken = require('node:crypto').randomBytes(32).toString('base64url');
+  const backend = await startBackend(options, {}, {apiToken});
   let progress;
   const stop = async () => { clearInterval(progress); await backend.dispose(); };
   process.once('SIGINT', () => { void stop().then(() => process.exit(0)); });
@@ -43,7 +45,7 @@ async function main() {
     console.log(JSON.stringify({step: 'imported', id: model.id, name: model.displayName, sizeBytes: model.sizeBytes}));
     const projects = await runtime.projectStore.list();
     const project = projects.find(item => item.rootPath === projectPath) ?? await runtime.projectStore.create({name: 'Synthesis calculator demo', rootPath: projectPath});
-    if (serve) console.log(`Synthesis UI: http://127.0.0.1:${port}/#/synthesis`);
+    if (serve) console.log(`Synthesis UI (the link holds this run's API key): http://127.0.0.1:${port}/?token=${apiToken}#/synthesis`);
     const run = await runtime.synthesis.start(project.id, moduleName);
     let sequence = 0;
     let reading = false;

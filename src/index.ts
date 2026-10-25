@@ -1,5 +1,6 @@
 import express, { NextFunction, Request, Response } from "express";
 import { createApiRouter } from "./api/routes";
+import fs from "fs";
 import path from "path";
 import { AppSettingsStore } from "./app/AppSettingsStore";
 import { RuntimeManager, IntegrationRuntimeOptions } from "./app/RuntimeManager";
@@ -17,6 +18,7 @@ import { DataRootLock, RuntimeKind } from "./runtime/db/DataRootLock";
 import { appVersion } from "./utils/appVersion";
 import { shellQuoteArg } from "./utils/shellQuote";
 import { createDrainGate } from "./api/drainGate";
+import { apiTokenFilePath, createApiToken, createLocalApiAuth, readApiTokenFile, removeApiTokenFile, writeApiTokenFile } from "./api/localApiAuth";
 import { processRunRegistry } from "./api/ProcessRunRegistry";
 import { WorkflowRunner } from "./workflows/WorkflowRunner";
 import { HostDatabase } from "./runtime/db/HostDatabase";
@@ -77,12 +79,22 @@ export interface BackendOptions {
   runtimeKind?: RuntimeKind;
   /** The account signed in to this computer (desktop); a server's account is its owner. */
   usageAccount?: () => string | undefined;
+  /** The key every HTTP request needs (localApiAuth.ts); a new random one when absent. Never in
+   * the environment (child processes inherit it), the status or the log. */
+  apiToken?: string;
+  /** Where the key is written once the API listens (0600), for its user's commands; removed when
+   * the backend stops. */
+  apiTokenFile?: string;
 }
 
 export const startBackend = async (config: AppConfig = defaultConfig, integrations: IntegrationRuntimeOptions = {}, options: BackendOptions = {}): Promise<BackendHandle> => {
   // One runtime owns a data directory; a second backend or MCP server on it is refused.
   // The short wait covers restarts (tsx watch, app relaunch) of the previous owner.
   const lock = await DataRootLock.acquire(config.appDataDir, options.runtimeKind ?? "server", appVersion(), { waitMs: 3000 });
+  const apiToken = options.apiToken ?? createApiToken();
+  // A file a crash left holds a key nobody uses any more.
+  if (options.apiTokenFile) fs.rmSync(options.apiTokenFile, { force: true });
+  let apiTokenWritten = false;
   if (lock.previousShutdown === "unclean") logger.warn("The previous runtime did not shut down cleanly", { kind: lock.previousOwner?.kind });
   const diagnosticLog = new DiagnosticLog(path.join(config.appDataDir, "diagnostics"));
   setDiagnosticSink(diagnosticLog);
@@ -140,6 +152,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     diagnosticLog.flush();
     server?.closeAllConnections();
     await closed;
+    if (options.apiTokenFile && apiTokenWritten) removeApiTokenFile(options.apiTokenFile, apiToken);
     lock.release();
   })();
   const activeWork = (): ActiveWork => {
@@ -154,6 +167,9 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   try {
   if (config.server.enabled) {
     const app = express();
+    // First: every request but /health and the browser's link with the key needs this launch's key,
+    // static files and unknown paths included (localApiAuth.ts).
+    app.use(createLocalApiAuth({ token: apiToken }));
     app.use(express.json({ limit: "8mb" }));
     app.use(createDrainGate(() => draining));
     app.use("/", createApiRouter(runtimeManager, sessionIndexStore, host ? {
@@ -181,6 +197,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
       });
       server.once("error", reject);
     });
+    if (options.apiTokenFile) { writeApiTokenFile(options.apiTokenFile, apiToken); apiTokenWritten = true; }
   }
 
   // Schedules run with or without the HTTP API.
@@ -281,6 +298,14 @@ const openHostServices = (database: HostDatabase, config: AppConfig, runtimeMana
   return { database, journal, runService, ledger: new CommandLedger(database) };
 };
 
+/** The key a development run left in its file, if only its owner can read the file. */
+const reusableApiToken = (file: string): string | undefined => {
+  try {
+    if (process.platform !== "win32" && (fs.statSync(file).mode & 0o077)) return undefined;
+    return readApiTokenFile(file);
+  } catch { return undefined; }
+};
+
 if (require.main === module) void (async () => {
   // Plain `npm start` (development headless run): the server CLI is local-cognitive-server.
   // The key file a server uses when it is set; on a Mac otherwise the development window's vault
@@ -289,7 +314,21 @@ if (require.main === module) void (async () => {
   const vault = resolveRunVault(defaultConfig);
   if (vault.error) throw new Error(vault.error);
   if (vault.kind === "none") logger.warn("Credential storage is not configured; provider keys and account connections cannot be saved. Set LOCAL_COGNITIVE_VAULT_KEY_FILE.");
-  return startBackend(defaultConfig, { vault: vault.vault });
+  // The API's key stays the same across restarts of a development run (tsx watch), so the browser
+  // keeps its cookie: the file of the previous run, else a new key written once this run owns the
+  // data directory. It is printed once, never put into the startup summary or the log.
+  const tokenFile = apiTokenFilePath(defaultConfig.appDataDir);
+  const previous = reusableApiToken(tokenFile);
+  const apiToken = previous ?? createApiToken();
+  const backend = await startBackend(defaultConfig, { vault: vault.vault }, { apiToken });
+  if (!previous) writeApiTokenFile(tokenFile, apiToken);
+  const http = backend.status().http;
+  if (http) {
+    const host = defaultConfig.server.host === "localhost" ? "localhost" : defaultConfig.server.host === "::1" ? "[::1]" : "127.0.0.1";
+    process.stdout.write(`\nOpen the browser UI with this link (it holds this computer's API key: keep it to yourself):\n  http://${host}:${http.port}/?token=${apiToken}\n` +
+      `Other programs send the key as "Authorization: Bearer <key>"; it is in ${tokenFile}.\n\n`);
+  }
+  return backend;
 })().then((backend) => {
   const stop = () => { void backend.dispose().then(() => process.exit(0), () => process.exit(1)); };
   process.once("SIGINT", stop);

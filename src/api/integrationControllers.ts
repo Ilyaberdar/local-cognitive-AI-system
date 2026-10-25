@@ -8,8 +8,11 @@ import { PluginError } from "../plugins/contracts";
 export const localApiOriginGuard: RequestHandler = (req, res, next) => {
   const host = req.headers.host, address = req.socket.remoteAddress;
   const allowedHosts = [`127.0.0.1:${req.socket.localPort}`, `localhost:${req.socket.localPort}`, `[::1]:${req.socket.localPort}`];
+  // Only the app's own pages (same-origin), a typed address or a program (none, or no header):
+  // another port of this computer is same-site but not this origin.
+  const site = req.headers["sec-fetch-site"];
   if (!host || !allowedHosts.includes(host) || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address ?? "") ||
-      (req.headers.origin && req.headers.origin !== `http://${host}`) || req.headers["sec-fetch-site"] === "cross-site") {
+      (req.headers.origin && req.headers.origin !== `http://${host}`) || (site !== undefined && site !== "same-origin" && site !== "none")) {
     res.status(403).json({ error: "Integrations are only available to this local application." }); return;
   }
   // Content-Type is not a trustworthy app signal: browsers can omit it for a

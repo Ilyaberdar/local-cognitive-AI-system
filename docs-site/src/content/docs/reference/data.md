@@ -21,6 +21,7 @@ Inside the data folder:
 | `models/` | Downloaded models |
 | `app/settings.json` | Settings |
 | `app/runtime/host.db` | Work in progress, the token ledger, Remote access (SQLite) |
+| `app/runtime/api-token` (a server, a run from source) | The key of the local HTTP API, readable only by its owner; a server removes it when it stops |
 | `app/integrations/vault/` (the app), `app/integrations/host-vault/` (a server) | Encrypted secrets: provider API keys and the Telegram bot token, sign-in, Remote keys, plugin and MCP tokens |
 | `app/diagnostics/` | A small technical log of event codes, without text from your chats |
 | `output/` | Files the app wrote for you |

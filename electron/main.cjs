@@ -1,8 +1,9 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, session, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { windowChromeOptions, windowsTitleBarOverlay } = require("./window-chrome.cjs");
+const apiAuth = require("./api-auth.cjs");
 // A packaged app never runs under a debugger or with a stand-in Keychain (see launch-guard.cjs).
 const refusedSwitch = require("./launch-guard.cjs").refusedSwitch({ isPackaged: app.isPackaged, hasSwitch: name => app.commandLine.hasSwitch(name) });
 if (refusedSwitch) { process.stderr.write(`This app does not run with --${refusedSwitch}.\n`); process.exit(64); }
@@ -166,7 +167,7 @@ const registerDiagnostics = () => {
   });
 };
 
-const startBackend = async (appRoot, vault) => {
+const startBackend = async (appRoot, vault, apiToken) => {
   const entry = path.join(appRoot, "dist", "src", "index.js");
   const { loadOAuthClientRegistrations } = require(path.join(appRoot, "dist", "src", "plugins", "OAuthConnections.js"));
   // Registrations are never packaged: a release reads them from user data, while a
@@ -178,7 +179,7 @@ const startBackend = async (appRoot, vault) => {
   let oauthClients = {};
   try { oauthClients = await loadOAuthClientRegistrations(oauthClientsFile); }
   catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
-  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount });
+  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount, apiToken });
 };
 
 const createWindow = async (url) => {
@@ -289,7 +290,11 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       getWindow: () => mainWindow, origin: runtime.url,
       root: path.join(runtime.dataRoot, "speech"),
       runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
-    backendHandle = await startBackend(runtime.appRoot, vault);
+    // This launch's key for the backend's API, in memory only: the window's requests to the app's
+    // origin get it from the network layer (api-auth.cjs), before the first one is made.
+    const apiToken = apiAuth.createApiToken();
+    apiAuth.installApiAuth(session.defaultSession, runtime.url, apiToken);
+    backendHandle = await startBackend(runtime.appRoot, vault, apiToken);
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
     sentry.attachLog(backendHandle.diagnosticLog);
     registerDiagnostics();
@@ -304,7 +309,8 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     const crashed = (process, details) => { if (details.reason !== "clean-exit") backendHandle.diagnosticLog.record("app.crash", { process, reason: details.reason, exitCode: details.exitCode }); };
     app.on("render-process-gone", (_event, _contents, details) => crashed("renderer", details));
     app.on("child-process-gone", (_event, details) => crashed(details.type === "GPU" ? "gpu" : details.type === "Utility" ? "utility" : "other", details));
-    await waitForServer(runtime.url);
+    // /health is the one address that needs no key.
+    await waitForServer(`${runtime.url}/health`);
     await createWindow(runtime.url);
     updates.start();
     const { isDeepLinkArgument } = require("./account.cjs");

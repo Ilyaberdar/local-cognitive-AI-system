@@ -20,6 +20,7 @@ import { findProject, type CloudModelsProject, type CloudModelsResult } from "./
 import type { WebTargetsProject, WebTargetsResult } from "./webTargets";
 import { spawn } from "child_process";
 import { childProcessEnv } from "../config/secrets";
+import { apiTokenFilePath, readApiTokenFile } from "../api/localApiAuth";
 
 // Only modules that do not read the application configuration are imported above: the
 // configuration is evaluated when its module loads, after `start` has set the environment.
@@ -126,6 +127,28 @@ const drain = async (args: ServerArgs) => {
   if (args.wait) for (let waited = 0; fs.existsSync(ownerFile(root)) && waited < 60_000; waited += 250) await new Promise(resolve => setTimeout(resolve, 250));
   print(args, result?.drained ? "Drained and stopped." : `Stopped after the timeout; ${String(result?.remaining ?? "some")} task(s) were interrupted.`, result ?? {});
   return result?.drained === false ? ExitCode.failure : ExitCode.ok;
+};
+
+/** The key of the running server's loopback HTTP API, for programs of the server's user: it is new
+ * at every start, in a file only that user can read. Printed alone, for a command line:
+ * curl -H "Authorization: Bearer $(local-cognitive-server api-token)" http://127.0.0.1:3000/sessions */
+const apiToken = async (args: ServerArgs) => {
+  const app = dataDirectories(path.resolve(args.dataDir!)).app;
+  let running: { http?: { host: string; port: number } };
+  try { running = (await controlRequest(controlSocketPathFor(app), { op: "status" }, { timeoutMs: 5_000 })).result as typeof running; }
+  catch (error) {
+    if (unreachable(error)) throw new CliError("The server is not running. Start it: sudo systemctl start local-cognitive", ExitCode.unavailable);
+    throw notPermitted(error, "api-token");
+  }
+  if (!running?.http) throw new CliError("The server's HTTP API is off (--no-http, or http.enabled false in server.json): it has no key.", ExitCode.unavailable);
+  let token: string | undefined;
+  try { token = readApiTokenFile(apiTokenFilePath(app)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw notPermitted(error, "api-token"); }
+  if (!token) throw new CliError("The server has not written its API key yet. Try again in a moment.", ExitCode.unavailable);
+  // A secret: only this command's output shows it, never the service log.
+  const host = running.http.host.includes(":") ? `[${running.http.host}]` : running.http.host;
+  process.stdout.write(args.json ? `${JSON.stringify({ token, url: `http://${host}:${running.http.port}` })}\n` : `${token}\n`);
+  return ExitCode.ok;
 };
 
 /** Sends a pairing administration request to the running server. */
@@ -433,6 +456,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "start": return await start(args);
       case "status": return await status(args);
       case "drain": return await drain(args);
+      case "api-token": return await apiToken(args);
       case "console": {
         if (!process.stdin.isTTY || !process.stdout.isTTY) throw new CliError("The console needs a terminal.", ExitCode.usage);
         const { runConsole } = await import("./console");

@@ -187,10 +187,12 @@ npm ci
 npm run prepare:llama     # the pinned llama.cpp for this machine
 npm run prepare:speech    # whisper.cpp (desktop dictation)
 npm run electron          # the desktop app
-npm run dev               # or the browser UI at http://127.0.0.1:3000
+npm run dev               # or the browser UI: open the link it prints
 ```
 
 Development runs keep their data in the operating system's user-data folder under `local-cognitive-ai-system`, separate from the installed app. The browser and headless runs read `.env`, while the desktop app keeps its settings in the app.
+
+The local HTTP API (`http://127.0.0.1:3000` for `npm start` and `npm run dev`) answers only requests with its key: `npm start` prints a link, `http://127.0.0.1:3000/?token=…`, that signs the browser in (an HttpOnly cookie) and keeps the key in `app/runtime/api-token` across restarts; other programs send `Authorization: Bearer <key>`. Only `/health` needs no key. The desktop app makes a new key at every launch and keeps it in memory; a server makes one at every start, and `sudo local-cognitive-server api-token` prints it.
 
 ### Tests
 

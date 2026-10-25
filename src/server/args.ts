@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -43,7 +43,7 @@ export interface ServerArgs {
   ascii?: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -52,6 +52,8 @@ Commands:
   start     Run the server in the foreground (systemd or a terminal)
   status    Show whether the server runs and what it is doing
   drain     Finish accepted work, then stop the server
+  api-token              Print the key of the loopback HTTP API (new at every start); programs send it
+                         as "Authorization: Bearer <key>"
   console                The interactive console (as root): status, live view, the commands below
                          (--no-color, --ascii)
   pair                   Connect a computer: prints a one-time key and waits until it is used
@@ -81,7 +83,7 @@ Commands:
 Options:
   --data-dir <dir>          Data directory (or LOCAL_COGNITIVE_DATA_DIR)
   --inference auto|cuda|cpu Inference backend (default: auto)
-  --http-port <port>        Loopback HTTP API port (default: 3000)
+  --http-port <port>        Loopback HTTP API port (default: 3000; it needs the key api-token prints)
   --no-http                 Disable the loopback HTTP API
   --init                    start: initialise the data directory first
   --env-file <file>         start: provider keys and options (KEY=value)
@@ -173,7 +175,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "api-token", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,

@@ -3,6 +3,7 @@ import path from "path";
 import type net from "net";
 import { config } from "../config/config";
 import { startBackend } from "../index";
+import { apiTokenFilePath, createApiToken } from "../api/localApiAuth";
 import { HostDatabaseError } from "../runtime/db/HostDatabase";
 import { createUsageOperations } from "../runtime/usageOperations";
 import { createDiagnosticsOperations } from "../runtime/diagnosticsOperations";
@@ -49,7 +50,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
   if (options.inference.fallbackReason) logger.warn(options.inference.fallbackReason);
 
   let handle;
-  try { handle = await startBackend(config, { vault: vault.vault }, { runtimeKind: "server" }); }
+  // A new key for the loopback HTTP API at every start, in a file only the server's user can read
+  // (`local-cognitive-server api-token`); removed when the server stops.
+  try { handle = await startBackend(config, { vault: vault.vault }, { runtimeKind: "server", apiToken: createApiToken(), apiTokenFile: apiTokenFilePath(config.appDataDir) }); }
   catch (error) {
     if (error instanceof DataRootLockedError) throw new CliError(error.message, ExitCode.locked);
     // Data of a newer version (after going back to an older one): exit 78, so systemd stops restarting.

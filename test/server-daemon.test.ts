@@ -120,7 +120,7 @@ test("the CUDA build is used only when it is prepared for this release", t => {
   assert.equal(selectInference("auto", { release, override: path.join(release, "none") }).backend, "cpu");
 });
 
-test("init → start → status → MCP bridge → drain, with a second start refused", { skip: !posix, timeout: 60_000 }, async t => {
+test("init → start → status → MCP bridge → drain, with a second start refused", { skip: !posix, timeout: 90_000 }, async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "lcs-"));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, "d"), keyFile = path.join(base, "k", "vault.key");
@@ -151,9 +151,25 @@ test("init → start → status → MCP bridge → drain, with a second start re
   assert.equal(status.scheduler, true);
   assert.equal(status.ui, false);
   assert.equal(status.vault?.configured, true);
+  // The loopback API's key: new at this start, in a file only the server's user can read, and what
+  // api-token prints; without it only /health answers.
+  const tokenFile = path.join(root, "app", "runtime", "api-token");
+  const token = fs.readFileSync(tokenFile, "utf8").trim();
+  assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(fs.statSync(tokenFile).mode & 0o777, 0o600);
+  const printed = run("api-token", "--data-dir", root);
+  assert.equal(printed.status, 0, printed.stderr);
+  assert.equal(printed.stdout, `${token}\n`);
+  assert.deepEqual(JSON.parse(run("api-token", "--data-dir", root, "--json").stdout), { token, url: `http://127.0.0.1:${status.http!.port}` });
+  assert.equal(JSON.stringify(status).includes(token), false, "the status never carries the key");
+  const authorized = { Authorization: `Bearer ${token}` };
   const health = await fetch(`http://127.0.0.1:${status.http!.port}/health`);
   assert.equal(health.status, 200);
-  assert.equal((await fetch(`http://127.0.0.1:${status.http!.port}/`)).status, 404, "the server serves no UI");
+  const anonymous = await fetch(`http://127.0.0.1:${status.http!.port}/`);
+  assert.equal(anonymous.status, 401);
+  assert.equal((await anonymous.json() as { code: string }).code, "api_token_required");
+  assert.equal((await fetch(`http://127.0.0.1:${status.http!.port}/app/settings`)).status, 401);
+  assert.equal((await fetch(`http://127.0.0.1:${status.http!.port}/`, { headers: authorized })).status, 404, "the server serves no UI");
 
   // The console's view: names and numbers, never paths or keys.
   const overview = await controlRequest(controlSocketPathFor(dataDirectories(root).app), { op: "overview" }, { timeoutMs: 5_000 });
@@ -169,10 +185,10 @@ test("init → start → status → MCP bridge → drain, with a second start re
   // cloud-models: the owner allows a Synthesis project's cloud models through the running server.
   const api = `http://127.0.0.1:${status.http!.port}`;
   const folder = path.join(base, "My review"); fs.mkdirSync(folder);
-  const created = await fetch(`${api}/projects`, { method: "POST", headers: { "Content-Type": "application/json", "X-Local-Cognitive": "1" }, body: JSON.stringify({ name: "My review", rootPath: folder }) });
+  const created = await fetch(`${api}/projects`, { method: "POST", headers: { ...authorized, "Content-Type": "application/json", "X-Local-Cognitive": "1" }, body: JSON.stringify({ name: "My review", rootPath: folder }) });
   assert.equal(created.status, 201, await created.clone().text());
   const project = await created.json() as { id: string };
-  const cloud = async () => (await (await fetch(`${api}/synthesis/projects/${project.id}/cloud`)).json() as { allowed: boolean }).allowed;
+  const cloud = async () => (await (await fetch(`${api}/synthesis/projects/${project.id}/cloud`, { headers: authorized })).json() as { allowed: boolean }).allowed;
   const listed = run("cloud-models", "--data-dir", root, "--json");
   assert.equal(listed.status, 0, listed.stderr);
   assert.deepEqual(JSON.parse(listed.stdout).projects.map((item: { id: string; allowed: boolean }) => [item.id, item.allowed]), [[project.id, false]]);
@@ -193,11 +209,16 @@ test("init → start → status → MCP bridge → drain, with a second start re
     assert.equal(denied.status, 78, denied.stderr);
     assert.match(denied.stderr, /^Permission denied: the server's files belong to its user\. Run: sudo local-cognitive-server status$/m);
     assert.doesNotMatch(denied.stderr, /\bat \S+ \(/, "no stack trace");
+    const key = run("api-token", "--data-dir", root);
+    assert.equal(key.status, 78, key.stderr);
+    assert.match(key.stderr, /^Permission denied: the server's files belong to its user\. Run: sudo local-cognitive-server api-token$/m);
+    assert.equal(key.stdout, "");
   } finally { fs.chmodSync(runtimeDir, 0o700); }
 
   const second = run("start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none"));
   assert.equal(second.status, 75, second.stderr);
   assert.match(second.stderr, /already used by server/);
+  assert.equal(fs.readFileSync(tokenFile, "utf8").trim(), token, "a refused start leaves the running server's key");
 
   const transport = new StdioClientTransport({ command: process.execPath, args: [mcp], cwd: base, stderr: "pipe",
     env: { ...env, APP_DATA_DIR: path.join(root, "app"), LOCAL_COGNITIVE_ENV_FILE: "none", MCP_ENABLED: "true" } });
@@ -213,6 +234,35 @@ test("init → start → status → MCP bridge → drain, with a second start re
   assert.equal(await exited, 0, log);
   assert.equal(fs.existsSync(path.join(root, "app", "runtime", "data-root.owner.json")), false, "the lock is released");
   assert.equal(run("status", "--data-dir", root).status, 3);
+  assert.equal(fs.existsSync(tokenFile), false, "the key is removed when the server stops");
+  const stopped = run("api-token", "--data-dir", root);
+  assert.equal(stopped.status, 69);
+  assert.match(stopped.stderr, /The server is not running/);
+  assert.equal(log.includes(token), false, "the key is never in the service log");
+
+  // The next start has a new key; the old one opens nothing.
+  const again = spawn(process.execPath, [cli, "start", "--data-dir", root, "--http-port", "0", "--inference", "cpu", "--llama-runtime-dir", path.join(base, "none")],
+    { env, stdio: ["ignore", "pipe", "pipe"] });
+  let againLog = "";
+  again.stdout.on("data", chunk => { againLog += chunk; }); again.stderr.on("data", chunk => { againLog += chunk; });
+  const againExited = new Promise<number | null>(resolve => again.once("exit", resolve));
+  t.after(() => { if (again.exitCode === null) again.kill("SIGKILL"); });
+  let port: number | undefined;
+  for (let attempt = 0; attempt < 120 && !port; attempt++) {
+    const result = run("status", "--data-dir", root, "--json");
+    if (result.status === 0) port = JSON.parse(result.stdout).http?.port;
+    else await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  assert.ok(port, againLog);
+  const next = run("api-token", "--data-dir", root).stdout.trim();
+  assert.match(next, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(next, token);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/app/settings`, { headers: authorized })).status, 401);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/app/settings`, { headers: { Authorization: `Bearer ${next}` } })).status, 200);
+  assert.equal(run("drain", "--data-dir", root, "--json").status, 0);
+  assert.equal(await againExited, 0, againLog);
+  assert.equal(fs.existsSync(tokenFile), false);
+  assert.equal(againLog.includes(next), false);
 });
 
 test("folders: an admin shares, lists and stops sharing folders for connected computers", t => {

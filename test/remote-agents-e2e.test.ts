@@ -72,7 +72,7 @@ test("a server chat's subagents and debate agents are set from a device; a chat 
   // The server's own API gives the chat full access: from now on it is the server's alone.
   const status = JSON.parse(server.run("status", "--json").stdout) as { http?: { port: number } };
   assert.ok(status.http?.port, "the daemon serves its loopback API");
-  const response = await fetch(`http://127.0.0.1:${status.http!.port}/sessions/${session.id}/settings`, { method: "PUT", headers: { "content-type": "application/json", "x-local-cognitive": "1" },
+  const response = await server.api(`/sessions/${session.id}/settings`, { method: "PUT", headers: { "content-type": "application/json", "x-local-cognitive": "1" },
     body: JSON.stringify({ defaultAccessMode: "full" }) });
   assert.equal(response.status, 200, await response.text());
   const setup = await runtime.request<{ access: { hostOnly?: string } }>("sessions.setup.get", { sessionId: session.id });
@@ -181,8 +181,7 @@ test("a server chat's attachment arrives in chunks across a dropped connection a
   assert.equal(received.includes(server.root), false, "the project's folder is not named");
   const elsewhere = path.join(path.dirname(server.root), "elsewhere");
   fs.mkdirSync(elsewhere);
-  const port = (JSON.parse(server.run("status", "--json").stdout) as { http: { port: number } }).http.port;
-  const hostProject = await (await fetch(`http://127.0.0.1:${port}/projects`, { method: "POST", headers: { "content-type": "application/json", "x-local-cognitive": "1" },
+  const hostProject = await (await server.api("/projects", { method: "POST", headers: { "content-type": "application/json", "x-local-cognitive": "1" },
     body: JSON.stringify({ name: "Host project", rootPath: elsewhere }) })).json() as { id: string };
   const listed = await runtime.request<Array<{ id: string; hostOnly?: boolean; folder?: unknown }>>("projects.list", {});
   assert.deepEqual(listed.find(item => item.id === hostProject.id), { ...listed.find(item => item.id === hostProject.id), hostOnly: true });

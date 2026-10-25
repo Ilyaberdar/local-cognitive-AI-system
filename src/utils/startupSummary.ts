@@ -48,8 +48,9 @@ export const formatStartupSummary = ({
     "",
     "Local Cognitive",
     "=========================",
-    line("HTTP API", config.server.enabled ? baseUrl : "off"),
-    line("Web UI", config.server.enabled ? baseUrl : "off"),
+    // The API's key itself is never in the summary (it goes to the log).
+    line("HTTP API", config.server.enabled ? `${baseUrl} (needs this computer's API key)` : "off"),
+    line("Web UI", config.server.enabled && config.ui.serve !== false ? baseUrl : "off"),
     line("Health", config.server.enabled ? `${baseUrl}/health` : "off"),
     line("Default LLM", settings.llm.defaultProvider),
     line("Memory", `${config.memory.adapter} @ ${config.memory.baseDir}`),
