@@ -10,3 +10,9 @@ if (bridge?.reportError) {
   window.addEventListener("error", event => forward(event.error ?? { message: event.message }, event.filename || undefined));
   window.addEventListener("unhandledrejection", event => forward(event.reason instanceof Error ? event.reason : { name: "UnhandledRejection", message: "A promise was rejected without a handler." }));
 }
+
+// The page's Content Security Policy (src/api/uiSecurityHeaders.ts) blocked something: said in the
+// console, so a part of the UI that stops working says why. Nothing leaves the window.
+document.addEventListener("securitypolicyviolation", event => {
+  console.warn(`[csp] blocked ${event.effectiveDirective}: ${event.blockedURI || "inline"} at ${event.sourceFile || "the page"}:${event.lineNumber || 0}`);
+});

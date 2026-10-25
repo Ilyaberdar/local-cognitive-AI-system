@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { isMissingFile } from "../utils/fileStore";
 import { SynthesisError } from "./types";
+import { assertNotProtected } from "../security/protectedPaths";
 
 export const MAX_SOURCE_BYTES = 128 * 1024;
 export const MAX_ARTIFACT_BYTES = 128 * 1024;
@@ -26,6 +27,8 @@ export async function containedPath(root: string, relative: string): Promise<str
       if ((await fs.lstat(cursor)).isSymbolicLink()) throw new SynthesisError("Symbolic links are not allowed in Synthesis paths.");
     } catch (error) { if (!isMissingFile(error)) throw error; }
   }
+  // A project folder above the app's data (a checkout of this app) never reaches the app's own files.
+  assertNotProtected(cursor);
   return cursor;
 }
 export async function readText(file: string, limit = MAX_SOURCE_BYTES): Promise<string> {

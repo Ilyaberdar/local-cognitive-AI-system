@@ -16,6 +16,7 @@ import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore";
 import type { ProjectAccess } from "./projectOperations";
+import { protectedPathReason } from "../security/protectedPaths";
 
 const MAX_HISTORY_BYTES = 768 * 1024;
 const MAX_SUBAGENTS = 4, MAX_ADVISORS = 5;
@@ -203,7 +204,8 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       if (!granted(candidate)) continue;
       let real: string;
       try { real = await fsp.realpath(candidate); } catch { continue; }
-      if (!granted(real)) continue;
+      // The app's own files are never sent, even one a chat's file action named.
+      if (!granted(real) || protectedPathReason(real)) continue;
       let handle: fsp.FileHandle;
       try { handle = await fsp.open(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch { continue; }
       try {

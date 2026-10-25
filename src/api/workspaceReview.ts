@@ -5,6 +5,7 @@ import path from "path";
 import { NextFunction, Request, Response } from "express";
 import { RuntimeManager } from "../app/RuntimeManager";
 import { isWorkspacePath } from "../tools/AccessPolicy";
+import { protectedPathReason } from "../security/protectedPaths";
 
 class ReviewError extends Error {
   readonly statusCode: number;
@@ -23,6 +24,9 @@ export async function resolveReviewPath(manager: RuntimeManager, requestedPath: 
   const workspace = run?.workspace ?? (sessionId ? await runtime.workspaceResolver?.forSession(sessionId, { allowArchived: true }) : undefined);
   if (workspace) await runtime.workspaceResolver.validate(workspace);
   const target = await fs.realpath(path.resolve(workspace?.rootPath ?? process.cwd(), requestedPath));
+  // The app's own files are never opened here, even one a file action named.
+  const refusal = protectedPathReason(target);
+  if (refusal) throw new ReviewError(403, refusal);
   if (await isWorkspacePath(target, workspace?.allowedDirectories ?? runtime.config.filesystem.allowedDirectories)) return target;
   if (sessionId) {
     const settings = await manager.getSettings();

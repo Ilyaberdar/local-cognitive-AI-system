@@ -24,6 +24,7 @@ import {
 } from "./provider-utils";
 import { unsupportedFeature } from "./provider-utils";
 import { dialectFor, type ProviderDialect } from "./ProviderDialect";
+import { sameOriginFetch } from "./sameOriginFetch";
 
 export class OpenAICompatibleProvider implements LLMProvider {
   /** Models that refused a reasoning effort (not reasoning models): asked without one from then on. */
@@ -70,7 +71,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   /** The service's models. `strict` (adding a provider): a refused key or a wrong address is an
    * error instead of the models a dialect knows. */
   async listModels(options: { strict?: boolean } = {}): Promise<ProviderModel[]> {
-    const response = await (this.fetchImpl ?? fetch)(`${this.options.baseUrl}/models`, {
+    const response = await sameOriginFetch(this.fetchImpl)(`${this.options.baseUrl}/models`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -130,7 +131,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (refusedTools !== undefined) return { provider: this.id, model, text: "", error: refusedTools, unsupportedFeature: "tools" };
       const url = `${this.options.baseUrl.replace(/\/+$/, "")}/${useChat ? "chat/completions" : "responses"}`;
       // A cloud service is retried on overload and rate limits as its SDK does; a local server is not.
-      const fetchImpl = countedFetch(this.fetchImpl ?? fetch, request);
+      const fetchImpl = countedFetch(sameOriginFetch(this.fetchImpl), request);
       // An answer that is not streamed is read whole, and asked for again when the connection cuts it off.
       const send = (init: RequestInit) => !dialect.retries ? fetchImpl(url, init) : stream ? fetchWithRetries(fetchImpl, url, init) : fetchWholeWithRetries(fetchImpl, url, init);
       // Thinking on from a medium effort up, as the service's own thinking models default to; off for

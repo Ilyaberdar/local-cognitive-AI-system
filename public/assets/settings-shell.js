@@ -192,7 +192,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     ];
     if (name === 'data') return [field('filesystem.outputDir', 'Chat output folder', 'text', { description: 'Built-in file tools use this folder for ordinary chats. Project and workflow folders keep their own boundaries.' }),
       select('filesystem.accessMode', 'Built-in filesystem access', ['restricted', 'full']),
-      field('filesystem.allowedDirectories', 'Allowed folders', 'textarea', { description: 'One absolute folder path per line. Session approval rules still apply.' })];
+      field('filesystem.allowedDirectories', 'Allowed folders', 'textarea', { description: "One absolute folder path per line. Session approval rules still apply. The app's own data folder is never used by tools, even inside an allowed folder or with full access." })];
     if (name === 'voice') return [field('voice.microphone', 'Microphone', 'text', { description: 'Input device, headset, input level and permissions' }), field('voice.language', 'Language'), field('voice.recognition', 'Recognition model')];
     if (name === 'shortcuts') {
       const mod = MAC ? '⌘Enter' : 'Ctrl+Enter';

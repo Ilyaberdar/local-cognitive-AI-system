@@ -1,8 +1,8 @@
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import dns from "node:dns/promises";
 import { lookup as dnsLookup } from "node:dns";
+import { defaultHooks, hostOf, resolveAndPin, type Hooks } from "../../security/egress";
 
 /** One HTTP request an agent asked for, and one it received. Headers the agent sent that carry a
  * secret (Authorization, Cookie…) are recorded as "set", never their value. */
@@ -34,48 +34,9 @@ const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIO
 const SECRET_HEADER = /^(authorization|cookie|proxy-authorization|x-api-key|api-key|x-auth-token)$/i;
 const DROPPED_HEADER = /^(host|content-length|connection|transfer-encoding|keep-alive|upgrade|te|trailer|expect)$/i;
 
-/** The addresses an agent's request may never reach: its own machine, a private network, a link-local
- * or a cloud metadata service. Checked on every address a name resolves to, and on every redirect. */
-const blocked = new net.BlockList();
-for (const [net4, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
-  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4]] as [string, number][]) blocked.addSubnet(net4, bits, "ipv4");
-for (const [net6, bits] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32]] as [string, number][]) blocked.addSubnet(net6, bits, "ipv6");
-// IPv4-mapped (::ffff:0:0/96) is not added as a subnet: net.BlockList.check cross-matches every IPv4 input
-// against it, which would block all IPv4. Embedded-IPv4 forms are decoded and checked as IPv4 instead.
-
-/** The IPv4 an IPv6 address embeds, if any — IPv4-mapped (::ffff:a.b.c.d / ::ffff:HHHH:HHHH), -compatible
- * (::a.b.c.d), 6to4 (2002:V4::) and NAT64 (64:ff9b::V4, 64:ff9b:1::V4) — as dotted decimal. These route
- * to the embedded IPv4, so a hex form such as ::ffff:7f00:1 (127.0.0.1) must be checked as that IPv4. */
-function embeddedIpv4(address: string): string | undefined {
-  if (!net.isIPv6(address)) return undefined;
-  const parts = address.split("%")[0]!.split("::");
-  if (parts.length > 2) return undefined;
-  const head = parts[0] ? parts[0].split(":") : [], tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
-  // A trailing a.b.c.d counts as two hextets; expand :: to eight groups in all.
-  const expand = (groups: string[]): number[] => groups.flatMap(group => {
-    const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(group);
-    if (dotted) { const b = dotted.slice(1).map(Number); return [(b[0]! << 8) | b[1]!, (b[2]! << 8) | b[3]!]; }
-    return [parseInt(group, 16)];
-  });
-  let h: number[];
-  try { const h0 = expand(head), h1 = expand(tail); h = parts.length === 2 ? [...h0, ...Array(8 - h0.length - h1.length).fill(0), ...h1] : h0; }
-  catch { return undefined; }
-  if (h.length !== 8 || h.some(group => !Number.isInteger(group) || group < 0 || group > 0xffff)) return undefined;
-  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
-  if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && (h[5] === 0xffff || h[5] === 0)) {
-    if (h[6] === 0 && (h[7] === 0 || h[7] === 1)) return undefined; // :: and ::1 are plain IPv6, handled above.
-    return v4(h[6]!, h[7]!);
-  }
-  if (h[0] === 0x2002) return v4(h[1]!, h[2]!); // 6to4
-  if (h[0] === 0x64 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && ((h[4] === 0 && h[5] === 0) || true)) return v4(h[6]!, h[7]!); // NAT64 64:ff9b::/96 and 64:ff9b:1::/48
-  return undefined;
-}
-export function isBlockedAddress(address: string): boolean {
-  if (!net.isIP(address)) return true;
-  const v4 = net.isIPv6(address) ? embeddedIpv4(address) : address;
-  if (v4 && net.isIPv4(v4)) return blocked.check(v4, "ipv4");
-  return net.isIPv6(address) ? blocked.check(address, "ipv6") : blocked.check(address, "ipv4");
-}
+// What a request may never reach (this machine, a private network, link-local and metadata addresses)
+// and the pinned resolution are shared with the terminal's egress proxy and workflows' web steps.
+export { isBlockedAddress, embeddedIpv4, resolveAndPin, defaultHooks, type Hooks, type Pinned } from "../../security/egress";
 
 /** A declared target: its scheme, host, port and, when the pattern has a path, the path it must start
  * with. "https://api.example.com/v1" allows that host's /v1…; "https://staging.example.com" all of it. */
@@ -106,32 +67,9 @@ export function allowed(url: URL, targets: Target[]): boolean {
     (!target.prefix || path === target.prefix || path.startsWith(`${target.prefix}/`)));
 }
 
-/** One request, with the address resolved and pinned so that the socket connects to exactly the address
- * this check passed: a name cannot resolve to an allowed address here and a blocked one at connect time. */
-export interface Hooks { resolve(host: string): Promise<{ address: string; family: number }[]>; blocked(address: string): boolean }
-export const defaultHooks: Hooks = { resolve: host => dns.lookup(host, { all: true }), blocked: isBlockedAddress };
-
-/** A name resolved to the one address a connection is pinned to, with a `lookup` that always returns it:
- * every address the name gives must pass the block check, and the first is pinned, so the socket connects
- * to exactly what was checked. Shared by the engine's client and the terminal's egress proxy. */
-export interface Pinned { address: string; family: 4 | 6; lookup: (hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => void }
-export async function resolveAndPin(hostname: string, hooks: Hooks): Promise<Pinned> {
-  const family = net.isIP(hostname);
-  const records = family ? [{ address: hostname, family: family as 4 | 6 }] : await hooks.resolve(hostname);
-  if (!records.length) throw new Error(`${hostname} did not resolve.`);
-  // Every address a name gives must be allowed: one blocked address among them is refused, so a name
-  // cannot mix an allowed and a blocked answer.
-  for (const record of records) if (hooks.blocked(record.address)) throw new Error(`${hostname} resolves to ${record.address}, a private, loopback, link-local or metadata address agents may not reach.`);
-  const pinned = records[0]!; const pinnedFamily = pinned.family === 6 || net.isIPv6(pinned.address) ? 6 : 4;
-  const lookup = (_hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
-    if (options && typeof options === "object" && options.all) callback(null, [{ address: pinned.address, family: pinnedFamily }]);
-    else callback(null, pinned.address, pinnedFamily);
-  };
-  return { address: pinned.address, family: pinnedFamily, lookup };
-}
-
 async function once(url: URL, method: string, headers: Record<string, string>, body: string | undefined, signal: AbortSignal, hooks: Hooks): Promise<{ status: number; statusText: string; location?: string; headers: Record<string, string>; body: string; truncated: boolean; contentType: string }> {
-  const literal = net.isIP(url.hostname);
+  // An IPv6 literal's hostname is "[::1]": without its brackets for the check and the TLS name.
+  const literal = net.isIP(hostOf(url));
   // The socket connects to the one address this check passed; a name cannot re-resolve mid-request.
   const { lookup } = await resolveAndPin(url.hostname, hooks);
   const agent = new (url.protocol === "https:" ? https : http).Agent({ lookup: lookup as unknown as typeof dnsLookup });

@@ -3,6 +3,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { isMissingFile, withFileLock, writeJsonAtomically } from "../utils/fileStore";
 import { CreateProjectInput, Project, ProjectColor, PROJECT_COLORS, ProjectError, UpdateProjectInput } from "./types";
+import { protectedPathReason } from "../security/protectedPaths";
 
 interface ProjectRecord { version: 1; projects: Project[]; }
 
@@ -114,6 +115,8 @@ export async function projectDirectory(value: string): Promise<string> {
   try {
     const rootPath = await fs.realpath(value.trim());
     if (!(await fs.stat(rootPath)).isDirectory()) throw new ProjectError(400, "Project path must be a directory.");
+    // Tools never use the app's own data; a folder that holds it is fine (only that part is out of reach).
+    if (protectedPathReason(rootPath)) throw new ProjectError(400, "This folder is inside the app's own data folder, which tools never use. Choose a folder outside it.");
     return rootPath;
   } catch (error) {
     if (error instanceof ProjectError) throw error;

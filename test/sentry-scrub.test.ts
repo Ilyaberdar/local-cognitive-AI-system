@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { maskText, scrubSentryBreadcrumb, scrubSentryEvent } from "../src/diagnostics/sentryScrub";
+import { maskText, scrubSentryBreadcrumb, scrubSentryEvent, withholdMainProcessMinidump, type SentryHint } from "../src/diagnostics/sentryScrub";
 
 const errorEvent = () => ({
   level: "error", server_name: "Gamzatels-MacBook-Pro.local", user: { ip_address: "1.2.3.4", id: "u" }, request: { url: "http://127.0.0.1:5000/#/sessions/abc", data: "prompt" },
@@ -54,4 +54,26 @@ test("breadcrumbs: only the technical log's", () => {
   assert.equal(scrubSentryBreadcrumb({ category: "console", message: "x" }), null);
   assert.equal(scrubSentryBreadcrumb({ category: "electron", message: "x" }), null);
   assert.deepEqual(scrubSentryBreadcrumb({ category: "lc", message: "mcp.connection_failed" }), { category: "lc", message: "mcp.connection_failed" });
+});
+
+test("a main-process crash is reported without its minidump; a window's or helper's keeps it", () => {
+  const dump = () => ({ attachmentType: "event.minidump", filename: "crash.dmp" });
+  const log = { filename: "log.txt" };
+  const native = (process?: string, annotation?: string) => ({ level: "fatal", platform: "native", tags: { "event.environment": "native", ...(process ? { "event.process": process } : {}) },
+    contexts: annotation ? { electron: { "crashpad.process_type": annotation } } : {} });
+  for (const [process, annotation] of [["browser", undefined], [undefined, "browser"], ["unknown", undefined], [undefined, undefined], ["main", undefined]] as const) {
+    const event = native(process, annotation), hint: SentryHint = { attachments: [dump(), log] };
+    assert.equal(withholdMainProcessMinidump(event, hint), true, `${process}/${annotation}`);
+    assert.deepEqual(hint.attachments, [log], "only the dump is withheld");
+    assert.equal((event.tags as Record<string, string>).minidump, "withheld");
+    // The event itself still goes, scrubbed as any other.
+    assert.ok(scrubSentryEvent(event, true));
+  }
+  for (const process of ["renderer", "GPU", "utility"]) {
+    const hint: SentryHint = { attachments: [dump()] };
+    assert.equal(withholdMainProcessMinidump(native(process), hint), false, process);
+    assert.equal(hint.attachments?.length, 1);
+  }
+  assert.equal(withholdMainProcessMinidump(native("browser"), {}), false, "nothing to withhold");
+  assert.equal(withholdMainProcessMinidump(native("browser"), undefined), false);
 });

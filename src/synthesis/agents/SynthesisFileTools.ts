@@ -12,6 +12,7 @@ import { SynthesisError } from "../types";
 import { Checkouts, Holder } from "./Checkouts";
 import { AgentTerminal, TerminalHost } from "./Terminal";
 import { HttpHost } from "./AgentHttp";
+import { isProtectedEntry } from "../../security/protectedPaths";
 
 /** What an agent may touch, by project-relative patterns. `own`: of the write patterns, those whose
  * files belong to the agent that first creates or changes them. */
@@ -207,6 +208,8 @@ export class SynthesisFileTools extends OperationExecutor {
         if (entry.name.startsWith(".") || SKIPPED.has(entry.name) || entry.isSymbolicLink()) continue;
         const relative = current ? `${current}/${entry.name}` : entry.name;
         if (this.candidates.hidden(relative)) continue;
+        // The app's own data (a project that is a checkout of this app) is left out of every walk.
+        if (isProtectedEntry(`${this.candidates.root}/${relative}`)) continue;
         if (entry.isDirectory()) { if (this.rights.read.some(pattern => mayHold(relative, pattern))) queue.push(relative); continue; }
         if (entry.isFile() && this.mayRead(relative)) { if (found.size >= limit) { truncated = true; break; } found.add(relative); }
       }

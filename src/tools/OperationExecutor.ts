@@ -13,6 +13,7 @@ import type { PluginManager } from "../plugins/PluginManager";
 import type { McpClientService } from "../mcp/client/types";
 import { ExternalMcpExecutor } from "../mcp/client/ExternalMcpExecutor";
 import type { McpServerPolicy } from "../mcp/client/types";
+import { assertNotProtected } from "../security/protectedPaths";
 
 export interface OperationInput {
   onProgress?: (event: ProcessProgressEvent) => void;
@@ -151,6 +152,8 @@ export class OperationExecutor {
     });
   }
   private async fileVersion(target:string):Promise<string>{
+    // Not even a hash of the app's own files is read.
+    assertNotProtected(await canonicalPath(target));
     const stat=await fs.stat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code!=="ENOENT")throw error;return undefined;});
     if(!stat)return "missing";
     if(!stat.isFile()||stat.size>5*1024*1024)throw new Error("Only text files up to 5 MB can be edited.");

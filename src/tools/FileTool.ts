@@ -5,6 +5,7 @@ import { ModeResult, ToolExecutionRequest, ToolExecutionResult } from "../types"
 import { Tool } from "./Tool.interface";
 import { authorizeOperation, canonicalPath, isWorkspacePath } from "./AccessPolicy";
 import { isReviewEditRequest, readReviewSelection, reviewInputPath } from "../utils/reviewSelection";
+import { protectedPathReason } from "../security/protectedPaths";
 
 interface FileToolOptions {
   outputDir: string;
@@ -100,6 +101,9 @@ export class FileTool implements Tool {
       ? path.join(await canonicalPath(path.dirname(target)), path.basename(target))
       : canonicalPath(target);
     files = await Promise.all(files.map(async (file) => ({ ...file, path: await resolveOperationPath(file.path) })));
+    // The app's own files are refused in every access mode, before anything is asked or read.
+    const refused = this.protectedRefusal(operation, files);
+    if (refused) return refused;
     const inWorkspace = (await Promise.all(files.map((file) => isWorkspacePath(file.path, this.options.allowedDirectories)))).every(Boolean);
     let selectedFileVersion: string | undefined;
     if (selection && operation === "write") {
@@ -122,6 +126,8 @@ export class FileTool implements Tool {
     if (permission) return permission;
     input.context.signal?.throwIfAborted();
     // Authorize the canonical paths above, never a mutable alias or a path reparsed from user text.
+    const refusedAfterApproval = this.protectedRefusal(operation, files);
+    if (refusedAfterApproval) return refusedAfterApproval;
     for (const file of files) {
       if (await resolveOperationPath(file.path) !== file.path) throw new Error(`Path changed while awaiting approval: ${file.path}`);
       if (selectedFileVersion && createHash("sha256").update(await fs.readFile(file.path)).digest("hex") !== selectedFileVersion) {
@@ -142,6 +148,16 @@ export class FileTool implements Tool {
     if (results.length === 1) return results[0];
     return { tool: this.name, ok: true, output: `Wrote ${results.length} files`,
       metadata: { writtenPaths: files.map((file) => file.path), files: results.map((result) => result.metadata) } };
+  }
+
+  /** A refusal for any of these paths that is one of the app's own files or folders. */
+  private protectedRefusal(operation: string, files: Array<{ path: string }>): ToolExecutionResult | undefined {
+    for (const file of files) {
+      const reason = protectedPathReason(file.path);
+      if (reason) return { tool: this.name, ok: false, output: `${reason} Nothing was ${operation === "read" || operation === "list" ? "read" : "changed"}: ${file.path}`,
+        metadata: { protectedPath: true, operation, filePath: file.path } };
+    }
+    return undefined;
   }
 
   private async writeFile(targetPath: string, content: string, preserveContent = false): Promise<ToolExecutionResult> {

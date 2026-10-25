@@ -1,66 +1,77 @@
 import { resolveAbortSignal } from "../../llm/provider-utils";
+import { addressPlace, guardedGet, type GuardedGetOptions, type GuardedResponse, type Hooks } from "../../security/egress";
 import { NodeResult } from "../types";
 import { readConfigNumber, readConfigString, renderWorkflowTemplate } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 import { nodeAccess } from "./NodeAccess";
 
-/** Read-only HTTP fetch. Pages are reference data; scripts are never executed. */
+const TEXT_TYPES = ["text/html", "application/xhtml+xml", "text/plain", "text/markdown", "text/csv", "application/json"];
+
+export interface WebFetchOptions {
+  /** The request (tests may give another). */
+  get?: (url: URL, options: GuardedGetOptions) => Promise<GuardedResponse>;
+  /** The app's own API port: never read, approved or not. */
+  ownPort?: number;
+  /** Name resolution and address checks (tests reach a server on this machine through them). */
+  hooks?: Partial<Hooks>;
+}
+
+/** Read-only HTTP fetch. Pages are reference data; scripts are never executed. The address may come
+ * from a model's output (a template), and full access skips the prompt, so what it may reach is
+ * decided by the request itself (security/egress.ts): public addresses, and this computer or the local
+ * network only at the address the user named — the one approved in the prompt, or one written in the
+ * step with no template in its scheme, host or port. Link-local, metadata and the app's own API never. */
 export class WebFetchNodeExecutor implements NodeExecutor {
   readonly type = "web_fetch" as const;
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly options: WebFetchOptions = {}) {}
 
   async execute(context: NodeExecutionContext): Promise<NodeResult> {
     const config = context.node.config;
     const approvalId = context.operationId ?? `web-fetch:${context.run.id}:${context.node.id}`;
     const approved = context.approval?.approvalId === approvalId ? context.approval : undefined;
-    const url = httpUrl(approved ? String(approved.url) : renderWorkflowTemplate(readConfigString(config, "urlTemplate", ""), context));
+    const template = readConfigString(config, "urlTemplate", "");
+    const url = httpUrl(approved ? String(approved.url) : renderWorkflowTemplate(template, context));
     const maxChars = approved ? Number(approved.maxChars) : readConfigNumber(config, "maxChars", 12000, 500, 100000);
     const access = nodeAccess(context);
     const needsApproval = access.requireApproval || access.accessMode !== "full";
-    if (needsApproval && !approved) return {
-      status: "needs_input", event: "web_fetch.approval_required", summary: `Allow reading ${url.href} and its redirects?`,
-      data: { permissionRequired: true, approvalId, url: url.href, maxChars, details: `HTTP GET · ${url.href}\nRead page text only; no scripts or credentials.` }
-    };
+    if (needsApproval && !approved) {
+      const place = await addressPlace(url, this.options.hooks);
+      return {
+        status: "needs_input", event: "web_fetch.approval_required", summary: `Allow reading ${url.href} and its redirects?`,
+        data: { permissionRequired: true, approvalId, url: url.href, maxChars,
+          details: `HTTP GET · ${url.href}\nRead page text only; no scripts or credentials. Redirects are followed only to public addresses, or within this address.` +
+            (place ? `\nThis address is on ${place}: allowing it lets this step read what is served there.` : ""),
+          ...(place ? { place, warning: `This address is on ${place}.` } : {}) }
+      };
+    }
     if (approved?.approved === false) return { status: "failed", event: "web_fetch.rejected", summary: "Page access rejected.", data: {}, error: "Page access rejected." };
-    const signal = resolveAbortSignal(30000, context.signal);
-    let current = url;
-    let response: Response | undefined;
-    for (let redirects = 0; redirects <= 5; redirects++) {
-      context.onProgress?.({ phase: "tools", label: "Reading webpage", detail: current.href, at: new Date().toISOString() });
-      response = await this.fetchImpl(current, { signal, redirect: "manual", headers: { Accept: "text/html, text/plain, application/json" } });
-      if (![301, 302, 303, 307, 308].includes(response.status)) break;
-      await response.body?.cancel();
-      const location = response.headers.get("location");
-      if (!location || redirects === 5) throw new Error("Webpage redirect limit exceeded or redirect has no location.");
-      current = httpUrl(new URL(location, current).href);
-    }
-    if (!response!.ok) { await response!.body?.cancel(); throw new Error(`Webpage returned HTTP ${response!.status}.`); }
-    const type = response!.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "text/plain";
-    if (!["text/html", "application/xhtml+xml", "text/plain", "text/markdown", "text/csv", "application/json"].includes(type)) {
-      await response!.body?.cancel(); throw new Error(`Cannot read ${type} as webpage text.`);
-    }
-    const reader = response!.body?.getReader();
-    if (!reader) throw new Error("Webpage has no response body.");
-    const chunks: Uint8Array[] = [];
-    const maxBytes = 1_000_000;
-    let bytes = 0, bodyTruncated = false;
-    try {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        const remaining = maxBytes - bytes;
-        chunks.push(chunk.value.subarray(0, remaining)); bytes += Math.min(remaining, chunk.value.length);
-        if (chunk.value.length > remaining) { bodyTruncated = true; break; }
-      }
-    } finally { await reader.cancel().catch(() => undefined); }
-    const raw = Buffer.concat(chunks).toString("utf8");
+    // The address the user named: approved in the prompt, or written in the step itself.
+    const named = approved ? url.origin : staticOrigin(template) === url.origin ? url.origin : undefined;
+    const page = await (this.options.get ?? guardedGet)(url, {
+      headers: { Accept: "text/html, text/plain, application/json" }, signal: resolveAbortSignal(30000, context.signal),
+      maxBytes: 1_000_000, maxRedirects: 5, allowPrivateOrigin: named, ownPort: this.options.ownPort, hooks: this.options.hooks,
+      onHop: hop => context.onProgress?.({ phase: "tools", label: "Reading webpage", detail: hop.href, at: new Date().toISOString() }),
+      accept: (status, type) => status >= 200 && status < 300 && TEXT_TYPES.includes(type || "text/plain")
+    });
+    if (page.status < 200 || page.status >= 300) throw new Error(`Webpage returned HTTP ${page.status}.`);
+    const type = page.contentType || "text/plain";
+    if (!TEXT_TYPES.includes(type)) throw new Error(`Cannot read ${type} as webpage text.`);
+    const raw = page.body.toString("utf8");
     const html = type.includes("html");
     const title = html ? decodeEntities(raw.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "").replace(/<[^>]*>/g, "").trim().slice(0, 300) : "";
     const text = html ? pageText(raw) : raw.trim();
-    const truncated = bodyTruncated || text.length > maxChars;
-    return { status: "ok", event: "web_fetch.completed", summary: `Read ${current.href}${truncated ? " (truncated)" : ""}`,
-      data: { url: current.href, requestedUrl: url.href, title, text: text.slice(0, maxChars), truncated, contentType: type } };
+    const truncated = page.truncated || text.length > maxChars;
+    return { status: "ok", event: "web_fetch.completed", summary: `Read ${page.url}${truncated ? " (truncated)" : ""}`,
+      data: { url: page.url, requestedUrl: url.href, title, text: text.slice(0, maxChars), truncated, contentType: type } };
   }
+}
+
+/** The origin a step's address names when no template part decides its scheme, host or port: a model
+ * may fill a path or a query, never where the request goes. */
+export function staticOrigin(template: string): string | undefined {
+  const authority = /^\s*([a-z][a-z0-9+.-]*:\/\/[^/?#]*)/i.exec(template)?.[1];
+  if (!authority || authority.includes("{{")) return undefined;
+  try { return new URL(authority).origin; } catch { return undefined; }
 }
 
 function httpUrl(value: string): URL {

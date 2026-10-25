@@ -1,5 +1,6 @@
 import { parse as parseToml } from "smol-toml";
 import { hasSecretName, SECRET_ENV_KEYS } from "../../config/secrets";
+import { looksLikeKey } from "../../security/keyPatterns";
 import type { McpSecretKind } from "./credentials";
 import type { McpApprovalMode, McpServerDefinition } from "./types";
 
@@ -23,7 +24,10 @@ export interface McpImportCandidate {
   unsupported?: string;
 }
 
-const secretValue = /^(?:Bearer|Basic)\s|-----BEGIN [A-Z ]*PRIVATE KEY-----|^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.|^(?:sk|pk|rk|ghp|gho|xox[abp]|AKIA)[-_A-Za-z0-9]{8,}/i;
+const secretShape = /^(?:Bearer|Basic)\s|-----BEGIN [A-Z ]*PRIVATE KEY-----|^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.|^(?:sk|pk|rk|ghp|gho|xox[abp]|AKIA)[-_A-Za-z0-9]{8,}/i;
+/** A value that is a secret by its form, whatever its name: an auth header, a private key, a JWT, or a
+ * key in one of the shapes services publish (security/keyPatterns.ts). */
+const secretValue = { test: (value: string) => secretShape.test(value) || looksLikeKey(value) };
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const strings = (value: unknown): string[] | undefined =>

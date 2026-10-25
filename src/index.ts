@@ -35,6 +35,8 @@ import type { ChatAttachment } from "./types";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
 import { loadSessionMessages } from "./conversations/sessionHistory";
+import { protectedPathsFor, setProtectedPaths } from "./security/protectedPaths";
+import { uiSecurityHeaders } from "./api/uiSecurityHeaders";
 
 const logger = new Logger();
 
@@ -85,6 +87,8 @@ export interface BackendOptions {
   /** Where the key is written once the API listens (0600), for its user's commands; removed when
    * the backend stops. */
   apiTokenFile?: string;
+  /** The desktop app's data folder (Electron's userData): file tools never use it. */
+  userDataDir?: string;
 }
 
 export const startBackend = async (config: AppConfig = defaultConfig, integrations: IntegrationRuntimeOptions = {}, options: BackendOptions = {}): Promise<BackendHandle> => {
@@ -95,6 +99,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   // A file a crash left holds a key nobody uses any more.
   if (options.apiTokenFile) fs.rmSync(options.apiTokenFile, { force: true });
   let apiTokenWritten = false;
+  // The app's own files are out of reach of its file tools from here on (security/protectedPaths.ts).
+  setProtectedPaths(`backend:${config.appDataDir}`, protectedPathsFor(config, { userDataDir: options.userDataDir }));
   if (lock.previousShutdown === "unclean") logger.warn("The previous runtime did not shut down cleanly", { kind: lock.previousOwner?.kind });
   const diagnosticLog = new DiagnosticLog(path.join(config.appDataDir, "diagnostics"));
   setDiagnosticSink(diagnosticLog);
@@ -176,6 +182,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
       forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted) } : undefined));
     // The headless server has no UI: clients bring their own (desktop app).
     if (config.ui.serve !== false) {
+      app.use(uiSecurityHeaders);
       app.use(express.static(config.ui.publicDir));
       app.get("/", (_req, res) => {
         res.sendFile(path.join(config.ui.publicDir, "index.html"));
