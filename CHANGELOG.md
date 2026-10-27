@@ -30,6 +30,10 @@
 - **A crash of the app's main process is reported without its memory dump** (with error reports on): that process holds the decrypted keys and your chats. So is one of a utility process, such as the network service, which sees what requests carry and this computer's API key. The report still says that and where it crashed; only a window's or the GPU's crash keeps its dump.
 - **More key shapes are recognised and masked** in error reports, in what a paired device is told and in MCP configurations imported from other apps: Groq, Perplexity, xAI, Cerebras, Hugging Face, Replicate, Brave Search, GitHub fine-grained tokens, Slack (app tokens too), Stripe (webhook secrets too), AWS, Sentry and Telegram bot tokens, besides OpenAI's, Anthropic's and Google's. Every desktop build is now checked for credentials before it is signed or packed, and fails if it finds one.
 
+### Desktop
+
+- **The light theme's buttons look like the dark theme's.** Every button on a page was a white pill with a rim and a shadow in the light theme only, so a task's Run and Delete, Add task and the choices of How should agent actions be approved? stood out as raised patches. They now have the dark theme's shapes in the light colors: the main action (New task, the workflow's Save) stands out, Delete is plain text until pointed at, an unselected tab (On device, Hugging Face) no longer looks selected, and Full access keeps its orange.
+
 ## 0.1.9 — 2026-10-24
 
 Agents' terminals reach their web targets on a Linux server, contract tests and agents' terminals run sandboxed on Windows, agents on DeepSeek, OpenRouter, Groq, Qwen and Perplexity use the service's function calls, and the progress bars are redone.
