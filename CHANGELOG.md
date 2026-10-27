@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.10 — 2026-10-28
+
+API keys saved in Settings are encrypted on your computer, this computer's API answers only the app itself, a provider's key never follows a redirect to another host, agents' and workflows' tools stay out of the app's own data and this computer's network, and the light theme's buttons look like the dark theme's.
 
 ### Models & Providers
 
