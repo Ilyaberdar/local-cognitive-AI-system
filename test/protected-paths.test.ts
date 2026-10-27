@@ -154,7 +154,7 @@ test("agents' file tools: refused in full access, through a link, for a version 
     run: { id: "r", workflowId: "w", workflowVersion: 1, status: "running", state: {}, createdAt: "", updatedAt: "" },
     node: { id: "s", type: "file_search", label: "Search", position: { x: 0, y: 0 }, config: { root: ".", queryTemplate: "SESSION_MARKER" } }, previousNodeRuns: [] } as unknown as NodeExecutionContext;
   const searched = await new FileSearchNodeExecutor({ accessMode: "full", allowedDirectories: [], workspaceDir: f.repo }).execute(step);
-  assert.deepEqual((searched.data.results as Array<{ path: string }>).map(item => item.path), ["src/index.ts"], "a workflow's file search leaves the data folder out");
+  assert.deepEqual((searched.data.results as Array<{ path: string }>).map(item => item.path.replaceAll("\\", "/")), ["src/index.ts"], "a workflow's file search leaves the data folder out");
 });
 
 test("a Synthesis project at a checkout of this app neither reads nor lists the app's data", async t => {

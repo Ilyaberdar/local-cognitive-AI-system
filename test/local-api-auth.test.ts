@@ -147,9 +147,10 @@ test("a run from source keeps its key in a file only its owner reads; on Windows
   const first = sourceRunApiToken(file, "darwin");
   assert.equal(first.write, true, "none yet: a new key to write");
   writeApiTokenFile(file, first.token);
-  const again = sourceRunApiToken(file, "linux");
-  assert.deepEqual([again.token, again.write], [first.token, false], "the same key across restarts");
+  // The file's mode decides on macOS and Linux. Windows reports 0666 for every file, so this is checked on the others only.
   if (process.platform !== "win32") {
+    const again = sourceRunApiToken(file, "linux");
+    assert.deepEqual([again.token, again.write], [first.token, false], "the same key across restarts");
     fs.chmodSync(file, 0o644);
     assert.notEqual(sourceRunApiToken(file, "darwin").token, first.token, "a file others can read is not reused");
     fs.chmodSync(file, 0o600);

@@ -23,13 +23,13 @@ test("the package check finds the newer key shapes, names file and pattern only,
     const dirty = appAt(path.join(temp, "dirty"), { "package.json": "{}", "dist/src/config.js": `const k = "${groq}";`, "public/a.js": `x("${openrouter}")` });
     const result = run(dirty);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /dist\/src\/config\.js: Groq key/);
-    assert.match(result.stderr, /public\/a\.js: (?:OpenAI key|OpenRouter key)/);
+    assert.match(result.stderr, /dist[\\/]src[\\/]config\.js: Groq key/);
+    assert.match(result.stderr, /public[\\/]a\.js: (?:OpenAI key|OpenRouter key)/);
     for (const value of [groq, openrouter]) assert.equal(result.stderr.includes(value) || result.stdout.includes(value), false, "never the value");
     // A folder that is not an app (src/ of a checkout) is scanned whole.
     const sources = appAt(path.join(temp, "src"), { "diagnostics/token.ts": `export const t = "${sentry}";` });
     const whole = run(sources);
-    assert.equal(whole.status, 1); assert.match(whole.stderr, /diagnostics\/token\.ts: Sentry auth token/);
+    assert.equal(whole.status, 1); assert.match(whole.stderr, /diagnostics[\\/]token\.ts: Sentry auth token/);
     const clean = appAt(path.join(temp, "clean"), { "package.json": "{}", "dist/src/ok.js": "const pattern = /\\bgsk_[A-Za-z0-9]{40,}/;", "node_modules/x/fixture.js": `"${groq}"` });
     assert.equal(run(clean).status, 0, "regular expressions and third-party fixtures are not findings");
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
