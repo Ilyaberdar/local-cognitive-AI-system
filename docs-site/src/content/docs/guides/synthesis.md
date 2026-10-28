@@ -32,6 +32,8 @@ Synthesis is built to keep small local models on the architecture you designed. 
 
 Each failure goes back to the model as an exact item, for example a failed test with its expected and actual values and its file and line, until every gate passes.
 
+The model reads where each failure is: an assertion names its line in the test, an error thrown in the code names the test line that called it, and TypeScript is type-checked before the tests run, so a call with the wrong arguments or a class imported with `import type` comes back at its file and line too (the check never decides acceptance). Small models often hand back the file they were shown, unchanged; when that happens while the failures point into it, the model is asked once more about the first failure in that file alone. A flow that evaluates with `keep = "best"` goes back to the best candidate so far when a new one is worse. Every run has a seed, recorded in its activity with each model call, so on the same local model and app version a run repeats as it ran.
+
 Tests run in TypeScript or JavaScript (Node.js 22.18+), Python 3 and C++20. The sandbox is built into macOS; on Linux it needs [bubblewrap](https://github.com/containers/bubblewrap), which the server installer sets up from 0.1.3 (on a server installed earlier, run `sudo local-cognitive-server sandbox` once after updating). On Windows it is a regular AppContainer inside a kill-on-close Job object, running the app's own bundled Node: JavaScript and TypeScript tests run; Python runs only where the sandbox can read it (installed under Program Files, otherwise the gate is Unknown); C++ tests are Unknown.
 
 ## Cloud models
