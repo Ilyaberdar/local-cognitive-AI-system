@@ -187,7 +187,7 @@ const startBackend = async (appRoot, vault, apiToken) => {
   let oauthClients = {};
   try { oauthClients = await loadOAuthClientRegistrations(oauthClientsFile); }
   catch { console.warn("[plugins] Application OAuth registrations could not be loaded. Affected sign-ins are unavailable."); }
-  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount, apiToken, userDataDir: app.getPath("userData") });
+  return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url), focusApp: focusWindow }, { runtimeKind: "desktop", usageAccount, apiToken, userDataDir: app.getPath("userData") });
 };
 
 // What the window shows while the backend starts: the app's background and one line, nothing that runs.

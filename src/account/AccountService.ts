@@ -261,7 +261,7 @@ export class AccountService extends EventEmitter {
     // An invalid request does not consume the attempt: the genuine redirect can still arrive.
     if (this.attempt !== attempt || attempt.consumed || !state || !safeEqual(state, attempt.state) || url.searchParams.getAll("code").length > 1 ||
         issuers.length > 1 || (issuers.length === 1 && issuers[0] !== this.options.config.issuer)) {
-      sendAuthPage(response, 400, { outcome: "failure", title: "Sign-in link expired", message: "Start sign-in again from Local Cognitive." });
+      sendAuthPage(response, 400, { outcome: "failure", title: "This sign-in has ended", message: "Start sign-in again in Local Cognitive." });
       return;
     }
     attempt.consumed = true;
@@ -289,12 +289,12 @@ export class AccountService extends EventEmitter {
       this.cloudReachable = true;
       this.lastProfileCheck = this.now();
       this.completed.set(attempt.id, this.now() + 5 * 60_000);
-      sendAuthPage(response, 200, { outcome: "success", title: "You’re signed in", message: "Local Cognitive is now connected to your account.",
+      sendAuthPage(response, 200, { outcome: "success", title: "You’re signed in", message: "Local Cognitive is connected to your account.",
         appLink: `localcognitive://auth/complete/${attempt.id}` });
     } catch (error) {
       failure = errorStatus(error instanceof AccountError ? error.code : "token_exchange_failed");
       if (tokens?.refresh_token) void revokeRefreshToken(config, tokens.refresh_token, this.fetchImpl);
-      sendAuthPage(response, 400, { outcome: "failure", title: "Could not sign in", message: failure.state === "error" ? failure.error.message : "" });
+      sendAuthPage(response, 400, { outcome: "failure", title: "Sign-in didn’t finish", message: failure.state === "error" ? failure.error.message : "" });
     }
     // Close the listener after the page is delivered, not before.
     const close = () => attempt.server?.close();

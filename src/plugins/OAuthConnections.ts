@@ -32,6 +32,10 @@ export const nativeProviders: Record<string, NativeProvider> = {
   dropbox: { authorize: "https://www.dropbox.com/oauth2/authorize", token: "https://api.dropboxapi.com/oauth2/token",
     scopes: "account_info.read files.metadata.read files.content.read files.content.write" }
 };
+// What a service's consent page may show about this app when it registers itself (RFC 7591).
+export const appClientMetadata = { client_name: "Local Cognitive", logo_uri: "https://local-cognitive.com/apple-touch-icon.png",
+  client_uri: "https://local-cognitive.com/", policy_uri: "https://local-cognitive.com/privacy/" } as const;
+export interface OAuthConnectionsOptions { /** Called once a service's account is authorized in the browser: the app comes to the front. */ onAuthorized?(): void }
 const safeEqual = (a: string, b: string) => { const left = Buffer.from(a), right = Buffer.from(b); return left.length === right.length && timingSafeEqual(left, right); };
 const random = () => randomBytes(32).toString("base64url");
 
@@ -53,7 +57,8 @@ export class OAuthConnections {
   private readonly revoked = new Set<string>();
   private readonly refreshing = new Map<string, Promise<string>>();
   private closed = false;
-  constructor(private readonly vault: CredentialVault, readonly ownerId: string, private readonly registrations: OAuthClientRegistrations = {}) {}
+  constructor(private readonly vault: CredentialVault, readonly ownerId: string, private readonly registrations: OAuthClientRegistrations = {},
+    private readonly options: OAuthConnectionsOptions = {}) {}
   available() { return this.vault.available(); }
   unavailableReason() { return this.vault.unavailableReason?.(); }
   private key(id: string) { return `owners/${this.ownerId}/connections/${id}`; }
@@ -127,7 +132,7 @@ export class OAuthConnections {
         const expectedHost = new URL(record.redirect).host;
         if (request.method !== "GET" || request.headers.host !== expectedHost || url.pathname !== "/oauth/callback" ||
             !safeEqual(url.searchParams.get("state") ?? "", flow.state) || flow.consumed) {
-          sendAuthPage(response, 400, { outcome: "failure", title: "Invalid or expired authorization", message: "Return to Local Cognitive and connect again." }); return;
+          sendAuthPage(response, 400, { outcome: "failure", title: "This authorization has ended", message: `Connect ${plugin.name} again in Local Cognitive.` }); return;
         }
         flow.consumed = true;
         void (async () => {
@@ -139,8 +144,9 @@ export class OAuthConnections {
             else await this.exchange(plugin, id, record, { grant_type: "authorization_code", code,
               redirect_uri: record.redirect, code_verifier: flow.verifier }, flow.controller.signal);
             // Shown only after the credential is stored; the app still inspects the connection.
-            sendAuthPage(response, 200, { outcome: "success", title: `${plugin.name} authorized`, message: "Return to Local Cognitive and check the connection before enabling it." });
-          } catch { sendAuthPage(response, 400, { outcome: "failure", title: "Could not connect", message: "Authorization failed or was cancelled. Return to Local Cognitive and reconnect." }); }
+            sendAuthPage(response, 200, { outcome: "success", title: `${plugin.name} is connected`, message: "Check the connection in Local Cognitive, then turn the plugin on." });
+            try { this.options.onAuthorized?.(); } catch { /* Bringing the app forward is a courtesy. */ }
+          } catch { sendAuthPage(response, 400, { outcome: "failure", title: `${plugin.name} isn’t connected`, message: "The authorization was cancelled or didn’t finish." }); }
           finally { this.stop(id); }
         })();
       });
@@ -177,7 +183,7 @@ export class OAuthConnections {
   private mcpProvider(plugin: CatalogPlugin, id: string, record: SavedAuth, flow?: Flow): OAuthClientProvider {
     return {
       redirectUrl: record.redirect,
-      clientMetadata: { client_name: "Local Cognitive", redirect_uris: [record.redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" },
+      clientMetadata: { ...appClientMetadata, redirect_uris: [record.redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" },
       state: () => { if (!flow) throw new PluginError("Login expired. Reconnect the account.", 401); return flow.state; },
       clientInformation: () => record.client,
       saveClientInformation: async client => { record.client = client; await this.save(id, record); },
@@ -234,7 +240,9 @@ export class OAuthConnections {
           if (tokens.error === "authorization_pending") continue;
           if (tokens.error === "slow_down") { interval += 5; continue; }
           if (!tokenResponse.ok || !tokens.access_token || tokens.error) break;
-          this.tokens(record, tokens); await this.save(id, record); break;
+          this.tokens(record, tokens); await this.save(id, record);
+          try { this.options.onAuthorized?.(); } catch { /* Bringing the app forward is a courtesy. */ }
+          break;
         }
       } catch { /* UI displays reconnect, never raw token endpoint errors. */ }
       finally { this.stop(id); }

@@ -21,6 +21,8 @@ import { emptyMcpConfiguration } from "../mcp/client/configuration";
 import { validateSettingsPatch } from "./settingsValidation";
 
 export interface IntegrationRuntimeOptions { vault?: CredentialVault; openExternal?: (url: string) => Promise<void>; oauthClients?: OAuthClientRegistrations;
+  /** Brings the app to the front once a plugin's account is authorized in the browser. */
+  focusApp?: () => void;
   /** Records every model call of this runtime (the usage ledger in host.db). */
   usage?: UsageRecorder; }
 
@@ -156,7 +158,8 @@ export class RuntimeManager {
     setProtectedPaths(`runtime:${this.baseConfig.appDataDir}`, { roots: protectedPathsFor(mergedConfig).roots, carveOuts: protectedPathsFor(this.baseConfig).carveOuts });
     if (!this.plugins) {
       const ownerId = this.integrationOwner ?? `local:${settings.memory.localProfileId}`;
-      this.direct = new DirectIntegrationAdapter(this.integrations.vault ?? unavailableVault, ownerId, this.mcpClients, this.integrations.oauthClients);
+      this.direct = new DirectIntegrationAdapter(this.integrations.vault ?? unavailableVault, ownerId, this.mcpClients, this.integrations.oauthClients,
+        { onAuthorized: this.integrations.focusApp });
       this.plugins = new PluginManager(mergedConfig.appDataDir, ownerId, [this.direct]);
       void this.plugins.restore().catch(() => this.logger.warn("Plugin accounts could not be restored. Open Connections to reconnect."));
     }

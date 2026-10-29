@@ -75,10 +75,18 @@ test("the completion page escapes text, allows only its hashed style and a valid
   assert.match(html, /&quot;quoted&quot; &amp; &lt;b&gt;/);
   const success = renderAuthCompletionPage({ outcome: "success", title: "You’re signed in", message: "ok", appLink: `localcognitive://auth/complete/${"B".repeat(22)}` });
   assert.match(success, /Open Local Cognitive/);
-  const style = /<style>(.*)<\/style>/.exec(success)![1]!;
-  assert.match(authPageHeaders["Content-Security-Policy"]!, new RegExp(`style-src 'sha256-${createHash("sha256").update(style).digest("base64").replace(/[+/]/g, "\\$&")}'`));
-  assert.match(authPageHeaders["Content-Security-Policy"]!, /default-src 'none'/);
-  assert.doesNotMatch(success, /https?:\/\//);
+  const policy = authPageHeaders["Content-Security-Policy"]!;
+  const allowed = (kind: string, text: string) => assert.match(policy, new RegExp(`${kind}-src 'sha256-${createHash("sha256").update(text).digest("base64").replace(/[+/]/g, "\\$&")}'`));
+  allowed("style", /<style>(.*)<\/style>/.exec(success)![1]!);
+  allowed("script", /<script>(.*)<\/script>/.exec(success)![1]!);
+  assert.match(policy, /default-src 'none'/);
+  assert.match(policy, /img-src data:;/);
+  assert.doesNotMatch(success, /https?:\/\//, "the page loads nothing from anywhere");
+  assert.match(success, /<img src="data:image\/png;base64,iVBOR/, "the app icon, inline");
+  assert.match(success, /prefers-color-scheme:light/, "the app's light tokens when the browser is light");
+  assert.match(success, /--bg:#111214/, "and its dark ones otherwise");
+  assert.match(success, /window\.close\(\)/, "a success tries to close its tab");
+  assert.doesNotMatch(renderAuthCompletionPage({ outcome: "failure", title: "x", message: "y" }), /<script>/, "a failure stays open to be read");
 });
 
 test("packaged builds ignore tenant overrides and refuse insecure Cloud URLs", () => {

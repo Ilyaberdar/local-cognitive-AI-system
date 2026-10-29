@@ -13,7 +13,7 @@ export const openLoopback = async (options: { port: number; path: string; handle
   const server = http.createServer({ requestTimeout: 30_000, headersTimeout: 10_000 }, (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", `http://${host}`);
     if (request.method !== "GET" || request.headers.host !== host || url.pathname !== options.path) {
-      sendAuthPage(response, 400, { outcome: "failure", title: "Invalid request", message: "This page only completes sign-in for Local Cognitive." });
+      sendAuthPage(response, 400, { outcome: "failure", title: "Nothing to finish here", message: "This page only completes sign-in to Local Cognitive." });
       return;
     }
     options.handle(url, response);

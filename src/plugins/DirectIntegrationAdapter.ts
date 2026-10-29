@@ -4,7 +4,7 @@ import { McpClientManager } from "../mcp/client/McpClientManager";
 import { McpClientConfiguration, McpCredentialProvider } from "../mcp/client/types";
 import { CatalogPlugin, CredentialVault, IntegrationAdapter, PluginError, PluginInvocationError, ServiceConnection } from "./contracts";
 import { catalogEntry } from "./catalog";
-import { OAuthConnections, OAuthClientRegistrations } from "./OAuthConnections";
+import { OAuthConnections, OAuthClientRegistrations, OAuthConnectionsOptions } from "./OAuthConnections";
 import { callNative, nativeAccount, nativeTools } from "./NativeServiceTools";
 
 export class DirectIntegrationAdapter implements IntegrationAdapter, McpCredentialProvider {
@@ -14,7 +14,9 @@ export class DirectIntegrationAdapter implements IntegrationAdapter, McpCredenti
   private readonly tokenHashes = new Map<string, string>();
   private readonly config: McpClientConfiguration = { servers: {}, bindings: {} };
   private closed = false;
-  constructor(vault: CredentialVault, ownerId: string, private readonly mcp: McpClientManager, registrations: OAuthClientRegistrations = {}) { this.oauth = new OAuthConnections(vault, ownerId, registrations); }
+  constructor(vault: CredentialVault, ownerId: string, private readonly mcp: McpClientManager, registrations: OAuthClientRegistrations = {}, oauthOptions: OAuthConnectionsOptions = {}) {
+    this.oauth = new OAuthConnections(vault, ownerId, registrations, oauthOptions);
+  }
   async ready() { return { ready: this.oauth.available(), message: this.oauth.available() ? undefined : this.oauth.unavailableReason() ?? "Account connections require the desktop app's protected credential storage." }; }
   async connect(plugin: CatalogPlugin, ownerId: string, id: string) {
     if (ownerId !== this.oauth.ownerId || this.closed) throw new PluginError("Profile changed. Reload Plugins.", 409);

@@ -253,6 +253,27 @@ test("OAuth PKCE callback validates one-use state; refresh is serialized and own
   await assert.rejects(oauth.accessToken(catalogEntry("dropbox"), connection), /cancelled/);
 });
 
+test("an MCP service's consent page gets the app's name, icon, site and privacy policy when the app registers itself", async t => {
+  const { vault } = memoryVault(); const oauth = new OAuthConnections(vault, "local:dcr-owner"); t.after(() => oauth.dispose());
+  let registration: Record<string, unknown> | undefined;
+  const metadata = { issuer: "https://mcp.notion.com", authorization_endpoint: "https://mcp.notion.com/authorize", token_endpoint: "https://mcp.notion.com/token",
+    registration_endpoint: "https://mcp.notion.com/register", response_types_supported: ["code"], code_challenge_methods_supported: ["S256"] };
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) return new Response("", { status: 404 });
+    if (url.pathname.startsWith("/.well-known/")) return Response.json(metadata);
+    if (url.pathname === "/register") { registration = JSON.parse(String(init!.body)); return Response.json({ ...registration, client_id: "dcr-client" }, { status: 201 }); }
+    return new Response("", { status: 404 });
+  });
+  const attempt = await oauth.begin(catalogEntry("notion"), randomUUID());
+  assert.equal(new URL(attempt.authorizationUrl).origin, "https://mcp.notion.com");
+  assert.equal(registration?.client_name, "Local Cognitive");
+  assert.equal(registration?.logo_uri, "https://local-cognitive.com/apple-touch-icon.png");
+  assert.equal(registration?.client_uri, "https://local-cognitive.com/");
+  assert.equal(registration?.policy_uri, "https://local-cognitive.com/privacy/");
+  assert.equal(registration?.token_endpoint_auth_method, "none");
+});
+
 test("application-owned native OAuth registrations are shared across profiles without sharing account credentials", async t => {
   const root = await temporary(t), file = path.join(root, 'clients.json');
   assert.deepEqual(await loadOAuthClientRegistrations(file), {});
@@ -280,7 +301,9 @@ test("Google desktop sign-in uses the distributor registration with PKCE and kee
   const free = http.createServer(); await new Promise<void>(resolve => free.listen(0, '127.0.0.1', resolve));
   const port = (free.address() as { port: number }).port; await new Promise<void>(resolve => free.close(() => resolve()));
   const { vault, data } = memoryVault();
-  const oauth = new OAuthConnections(vault, 'local:google-owner', { 'google-drive': { clientId: 'fixture.apps.googleusercontent.com', clientSecret: 'fixture-desktop-secret', callbackPort: port } });
+  let focused = 0;
+  const oauth = new OAuthConnections(vault, 'local:google-owner', { 'google-drive': { clientId: 'fixture.apps.googleusercontent.com', clientSecret: 'fixture-desktop-secret', callbackPort: port } },
+    { onAuthorized: () => { focused++; } });
   t.after(() => oauth.dispose());
   const original = globalThis.fetch;
   t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
@@ -302,8 +325,11 @@ test("Google desktop sign-in uses the distributor registration with PKCE and kee
   assert.ok(!attempt.authorizationUrl.includes('fixture-desktop-secret'));
   const callback = new URL(url.searchParams.get('redirect_uri')!);
   callback.searchParams.set('state', url.searchParams.get('state')!); callback.searchParams.set('code', 'fixture-code');
-  assert.equal((await original(callback)).status, 200);
+  const page = await original(callback);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Google Drive is connected/);
   assert.equal(await oauth.connected(id), true);
+  assert.equal(focused, 1, "the app comes to the front once the account is authorized");
   assert.ok([...data.keys()].every(key => key.startsWith('owners/local:google-owner/')));
   assert.ok(!JSON.stringify(await oauth.configuration(catalogEntry('google-drive'))).includes('fixture-google-access'));
 });
