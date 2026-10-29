@@ -274,6 +274,28 @@ test("an MCP service's consent page gets the app's name, icon, site and privacy 
   assert.equal(registration?.token_endpoint_auth_method, "none");
 });
 
+test("a service that refuses the app's icon and site in a registration gets the plain one", async t => {
+  const { vault } = memoryVault(); const oauth = new OAuthConnections(vault, "local:dcr-plain"); t.after(() => oauth.dispose());
+  const registrations: Record<string, unknown>[] = [];
+  const metadata = { issuer: "https://mcp.linear.app", authorization_endpoint: "https://mcp.linear.app/authorize", token_endpoint: "https://mcp.linear.app/token",
+    registration_endpoint: "https://mcp.linear.app/register", response_types_supported: ["code"], code_challenge_methods_supported: ["S256"] };
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) return new Response("", { status: 404 });
+    if (url.pathname.startsWith("/.well-known/")) return Response.json(metadata);
+    if (url.pathname === "/register") {
+      const body = JSON.parse(String(init!.body)); registrations.push(body);
+      if (body.logo_uri) return Response.json({ error: "invalid_client_metadata", error_description: "logo_uri host must match redirect_uris" }, { status: 400 });
+      return Response.json({ ...body, client_id: "plain-client" }, { status: 201 });
+    }
+    return new Response("", { status: 404 });
+  });
+  const attempt = await oauth.begin(catalogEntry("linear"), randomUUID());
+  assert.equal(new URL(attempt.authorizationUrl).searchParams.get("client_id"), "plain-client");
+  assert.equal(registrations.length, 2);
+  assert.deepEqual([registrations[1]!.client_name, registrations[1]!.logo_uri, registrations[1]!.client_uri], ["Local Cognitive", undefined, undefined]);
+});
+
 test("application-owned native OAuth registrations are shared across profiles without sharing account credentials", async t => {
   const root = await temporary(t), file = path.join(root, 'clients.json');
   assert.deepEqual(await loadOAuthClientRegistrations(file), {});

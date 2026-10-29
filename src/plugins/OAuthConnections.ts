@@ -157,7 +157,12 @@ export class OAuthConnections {
       const address = flow.server.address();
       if (!address || typeof address === "string") throw new Error("No callback listener");
       record.redirect = `http://${nativeProviders[plugin.id]?.localhost ? "localhost" : "127.0.0.1"}:${address.port}/oauth/callback`;
-      if (plugin.mcpEndpoint) await auth(this.mcpProvider(plugin, id, record, flow), { serverUrl: plugin.mcpEndpoint, fetchFn: this.oauthFetch(plugin, flow.controller.signal) });
+      if (plugin.mcpEndpoint) {
+        const start = (branded: boolean) => auth(this.mcpProvider(plugin, id, record, flow, branded), { serverUrl: plugin.mcpEndpoint!, fetchFn: this.oauthFetch(plugin, flow.controller.signal) });
+        // A service may refuse a registration whose site and icon are on another host than the
+        // callback (RFC 7591 §5): it then gets the plain one, with the name only.
+        try { await start(true); } catch (error) { if (record.client || flow.controller.signal.aborted) throw error; await start(false); }
+      }
       else {
         const provider = nativeProviders[plugin.id], url = new URL(provider.authorize);
         for (const [name, value] of Object.entries({ response_type: "code", client_id: settings!.clientId, redirect_uri: record.redirect,
@@ -180,10 +185,11 @@ export class OAuthConnections {
       return fetch(input, { ...init, redirect: "error", signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(20_000)]) });
     };
   }
-  private mcpProvider(plugin: CatalogPlugin, id: string, record: SavedAuth, flow?: Flow): OAuthClientProvider {
+  private mcpProvider(plugin: CatalogPlugin, id: string, record: SavedAuth, flow?: Flow, branded = true): OAuthClientProvider {
+    const app = branded ? appClientMetadata : { client_name: appClientMetadata.client_name };
     return {
       redirectUrl: record.redirect,
-      clientMetadata: { ...appClientMetadata, redirect_uris: [record.redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" },
+      clientMetadata: { ...app, redirect_uris: [record.redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" },
       state: () => { if (!flow) throw new PluginError("Login expired. Reconnect the account.", 401); return flow.state; },
       clientInformation: () => record.client,
       saveClientInformation: async client => { record.client = client; await this.save(id, record); },
