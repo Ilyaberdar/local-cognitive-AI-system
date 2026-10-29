@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Account and plugins
+
+- **The pages your browser shows after signing in look like the app.** After a sign-in or a plugin login, the page that says it worked (or didn't) was dark whatever your browser's appearance, with no icon. It now has the app's icon, fonts and light or dark colours, one short line, and tries to close its tab by itself; after a plugin login the app comes to the front, as it already did after signing in.
+- **Settings → Account says how you signed in** (Google, email and password, or Apple), since each way is its own account, and explains an address from Apple's Hide My Email.
+- **Notion, Linear and Atlassian see the app's name, icon and privacy policy** when the app registers itself with them, so their consent pages can show Local Cognitive.
+- Sign in with Apple is ready in the app and in Local Cognitive Cloud, and appears once its sign-in service is set up.
+
 ## 0.1.11 — 2026-10-29
 
 Synthesis tells a small local model where its code fails and what to change, asks again when the model hands a file back unchanged, keeps the best candidate, type-checks TypeScript before the tests, and gives every run a seed, so Qwen3.5-9B and Nemotron-3-Nano-4B now finish the calculator template in every measured run; the window opens at once instead of after the whole app has started, and Remote tells two computers with one name apart.

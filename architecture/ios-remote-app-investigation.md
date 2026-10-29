@@ -1031,7 +1031,9 @@ once, never shared in chat, never committed, and reach the Cloud only as mounted
 3. Choose the bundle ID and register the App ID with Push Notifications, Sign in with Apple,
    Associated Domains and App Groups, and optionally Time Sensitive Notifications.
 4. Create the APNs keys (Sandbox and Production) and a Sign in with Apple key with a Services ID
-   (the Services ID is for sign-in on the web and the desktop).
+   (the Services ID is for sign-in on the web and the desktop, grouped under this App ID so both
+   share one consent and one relay address; the desktop's steps are in `deploy/cloud/README.md`,
+   "Auth0 tenant").
 5. Register the email sending domains for Apple's private relay (SPF, DKIM); otherwise Auth0's
    emails to hidden addresses do not arrive [27].
 6. Create the app record in App Store Connect: privacy and support URLs, the App Privacy answers,
@@ -1045,7 +1047,9 @@ once, never shared in chat, never committed, and reach the Cloud only as mounted
    machine-to-machine client for account deletion. Decide the "Non-Verifiable Callback URI End-User
    Confirmation" setting: Auth0 now asks users to confirm custom-scheme and loopback callbacks, by
    default on older tenants since 28 April 2026 [25], which also affects the desktop's loopback
-   sign-in.
+   sign-in: it is the "Authorize App" page desktop users see after Google (and Apple), branded
+   through the consent prompt's texts (`deploy/cloud/README.md`). An HTTPS universal-link callback
+   is verifiable, so the phone does not get it.
 
 ## 14. Open decisions for the owner
 

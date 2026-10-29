@@ -65,3 +65,53 @@ docker exec -i local-cognitive-postgres-1 pg_restore -U lc_cloud -d lc_cloud --c
 
 On a host with free ports 80/443, use the bundled Caddy instead of `compose.edge.yml`:
 `docker compose -p local-cognitive --profile standalone-proxy up -d --build`.
+
+## Auth0 tenant
+
+The tenant is configured in its dashboard, not from this repository. What the code expects:
+
+- **Desktop application** (Native, PKCE, no secret; `src/account/accountConfig.ts`): Allowed Callback
+  URL `http://127.0.0.1:17850/callback` exactly, refresh-token rotation, offline access on the API;
+  connections `google-oauth2`, the database connection with sign-up, and `apple` once set up.
+  The website's Account page is a second application (SPA, callback `https://local-cognitive.com/`).
+- **API** `https://api.local-cognitive.com` (RS256, `AUTH0_AUDIENCE`), Allow Offline Access and
+  Allow Skipping User Consent on.
+- **Post-Login Action** adds `https://local-cognitive.com/email`, `…/email_verified` (a boolean;
+  Apple's can be the string `"true"`, so coerce it) and `…/name` to access tokens
+  (`apps/cloud/src/auth/profileClaims.ts`). Without the claims the account exists but has no
+  Remote.
+
+**The "Authorize App" page.** The desktop returns to a loopback address, which Auth0 cannot verify,
+so the tenant's Non-Verifiable Callback URI End-User Confirmation asks the user to confirm on
+every sign-in where they saw no other Auth0 page (Google, Apple). It uses the consent screen's look
+and texts. Keep it on: without it a program on the computer could take tokens from an existing
+browser session. Make it read as part of Local Cognitive instead:
+
+1. Applications → each application: Name "Local Cognitive", Application Logo
+   `https://local-cognitive.com/apple-touch-icon.png`.
+2. Settings → General: Friendly Name "Local Cognitive" (the `${companyName}` of the texts) and the
+   same logo.
+3. Branding → Universal Login: the logo, primary colour `#466896`, page background `#e9edf2`.
+4. Branding → Universal Login → Advanced Options → Custom Text → prompt `consent`, screen `consent`:
+   `pageTitle` and `title` "Continue to Local Cognitive", `messageSingleTenant` and
+   `messageMultipleTenants` "Local Cognitive on this computer is finishing your sign-in. Continue
+   only if you started it in the app.", `acceptButtonText` "Continue", `declineButtonText` "Cancel".
+
+**Sign in with Apple.**
+
+1. Apple Developer → Identifiers: an App ID with Sign in with Apple (the iOS app's bundle ID, so
+   desktop and phone share one consent and one relay address); a Services ID (for example
+   `com.localcognitive.signin`) with Sign in with Apple configured: that App ID as primary, domain
+   the Auth0 domain (`dev-1r1wg4zfij4lam4r.eu.auth0.com`, or the custom domain), return URL
+   `https://<that domain>/login/callback`.
+2. Apple Developer → Keys: a key with Sign in with Apple for that App ID; the `.p8` downloads once.
+3. Auth0 → Authentication → Social → Apple: Client ID = the Services ID, Client Secret Signing Key =
+   the `.p8`, Apple Team ID, Key ID, attributes Email and Name; keep the connection's name `apple`;
+   enable it for the desktop and website applications.
+4. Try it in the development window:
+   `LOCAL_COGNITIVE_AUTH0_APPLE=1 LOCAL_COGNITIVE_CLOUD_URL=https://api.local-cognitive.com npm run electron`.
+5. Then set `appleSignIn = true` in `src/account/accountConfig.ts`; packaged builds show the button
+   only then.
+
+Each sign-in method is its own Auth0 user and so its own Local Cognitive account (accounts are keyed
+by issuer and subject, never by email; a Hide My Email address would not match anyway).
