@@ -94,6 +94,12 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
     </form>`;
   }
 
+  // Two computers can have one name (a Mac paired again from another profile): the day each was paired tells them apart.
+  const pairedOn = value => {
+    const date = value ? new Date(value) : undefined;
+    return date && !Number.isNaN(date.getTime()) ? ` · paired ${escape(date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }))}` : "";
+  };
+
   function serverList() {
     if (!hostsLoaded) return '<p class="settings-description" role="status">Loading your servers…</p>';
     if (hostsError) return `<p class="remote-error" role="alert">${escape(hostsError)} <button type="button" class="ghost-button" data-remote-action="reload">Try again</button></p>`;
@@ -104,7 +110,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
         host.paired && !current ? `<button type="button" class="ghost-button" data-remote-action="connect" data-host-id="${escape(host.hostId)}"${pending || !host.online ? " disabled" : ""}>Connect</button>` : "",
         host.paired ? `<button type="button" class="ghost-button" data-remote-action="forget" data-host-id="${escape(host.hostId)}"${pending ? " disabled" : ""}>Forget</button>` : ""
       ].join("");
-      const devices = host.devices.map(device => `<li><span>${escape(device.name)}${device.current ? ' <span class="account-badge">This computer</span>' : ""}</span><span class="subtle">${escape(device.platform)}</span><button type="button" class="ghost-button" data-remote-action="revoke" data-host-id="${escape(host.hostId)}" data-device-id="${escape(device.deviceId)}"${pending ? " disabled" : ""}>Remove access</button></li>`).join("");
+      const devices = host.devices.map(device => `<li><span>${escape(device.name)}${device.current ? ' <span class="account-badge">This computer</span>' : ""}</span><span class="subtle">${escape(device.platform)}${pairedOn(device.grantedAt)}</span><button type="button" class="ghost-button" data-remote-action="revoke" data-host-id="${escape(host.hostId)}" data-device-id="${escape(device.deviceId)}"${pending ? " disabled" : ""}>Remove access</button></li>`).join("");
       return `<div class="remote-host"><div class="remote-host-head"><div><strong>${escape(host.name)}</strong><span class="subtle"><span class="status-dot ${host.online ? "is-online" : ""}"></span>${host.online ? "Online" : "Offline"} · ${escape(host.appVersion)}${current ? " · connected" : ""}${!host.paired ? " · not paired with this computer" : ""}</span></div><div class="account-actions">${actions}</div></div>${devices ? `<ul class="remote-devices">${devices}</ul>` : ""}</div>`;
     }).join("")}</div>`;
   }

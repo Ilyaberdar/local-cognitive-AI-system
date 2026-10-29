@@ -11,7 +11,7 @@ import { RemoteSession } from "./RemoteSession";
 export interface RemoteProfile { hostId: string; hostName: string; hostSpkiSha256: string; deviceId: string; pairedAt: string }
 export type RemoteState = "idle" | "connecting" | "online" | "reconnecting" | "offline" | "revoked" | "identity_changed" | "error";
 export interface RemoteStatus { state: RemoteState; hostId?: string; hostName?: string; serverVersion?: string; capabilities?: string[]; error?: { code: string; message: string } }
-export interface RemoteHostSummary { hostId: string; name: string; online: boolean; appVersion: string; paired: boolean; devices: Array<{ deviceId: string; name: string; platform: string; status: string; current: boolean }> }
+export interface RemoteHostSummary { hostId: string; name: string; online: boolean; appVersion: string; paired: boolean; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string; current: boolean }> }
 
 export class RemoteError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 
@@ -131,7 +131,7 @@ export class RemoteClient extends EventEmitter {
   async hosts(): Promise<RemoteHostSummary[]> {
     const { accountId, accessToken } = await this.requireAccount();
     const [profiles, device] = await Promise.all([this.profiles(accountId), this.storedDevice(accountId)]);
-    const body = await this.api<{ hosts: Array<{ hostId: string; name: string; online: boolean; appVersion: string; devices: Array<{ deviceId: string; name: string; platform: string; status: string }> }> }>(
+    const body = await this.api<{ hosts: Array<{ hostId: string; name: string; online: boolean; appVersion: string; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string }> }> }>(
       accessToken, "GET", "/v1/hosts");
     return body.hosts.map(host => ({ hostId: host.hostId, name: host.name, online: host.online, appVersion: host.appVersion,
       paired: profiles.some(profile => profile.hostId === host.hostId) && host.devices.some(entry => entry.deviceId === device?.deviceId && entry.status === "active"),

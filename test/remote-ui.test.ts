@@ -77,6 +77,25 @@ test("a key pairs this computer, the server state shows, and names are escaped",
   assert.deepEqual(calls.find(call => call[0] === "revokeDevice"), ["revokeDevice", HOST, DEVICE]);
 });
 
+test("two computers with one name are told apart by the day each was paired; a date that is not one is left out", async () => {
+  const devices = [
+    { deviceId: DEVICE, name: "Gamzatels-MacBook-Pro", platform: "macos", status: "active", grantedAt: "2026-10-10T19:01:24.220Z", current: false },
+    { deviceId: "stale", name: "Gamzatels-MacBook-Pro", platform: "macos", status: "active", grantedAt: "2026-10-16T17:34:08.629Z", current: false },
+    { deviceId: "pc", name: "DESKTOP-QPD45QC", platform: "windows", status: "active", grantedAt: "not a date", current: true }];
+  const hosts = async () => ({ ok: true, value: [{ hostId: HOST, name: "fedora", online: true, appVersion: "0.1.11", paired: true, devices }] });
+  const page = load(bridgeWith({ hosts }).bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
+  page.paint();
+  page.signIn({});
+  await flush(); await flush();
+  const rows = [...page.root.querySelectorAll(".remote-devices li")].map(row => row.textContent);
+  const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  assert.ok(rows[0].includes(`macos · paired ${day("2026-10-10T19:01:24.220Z")}`), rows[0]);
+  assert.ok(rows[1].includes(`macos · paired ${day("2026-10-16T17:34:08.629Z")}`), rows[1]);
+  assert.notEqual(day("2026-10-10T19:01:24.220Z"), day("2026-10-16T17:34:08.629Z"));
+  assert.match(rows[2], /This computer/);
+  assert.doesNotMatch(rows[2], /paired/);
+});
+
 test("a mistyped key stays editable and the reason is shown", async () => {
   const { bridge } = bridgeWith({ pair: async () => ({ ok: true, value: { state: "error", error: { code: "key_checksum", message: "The connection key has a typo. Copy it again." } } }) });
   const page = load(bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
