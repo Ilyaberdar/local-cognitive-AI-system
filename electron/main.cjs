@@ -304,8 +304,9 @@ ipcMain.on("appearance:title-bar", (event, colors) => {
 nativeTheme.on("updated", applyTitleBarColors);
 
 if (hasInstanceLock) app.whenReady().then(async () => {
-  // The window first: the backend's start can take seconds, and nothing was on screen meanwhile.
-  const starting = createWindow().catch(error => console.error("The starting window failed:", error));
+  // The window first, and shown before the backend's files load: loading them holds this thread (seconds on
+  // a first Windows launch), so a window still opening then would show only once they had loaded.
+  try { await createWindow(); } catch (error) { console.error("The starting window failed:", error); }
   try {
     const runtime = await configureRuntimeEnvironment();
     applicationDataRoot = runtime.dataRoot;
@@ -342,7 +343,6 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     app.on("child-process-gone", (_event, details) => crashed(details.type === "GPU" ? "gpu" : details.type === "Utility" ? "utility" : "other", details));
     // /health is the one address that needs no key.
     await waitForServer(`${runtime.url}/health`);
-    await starting;
     await showApplication(runtime.url);
     updates.start();
     void prepareSandbox?.();

@@ -15,7 +15,7 @@ Synthesis tells a small local model where its code fails and what to change, ask
 
 ### Desktop
 
-- **The window opens at once.** It opened only after the whole app had started, so a first launch on Windows, where Defender scans each of the app's 1,600 script files as they load, showed nothing for seconds and longer. The window now opens at once with "Starting Local Cognitive…" and shows the app in the same window when it is ready. The launch also does less: the error-report SDK (about 700 files) is not loaded unless automatic error reports are on, and starts when you send a bug report or turn them on; the Windows sandbox's upkeep runs after the window shows, instead of holding the launch for up to a minute when it is slow; and the readers of .docx files and of the calculator check load when first used.
+- **The window opens at once.** It opened only after the whole app had started, so a first launch on Windows, where Defender scans each of the app's 1,600 script files as they load, showed nothing for seconds and longer. The window now opens at once with "Starting Local Cognitive…" and shows the app in the same window when it is ready. The launch also does less: the error-report SDK (about 700 files) is not loaded unless automatic error reports are on, and starts when you send a bug report or turn them on; the Windows sandbox's upkeep runs after the window shows, instead of holding the launch for up to a minute when it is slow; and the readers of .docx files and of the calculator check load when first used. On a Windows test PC with Defender on, a launch from freshly installed files shows the window after about 1 s instead of 12 and the app after about 10 s instead of 13; a later launch shows the window at 0.3 s and the app at 1.6 s.
 
 ### Remote
 
