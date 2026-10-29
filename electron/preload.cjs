@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("desktopVoice", {
 // Account status only; tokens stay in the main process.
 contextBridge.exposeInMainWorld("desktopAccount", {
   status: () => ipcRenderer.invoke("account:status"),
+  methods: () => ipcRenderer.invoke("account:methods"),
   signIn: method => ipcRenderer.invoke("account:sign-in", method),
   cancelSignIn: () => ipcRenderer.invoke("account:cancel-sign-in"),
   signOut: () => ipcRenderer.invoke("account:sign-out"),

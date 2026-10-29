@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SignInMethod } from "./oidc";
 
 export interface AccountConfig {
   /** https://<tenant domain>, without a trailing slash. */
@@ -11,12 +12,19 @@ export interface AccountConfig {
   callbackPort: number;
   /** Local Cognitive Cloud API; sign-in is unavailable without it. */
   cloudUrl?: string;
+  /** The ways to sign in this build offers; Google, email and sign-up when absent. */
+  methods?: readonly SignInMethod[];
 }
 
 export const ACCOUNT_CALLBACK_PORT = 17850;
 
 // Public values of the Auth0 Native application (PKCE, no client secret).
 const tenant = { domain: "dev-1r1wg4zfij4lam4r.eu.auth0.com", clientId: "f2AA24WqGaB3QF1UXFP7HQMRI5DBfHC0", audience: "https://api.local-cognitive.com" };
+// Sign in with Apple needs the tenant's Apple connection enabled for this application first
+// (Apple Services ID and key, then Auth0 → Authentication → Social → Apple). Until then the
+// button stays hidden, since Auth0 would answer it with an error page.
+const appleSignIn = false;
+export const DEFAULT_SIGN_IN_METHODS: readonly SignInMethod[] = ["google", "email", "signup"];
 // Deployed on the Oracle host behind its Caddy (deploy/cloud/README.md).
 const productionCloudUrl: string | undefined = "https://api.local-cognitive.com";
 const developmentCloudUrl = "http://127.0.0.1:8080";
@@ -36,6 +44,8 @@ export const resolveAccountConfig = ({ env, packaged }: { env: NodeJS.ProcessEnv
     audience: (!packaged && env.LOCAL_COGNITIVE_AUTH0_AUDIENCE) || tenant.audience,
     scope: "openid profile email offline_access",
     callbackPort: ACCOUNT_CALLBACK_PORT,
-    cloudUrl: cloud ? cloudUrl.parse(cloud).replace(/\/$/, "") : undefined
+    cloudUrl: cloud ? cloudUrl.parse(cloud).replace(/\/$/, "") : undefined,
+    // A development build may try the Apple connection before it ships: LOCAL_COGNITIVE_AUTH0_APPLE=1.
+    methods: appleSignIn || (!packaged && env.LOCAL_COGNITIVE_AUTH0_APPLE === "1") ? ["google", "apple", "email", "signup"] : DEFAULT_SIGN_IN_METHODS
   };
 };

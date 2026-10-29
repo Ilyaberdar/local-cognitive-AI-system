@@ -2,7 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import type { AccountConfig } from "./accountConfig";
 import { AccountError } from "./errors";
 
-export type SignInMethod = "google" | "email" | "signup";
+export type SignInMethod = "google" | "apple" | "email" | "signup";
+export const SIGN_IN_METHODS: readonly SignInMethod[] = ["google", "apple", "email", "signup"];
 export type FetchLike = typeof fetch;
 
 export const randomToken = (bytes = 32): string => randomBytes(bytes).toString("base64url");
@@ -24,7 +25,9 @@ export const buildAuthorizeUrl = (config: AccountConfig, input: { redirectUri: s
     // Interactive sign-in always asks for credentials, so a signed-out user can switch accounts.
     prompt: "login"
   };
+  // Social methods go straight to their provider; Auth0 names the Apple connection "apple".
   if (input.method === "google") parameters.connection = "google-oauth2";
+  if (input.method === "apple") parameters.connection = "apple";
   if (input.method === "signup") parameters.screen_hint = "signup";
   for (const [name, value] of Object.entries(parameters)) url.searchParams.set(name, value);
   return url.href;

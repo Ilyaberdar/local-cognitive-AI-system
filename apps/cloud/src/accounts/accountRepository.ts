@@ -12,13 +12,17 @@ export interface AccountRepository {
 // The unique (issuer, subject) index decides a first-login race: the loser waits, takes
 // DO UPDATE and gets the winner's account id, so it never creates an account. FK checks
 // run at the end of the statement, so the link may reference the account inserted after it.
+// A token that carries no email (Sign in with Apple sends the name only once, and its email
+// can be missing later) keeps what the identity had: the same identity, so its verified email
+// still holds. A token with an email replaces both, an unverified one too.
 const upsertSql = `
 WITH link AS (
   INSERT INTO identity_links AS l (account_id, issuer, subject, email, email_verified, display_name)
   VALUES ($1::uuid, $2, $3, $4, $5, $6)
   ON CONFLICT (issuer, subject) DO UPDATE
-    SET email = EXCLUDED.email, email_verified = EXCLUDED.email_verified,
-        display_name = EXCLUDED.display_name, last_seen_at = now()
+    SET email = COALESCE(EXCLUDED.email, l.email),
+        email_verified = CASE WHEN EXCLUDED.email IS NULL THEN l.email_verified ELSE EXCLUDED.email_verified END,
+        display_name = COALESCE(EXCLUDED.display_name, l.display_name), last_seen_at = now()
   RETURNING l.account_id
 ), created AS (
   INSERT INTO accounts (id) SELECT account_id FROM link WHERE account_id = $1::uuid RETURNING id

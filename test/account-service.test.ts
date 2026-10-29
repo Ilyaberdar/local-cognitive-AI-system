@@ -19,10 +19,10 @@ const memoryVault = () => {
 async function fakeServers(t: TestContext) {
   const state = {
     tokenCalls: [] as URLSearchParams[], revoked: [] as string[], meStatus: 200, refreshStatus: 200, refreshError: "", revokeStatus: 200,
-    rotation: 1, nonce: "", emailVerified: true, holdRefresh: undefined as Promise<void> | undefined
+    rotation: 1, nonce: "", emailVerified: true, holdRefresh: undefined as Promise<void> | undefined, subject: "auth0|user"
   };
   let issuer = "";
-  const idToken = (sub = "auth0|user") => `${encode({ alg: "RS256" })}.${encode({ iss: issuer, aud: "client-1", sub, exp: Math.floor(Date.now() / 1000) + 600,
+  const idToken = (sub = state.subject) => `${encode({ alg: "RS256" })}.${encode({ iss: issuer, aud: "client-1", sub, exp: Math.floor(Date.now() / 1000) + 600,
     iat: Math.floor(Date.now() / 1000), nonce: state.nonce, email: "mira@example.test", name: "Mira" })}.signature`;
   const server = http.createServer(async (request, response) => {
     let body = "";
@@ -85,7 +85,7 @@ test("sign-in stores only a refresh token, returns a safe status and survives a 
   assert.equal(exchange.get("redirect_uri"), new URL(f.opened[0]!).searchParams.get("redirect_uri"));
   assert.ok(exchange.get("code_verifier"));
   const status = f.service.status();
-  assert.deepEqual(status, { state: "signed-in", cloudReachable: true, profile: { accountId: "acc-1", email: "mira@example.test", emailVerified: true, name: "Mira" } });
+  assert.deepEqual(status, { state: "signed-in", cloudReachable: true, profile: { accountId: "acc-1", email: "mira@example.test", emailVerified: true, name: "Mira", provider: "email" } });
   assert.doesNotMatch(JSON.stringify(status), /access-|refresh-/);
   const stored = f.data.get("account/session")!;
   assert.match(stored, /refresh-0/);
@@ -99,6 +99,25 @@ test("sign-in stores only a refresh token, returns a safe status and survives a 
   assert.match(f.data.get("account/session")!, /refresh-1/, "the rotated refresh token is persisted");
   await restarted.refreshNow();
   assert.equal(f.state.tokenCalls.at(-1)!.get("refresh_token"), "refresh-1");
+});
+
+test("Sign in with Apple starts only where the build offers it, and the profile says how the session signed in", async t => {
+  const off = await setup(t);
+  assert.deepEqual(off.service.methods(), ["google", "email", "signup"]);
+  assert.deepEqual(await off.service.signIn("apple"), { state: "signed-out" });
+  assert.equal(off.opened.length, 0, "no browser for a method this build does not offer");
+
+  const servers = await fakeServers(t), storage = memoryVault(), opened: string[] = [];
+  servers.state.subject = "apple|001234.abcdef";
+  const service = new AccountService({ config: { ...servers.config, methods: ["google", "apple", "email", "signup"] }, vault: storage.vault,
+    openExternal: async url => { opened.push(url); servers.state.nonce = new URL(url).searchParams.get("nonce") ?? ""; } });
+  t.after(() => service.dispose());
+  assert.deepEqual(await service.signIn("apple"), { state: "signing-in" });
+  assert.equal(new URL(opened[0]!).searchParams.get("connection"), "apple");
+  assert.equal((await browserReturn(opened[0]!, { code: "code-1" })).status, 200);
+  const status = service.status();
+  assert.equal(status.state === "signed-in" && status.profile.provider, "apple");
+  assert.doesNotMatch(storage.data.get("account/session")!, /"provider"/, "derived from the subject, never stored: earlier versions read the record strictly");
 });
 
 test("callback requests with a wrong state, method or path are rejected without consuming the attempt", async t => {

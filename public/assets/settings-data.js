@@ -49,13 +49,18 @@ export function localProfileView(settings) {
 }
 
 const accountStates = ['signed-out', 'signing-in', 'signed-in', 'error'];
+// Every way to sign in the page knows, in the order it shows them; the desktop says which it offers.
+const signInMethods = ['google', 'apple', 'email', 'signup'];
+const defaultSignInMethods = ['google', 'email', 'signup'];
+const accountProviders = ['google', 'apple', 'email'];
 const accountText = (value, max) => typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined;
 
 // Allowlist only: tokens or any other bridge fields can never reach markup.
 export function accountView(status) {
   const raw = status?.profile && typeof status.profile === 'object' ? status.profile : undefined;
   const accountId = accountText(raw?.accountId, 200);
-  const profile = accountId ? { accountId, email: accountText(raw.email, 320), emailVerified: raw.emailVerified === true, name: accountText(raw.name, 120) } : undefined;
+  const profile = accountId ? { accountId, email: accountText(raw.email, 320), emailVerified: raw.emailVerified === true, name: accountText(raw.name, 120),
+    provider: accountProviders.includes(raw.provider) ? raw.provider : undefined } : undefined;
   let state = accountStates.includes(status?.state) ? status.state : 'error';
   if (state === 'signed-in' && !profile) state = 'error';
   const error = state === 'error'
@@ -67,15 +72,24 @@ export function accountView(status) {
 // Account state for the renderer. Change events from the desktop bridge are the source
 // of truth; a call result older than a later event is ignored.
 export function createAccountState(bridge) {
-  let view = { state: bridge ? 'loading' : 'unavailable', cloudReachable: true };
+  let methods = defaultSignInMethods;
+  let view = { state: bridge ? 'loading' : 'unavailable', cloudReachable: true, methods };
   let generation = 0;
   const listeners = new Set();
-  const publish = status => { view = accountView(status); listeners.forEach(listener => listener(view)); return view; };
+  const notify = () => { listeners.forEach(listener => listener(view)); return view; };
+  const publish = status => { view = { ...accountView(status), methods }; return notify(); };
   const failed = () => ({ state: 'error', error: { code: 'bridge_error', message: 'Sign-in could not start. Try again.' } });
   if (bridge) {
     bridge.onChange?.(status => { generation++; publish(status); });
     const start = generation;
     bridge.status().then(status => { if (generation === start) publish(status); }, () => { if (generation === start) publish(failed()); });
+    // An older desktop without the list offers the default three.
+    bridge.methods?.().then(list => {
+      if (!Array.isArray(list)) return;
+      methods = signInMethods.filter(method => list.includes(method));
+      view = { ...view, methods };
+      notify();
+    }, () => {});
   }
   async function call(method, ...args) {
     if (!bridge) return view;
@@ -86,7 +100,7 @@ export function createAccountState(bridge) {
   return {
     get: () => view,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    signIn: method => ['google', 'email', 'signup'].includes(method) ? call('signIn', method) : Promise.resolve(view),
+    signIn: method => methods.includes(method) ? call('signIn', method) : Promise.resolve(view),
     cancelSignIn: () => call('cancelSignIn'),
     signOut: () => call('signOut'),
     refresh: () => call('status')

@@ -8,6 +8,13 @@ import { mountReportBugPage } from './report-bug.js';
 import { openAvatarCropper } from './avatar-crop.js';
 import { SHORTCUT_ACTIONS, checkShortcut, effectiveShortcuts, isMacPlatform, ownShortcuts, shortcutCaps, shortcutFromEvent, shortcutSpoken, shortcutText } from './shortcuts.js';
 
+// The providers' own marks, as their sign-in button guidelines ask (the Apple logo; Google's four-colour G).
+const signInMarks = {
+  apple: '<svg class="account-provider-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>',
+  google: '<svg class="account-provider-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24Z"/><path fill="#FBBC05" d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09Z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96Z"/></svg>'
+};
+const signInNames = { apple: 'Apple', google: 'Google', email: 'Email and password' };
+
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
   ['AI System', [['providers', 'Models & Providers', 'models'], ['runtime', 'Local Runtime', 'models'], ['agents', 'Agents', 'workflow'], ['memory', 'Memory', 'folder']]],
@@ -354,28 +361,35 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (view.state === 'unavailable') return 'Available in the desktop app';
     return view.state === 'signed-in' ? view.profile?.email || 'Signed in' : 'Sign in to use Remote';
   }
-  function accountButtons(disabled) {
+  // Apple and Google as equals (Apple's guidelines ask for no less prominence), then email and sign-up.
+  function accountButtons(disabled, methods = ['google', 'email', 'signup']) {
     const attr = disabled ? ' disabled' : '';
-    return `<div class="account-actions"><button type="button" class="primary-button" data-account-action="google"${attr}>Continue with Google</button><button type="button" class="ghost-button" data-account-action="email"${attr}>Continue with email</button><button type="button" class="ghost-button" data-account-action="signup"${attr}>Create account</button></div>`;
+    const provider = name => methods.includes(name) ? `<button type="button" class="account-provider-button" data-account-action="${name}"${attr}>${signInMarks[name]}<span>Continue with ${signInNames[name]}</span></button>` : '';
+    const plain = (name, label) => methods.includes(name) ? `<button type="button" class="ghost-button" data-account-action="${name}"${attr}>${label}</button>` : '';
+    return `<div class="account-actions account-providers">${provider('apple')}${provider('google')}</div><div class="account-actions">${plain('email', 'Continue with email')}${plain('signup', 'Create account')}</div>`;
   }
   function accountPanel() {
     const view = account.get(), busy = Boolean(accountPending);
     if (view.state === 'unavailable') return note('Sign-in is available in the desktop app', 'Open the Local Cognitive desktop app to sign in. Local features work without an account.');
     if (view.state === 'loading') return '<p class="settings-description" role="status">Checking your account…</p>';
     if (view.state === 'signing-in') return `<div class="account-card" role="status"><div><h2>Waiting for your browser…</h2><p>Finish signing in in the browser window that opened, then return here. This page updates automatically.</p></div><div class="account-actions"><button type="button" class="ghost-button" data-account-action="cancel">Cancel</button></div></div>`;
-    const signIn = `<div class="account-card"><div><h2>Sign in to Local Cognitive</h2><p>An account is needed only for Remote — controlling Local Cognitive on another computer you own. Chats, models, plugins and everything on this device work without signing in.</p></div>${accountButtons(busy)}<p class="settings-footnote">Sign-in opens in your web browser; your password is never entered in this app. Signing in doesn't change your local profile, chats or plugin connections.</p></div>`;
+    const signIn = `<div class="account-card"><div><h2>Sign in to Local Cognitive</h2><p>An account is needed only for Remote — controlling Local Cognitive on another computer you own. Chats, models, plugins and everything on this device work without signing in.</p></div>${accountButtons(busy, view.methods)}<p class="settings-footnote">Sign-in opens in your web browser; your password is never entered in this app. Signing in doesn't change your local profile, chats or plugin connections.</p></div>`;
     if (view.state === 'error') return `<div class="settings-test-result is-error" role="alert"><div class="settings-test-heading">${icon('shieldAlert')}<strong>Sign-in didn't complete</strong></div><p>${escape(view.error?.message)}</p></div>${signIn}`;
     if (view.state !== 'signed-in') return signIn;
     const user = view.profile, title = user.name || user.email || 'Signed in', initial = (Array.from(title)[0] || '?').toUpperCase();
     const disabled = busy ? ' disabled' : '';
     const offline = view.cloudReachable ? '' : `<p class="account-offline" role="status">${icon('info')}<span>Can't reach Local Cognitive Cloud. You're still signed in on this device; Remote needs a connection. Local features are unaffected.</span></p>`;
     const verified = user.emailVerified ? '<span class="account-badge is-verified">Verified</span>' : '<span class="account-badge is-unverified">Not verified</span>';
-    const emailRow = user.email ? `<div class="settings-row"><div><label>Email</label>${user.emailVerified ? '' : '<p>Confirm your email to use Remote, then choose Check again.</p>'}</div><div class="settings-control"><span>${escape(user.email)}</span>${verified}</div></div>` : '';
+    // Hide My Email: Apple forwards mail from a relay address the person may not recognise.
+    const relay = /@privaterelay\.appleid\.com$/i.test(user.email || '');
+    const emailNote = !user.emailVerified ? 'Confirm your email to use Remote, then choose Check again.' : relay ? 'A private address from Apple’s Hide My Email; Apple forwards mail sent to it to you.' : '';
+    const emailRow = user.email ? `<div class="settings-row"><div><label>Email</label>${emailNote ? `<p>${emailNote}</p>` : ''}</div><div class="settings-control"><span>${escape(user.email)}</span>${verified}</div></div>` : '';
+    const method = signInNames[user.provider] ? `<div class="settings-row"><div><label>Sign-in method</label><p>Each method is its own account: sign in the same way on your other computers.</p></div><div class="settings-control"><span data-account-provider>${signInNames[user.provider]}</span></div></div>` : '';
     const copy = navigator.clipboard?.writeText ? `<button type="button" class="ghost-button" data-account-action="copy-id"${disabled}>Copy</button>` : '';
     // R3/R5: the Remote hosts and devices link attaches after the identity rows.
     // The picture chosen in Profile, else the name's first letter.
     const picture = localProfileView(clientSettings()).avatarDataUrl;
-    return `${offline}<div class="account-identity"><span class="local-avatar account-avatar">${picture ? `<img src="${escape(picture)}" alt="" />` : escape(initial)}</span><span><strong>${escape(title)}</strong>${user.email && user.name ? `<small>${escape(user.email)}</small>` : ''}</span></div><div class="settings-rows">${emailRow}<div class="settings-row"><div><label>Account ID</label><p>Identifies this account to Local Cognitive Cloud.</p></div><div class="settings-control account-id-control"><code class="account-id">${escape(user.accountId)}</code>${copy}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-account-status>${escape(accountNotice || "Signing out doesn't remove local chats, models or plugin connections.")}</span><div class="settings-form-actions">${!user.emailVerified || !view.cloudReachable ? `<button type="button" class="ghost-button" data-account-action="refresh"${disabled}>Check again</button>` : ''}<button type="button" class="ghost-button" data-account-action="sign-out"${disabled}>Sign out</button></div></div>`;
+    return `${offline}<div class="account-identity"><span class="local-avatar account-avatar">${picture ? `<img src="${escape(picture)}" alt="" />` : escape(initial)}</span><span><strong>${escape(title)}</strong>${user.email && user.name ? `<small>${escape(user.email)}</small>` : ''}</span></div><div class="settings-rows">${emailRow}${method}<div class="settings-row"><div><label>Account ID</label><p>Identifies this account to Local Cognitive Cloud.</p></div><div class="settings-control account-id-control"><code class="account-id">${escape(user.accountId)}</code>${copy}</div></div></div><div class="settings-form-footer"><span role="status" aria-live="polite" class="settings-save-status" data-account-status>${escape(accountNotice || "Signing out doesn't remove local chats, models or plugin connections.")}</span><div class="settings-form-actions">${!user.emailVerified || !view.cloudReachable ? `<button type="button" class="ghost-button" data-account-action="refresh"${disabled}>Check again</button>` : ''}<button type="button" class="ghost-button" data-account-action="sign-out"${disabled}>Sign out</button></div></div>`;
   }
   function updateAccountPage() {
     const container = root.querySelector('[data-account-page]');
@@ -395,7 +409,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     accountPending = action; accountNotice = undefined;
     updateAccountPage();
     try {
-      if (['google', 'email', 'signup'].includes(action)) await account.signIn(action);
+      if (['google', 'apple', 'email', 'signup'].includes(action)) await account.signIn(action);
       else if (action === 'cancel') await account.cancelSignIn();
       else if (action === 'sign-out') await account.signOut();
       else if (action === 'refresh') await account.refresh();

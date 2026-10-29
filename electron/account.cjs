@@ -21,7 +21,9 @@ function registerAccount({ app, ipcMain, shell, vault, assertSender, getWindow, 
   // Handlers resolve with an AccountStatus; they throw only for an unknown sender.
   const handle = (name, action) => ipcMain.handle(`account:${name}`, (event, ...args) => { assertSender(event); return action(...args); });
   handle("status", () => service.refreshStatus());
-  handle("sign-in", method => ["google", "email", "signup"].includes(method) ? service.signIn(method) : service.status());
+  // The ways this build offers, for the buttons; sign-in refuses any other.
+  handle("methods", () => [...service.methods()]);
+  handle("sign-in", method => service.methods().includes(method) ? service.signIn(method) : service.status());
   handle("cancel-sign-in", () => service.cancelSignIn());
   handle("sign-out", () => service.signOut());
   return {

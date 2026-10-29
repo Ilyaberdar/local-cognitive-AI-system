@@ -62,6 +62,23 @@ test('account view passes only allowlisted profile fields and normalises invalid
   assert.equal(context.accountView({ state: 'hacked' }).state, 'error');
   assert.equal(context.accountView({ state: 'error', error: { message: 'x'.repeat(400) } }).error.message.length, 300);
   assert.equal(context.accountView({ state: 'signed-in', cloudReachable: false, profile: { accountId: 'a' } }).cloudReachable, false);
+  assert.equal(context.accountView({ state: 'signed-in', profile: { accountId: 'a', provider: 'apple' } }).profile.provider, 'apple');
+  assert.equal(context.accountView({ state: 'signed-in', profile: { accountId: 'a', provider: '<b>x</b>' } }).profile.provider, undefined);
+});
+
+test('account state takes the sign-in methods the desktop offers and refuses others', async () => {
+  const context: any = {};
+  vm.runInNewContext(source, context);
+  const calls: string[] = [];
+  const bridge = { status: async () => ({ state: 'signed-out' }), methods: async () => ['apple', 'google', 'evil'],
+    signIn: async (method: string) => { calls.push(method); return { state: 'signing-in' }; }, onChange: () => {} };
+  const account = context.createAccountState(bridge);
+  assert.deepEqual(plain(account.get().methods), ['google', 'email', 'signup'], 'the default three until the desktop answers');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(plain(account.get().methods), ['google', 'apple']);
+  await account.signIn('email');
+  await account.signIn('apple');
+  assert.deepEqual(calls, ['apple']);
 });
 
 test('account state follows bridge events and ignores stale call results', async () => {

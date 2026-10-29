@@ -9,7 +9,12 @@ export const memoryAccounts = () => {
   const repository: AccountRepository = {
     async upsertIdentity(input) {
       const key = `${input.issuer}\n${input.subject}`, existing = links.get(key);
-      if (existing) { links.set(key, { ...existing, ...input }); return { accountId: existing.accountId, created: false }; }
+      if (existing) {
+        // As the SQL upsert: a token without an email keeps the identity's email, verification and name.
+        links.set(key, { ...existing, email: input.email ?? existing.email, emailVerified: input.email === null ? existing.emailVerified : input.emailVerified,
+          displayName: input.displayName ?? existing.displayName });
+        return { accountId: existing.accountId, created: false };
+      }
       const accountId = randomUUID();
       accounts.set(accountId, { status: "active", createdAt: new Date() });
       links.set(key, { ...input, accountId, linkedAt: new Date() });

@@ -32,6 +32,18 @@ test("authorize URLs carry PKCE, nonce, audience and per-method hints", () => {
     state: "s", nonce: "n", code_challenge: "c", code_challenge_method: "S256", prompt: "login", connection: "google-oauth2" })) assert.equal(google.searchParams.get(name), value);
   assert.equal(new URL(buildAuthorizeUrl(config, { ...base, method: "signup" })).searchParams.get("screen_hint"), "signup");
   assert.equal(new URL(buildAuthorizeUrl(config, { ...base, method: "email" })).searchParams.has("connection"), false);
+  const apple = new URL(buildAuthorizeUrl(config, { ...base, method: "apple" }));
+  assert.equal(apple.searchParams.get("connection"), "apple", "Sign in with Apple goes straight to Auth0's Apple connection");
+  assert.equal(apple.searchParams.get("prompt"), "login");
+  assert.equal(apple.searchParams.get("code_challenge_method"), "S256");
+});
+
+test("Sign in with Apple is offered only once the build turns it on; a development run may try it", () => {
+  assert.deepEqual(resolveAccountConfig({ env: {}, packaged: true }).methods, ["google", "email", "signup"]);
+  assert.deepEqual(resolveAccountConfig({ env: {}, packaged: false }).methods, ["google", "email", "signup"]);
+  assert.deepEqual(resolveAccountConfig({ env: { LOCAL_COGNITIVE_AUTH0_APPLE: "1" }, packaged: false }).methods, ["google", "apple", "email", "signup"]);
+  assert.deepEqual(resolveAccountConfig({ env: { LOCAL_COGNITIVE_AUTH0_APPLE: "1" }, packaged: true }).methods, ["google", "email", "signup"],
+    "a packaged build ignores the override");
 });
 
 test("ID token claims are validated without accepting tampering", () => {

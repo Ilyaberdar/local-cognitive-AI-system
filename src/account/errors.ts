@@ -26,7 +26,9 @@ export class AccountError extends Error {
   constructor(readonly code: AccountErrorCode) { super(messages[code]); this.name = "AccountError"; }
 }
 
-export interface AccountProfile { accountId: string; email?: string; name?: string; emailVerified: boolean }
+/** How the session signed in, from its subject (google-oauth2|…, apple|…, auth0|…). */
+export type AccountProvider = "google" | "apple" | "email" | "other";
+export interface AccountProfile { accountId: string; email?: string; name?: string; emailVerified: boolean; provider: AccountProvider }
 
 /** The only account data the renderer receives; never tokens. */
 export type AccountStatus =

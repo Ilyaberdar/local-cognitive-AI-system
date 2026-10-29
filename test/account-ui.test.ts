@@ -69,6 +69,41 @@ test("signed-out account offers Google, email and sign-up; cancel returns to sig
   assert.deepEqual(fake.calls.at(-1), ["cancelSignIn"]);
 });
 
+test("Sign in with Apple shows beside Google, with both marks, only when the desktop offers it", async t => {
+  const offered = fakeBridge({ state: "signed-out" });
+  (offered.bridge as Record<string, unknown>).methods = async () => ["google", "apple", "email", "signup", "unknown"];
+  const ui = mount(offered.bridge); t.after(ui.close);
+  ui.shell.route("#/settings/account");
+  await until(() => Boolean(ui.page()?.querySelector('[data-account-action="apple"]')), "Apple button");
+  const buttons = [...ui.page().querySelectorAll("[data-account-action]")].map((button: any) => button.dataset.accountAction);
+  assert.deepEqual(buttons, ["apple", "google", "email", "signup"]);
+  const apple = ui.page().querySelector('[data-account-action="apple"]');
+  assert.equal(apple.textContent, "Continue with Apple");
+  assert.ok(apple.querySelector("svg.account-provider-mark"), "the Apple logo, as Apple's button guidelines ask");
+  assert.equal(apple.className, ui.page().querySelector('[data-account-action="google"]').className, "Apple is as prominent as Google");
+  ui.click("apple");
+  await until(() => /Waiting for your browser/.test(ui.page().textContent), "waiting view");
+  assert.deepEqual(offered.calls.at(-1), ["signIn", "apple"]);
+
+  const older = fakeBridge({ state: "signed-out" });
+  const plain = mount(older.bridge); t.after(plain.close);
+  plain.shell.route("#/settings/account");
+  await until(() => Boolean(plain.page()?.querySelector('[data-account-action="google"]')), "sign-in buttons");
+  assert.equal(plain.page().querySelector('[data-account-action="apple"]'), null, "a desktop without the list offers no Apple button");
+});
+
+test("a session signed in with Apple says so and explains a Hide My Email address", async t => {
+  const fake = fakeBridge(signedIn({ email: "x7k2@privaterelay.appleid.com", name: undefined, provider: "apple" }));
+  const ui = mount(fake.bridge); t.after(ui.close);
+  ui.shell.route("#/settings/account");
+  await until(() => Boolean(ui.page()?.querySelector("[data-account-provider]")), "sign-in method row");
+  assert.equal(ui.page().querySelector("[data-account-provider]").textContent, "Apple");
+  assert.match(ui.page().textContent, /Hide My Email/);
+  fake.emit(signedIn({ provider: "made-up" }));
+  await until(() => !ui.page().querySelector("[data-account-provider]"), "unknown provider shows no row");
+  assert.doesNotMatch(ui.page().textContent, /made-up|Hide My Email/);
+});
+
 test("signed-in account escapes profile fields, never renders token fields, and signs out", async t => {
   const fake = fakeBridge(signedIn({ name: '<img src=x onerror="alert(1)">', email: 'a"<b>@x.test', emailVerified: false }));
   const ui = mount(fake.bridge); t.after(ui.close);

@@ -3,15 +3,21 @@ import type { ServerResponse } from "http";
 import { z } from "zod";
 import type { CredentialVault } from "../plugins/contracts";
 import { sendAuthPage } from "../security/AuthCompletionPage";
-import type { AccountConfig } from "./accountConfig";
+import { DEFAULT_SIGN_IN_METHODS, type AccountConfig } from "./accountConfig";
 import { openLoopback, LoopbackServer } from "./AuthCallbackServer";
-import { AccountError, AccountProfile, AccountStatus, errorStatus } from "./errors";
+import { AccountError, AccountProfile, AccountProvider, AccountStatus, errorStatus } from "./errors";
 import {
   buildAuthorizeUrl, FetchLike, IdTokenClaims, pkcePair, randomToken, revokeRefreshToken, safeEqual, SignInMethod,
   TokenEndpointError, TokenResponse, tokenRequest, validateIdToken
 } from "./oidc";
 
 const SESSION_KEY = "account/session";
+// Same prefixes as the Cloud's providerFromSubject; derived, never stored, so the record stays
+// readable by earlier versions (their schema is strict).
+const providerOf = (subject: string): AccountProvider => {
+  const prefix = subject.slice(0, Math.max(0, subject.indexOf("|")));
+  return prefix === "google-oauth2" ? "google" : prefix === "apple" ? "apple" : prefix === "auth0" ? "email" : "other";
+};
 const profileSchema = z.object({ name: z.string().optional(), email: z.string().optional(), emailVerified: z.boolean() }).strict();
 const recordSchema = z.object({
   v: z.literal(1), issuer: z.string(), clientId: z.string(), audience: z.string(), subject: z.string().min(1),
@@ -95,8 +101,11 @@ export class AccountService extends EventEmitter {
     void this.refreshNow();
   }
 
+  /** The ways to sign in this build offers (Apple only once its connection is set up). */
+  methods(): readonly SignInMethod[] { return this.options.config.methods ?? DEFAULT_SIGN_IN_METHODS; }
+
   async signIn(method: SignInMethod): Promise<AccountStatus> {
-    if (this.record) return this.status();
+    if (this.record || !this.methods().includes(method)) return this.status();
     if (this.attempt) this.finishAttempt(this.attempt);
     if (!this.options.vault.available()) return this.fail("storage_unavailable");
     if (!this.options.config.cloudUrl) return this.fail("not_configured");
@@ -165,7 +174,7 @@ export class AccountService extends EventEmitter {
   }
 
   private profile(record: SessionRecord): AccountProfile {
-    return { accountId: record.accountId, ...record.profile };
+    return { accountId: record.accountId, ...record.profile, provider: providerOf(record.subject) };
   }
 
   private fail(code: Parameters<typeof errorStatus>[0]): AccountStatus {

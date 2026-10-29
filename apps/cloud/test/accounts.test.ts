@@ -25,6 +25,20 @@ test("identities map to one account, are updated in place and never merged by em
   assert.notEqual(otherIssuer.accountId, first.accountId);
 });
 
+test("a later token without an email keeps the identity's email, verification and name", { skip: databaseSkip }, async (t) => {
+  const pool = await createTestDatabase(t);
+  await migrate(pool, MIGRATIONS_DIR);
+  const accounts = createAccountRepository(pool);
+  const relay = "x7k2@privaterelay.appleid.com";
+  const { accountId } = await accounts.upsertIdentity({ ...identity("apple|1", relay), displayName: "Mira" });
+  await accounts.upsertIdentity({ issuer: "https://tenant/", subject: "apple|1", email: null, emailVerified: false, displayName: null });
+  let current = (await accounts.loadAccount(accountId, "https://tenant/", "apple|1"))?.identities[0];
+  assert.deepEqual([current?.email, current?.emailVerified, current?.displayName], [relay, true, "Mira"]);
+  await accounts.upsertIdentity({ issuer: "https://tenant/", subject: "apple|1", email: "mira@example.com", emailVerified: false, displayName: null });
+  current = (await accounts.loadAccount(accountId, "https://tenant/", "apple|1"))?.identities[0];
+  assert.deepEqual([current?.email, current?.emailVerified, current?.displayName], ["mira@example.com", false, "Mira"]);
+});
+
 test("parallel first logins create exactly one account", { skip: databaseSkip }, async (t) => {
   const pool = await createTestDatabase(t);
   await migrate(pool, MIGRATIONS_DIR);

@@ -36,6 +36,21 @@ test("first login creates one account; later logins return it with fresh profile
   assert.equal(second.body.displayName, "Mira");
 });
 
+test("a Sign in with Apple identity keeps its relay email and verification when a later token carries no email", async () => {
+  const store = memoryAccounts(), relay = "x7k2@privaterelay.appleid.com";
+  const first = await me(store.repository, await token("apple|001234.abc", { [`${ns}email`]: relay, [`${ns}email_verified`]: true, [`${ns}name`]: "Mira" }));
+  assert.deepEqual([first.status, first.body.email, first.body.emailVerified, first.body.displayName], [200, relay, true, "Mira"]);
+  assert.deepEqual(first.body.identities.map((identity: { provider: string }) => identity.provider), ["apple"]);
+  const later = await me(store.repository, await token("apple|001234.abc"));
+  assert.deepEqual([later.body.accountId, later.body.email, later.body.emailVerified, later.body.displayName], [first.body.accountId, relay, true, "Mira"],
+    "Apple sends the name once; a token without an email says nothing new about the identity");
+  const changed = await me(store.repository, await token("apple|001234.abc", { [`${ns}email`]: "mira@example.test", [`${ns}email_verified`]: false }));
+  assert.deepEqual([changed.body.email, changed.body.emailVerified, changed.body.displayName], ["mira@example.test", false, "Mira"],
+    "a token with an email replaces it, unverified too");
+  const google = await me(store.repository, await token("google-oauth2|9", { [`${ns}email`]: "mira@example.test", [`${ns}email_verified`]: true }));
+  assert.notEqual(google.body.accountId, first.body.accountId, "never merged by email");
+});
+
 test("missing claims, machine tokens, disabled accounts and storage failures", async () => {
   const store = memoryAccounts();
   const missing = await me(store.repository, await token("google-oauth2|2"));
