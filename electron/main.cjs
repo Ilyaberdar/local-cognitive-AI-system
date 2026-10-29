@@ -17,7 +17,7 @@ if (devVault) app.commandLine.appendSwitch("use-mock-keychain");
 // Windows: the app's data (models of tens of GB, the CUDA runtime) belongs in the local profile, not
 // the roaming one that a company network copies at sign-in. Set before anything reads it.
 if (process.platform === "win32" && process.env.LOCALAPPDATA && !process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.join(process.env.LOCALAPPDATA, app.getName()));
-// First: the native crash handler starts before the app is ready (reports only with consent).
+// First: with consent to error reports, the native crash handler starts before the app is ready.
 const sentry = require("./sentry.cjs").startSentry();
 
 let mainWindow;
@@ -26,6 +26,10 @@ let voiceInput;
 let shutdownComplete = false;
 let applicationDataRoot;
 let applicationOrigin;
+// The window shows the app's own page (until then it shows the starting page).
+let applicationShown = false;
+// Windows: the sandbox helper's upkeep at launch, run once the app is shown.
+let prepareSandbox;
 if (process.env.LOCAL_COGNITIVE_TEST_DATA_DIR) app.setPath("userData", path.resolve(process.env.LOCAL_COGNITIVE_TEST_DATA_DIR));
 const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) app.quit();
@@ -37,7 +41,7 @@ if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? require
 const pendingDeepLinks = [];
 // Deep links can arrive before the window and account service exist (cold start on macOS).
 const deliverDeepLink = raw => {
-  if (account && mainWindow) account.handleDeepLink(raw);
+  if (account && mainWindow && applicationShown) account.handleDeepLink(raw);
   else if (pendingDeepLinks.length < 4) pendingDeepLinks.push(raw);
 };
 if (hasInstanceLock) {
@@ -107,9 +111,13 @@ const configureRuntimeEnvironment = async () => {
       // a second instance beside the user's app — a test, a capture or a dev window, each with its own
       // data dir and single-instance lock — keeps its live runs, though the AppContainer registry is
       // shared per user.
-      const run = (args) => { try { require("child_process").execFileSync(helper, args, { stdio: "ignore", timeout: 30000 }); } catch (error) { console.error(`lc-sandbox ${args[0]} failed:`, error && error.message); } };
-      run(["clean-stale"]);
-      run(["grant-tools", sandboxDir]);
+      // Both run after the window shows the app, one after the other and off the main thread: they kept
+      // the window from opening (each may take up to 30 s), and the installer has granted the tools already.
+      const run = args => new Promise(resolve => require("child_process").execFile(helper, args, { timeout: 30000, windowsHide: true }, error => {
+        if (error) console.error(`lc-sandbox ${args[0]} failed:`, error.message);
+        resolve();
+      }));
+      prepareSandbox = async () => { await run(["clean-stale"]); await run(["grant-tools", sandboxDir]); };
     }
   }
   process.env.APP_DATA_DIR = path.join(dataRoot, "app");
@@ -182,7 +190,19 @@ const startBackend = async (appRoot, vault, apiToken) => {
   return require(entry).startBackend(undefined, { vault, oauthClients, openExternal: url => shell.openExternal(url) }, { runtimeKind: "desktop", usageAccount, apiToken, userDataDir: app.getPath("userData") });
 };
 
-const createWindow = async (url) => {
+// What the window shows while the backend starts: the app's background and one line, nothing that runs.
+// A first launch loads about 1,600 script files, which Windows' Defender scans one by one (seconds).
+const startingPage = () => {
+  const muted = nativeTheme.shouldUseDarkColors ? "#9a9ca3" : "#6b6f78";
+  return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>Local Cognitive</title>
+<style>html,body{margin:0;height:100%;background:transparent;-webkit-app-region:drag;-webkit-user-select:none;cursor:default}
+body{display:flex;align-items:center;justify-content:center;font:13px system-ui,-apple-system,"Segoe UI",sans-serif;color:${muted}}</style>
+</head><body>Starting Local Cognitive…</body></html>`)}`;
+};
+
+// The window opens on the starting page unless the app is already up; showApplication loads the app into it.
+const createWindow = async (url = applicationShown ? applicationOrigin : startingPage()) => {
   const isMac = process.platform === "darwin";
   // A development run is Electron itself, with Electron's Dock icon: it shows the project's instead
   // (a build carries icon.png in its bundle, "icon" in package.json).
@@ -218,6 +238,7 @@ const createWindow = async (url) => {
   });
 
   voiceInput?.attach(mainWindow);
+  const window = mainWindow;
   // Links to the web (a model's answer, a model card) open in the user's browser, never in an app
   // window: such a window would get the app's preload. Nothing else opens a window.
   const openOutside = url => {
@@ -234,22 +255,29 @@ const createWindow = async (url) => {
     if (event.isMainFrame || ["about:blank", "about:srcdoc"].includes(event.url)) return;
     event.preventDefault();
   });
-  await mainWindow.loadURL(url);
-  if (isMac) mainWindow.setWindowButtonVisibility(true);
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
+  });
+  await window.loadURL(url);
+  if (window.isDestroyed()) return;
+  if (isMac) window.setWindowButtonVisibility(true);
   if (liquidGlass) {
     try {
-      const glassId = liquidGlass.addView(mainWindow.getNativeWindowHandle(), { cornerRadius: 14, opaque: false });
+      const glassId = liquidGlass.addView(window.getNativeWindowHandle(), { cornerRadius: 14, opaque: false });
       if (glassId < 0) throw new Error("Native material unavailable");
       console.info("[appearance] Native Liquid Glass active");
     } catch {
-      mainWindow.setVibrancy("sidebar");
+      window.setVibrancy("sidebar");
     }
   }
-  mainWindow.show();
+  window.show();
+};
 
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
+// The app's page replaces the starting page in the same window (one closed meanwhile is opened again).
+const showApplication = async url => {
+  if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(url);
+  else await createWindow(url);
+  applicationShown = true;
 };
 
 ipcMain.on("appearance:set-theme", (event, theme) => {
@@ -276,6 +304,8 @@ ipcMain.on("appearance:title-bar", (event, colors) => {
 nativeTheme.on("updated", applyTitleBarColors);
 
 if (hasInstanceLock) app.whenReady().then(async () => {
+  // The window first: the backend's start can take seconds, and nothing was on screen meanwhile.
+  const starting = createWindow().catch(error => console.error("The starting window failed:", error));
   try {
     const runtime = await configureRuntimeEnvironment();
     applicationDataRoot = runtime.dataRoot;
@@ -290,6 +320,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       getWindow: () => mainWindow, origin: runtime.url,
       root: path.join(runtime.dataRoot, "speech"),
       runtimeDir: path.join(runtime.resourceRoot, "speech", `${process.platform}-${process.arch}`) });
+    if (mainWindow) voiceInput.attach(mainWindow);
     // This launch's key for the backend's API, in memory only: the window's requests to the app's
     // origin get it from the network layer (api-auth.cjs), before the first one is made.
     const apiToken = apiAuth.createApiToken();
@@ -311,8 +342,10 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     app.on("child-process-gone", (_event, details) => crashed(details.type === "GPU" ? "gpu" : details.type === "Utility" ? "utility" : "other", details));
     // /health is the one address that needs no key.
     await waitForServer(`${runtime.url}/health`);
-    await createWindow(runtime.url);
+    await starting;
+    await showApplication(runtime.url);
     updates.start();
+    void prepareSandbox?.();
     const { isDeepLinkArgument } = require("./account.cjs");
     for (const link of [...pendingDeepLinks.splice(0), ...process.argv.filter(isDeepLinkArgument)]) account.handleDeepLink(link);
   } catch (error) {
@@ -323,11 +356,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
 });
 
 app.on("activate", () => {
-  if (!mainWindow && !shutdownPromise) {
-    const host = process.env.HOST ?? "127.0.0.1";
-    const port = process.env.PORT ?? "3000";
-    void createWindow(`http://${host}:${port}`);
-  }
+  if (!mainWindow && !shutdownPromise) void createWindow();
 });
 
 app.on("window-all-closed", () => {

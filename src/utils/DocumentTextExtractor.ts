@@ -1,5 +1,4 @@
 import { Worker, isMainThread, parentPort, workerData } from "worker_threads";
-import mammoth from "mammoth";
 import { inflateRawSync } from "zlib";
 
 export interface ExtractedDocument { textContent: string; truncated: boolean; warning?: string }
@@ -94,6 +93,8 @@ async function readDocument(bytes: Buffer, pdf: boolean): Promise<ExtractedDocum
     } finally { await task.destroy(); }
   } else {
     validateDocxArchive(bytes);
+    // Loaded on the first .docx: its 185 files slowed every launch (a first Windows start most).
+    const mammoth = (await import("mammoth")).default;
     text = (await mammoth.extractRawText({ buffer: bytes })).value;
   }
   text = text.trim();

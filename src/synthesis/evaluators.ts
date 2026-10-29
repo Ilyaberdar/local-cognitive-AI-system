@@ -1,5 +1,5 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
-import { getQuickJS, type QuickJSContext, type QuickJSHandle } from "quickjs-emscripten";
+import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 
 // 1.2: every declared file must be present (an implicit hard "artifacts" gate).
 export const evaluatorVersion = "calculator-v1.2";
@@ -276,8 +276,9 @@ export async function evaluateCalculator(files: Record<string, string>, evaluato
     page = evaluatorId === "calculator-arithmetic-v1" ? arithmeticPage(files) : readPage(files);
     if (evaluatorId === "calculator-ui-v1") validateControls(page);
   } catch (error) { return { status: "Fail", message: error instanceof Error ? error.message : String(error) }; }
-  let module: Awaited<ReturnType<typeof getQuickJS>>;
-  try { module = await getQuickJS(); }
+  let module: Awaited<ReturnType<typeof import("quickjs-emscripten").getQuickJS>>;
+  // Loaded on the first calculator check, not with the app.
+  try { module = await (await import("quickjs-emscripten")).getQuickJS(); }
   catch { return { status: "Unknown", message: "The isolated QuickJS evaluator runtime could not be initialized." }; }
   const runtime = module.newRuntime();
   runtime.setMemoryLimit(16 * 1024 * 1024);
