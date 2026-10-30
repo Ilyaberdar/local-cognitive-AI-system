@@ -1,5 +1,5 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
-import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
+import type { QuickJSContext, QuickJSHandle, QuickJSWASMModule } from "quickjs-emscripten";
 
 // 1.2: every declared file must be present (an implicit hard "artifacts" gate).
 export const evaluatorVersion = "calculator-v1.2";
@@ -10,6 +10,11 @@ const MAX_FILE_BYTES = 128 * 1024;
 const MAX_TOTAL_BYTES = 256 * 1024;
 const MAX_ELEMENTS = 400;
 const EXECUTION_MS = 350;
+// QuickJS must stop a deep recursion itself, before Node's own stack runs out under the WebAssembly:
+// that RangeError unwinds QuickJS without its cleanup, and freeing the runtime then aborts. 128 KiB
+// is about 740 guest calls and stays clear of Node's stack with the host 3,000 calls deep (at
+// 512 KiB Node's ran out first on any recursion; at 256 KiB, with the host that deep).
+const STACK_BYTES = 128 * 1024;
 type Element = DefaultTreeAdapterTypes.Element;
 type HtmlNode = DefaultTreeAdapterTypes.Node;
 interface ElementDescription { tag: string; attributes: Record<string, string>; text: string; value: string }
@@ -269,6 +274,18 @@ function evaluateCode(context: QuickJSContext, source: string, filename: string)
   return result.value;
 }
 
+// Loaded on the first calculator check, not with the app, and shared by the checks after it, until the
+// module fails: an error thrown by the VM itself (not by guest code) may leave the module's memory and
+// stack inconsistent, so the next check loads a fresh one.
+let quickjs: Promise<QuickJSWASMModule> | undefined;
+function loadQuickJS(): Promise<QuickJSWASMModule> {
+  if (quickjs) return quickjs;
+  const loading = import("quickjs-emscripten").then(library => library.newQuickJSWASMModule());
+  quickjs = loading;
+  loading.catch(() => { if (quickjs === loading) quickjs = undefined; });
+  return loading;
+}
+
 export async function evaluateCalculator(files: Record<string, string>, evaluatorId: string): Promise<CalculatorEvaluation> {
   if (!supportedEvaluators.has(evaluatorId)) return { status: "Unknown", message: `No trusted evaluator is registered for ${evaluatorId}.` };
   let page: ParsedPage;
@@ -276,17 +293,18 @@ export async function evaluateCalculator(files: Record<string, string>, evaluato
     page = evaluatorId === "calculator-arithmetic-v1" ? arithmeticPage(files) : readPage(files);
     if (evaluatorId === "calculator-ui-v1") validateControls(page);
   } catch (error) { return { status: "Fail", message: error instanceof Error ? error.message : String(error) }; }
-  let module: Awaited<ReturnType<typeof import("quickjs-emscripten").getQuickJS>>;
-  // Loaded on the first calculator check, not with the app.
-  try { module = await (await import("quickjs-emscripten")).getQuickJS(); }
+  const loading = loadQuickJS();
+  let module: QuickJSWASMModule;
+  try { module = await loading; }
   catch { return { status: "Unknown", message: "The isolated QuickJS evaluator runtime could not be initialized." }; }
   const runtime = module.newRuntime();
   runtime.setMemoryLimit(16 * 1024 * 1024);
-  runtime.setMaxStackSize(512 * 1024);
+  runtime.setMaxStackSize(STACK_BYTES);
   const deadline = Date.now() + EXECUTION_MS;
   runtime.setInterruptHandler(() => Date.now() > deadline);
   const context = runtime.newContext();
   const handles: QuickJSHandle[] = [];
+  let failed = false;
   try {
     const harness = evaluateCode(context, harnessSource(page.elements), "trusted-dom-harness.js"); handles.push(harness);
     // Arithmetic evaluates the public function independently of authored HTML/CSS.
@@ -305,9 +323,20 @@ export async function evaluateCalculator(files: Record<string, string>, evaluato
     return { status: "Pass", message };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { status: "Fail", message: Date.now() > deadline || /interrupted/.test(message) ? "Candidate exceeded the isolated evaluator execution budget (350 ms)." : message.slice(0, 1500) };
+    if (!(error instanceof CandidateError)) {
+      failed = true;
+      return { status: "Unknown", message: `The isolated QuickJS evaluator failed while running the candidate: ${message.slice(0, 300)}` };
+    }
+    if (Date.now() > deadline || /interrupted/.test(message)) return { status: "Fail", message: "Candidate exceeded the isolated evaluator execution budget (350 ms)." };
+    // QuickJS's own InternalError at STACK_BYTES; a page's window.calculate is the global calculate.
+    if (message === "stack overflow") return { status: "Fail", message: "calculator.js ran out of stack (InternalError: stack overflow): a function calls itself without end, directly or through another; in a page, window.calculate is the global calculate itself." };
+    return { status: "Fail", message: message.slice(0, 1500) };
   } finally {
-    for (let i = handles.length - 1; i >= 0; i--) handles[i].dispose();
-    context.dispose(); runtime.dispose();
+    // The checks have finished: a failure to free the VM no longer decides the result above.
+    try {
+      for (let i = handles.length - 1; i >= 0; i--) handles[i].dispose();
+      context.dispose(); runtime.dispose();
+    } catch { failed = true; }
+    if (failed && quickjs === loading) quickjs = undefined;
   }
 }

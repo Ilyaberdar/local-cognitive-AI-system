@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Synthesis
+
+- **A calculator that calls itself without end fails its check instead of stopping the run.** Any such recursion (in one study run, a `window.calculate` that called `calculate`, which in a page is itself) ran past the evaluator's stack, its runtime could then not be freed, and the run ended in an error. It now fails with "calculator.js ran out of stack: a function calls itself without end"; an error in the evaluator itself reads Unknown, and the next check starts a fresh evaluator: reusing the failed one broke every check after the 44th such failure, correct calculators included, until the app was restarted.
+
 ## 0.1.11 — 2026-10-29
 
 Synthesis tells a small local model where its code fails and what to change, asks again when the model hands a file back unchanged, keeps the best candidate, type-checks TypeScript before the tests, and gives every run a seed, so Qwen3.5-9B and Nemotron-3-Nano-4B now finish the calculator template in every measured run; the window opens at once instead of after the whole app has started, and Remote tells two computers with one name apart.
