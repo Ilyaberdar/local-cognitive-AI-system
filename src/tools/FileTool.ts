@@ -48,6 +48,8 @@ export class FileTool implements Tool {
   async execute(request: ToolExecutionRequest): Promise<ToolExecutionResult> {
     const workspace=request.context.workspace;
     if(workspace)return new FileTool({...this.options,outputDir:workspace.outputDir,allowedDirectories:workspace.allowedDirectories}).executeScoped(request);
+    // A paired device's turn on a desktop: the output folder only, not the folders allowed in Settings.
+    if(request.context.requestMetadata?.deviceOutputOnly===true)return new FileTool({...this.options,allowedDirectories:[this.options.outputDir]}).executeScoped(request);
     return this.executeScoped(request);
   }
 
@@ -121,7 +123,8 @@ export class FileTool implements Tool {
     const permission = await authorizeOperation(input.context, {
       tool: this.name, operation,
       summary: `${operation[0].toUpperCase()}${operation.slice(1)} ${files.length === 1 ? files[0].path : `${files.length} files`}`,
-      details: files.map((file) => `${file.path}${file.content === undefined ? "" : `\n\n${file.content}`}`).join("\n\n---\n\n")
+      details: files.map((file) => `${file.path}${file.content === undefined ? "" : `\n\n${file.content}`}`).join("\n\n---\n\n"),
+      scope: inWorkspace ? "workspace" : "outside"
     }, inWorkspace && operation !== "delete", readOnly);
     if (permission) return permission;
     input.context.signal?.throwIfAborted();

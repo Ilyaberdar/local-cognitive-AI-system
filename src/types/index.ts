@@ -14,6 +14,9 @@ export interface ApprovalOperation {
   operation: string;
   summary: string;
   details: string;
+  /** Whether what is asked stays inside the run's own folders ("workspace") or reaches past them.
+   * A desktop that hosts devices lets them approve only the first. */
+  scope?: "workspace" | "outside";
 }
 
 export interface PendingApproval extends ApprovalOperation {

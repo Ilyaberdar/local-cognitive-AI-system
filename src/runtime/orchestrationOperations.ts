@@ -148,6 +148,8 @@ export interface OrchestrationOperationDependencies {
    * to a project or folder stays on the host. */
   projects?: ProjectAccess;
   folders?: HostFolders;
+  /** Why a device may not approve a waiting operation, on a host that keeps some approvals to itself. */
+  approvalPolicy?: (operation: Record<string, unknown>) => string | undefined;
   /** True while the host drains: new work is refused; reads, cancels and reviews still answer. */
   isDraining(): boolean;
   /** The event journal's epoch: workflow run streams use it, so their cursors survive restarts. */
@@ -387,7 +389,12 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
             // A waiting external MCP call would run in the host's own applications: only the host
             // approves it (a device may still reject it, which stops the step). Checked under the
             // run's lock, on the operation being approved.
-            beforeApprove: waiting => { if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST); if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST); } }));
+            beforeApprove: waiting => {
+              if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST);
+              if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST);
+              const refusal = deps.approvalPolicy?.(waiting);
+              if (refusal) throw new RemoteOperationError(refusal, "approval_host_only");
+            } }));
       }, { target: input.runId, allowWhileDraining: true });
     }),
     "workflows.runs.resume": (payload, context) => known(async () => {

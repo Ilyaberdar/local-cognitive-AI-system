@@ -84,6 +84,8 @@ export class OperationExecutor {
       }
       const target=String(saved.action.arguments[saved.action.tool==="command.run"?"cwd":"path"]);
       const internal=await isWorkspacePath(target,input.workspace.allowedDirectories);
+      // A command reaches past any folder: never "workspace", whatever its working directory.
+      saved.approval.scope=internal&&saved.action.tool!=="command.run"?"workspace":"outside";
       const readonly=readTool(saved.action.tool);
       const needsApproval=input.requireApproval || (input.accessMode!=="full" && (!internal || saved.action.tool==="file.delete"||saved.action.tool==="command.run"||(input.accessMode==="ask"&&!readonly)));
       if(needsApproval&&saved.status!=="approved") {

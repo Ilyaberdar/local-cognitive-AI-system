@@ -28,15 +28,17 @@ export class WorkspaceResolver {
       taskId: task.id, memoryScope: `task:${task.id}` };
   }
 
-  /** Ordinary chats keep their built-in output folder when plugins enable the tool loop. */
-  async forPluginChat(sessionId: string): Promise<WorkspaceSnapshot> {
+  /** Ordinary chats keep their built-in output folder when plugins enable the tool loop, with the
+   * folders allowed in Settings; a paired device's turn on a desktop (`outputOnly`) has the output
+   * folder alone. */
+  async forPluginChat(sessionId: string, options: { outputOnly?: boolean } = {}): Promise<WorkspaceSnapshot> {
     const id = `chat-${createHash("sha256").update(sessionId).digest("hex")}`;
     let rootPath: string;
     if (this.config.outputDir) {
       await fs.mkdir(this.config.outputDir, { recursive: true }); rootPath = await fs.realpath(this.config.outputDir);
     } else rootPath = (await this.managedWorkspaces.ensure(id)).rootPath;
     return { version: 1, kind: "legacy-chat", rootPath, outputDir: rootPath,
-      allowedDirectories: [...new Set([rootPath, ...(this.config.filesystem?.allowedDirectories ?? [])])], memoryScope: `session:${sessionId}` };
+      allowedDirectories: options.outputOnly ? [rootPath] : [...new Set([rootPath, ...(this.config.filesystem?.allowedDirectories ?? [])])], memoryScope: `session:${sessionId}` };
   }
 
   async forWorkflowRun(runId: string, options: { projectId?: string; rootPath?: string }): Promise<WorkspaceSnapshot> {

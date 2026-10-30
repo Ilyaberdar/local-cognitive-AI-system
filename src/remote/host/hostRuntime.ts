@@ -26,7 +26,9 @@ export type HostKind = "server" | "desktop";
  * event streams, models, usage, diagnostics, tasks and workflows, settings, folders, Synthesis and
  * projects. `dataRoot` is the folder the host's data lives in (the server's data root, the desktop's
  * userData): devices never see it named, and its "projects" folder is the one they manage. */
-export const createHostOperations = (input: { backend: BackendHandle; dataRoot: string; consentFile?: string }): {
+export const createHostOperations = (input: { backend: BackendHandle; dataRoot: string; consentFile?: string;
+  /** On a desktop: what devices may not approve (deviceApprovals.ts), read at every approval. */
+  approvalPolicy?: (operation: Record<string, unknown>) => string | undefined }): {
   operations: Record<string, RemoteOperation>; folders: HostFolders; stop(): void;
 } => {
   const { backend } = input;
@@ -56,14 +58,14 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   sweep.unref();
   const operations: Record<string, RemoteOperation> = {
     ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
-      runService: host.runService, journal: host.journal, scopeOf }),
+      runService: host.runService, journal: host.journal, scopeOf, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}) }),
     ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
       sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
     ...createModelOperations({ runtimeManager: backend.runtimeManager }),
     ...createUsageOperations({ ledger: backend.usage, outbox: backend.usageOutbox, owner }),
     ...createDiagnosticsOperations({ runtimeManager: backend.runtimeManager, diagnosticLog: backend.diagnosticLog, owner, status: () => backend.status(),
       ...(input.consentFile ? { consentFile: input.consentFile } : {}) }),
-    ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders, scopeOf, isDraining }),
+    ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders, scopeOf, isDraining, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}) }),
     ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining }),
     ...createFolderOperations({ folders }),
     ...createSynthesisOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger, projects, hostDirectories: orchestration.hostDirectories, scopeOf, isDraining }),

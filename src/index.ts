@@ -143,7 +143,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     catch (error) { failed(error); await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   } else if (options.runtimeKind === "desktop" && database) {
     // The app works without them; only hosting is unavailable.
-    try { host = openHostServices(database, config, runtimeManager, sessionIndexStore); }
+    try { host = openHostServices(database, config, runtimeManager, sessionIndexStore, true); }
     catch (error) { logger.warn("Remote hosting is unavailable: the host services did not open", { message: error instanceof Error ? error.message : String(error) }); }
   }
 
@@ -278,13 +278,16 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
 
 /** What the engine is told about a paired device's turn: it is a device's (never full access), its
  * attachments, and no plugins of this host (plugins for devices come later; without a selection the
- * engine would offer every enabled plugin, and `@plugin` in the message would choose one). */
-export const deviceRunMetadata = (run: { runId: string; attachments?: ChatAttachment[] }) => ({
-  chatRunId: run.runId, deviceRun: true, pluginIds: [] as string[], ...(run.attachments?.length ? { attachments: run.attachments } : {})
+ * engine would offer every enabled plugin, and `@plugin` in the message would choose one). On a
+ * desktop (`outputOnly`), the turn's files are the app's output folder only, never the folders the
+ * person at that computer allowed for their own chats. */
+export const deviceRunMetadata = (run: { runId: string; attachments?: ChatAttachment[] }, outputOnly = false) => ({
+  chatRunId: run.runId, deviceRun: true, pluginIds: [] as string[], ...(outputOnly ? { deviceOutputOnly: true } : {}),
+  ...(run.attachments?.length ? { attachments: run.attachments } : {})
 });
 
 /** Interrupts turns a crash left running, and wires chat runs to the shared engine. */
-const openHostServices = (database: HostDatabase, config: AppConfig, runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore): HostServices => {
+const openHostServices = (database: HostDatabase, config: AppConfig, runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore, desktop = false): HostServices => {
   const journal = new EventJournal(database);
   const runService = new RunService({
     host: database, journal, logger,
@@ -299,7 +302,7 @@ const openHostServices = (database: HostDatabase, config: AppConfig, runtimeMana
       const title = (await sessionIndexStore.get(run.sessionId))?.title;
       const sessionTitle = title && title !== "New chat" ? title : undefined;
       const result = await processRuntimeInput(runtimeManager, sessionIndexStore, { input: run.input, sessionId: run.sessionId, userId: settings.memory.localProfileId, sessionTitle,
-        metadata: deviceRunMetadata(run), signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
+        metadata: deviceRunMetadata(run, desktop), signal: hooks.signal, onProgress: hooks.onProgress, requestApproval: hooks.requestApproval }, "http");
       return { ...(result.result.error ? { error: result.result.error } : {}) };
     },
     // The finished turn as a device receives it: attachment contents stay on the host.

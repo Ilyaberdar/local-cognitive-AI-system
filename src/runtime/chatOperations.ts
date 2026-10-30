@@ -97,6 +97,8 @@ export interface ChatOperationDependencies {
   uploads?: UploadStore;
   /** Projects a device may use (R5-4g); without it, project chats stay on the host. */
   projects?: ProjectAccess;
+  /** Why a device may not approve this operation, on a host that keeps some approvals to itself. */
+  approvalPolicy?: (operation: Record<string, unknown>) => string | undefined;
 }
 
 /** Replaces the host's folders in a chat's history, approvals and events: a project chat's project
@@ -435,9 +437,12 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
     "chat.approvals.resolve": payload => known(async () => {
       const { runId, approvalId, approved } = parse(schemas.approval, payload);
-      // Declining is always allowed; approving only in a chat a device may use.
+      // Declining is always allowed; approving only in a chat a device may use, and what the host lets it.
       const run = approved ? deps.runService.get(runId) : undefined;
       if (run) await requireUsable(run.sessionId);
+      const pending = approved ? deps.runService.pendingApproval(runId) : undefined;
+      const refusal = pending?.approvalId === approvalId ? deps.approvalPolicy?.(pending as unknown as Record<string, unknown>) : undefined;
+      if (refusal) throw new RemoteOperationError(refusal, "approval_host_only");
       return deps.runService.resolveApproval(runId, approvalId, approved);
     }),
   };

@@ -51,6 +51,9 @@ test("hosting is turned on with its switch, and the page says when the computer 
   await flush();
   assert.match(page.text(), /Remote connections are off\s*Devices cannot connect to MacBook/);
   assert.equal(page.view().querySelector('[data-host-setting="keepAwake"]').disabled, true, "nothing to keep awake for while off");
+  const commands = page.view().querySelector('[data-host-setting="allowDeviceCommands"]');
+  assert.equal(commands.checked, false, "devices approve only file changes in their own folder until allowed");
+  assert.match(page.text(), /commands and other files it can only decline/);
   const enabled = page.view().querySelector('[data-host-setting="enabled"]');
   enabled.checked = true;
   enabled.dispatchEvent(new page.dom.window.Event("change", { bubbles: true }));

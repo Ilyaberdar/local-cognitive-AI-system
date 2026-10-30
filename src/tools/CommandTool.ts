@@ -52,7 +52,7 @@ export class CommandTool implements Tool {
     // Even apparently simple commands may execute hooks or access the network. Default asks conservatively.
     const permission = await authorizeOperation(input.context, {
       tool: this.name, operation: "command", summary: `Run ${executable}`,
-      details: `${display}\n\nWorking directory: ${cwd}\nTimeout: 30 seconds`
+      details: `${display}\n\nWorking directory: ${cwd}\nTimeout: 30 seconds`, scope: "outside"
     }, false);
     if (permission) return permission;
     input.context.signal?.throwIfAborted();

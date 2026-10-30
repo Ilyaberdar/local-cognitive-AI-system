@@ -155,6 +155,9 @@ export class RunService {
     return run;
   }
 
+  /** The approval a running turn waits for, as a device sees it. */
+  pendingApproval(runId: string): PendingApprovalView | undefined { return this.active.get(runId)?.approval?.view; }
+
   resolveApproval(runId: string, approvalId: string, approved: boolean): { accepted: boolean } {
     const run = this.active.get(runId);
     if (!run?.approval || run.approval.view.approvalId !== approvalId) throw new RunServiceError("This approval is no longer pending.", "approval_stale");

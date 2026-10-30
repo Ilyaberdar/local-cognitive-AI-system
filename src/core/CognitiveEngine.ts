@@ -68,7 +68,7 @@ export class CognitiveEngine {
     const needsToolWorkspace = Boolean(await this.pluginManager?.hasEnabled()) ||
       (!withoutHostMcp(request.metadata) && Boolean(await this.externalMcpAvailable?.()));
     const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId) ??
-      (needsToolWorkspace ? await this.workspaceResolver?.forPluginChat(sessionId) : undefined);
+      (needsToolWorkspace ? await this.workspaceResolver?.forPluginChat(sessionId, { outputOnly: request.metadata?.deviceOutputOnly === true }) : undefined);
     if(workspace)await this.workspaceResolver?.validate(workspace);
     const actor = {
       sessionId,

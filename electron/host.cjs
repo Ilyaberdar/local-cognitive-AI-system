@@ -4,6 +4,7 @@ const path = require("path");
 const { resolveAccountConfig } = require("../dist/src/account/accountConfig.js");
 const { createHostOperations, startHostAgent } = require("../dist/src/remote/host/hostRuntime.js");
 const { RemoteHostStore } = require("../dist/src/remote/host/RemoteHostStore.js");
+const { deviceApprovalRefusal } = require("../dist/src/remote/host/deviceApprovals.js");
 const { addAdminFolder, listAdminFolders, MANAGED_ROOT_ID, removeAdminFolder, setAdminFolderOptions } = require("../dist/src/runtime/hostFolders.js");
 const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
@@ -107,7 +108,8 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     if (!on && blocker !== undefined) { powerSaveBlocker.stop(blocker); blocker = undefined; }
   };
   const launch = expectedOwner => {
-    composition ??= createHostOperations({ backend, dataRoot });
+    // Commands and files outside a chat's folder are approved here, unless devices were allowed to.
+    composition ??= createHostOperations({ backend, dataRoot, approvalPolicy: operation => settings.allowDeviceCommands ? undefined : deviceApprovalRefusal(operation, hostName) });
     return startHostAgent({ host: backend.host, vault, cloudUrl, hostName, kind: "desktop", logger, status: hostStatus, operations: composition.operations, expectedOwner });
   };
 
