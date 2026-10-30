@@ -25,6 +25,9 @@ export interface ProviderDialect {
   readonly local?: boolean;
   /** The smallest output cap sent to the Responses API: a reasoning model's cap counts its reasoning. */
   readonly responsesOutputFloor?: number;
+  /** The smallest output cap sent to chat completions, for a service whose models think before they
+   * answer and count the thinking in max_tokens (DeepSeek). */
+  readonly chatOutputFloor?: number;
   /** Every request goes to chat completions: most cloud services offer only that, or only that fully. */
   readonly chatOnly?: boolean;
   /** Chat completions are always streamed: some thinking models answer only when streamed, and the
@@ -95,8 +98,10 @@ export const CHAT_DIALECT: ProviderDialect = {
 
 const CHAT_TOOLS = { ...CHAT_DIALECT.capabilities, nativeTools: true };
 /** DeepSeek: JSON mode, like Qwen's, wants the word in the messages. Agents act through chat tool calls;
- * it may send several at once whatever parallel_tool_calls says (the first runs). */
-export const DEEPSEEK_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "deepseek", jsonKeyword: true, nativeTools: "chat", capabilities: CHAT_TOOLS,
+ * it may send several at once whatever parallel_tool_calls says (the first runs). Its models think
+ * before they answer, within max_tokens (up to 384K): Synthesis's 2,600 tokens for a file of about
+ * 700 ran out in 143 of 320 requests, most before a line of it, so a cap is at least 16,000, as OpenAI's is. */
+export const DEEPSEEK_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "deepseek", jsonKeyword: true, nativeTools: "chat", chatOutputFloor: 16_000, capabilities: CHAT_TOOLS,
   models: { fallback: ["deepseek-flash", "deepseek-v4-pro"] } };
 /** Groq: its reasoning models (gpt-oss, Qwen) take the effort as reasoning_effort; one that does not says so. */
 export const GROQ_DIALECT: ProviderDialect = { ...CHAT_DIALECT, id: "groq", chatEffort: true, nativeTools: "chat",

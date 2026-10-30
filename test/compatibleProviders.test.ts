@@ -248,7 +248,7 @@ test("Settings names Qwen, shows its regions and links to its key page", t => {
   assert.deepEqual(regions.at(-1), ["Other address", ""]);
 });
 
-test("each preset's dialect asks in its service's own way: DeepSeek's JSON word, Groq's reasoning_effort, OpenRouter's reasoning, Perplexity without JSON mode", async () => {
+test("each preset's dialect asks in its service's own way: DeepSeek's JSON word and room to think, Groq's reasoning_effort, OpenRouter's reasoning, Perplexity without JSON mode", async () => {
   const chat = () => Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] });
   const provider = (id: string, fetchImpl: typeof fetch) => {
     const preset = providerPreset(id)!;
@@ -258,11 +258,17 @@ test("each preset's dialect asks in its service's own way: DeepSeek's JSON word,
   await provider("deepseek", deepseek.fetchImpl).generateText({ prompt: "Classify", responseFormat: { type: "json_object" } });
   assert.equal(deepseek.calls[0].url, "https://api.deepseek.com/chat/completions");
   assert.equal(deepseek.calls[0].body.messages[0].content, "Reply with a JSON object.");
+  // DeepSeek thinks within max_tokens: Synthesis's 2600 for a file is raised, a larger cap is kept, and
+  // none is sent when none is asked (its own default then applies).
+  await provider("deepseek", deepseek.fetchImpl).generateText({ prompt: "Write the file", maxTokens: 2600 });
+  await provider("deepseek", deepseek.fetchImpl).generateText({ prompt: "Write the file", maxTokens: 40_000 });
+  assert.deepEqual(deepseek.calls.map(call => call.body.max_tokens), [undefined, 16_000, 40_000]);
 
   const groq = service(chat);
-  await provider("groq", groq.fetchImpl).generateText({ prompt: "Think", reasoningEffort: "max" });
+  await provider("groq", groq.fetchImpl).generateText({ prompt: "Think", reasoningEffort: "max", maxTokens: 2600 });
   assert.equal(groq.calls[0].url, "https://api.groq.com/openai/v1/chat/completions");
   assert.equal(groq.calls[0].body.reasoning_effort, "high");
+  assert.equal(groq.calls[0].body.max_tokens, 2600, "a service without a floor gets the cap asked");
 
   const openrouter = service(chat);
   await provider("openrouter", openrouter.fetchImpl).generateText({ prompt: "Think", reasoningEffort: "low" });

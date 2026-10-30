@@ -160,8 +160,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
               ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl } }))
             ] : promptWithTurn(request) }
           ],
-          // With thinking on, Qwen takes at most 32768 here.
-          ...(typeof request.maxTokens === "number" ? { max_tokens: thinking ? Math.min(request.maxTokens, 32_768) : request.maxTokens } : {}),
+          // With thinking on, Qwen takes at most 32768 here. DeepSeek's cap counts its thinking: a small
+          // one would leave no answer. It is a cap; only what is generated is billed.
+          ...(typeof request.maxTokens === "number" ? { max_tokens: thinking ? Math.min(request.maxTokens, 32_768) : Math.max(request.maxTokens, dialect.chatOutputFloor ?? 0) } : {}),
           ...(typeof localTemperature === "number" ? { temperature: localTemperature } : {}),
           ...(localSampling?.topP !== undefined ? { top_p: localSampling.topP } : {}),
           ...(localSampling?.topK !== undefined ? { top_k: localSampling.topK } : {}),

@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.11 — 2026-10-29
+## Unreleased
+
+### Synthesis
+
+- **DeepSeek has room to think before it writes a file.** Its models think before they answer, and the thinking counts against the answer's token limit. A flow gives each file 2,600 tokens, so on a router module DeepSeek ran out before finishing a file of about 700 tokens in 143 of 320 requests, most often before writing a line. Six of ten runs ended unresolved, and each was told for twelve iterations to "write a shorter file". DeepSeek's limit is now at least 16,000 tokens, as OpenAI's already was; only the tokens it writes are billed. The same floor applies to its chat answers and judge, which ask for 1,000 to 9,000 tokens. When a model does run out while thinking, the run says so ("The model spent the whole token limit (16000 tokens) thinking and wrote none of the file") and asks it to think briefly. Each request's entry in the run's record keeps how many of its tokens were thinking, when the service reports it.
 
 Synthesis tells a small local model where its code fails and what to change, asks again when the model hands a file back unchanged, keeps the best candidate, type-checks TypeScript before the tests, and gives every run a seed, so Qwen3.5-9B and Nemotron-3-Nano-4B now finish the calculator template in every measured run; the window opens at once instead of after the whole app has started, and Remote tells two computers with one name apart.
 
