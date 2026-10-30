@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import test from "node:test";
 import { evaluateCalculator, evaluatorVersion, supportedEvaluators } from "../src/synthesis/evaluators";
 
@@ -185,4 +187,46 @@ test("calculator failures say what index.html or calculator.js must hold, in HTM
   const files = fixture(); files["calculator.js"] = files["calculator.js"].replace("if(operation === '*') return a*b;", "if(operation === '*') return a+b;");
   const arithmetic = await evaluateCalculator(files, "calculator-arithmetic-v1");
   assert.equal(arithmetic.message, "calculator.js: Arithmetic example failed: calculate(-3, 4, '*') must return -12; it returns 1 instead.");
+});
+
+test("a candidate that recurses without end fails with the stack named, and later checks still run", async () => {
+  const recursion = await evaluateCalculator({ "calculator.js": "function calculate(a, b, operation) { return calculate(a, b, operation); }" }, "calculator-arithmetic-v1");
+  assert.equal(recursion.status, "Fail");
+  assert.match(recursion.message, /^calculator\.js ran out of stack \(InternalError: stack overflow\): a function calls itself without end/);
+  // A 4B model's iteration (study 2026-10, 4b-calc-A6fresh-s5): window.calculate replaces the global
+  // calculate, so the call inside it is to itself, and each level catches the overflow. Freeing the
+  // VM aborted QuickJS after this, and the run stopped instead of the candidate failing.
+  const files = fixture();
+  files["calculator.js"] = calculate + `
+window.calculate = function () {
+  let result = 'Error';
+  try { result = calculate(Number(document.getElementById('a').value), Number(document.getElementById('b').value), document.getElementById('operation').value).toString(); }
+  catch (e) { result = e.message; }
+  document.getElementById('result').textContent = result;
+};`;
+  const shadowed = await evaluateCalculator(files, "calculator-arithmetic-v1");
+  assert.equal(shadowed.status, "Fail");
+  assert.equal(shadowed.message, "calculator.js: Arithmetic example failed: calculate(2, 3, '+') must return 5; it returns undefined instead.");
+  for (const evaluator of supportedEvaluators) assert.equal((await evaluateCalculator(fixture(), evaluator)).status, "Pass");
+});
+
+test("the VM failing under a candidate is Unknown, and the next check loads a fresh QuickJS", { timeout: 30000 }, () => {
+  // Node's stack made small enough to run out under QuickJS's limit: the RangeError unwinds QuickJS
+  // without its cleanup. Reusing that module, checks after the 44th such failure threw "memory
+  // access out of bounds", correct candidates included.
+  const evaluators = path.resolve(__dirname, "..", "src", "synthesis", "evaluators.js");
+  const script = `const { evaluateCalculator } = require(${JSON.stringify(evaluators)});
+(async () => {
+  const bad = { "calculator.js": "function calculate(a, b, operation) { return calculate(a, b, operation); }" };
+  const good = { "calculator.js": ${JSON.stringify(calculate)} };
+  const seen = new Set();
+  for (let i = 0; i < 60; i++) {
+    const failed = await evaluateCalculator(bad, "calculator-arithmetic-v1"), passed = await evaluateCalculator(good, "calculator-arithmetic-v1");
+    seen.add(failed.status + " " + failed.message.replace(/: .*$/, "") + " | " + passed.status);
+  }
+  process.stdout.write(JSON.stringify([...seen]));
+})();`;
+  const child = spawnSync(process.execPath, ["--stack-size=300", "-e", script], { encoding: "utf8", timeout: 25000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), ["Unknown The isolated QuickJS evaluator failed while running the candidate | Pass"]);
 });
