@@ -116,6 +116,12 @@ contextBridge.exposeInMainWorld("desktopRemoteHost", {
   setFolder: (folderId, options) => ipcRenderer.invoke("remote-host:set-folder", folderId, options),
   removeFolder: folderId => ipcRenderer.invoke("remote-host:remove-folder", folderId),
   openFolder: folderId => ipcRenderer.invoke("remote-host:open-folder", folderId),
+  // The tray's Connect a device: show Remote → This computer.
+  onOpen: callback => {
+    const listener = () => callback();
+    ipcRenderer.on("remote-host:open", listener);
+    return () => ipcRenderer.removeListener("remote-host:open", listener);
+  },
   onChange: callback => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("remote-host:changed", listener);

@@ -198,5 +198,12 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     });
   }
 
-  return { render, bind, repaint, refresh: loadHosts, status: () => status };
+  function showTab(name) {
+    if (!hostUi || !["connect", "host"].includes(name) || name === tab) return;
+    tab = name;
+    try { localStorage.setItem("lcai.remoteTab", tab); } catch { /* Remembered for this window only. */ }
+    if (root) root.innerHTML = render();
+  }
+
+  return { render, bind, repaint, showTab, refresh: loadHosts, status: () => status };
 }

@@ -522,6 +522,7 @@ function applyCodeFontSize(value) {
 // One account store for the app; Remote (R3+) subscribes to the same state.
 const accountState = createAccountState(window.desktopAccount);
 const remoteUi = createRemoteUi({ account: accountState, hostUi: window.desktopRemoteHost ? createRemoteHostUi({ account: accountState }) : undefined });
+window.desktopRemoteHost?.onOpen?.(() => { window.location.hash = "#/remote/host"; });
 chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountState,
   onChange: ({ cameOnline } = {}) => {
     repaintChatTarget();
@@ -649,8 +650,10 @@ async function finishExternalRun(active) {
 }
 
 function syncRouteFromHash() {
-  const route = window.location.hash.replace(/^#\/?/, "");
+  const [route, part] = window.location.hash.replace(/^#\/?/, "").split("/");
   state.route = ["chat", "orchestration", "synthesis", "models", "remote"].includes(route) ? route : "chat";
+  // #/remote/host: Remote on its This computer tab (the tray's Connect a device).
+  if (state.route === "remote" && part === "host") remoteUi.showTab("host");
   if (state.route === "remote") void remoteUi.refresh();
 }
 

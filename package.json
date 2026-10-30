@@ -114,6 +114,7 @@
     "files": [
       "LICENSE",
       "electron/*.cjs",
+      "electron/tray/*.png",
       "dist/src/**/*",
       "public/**/*",
       "package.json",

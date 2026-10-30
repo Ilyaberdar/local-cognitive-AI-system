@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, session, systemPreferences, shell, powerMonitor, powerSaveBlocker, safeStorage } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, session, systemPreferences, shell, powerMonitor, powerSaveBlocker, safeStorage, Tray } = require("electron");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
@@ -304,10 +304,21 @@ ipcMain.on("appearance:title-bar", (event, colors) => {
 });
 nativeTheme.on("updated", applyTitleBarColors);
 
+// A window for the tray or menu bar: the app's own, or Remote → This computer for "remote-host".
+const openWindow = async target => {
+  if (shutdownPromise || !applicationShown) return;
+  if (!mainWindow || mainWindow.isDestroyed()) await createWindow(target === "remote-host" ? `${applicationOrigin}/#/remote/host` : applicationOrigin);
+  else if (target === "remote-host") mainWindow.webContents.send("remote-host:open");
+  focusWindow();
+};
+
 if (hasInstanceLock) app.whenReady().then(async () => {
+  // Started by the system at login with hosting on: no window, the app waits in the tray or menu bar.
+  // host-settings.cjs, not host.cjs: the backend's modules read their configuration when loaded, after this sets it.
+  const startHidden = require("./host-settings.cjs").startsInBackground({ app, dataRoot: process.env.LOCAL_COGNITIVE_TEST_DATA_DIR || app.getPath("userData") });
   // The window first, and shown before the backend's files load: loading them holds this thread (seconds on
   // a first Windows launch), so a window still opening then would show only once they had loaded.
-  try { await createWindow(); } catch (error) { console.error("The starting window failed:", error); }
+  if (!startHidden) try { await createWindow(); } catch (error) { console.error("The starting window failed:", error); }
   try {
     const runtime = await configureRuntimeEnvironment();
     applicationDataRoot = runtime.dataRoot;
@@ -331,7 +342,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
     // This computer as a host for paired devices, when its owner turned that on.
     host = require("./host.cjs").registerHost({ app, ipcMain, dialog, shell, vault, accountService: account.service, backend: backendHandle, dataRoot: runtime.dataRoot,
-      assertSender: assertAppSender, getWindow: () => mainWindow, powerSaveBlocker });
+      assertSender: assertAppSender, getWindow: () => mainWindow, powerSaveBlocker, powerMonitor, Tray, Menu, nativeImage, Notification, openWindow });
     void host.init();
     sentry.attachLog(backendHandle.diagnosticLog);
     registerDiagnostics();
@@ -348,7 +359,8 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     app.on("child-process-gone", (_event, details) => crashed(details.type === "GPU" ? "gpu" : details.type === "Utility" ? "utility" : "other", details));
     // /health is the one address that needs no key.
     await waitForServer(`${runtime.url}/health`);
-    await showApplication(runtime.url);
+    if (startHidden && !mainWindow) applicationShown = true;
+    else await showApplication(runtime.url);
     updates.start();
     void prepareSandbox?.();
     const { isDeepLinkArgument } = require("./account.cjs");
@@ -365,13 +377,15 @@ app.on("activate", () => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  if (process.platform === "darwin") return;
+  // While devices may connect, Windows keeps the app in the tray; its menu quits it.
+  if (host?.keepsRunning()) { host.noteBackground(); return; }
+  app.quit();
 });
 
 app.on("second-instance", (_event, argv) => {
   if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+  else void openWindow();
   const link = argv.find(argument => require("./account.cjs").isDeepLinkArgument(argument));
   if (link) deliverDeepLink(link);
 });
@@ -386,9 +400,21 @@ const shutdown = () => shutdownPromise ??= (async () => {
   try { await Promise.all([backendHandle?.dispose(), voiceInput?.dispose()]); } catch (error) { console.error("Shutdown failed", error); }
   shutdownComplete = true;
 })();
+let quitConfirmed = false;
 app.on("before-quit", (event) => {
   if (shutdownComplete || !backendHandle) return;
   event.preventDefault();
+  if (shutdownPromise) return;
+  // Devices connected to this computer lose it: said before quitting (an update asks on its own).
+  const busy = quitConfirmed ? undefined : host?.busy();
+  if (busy && (busy.connected || busy.turns)) {
+    const devices = `${busy.connected} device${busy.connected === 1 ? "" : "s"}`;
+    const choice = dialog.showMessageBoxSync(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, { type: "question", buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1,
+      message: busy.connected ? `${devices} ${busy.connected === 1 ? "is" : "are"} connected to this computer` : "Answers for your devices are in progress",
+      detail: busy.turns ? `${busy.turns} answer${busy.turns === 1 ? "" : "s"} for them will stop. They can connect again when Local Cognitive runs.` : "They can connect again when Local Cognitive runs." });
+    if (choice !== 0) return;
+  }
+  quitConfirmed = true;
   void shutdown().finally(() => app.quit());
 });
 ipcMain.handle("models:select-files", async (event) => {

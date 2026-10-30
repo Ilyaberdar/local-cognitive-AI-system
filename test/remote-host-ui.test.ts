@@ -151,6 +151,10 @@ test("Remote has a tab for this computer, remembered; without the desktop app it
   root.querySelector('[data-remote-tab="host"]').click();
   assert.ok(root.querySelector("[data-host-page]"));
   assert.equal(dom.window.localStorage.getItem("lcai.remoteTab"), "host");
+  context.ui.showTab("connect");
+  assert.equal(root.querySelector("[data-host-page]"), null, "the tray's link and the router choose a tab too");
+  context.ui.showTab("host");
+  assert.ok(root.querySelector("[data-host-page]"));
   const none = load(undefined);
   none.view().innerHTML = none.ui.inner();
   assert.match(none.text(), /Available in the desktop app/);
@@ -186,4 +190,17 @@ test("shared folders: the app's own Projects folder, folders shared here with th
   assert.deepEqual(calls.find(call => call[0] === "removeFolder"), ["removeFolder", FOLDER]);
   assert.match(page.confirmations.at(-1)!, /Stop sharing Work <i>\? .*nothing in it is deleted/);
   assert.equal(page.view().querySelectorAll(".remote-host-folders .settings-row").length, 1);
+});
+
+test("open at login is offered in the installed app while hosting is on, and says when macOS wants an approval", async () => {
+  const page = load(bridgeWith(status({ enabled: true, state: "online", openAtLoginAvailable: true, openAtLogin: true, openAtLoginNeedsApproval: true })).bridge);
+  page.view().innerHTML = page.ui.inner();
+  await flush();
+  assert.equal(page.view().querySelector('[data-host-setting="openAtLogin"]').disabled, false);
+  assert.match(page.text(), /macOS needs your approval: System Settings → General → Login Items/);
+  const dev = load(bridgeWith(status({ enabled: true, state: "online", openAtLoginAvailable: false })).bridge);
+  dev.view().innerHTML = dev.ui.inner();
+  await flush();
+  assert.equal(dev.view().querySelector('[data-host-setting="openAtLogin"]').disabled, true);
+  assert.match(dev.text(), /Available in the installed app/);
 });

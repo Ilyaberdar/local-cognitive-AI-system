@@ -7,7 +7,8 @@ import { RemoteClient } from "../src/remote/client/RemoteClient";
 import { memoryVault, remoteStackSkip, startCloud, until } from "./fixtures/remoteStack";
 import { startTestBackend } from "./fixtures/testBackend";
 
-const { registerHost, readSettings } = require(path.resolve("electron/host.cjs"));
+const { registerHost } = require(path.resolve("electron/host.cjs"));
+const { readSettings, startsInBackground } = require(path.resolve("electron/host-settings.cjs"));
 
 type Account = { accountId: string; accessToken: string };
 /** The account service as the main process sees it: who is signed in, and a change event. */
@@ -52,7 +53,7 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   assert.deepEqual(await call("set", { enabled: true, ignored: "x" }).then(status => [status.enabled, status.keepAwake, status.allowDeviceCommands]), [true, true, false]);
   await until(state, value => value === "online");
   assert.equal(blocker.active.size, 1, "the computer is kept from sleeping while it hosts");
-  assert.deepEqual(readSettings(path.join(root, "remote-host.json")), { enabled: true, keepAwake: true, openAtLogin: false, allowDeviceCommands: false });
+  assert.deepEqual(readSettings(path.join(root, "remote-host.json")), { enabled: true, keepAwake: true, openAtLogin: false, allowDeviceCommands: false, backgroundNoticeShown: false });
   assert.ok(sent.some(([channel, status]) => channel === "remote-host:changed" && status.state === "online"), "the window hears of it");
 
   // A key in another account's hands pairs nothing; the same key still pairs the owner's phone.
@@ -146,4 +147,68 @@ test("shared folders come from the folder dialog the main process opens, never f
   assert.equal((await ipc.invoke("remove-folder", "../x")).error!.code, "invalid_request");
   assert.equal((await ipc.invoke("open-folder", "../x")).error!.code, "invalid_request");
   assert.deepEqual((await value("remove-folder", id)).map((folder: any) => folder.id), ["projects"]);
+});
+
+/** Electron's tray and menu as the host module uses them: the icon made, its menu's items, destroyed or not. */
+const fakeTray = () => {
+  const trays: Array<{ image: unknown; tooltip?: string; items: any[]; destroyed: boolean; listeners: Record<string, () => void> }> = [];
+  class Tray {
+    state: { image: unknown; tooltip?: string; items: any[]; destroyed: boolean; listeners: Record<string, () => void> };
+    constructor(image: unknown) { this.state = { image, items: [], destroyed: false, listeners: {} }; trays.push(this.state); }
+    setToolTip(text: string) { this.state.tooltip = text; }
+    setContextMenu(menu: { items: any[] }) { this.state.items = menu.items; }
+    on(name: string, listener: () => void) { this.state.listeners[name] = listener; }
+    destroy() { this.state.destroyed = true; }
+  }
+  return { Tray, Menu: { buildFromTemplate: (items: any[]) => ({ items }) }, trays };
+};
+
+test("while hosting is on: a tray or menu bar icon with the state, open at login in the installed app, a check on waking, and what quitting would stop", async t => {
+  const { backend, root } = await startTestBackend(t, "desktop");
+  const ipc = fakeIpc(), tray = fakeTray(), power = new EventEmitter(), opened: unknown[] = [], logins: unknown[] = [], notices: unknown[] = [];
+  class Notice { static isSupported() { return true; } constructor(readonly options: unknown) {} show() { notices.push(this.options); } }
+  const app = { isPackaged: true, setLoginItemSettings: (value: unknown) => { logins.push(value); }, getLoginItemSettings: () => ({ status: "requires-approval" }), quit: () => opened.push("quit") };
+  const host = registerHost({ app, ipcMain: ipc, vault: memoryVault(), accountService: new FakeAccount({ accountId: "a", accessToken: "t" }), backend, dataRoot: root,
+    assertSender: () => undefined, getWindow: () => undefined, powerSaveBlocker: fakeBlocker(), cloudUrl: "http://127.0.0.1:9", hostName: "MacBook",
+    powerMonitor: power, Tray: tray.Tray, Menu: tray.Menu, Notification: Notice, openWindow: (target?: string) => opened.push(target ?? "app"), platform: "darwin" });
+  t.after(() => host.dispose());
+  await host.init();
+  assert.equal(tray.trays.length, 0, "no icon while hosting is off");
+  assert.equal(host.keepsRunning(), false);
+  await ipc.invoke("set", { enabled: true, openAtLogin: true });
+  assert.equal(tray.trays.length, 1);
+  assert.match(String(tray.trays[0]!.image), /trayTemplate\.png$/, "a template image for the menu bar");
+  const labels = () => tray.trays[0]!.items.map(item => item.label ?? "—");
+  assert.match(labels()[0], /^Remote: (connecting…|offline, retrying)$/);
+  assert.deepEqual(labels().slice(1), ["—", "Open Local Cognitive", "Connect a device…", "Turn off remote connections", "—", "Quit Local Cognitive"]);
+  assert.equal(tray.trays[0]!.items[3].enabled, false, "no key to show while offline");
+  tray.trays[0]!.items[2].click();
+  assert.deepEqual(opened, ["app"]);
+  assert.deepEqual(logins.at(-1), { openAtLogin: true, type: "mainAppService" });
+  const status = (await ipc.invoke("status")).value;
+  assert.deepEqual([status.openAtLoginAvailable, status.openAtLoginNeedsApproval, "backgroundNoticeShown" in status], [true, true, false]);
+  assert.equal(host.keepsRunning(), true);
+  assert.deepEqual(host.busy(), { connected: 0, turns: 0 });
+
+  let checked = 0;
+  host.agent().reconnectNow = () => { checked++; };
+  power.emit("resume");
+  assert.equal(checked, 1);
+
+  host.noteBackground(); host.noteBackground();
+  assert.equal(notices.length, 1, "said once");
+  assert.equal(readSettings(path.join(root, "remote-host.json")).backgroundNoticeShown, true);
+  assert.equal(startsInBackground({ app, argv: ["--background"], platform: "win32", dataRoot: root }), true);
+  assert.equal(startsInBackground({ app, argv: [], platform: "win32", dataRoot: root }), false);
+
+  await ipc.invoke("set", { enabled: false });
+  assert.equal(tray.trays[0]!.destroyed, true);
+  assert.deepEqual(logins.at(-1), { openAtLogin: false, type: "mainAppService" }, "hosting off: no start at login");
+  assert.equal(startsInBackground({ app, argv: ["--background"], platform: "win32", dataRoot: root }), false, "nothing to wait for in the background");
+});
+
+test("main reads whether to start in the background without loading the backend, whose configuration is set after", () => {
+  const { execFileSync } = require("node:child_process");
+  const loaded = execFileSync(process.execPath, ["-e", `require(${JSON.stringify(path.resolve("electron/host-settings.cjs"))}); console.log(JSON.stringify(Object.keys(require.cache)))`], { encoding: "utf8" });
+  assert.deepEqual(JSON.parse(loaded).filter((file: string) => !file.endsWith("host-settings.cjs")), [], "an early backend module would read its configuration before main sets it");
 });

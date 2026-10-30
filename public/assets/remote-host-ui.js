@@ -85,6 +85,9 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
     return `<div class="settings-rows">
       ${toggle("enabled", "Allow remote connections", "Your devices, signed in to the same account, can use this computer's chats and models.", status.enabled, off)}
       ${toggle("keepAwake", "Keep this computer awake", "While connections are allowed, it does not sleep when idle; the screen still turns off. A laptop with its lid closed sleeps anyway, and devices see it offline.", status.keepAwake, off || !status.enabled)}
+      ${toggle("openAtLogin", "Open at login", status.openAtLoginAvailable
+        ? `Starts without a window, in the menu bar or the tray, when you sign in to this computer, so devices can connect after a restart.${status.openAtLoginNeedsApproval ? " <strong>macOS needs your approval:</strong> System Settings → General → Login Items, then turn on Local Cognitive." : ""}`
+        : "Available in the installed app.", status.openAtLogin, off || !status.enabled || !status.openAtLoginAvailable)}
     </div>`;
   }
 

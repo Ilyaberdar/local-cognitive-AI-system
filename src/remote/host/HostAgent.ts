@@ -80,6 +80,25 @@ export class HostAgent extends EventEmitter {
       sessions: this.remote?.activeSessions ?? 0, cloudUrl: this.origin, ...(this.lastError ? { lastError: this.lastError } : {}) };
   }
 
+  /** After the computer wakes: a connection that may have died asleep is checked at once (a pong
+   * within 5 s, or it is dropped and made again), and a host that is offline tries now instead of
+   * waiting out its backoff. */
+  reconnectNow(): void {
+    if (this.stopped) return;
+    const socket = this.control;
+    if (socket && this.state === "online") {
+      const timer = setTimeout(() => { this.attempt = 0; socket.terminate(); }, 5000);
+      timer.unref();
+      socket.once("pong", () => clearTimeout(timer));
+      try { socket.ping(); } catch { clearTimeout(timer); this.attempt = 0; socket.terminate(); }
+      return;
+    }
+    if (socket) return;
+    clearTimeout(this.reconnectTimer);
+    this.attempt = 0;
+    void this.connect();
+  }
+
   /** A one-time connection key. The Cloud must know the invitation, so the host must be online. */
   connectKey(ttlMs: number): { key: string; invitationId: string; expiresAt: number; hostId: string; claimed: boolean } {
     if (this.state !== "online" || !this.remote) throw new RemoteOperationError(`The server is not connected to ${this.origin}${this.lastError ? ` (${this.lastError})` : ""}. Try again shortly.`, "offline");

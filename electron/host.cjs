@@ -8,30 +8,20 @@ const { addAdminFolder, listAdminFolders, MANAGED_ROOT_ID, removeAdminFolder, se
 const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
 const { Logger } = require("../dist/src/utils/Logger.js");
+const { readSettings, SWITCHES, writeSettings } = require("./host-settings.cjs");
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const id = value => { if (typeof value !== "string" || !UUID.test(value)) throw Object.assign(new Error("Invalid id."), { code: "invalid_request" }); return value; };
 const failure = (message, code) => Object.assign(new Error(message), { code });
-// Hosting's own switches. Kept apart from the app's settings, which a paired device may change.
-const DEFAULTS = Object.freeze({ enabled: false, keepAwake: true, openAtLogin: false, allowDeviceCommands: false });
 const KEY_TTL_MS = 10 * 60_000;
-
-const readSettings = file => {
-  let saved = {};
-  try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* None yet, or unreadable: the defaults. */ }
-  return Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, typeof saved?.[key] === "boolean" ? saved[key] : value]));
-};
-const writeSettings = (file, settings) => {
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, file);
-};
+const busyStates = ["starting", "registering", "connecting"];
 
 // This computer as a Remote host: paired devices reach it through Local Cognitive Cloud while the
 // app runs and hosting is on. It belongs to the account signed in here: another account's key is
 // refused, and signing out pauses it. The host key and grants live in the app's vault and host.db;
 // the renderer gets statuses, the connection key it shows, and device names, never a path or token.
 function registerHost({ app, ipcMain, dialog, shell, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker, showQr = PHONE_APP_SHIPPED,
+  powerMonitor, Tray, Menu, nativeImage, Notification, openWindow = () => undefined, platform = process.platform,
   cloudUrl = resolveAccountConfig({ env: process.env, packaged: app.isPackaged }).cloudUrl, logger = new Logger(),
   hostName = os.hostname().replace(/\.local$/, "").slice(0, 120) || "Computer" }) {
   const file = path.join(dataRoot, "remote-host.json");
@@ -45,8 +35,10 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   const status = () => {
     const agentStatus = agent?.status();
     const connected = new Set((agent?.connectedDevices() ?? []).map(device => device.deviceId));
+    const { backgroundNoticeShown: _note, ...switches } = settings;
     return {
-      available: Boolean(store && cloudUrl), ...settings, hostName,
+      available: Boolean(store && cloudUrl), ...switches, hostName, openAtLoginAvailable: loginItemAvailable(),
+      ...(loginItemNeedsApproval() ? { openAtLoginNeedsApproval: true } : {}),
       state: agentStatus?.state ?? (settings.enabled ? "paused" : "off"),
       ...(!agent && settings.enabled && paused ? { reason: paused } : {}),
       ...(agentStatus?.lastError || startError ? { lastError: agentStatus?.lastError ?? startError } : {}),
@@ -57,6 +49,51 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   const emit = () => {
     const window = getWindow();
     if (window && !window.isDestroyed()) window.webContents.send("remote-host:changed", status());
+    syncTray();
+  };
+
+  // Open at login, only for the installed app (a development run would register Electron itself).
+  // Windows starts it with --background; macOS tells it by wasOpenedAtLogin. Either way no window.
+  const loginItemAvailable = () => Boolean(app.isPackaged && typeof app.setLoginItemSettings === "function" && (platform === "darwin" || platform === "win32"));
+  const loginItemNeedsApproval = () => {
+    if (!loginItemAvailable() || platform !== "darwin" || !settings.openAtLogin) return false;
+    try { return app.getLoginItemSettings({ type: "mainAppService" }).status === "requires-approval"; } catch { return false; }
+  };
+  const applyLoginItem = () => {
+    if (!loginItemAvailable()) return;
+    const openAtLogin = settings.enabled && settings.openAtLogin;
+    try { app.setLoginItemSettings(platform === "darwin" ? { openAtLogin, type: "mainAppService" } : { openAtLogin, args: ["--background"] }); }
+    catch (error) { logger.warn("Open at login could not be changed", { message: error instanceof Error ? error.message : String(error) }); }
+  };
+
+  // While hosting is on: the menu bar (macOS) or the tray (Windows), which is how the app is reached
+  // with no window open, and how it is quit on Windows then.
+  let tray;
+  const trayLine = () => {
+    const { state, reason, devices } = status();
+    if (state === "online") return `Remote: online · ${devices.length} device${devices.length === 1 ? "" : "s"}${devices.some(device => device.connected) ? `, ${devices.filter(device => device.connected).length} connected` : ""}`;
+    if (busyStates.includes(state)) return "Remote: connecting…";
+    if (state === "offline") return "Remote: offline, retrying";
+    return reason === "signed_out" ? "Remote: paused, signed out" : reason === "other_account" ? "Remote: paused, another account" : "Remote: not connected";
+  };
+  const syncTray = () => {
+    if (!Tray || !Menu) return;
+    if (!settings.enabled || disposed) { tray?.destroy(); tray = undefined; return; }
+    if (!tray) {
+      const file = path.join(__dirname, "tray", platform === "darwin" ? "trayTemplate.png" : "tray-windows.png");
+      tray = new Tray(nativeImage ? nativeImage.createFromPath(file) : file);
+      tray.setToolTip("Local Cognitive");
+      if (platform !== "darwin") tray.on("click", () => openWindow());
+    }
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: trayLine(), enabled: false },
+      { type: "separator" },
+      { label: "Open Local Cognitive", click: () => openWindow() },
+      { label: "Connect a device…", enabled: agent?.status().state === "online", click: () => openWindow("remote-host") },
+      { label: "Turn off remote connections", click: () => { void setSwitches({ enabled: false }); } },
+      { type: "separator" },
+      { label: "Quit Local Cognitive", click: () => app.quit() }
+    ]));
   };
   // What a device's status line shows: no update notice yet, nor anything a server's admin runs.
   const hostStatus = () => {
@@ -100,6 +137,9 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     target.on("state", changed);
   });
 
+  // Asleep, the Cloud connection may have died: check it on waking instead of after a minute.
+  powerMonitor?.on("resume", () => agent?.reconnectNow());
+
   // Signing out pauses hosting; signing in again, or with an account that may host here, resumes it.
   accountService.on("change", () => {
     const accountId = signedIn(), owner = store?.owner();
@@ -113,16 +153,19 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     catch (error) { return { ok: false, error: { code: error.code || "error", message: error.message || "Hosting failed." } }; }
   });
   handle("status", () => status());
-  handle("set", async patch => {
+  const setSwitches = async patch => {
     if (!patch || typeof patch !== "object") throw failure("Invalid request.", "invalid_request");
     const next = { ...settings };
-    for (const key of Object.keys(DEFAULTS)) if (typeof patch[key] === "boolean") next[key] = patch[key];
+    for (const key of SWITCHES) if (typeof patch[key] === "boolean") next[key] = patch[key];
     if (next.enabled && !store) throw failure("Hosting is unavailable on this computer: its database could not be opened.", "unavailable");
     writeSettings(file, next);
     settings = next;
+    applyLoginItem();
     if (!settings.enabled) await stop(); else { if (agent) keepAwake(settings.keepAwake); await start(); }
+    emit();
     return status();
-  });
+  };
+  handle("set", setSwitches);
   handle("connect-key", () => {
     if (!agent) throw failure("Turn on remote connections first.", "off");
     const { key, invitationId, expiresAt } = agent.connectKey(KEY_TTL_MS);
@@ -188,7 +231,18 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   });
 
   return {
-    init: () => start(),
+    init: () => { syncTray(); return start(); },
+    /** Whether closing the last window should leave the app running (hosting is on). */
+    keepsRunning: () => settings.enabled && !disposed,
+    /** Says once, the first time the window closes on Windows, that the app is still in the tray. */
+    noteBackground: () => {
+      if (settings.backgroundNoticeShown || !Notification?.isSupported?.()) return;
+      settings = { ...settings, backgroundNoticeShown: true };
+      writeSettings(file, settings);
+      new Notification({ title: "Local Cognitive is still running", body: "Your devices can connect while it runs. Open it or quit it from the icon in the taskbar's corner." }).show();
+    },
+    /** What quitting would interrupt: devices connected now and their answers in progress. */
+    busy: () => ({ connected: agent?.connectedDevices().length ?? 0, turns: backend.host?.runService.activeCount() ?? 0 }),
     status,
     /** This computer's id as a host, once it has registered with the Cloud. */
     hostId: () => store?.hostId(),
@@ -199,8 +253,10 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
       agent = undefined;
       keepAwake(false);
       composition?.stop();
+      tray?.destroy();
+      tray = undefined;
     }
   };
 }
 
-module.exports = { registerHost, readSettings };
+module.exports = { registerHost };
