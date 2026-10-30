@@ -361,12 +361,14 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (view.state === 'unavailable') return 'Available in the desktop app';
     return view.state === 'signed-in' ? view.profile?.email || 'Signed in' : 'Sign in to use Remote';
   }
-  // Apple and Google as equals (Apple's guidelines ask for no less prominence), then email and sign-up.
+  // Apple and Google as equals (Apple's guidelines ask for no less prominence), then email and sign-up
+  // as one quiet line of text buttons under them.
   function accountButtons(disabled, methods = ['google', 'email', 'signup']) {
     const attr = disabled ? ' disabled' : '';
     const provider = name => methods.includes(name) ? `<button type="button" class="account-provider-button" data-account-action="${name}"${attr}>${signInMarks[name]}<span>Continue with ${signInNames[name]}</span></button>` : '';
-    const plain = (name, label) => methods.includes(name) ? `<button type="button" class="ghost-button" data-account-action="${name}"${attr}>${label}</button>` : '';
-    return `<div class="account-actions account-providers">${provider('apple')}${provider('google')}</div><div class="account-actions">${plain('email', 'Continue with email')}${plain('signup', 'Create account')}</div>`;
+    const plain = (name, label) => methods.includes(name) ? `<button type="button" class="account-text-button" data-account-action="${name}"${attr}>${label}</button>` : '';
+    const others = [plain('email', 'Continue with email'), plain('signup', 'Create account')].filter(Boolean).join('<span class="account-separator" aria-hidden="true">·</span>');
+    return `<div class="account-actions account-providers">${provider('apple')}${provider('google')}</div><div class="account-actions account-alternatives">${others}</div>`;
   }
   function accountPanel() {
     const view = account.get(), busy = Boolean(accountPending);

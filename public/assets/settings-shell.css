@@ -430,7 +430,14 @@ html[data-motion=off] button:active, html[data-motion=off] .task-card:not(.is-dr
 .account-card p { margin: 5px 0 0; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.65; max-width: 620px; }
 .account-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .account-actions:empty { display: none; }
-.account-card .account-providers + .account-actions { margin-top: -8px; }
+.account-card .account-providers + .account-actions { margin-top: -6px; }
+/* Email and sign-up: text under the two provider buttons, not a second row of buttons. */
+.account-alternatives { align-items: center; gap: 10px; }
+.account-text-button { padding: 2px 0; border: 0; background: none; color: var(--muted); font: 500 var(--text-control)/1.4 var(--font-ui); cursor: pointer; transition: color 180ms; }
+.account-text-button:hover { color: var(--text); }
+.account-text-button:disabled { opacity: .5; cursor: default; }
+.account-text-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.account-separator { color: var(--faint); }
 /* Apple's and Google's sign-in buttons: their marks, the approved titles, white on dark themes and black on
    the light one (Apple's white and black styles; Google's light and dark themes). */
 .account-provider-button {
