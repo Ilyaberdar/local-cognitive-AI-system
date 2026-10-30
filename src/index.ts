@@ -128,7 +128,9 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   catch (error) { failed(error); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
   const appSettings = await appSettingsStore.get();
   const sessionIndexStore = runtime.sessionIndexStore;
-  // The server keeps chat turns durable across disconnects and restarts (R4); the desktop does not yet.
+  // Chat turns of paired devices stay durable across disconnects and restarts (R4), on a server and
+  // on a desktop that may host them; the desktop opens them even while hosting is off, so turning it
+  // on needs no restart and a chat a device is answering in is guarded here too.
   let host: HostServices | undefined;
   if (options.runtimeKind === "server") {
     // A server has no Cloud models switch: its owner allows them with a command (the same Synthesis
@@ -139,6 +141,10 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     runtime.synthesis.webConsentHint = (project, targets) => `Allow them on the server: sudo local-cognitive-server web-targets allow ${project.id} ${targets.map(shellQuoteArg).join(" ")}`;
     try { host = openHostServices(database!, config, runtimeManager, sessionIndexStore); }
     catch (error) { failed(error); await runtimeManager.dispose(); usageOutbox?.stop(); database?.close(); lock.release(); throw error; }
+  } else if (options.runtimeKind === "desktop" && database) {
+    // The app works without them; only hosting is unavailable.
+    try { host = openHostServices(database, config, runtimeManager, sessionIndexStore); }
+    catch (error) { logger.warn("Remote hosting is unavailable: the host services did not open", { message: error instanceof Error ? error.message : String(error) }); }
   }
 
   let server: Server | undefined;
@@ -179,7 +185,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     app.use(express.json({ limit: "8mb" }));
     app.use(createDrainGate(() => draining));
     app.use("/", createApiRouter(runtimeManager, sessionIndexStore, host ? {
-      forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted) } : undefined));
+      forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted),
+      answering: sessionId => Boolean(host!.runService.activeRun(sessionId)) } : undefined));
     // The headless server has no UI: clients bring their own (desktop app).
     if (config.ui.serve !== false) {
       app.use(uiSecurityHeaders);

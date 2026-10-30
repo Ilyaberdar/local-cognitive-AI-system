@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { TestContext } from "node:test";
 import express, { NextFunction, Request, Response } from "express";
+import type { DeviceChatTurns } from "../../src/api/controller";
 import { createApiRouter } from "../../src/api/routes";
 import { buildRuntime } from "../../src/app/buildRuntime";
 import type { RuntimeManager } from "../../src/app/RuntimeManager";
@@ -62,7 +63,7 @@ export const createChatTestConfig = (root: string): AppConfig => ({
 export type Script = (request: LLMRequest, providerId?: string) => Partial<LLMResponse> | Promise<Partial<LLMResponse>>;
 export interface HttpResult { status: number; body: any }
 
-export async function startChatHarness(t: TestContext) {
+export async function startChatHarness(t: TestContext, options: { deviceTurns?: DeviceChatTurns } = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-chat-regression-")));
   const config = createChatTestConfig(root);
   const runtime = await buildRuntime(config, new Logger());
@@ -78,7 +79,7 @@ export async function startChatHarness(t: TestContext) {
 
   const app = express();
   app.use(express.json({ limit: "8mb" }));
-  app.use("/", createApiRouter(manager, runtime.sessionIndexStore));
+  app.use("/", createApiRouter(manager, runtime.sessionIndexStore, options.deviceTurns));
   // Mirrors the error handler in src/index.ts.
   app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
     const statusCode = "statusCode" in error && typeof error.statusCode === "number" && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;

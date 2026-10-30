@@ -325,3 +325,20 @@ test("a turn stopped after its agent acted stays in the chat with what was done"
   assert.equal(messages.find(message => message.role === "user")?.content, "Build the scene");
   assert.match(messages.find(message => message.role === "assistant")?.content ?? "", /Stopped before the answer\. Completed actions: editor · ok\./);
 });
+
+test("a chat answering a paired device takes no turn from this screen; other chats do", async (t) => {
+  const answering = new Set(["busy"]);
+  const deleted: string[] = [];
+  const h = await startChatHarness(t, { deviceTurns: { answering: sessionId => answering.has(sessionId), forgetSession: sessionId => { deleted.push(sessionId); },
+    forgotSession: () => undefined } });
+  h.setScript(() => ({ text: "Hello." }));
+  const refused = await h.call("POST", "/chat", { requestId: "r-busy", input: "Hi", sessionId: "busy" });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body, { error: "This chat is answering a connected device. Wait for that answer or stop it, then send again.", code: "device_turn_active" });
+  assert.equal(h.calls.length, 0, "no model was asked");
+  assert.equal((await h.waitForRun("r-busy", run => run.status !== "running")).status, "failed");
+  const other = await h.call("POST", "/chat", { requestId: "r-free", input: "Hi", sessionId: "free" });
+  assert.equal(other.status, 200);
+  answering.delete("busy");
+  assert.equal((await h.call("POST", "/chat", { requestId: "r-after", input: "Hi", sessionId: "busy" })).status, 200, "once the device's answer is done");
+});

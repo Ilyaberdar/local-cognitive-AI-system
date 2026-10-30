@@ -16,7 +16,7 @@ import {
   createCreateSessionController,
   createCancelProcessRunController,
   createDeleteSessionController,
-  type SessionDeletionHooks,
+  type DeviceChatTurns,
   createDashboardBootstrapController,
   createGetAllManagedModelsController,
   createGetAllLocalModelsController,
@@ -84,8 +84,9 @@ import {
 export const createApiRouter = (
   runtimeManager: RuntimeManager,
   sessionIndexStore: SessionIndexStore,
-  /** On a server: a chat deleted here also loses its device turns and journal (R5-4). */
-  chatRuns?: SessionDeletionHooks
+  /** Where devices chat with this computer: a chat deleted here also loses their turns and journal
+   * (R5-4), and a chat answering a device takes no turn from here. */
+  chatRuns?: DeviceChatTurns
 ): Router => {
   const router = Router();
   // Execution, approval and settings must have the same origin boundary as OAuth.
@@ -189,8 +190,8 @@ export const createApiRouter = (
     }
   });
 
-  router.post("/chat", createProcessController(runtimeManager, sessionIndexStore));
-  router.post("/process", createProcessController(runtimeManager, sessionIndexStore));
+  router.post("/chat", createProcessController(runtimeManager, sessionIndexStore, chatRuns));
+  router.post("/process", createProcessController(runtimeManager, sessionIndexStore, chatRuns));
   router.post("/process-runs/:requestId/review", createReviewProcessRunController());
   router.get("/process-runs", createListProcessRunsController());
   router.get("/process-runs/:requestId", createProcessRunStatusController());

@@ -43,3 +43,14 @@ test("a host says what it is: its name, version, platform and kind", async () =>
     assert.equal(typeof info.version, "string");
   }
 });
+
+test("the desktop app opens the host services, so hosting can start without a restart; a test runtime does not", { timeout: 60_000 }, async t => {
+  const desktop = await startTestBackend(t, "desktop");
+  assert.ok(desktop.backend.host, "RunService, journal and ledger are open");
+  assert.equal(desktop.backend.activeWork().chatRuns, 0);
+  const host = createHostOperations({ backend: desktop.backend, dataRoot: desktop.root });
+  t.after(host.stop);
+  assert.ok(host.operations["chat.runs.start"]);
+  const plain = await startTestBackend(t, "test");
+  assert.equal(plain.backend.host, undefined);
+});

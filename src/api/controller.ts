@@ -28,7 +28,7 @@ import { checkProvider, currentStatuses, ProviderStatus, ProviderStatusStore, st
 import { maskSecrets } from "../runtime/settingsDto";
 
 export const createProcessController =
-  (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore) =>
+  (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore, deviceTurns?: DeviceChatTurns) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = typeof req.body?.requestId === "string" ? req.body.requestId : randomUUID();
     if (processRunRegistry.get(requestId)) {
@@ -37,6 +37,13 @@ export const createProcessController =
     }
     const processSessionId = typeof req.body?.sessionId === "string" && req.body.sessionId.trim() ? req.body.sessionId.trim() : randomUUID();
     const processRun = processRunRegistry.start(requestId, processSessionId, typeof req.body?.input === "string" ? req.body.input : undefined);
+    // Registered first, so a device's turn starting from now is refused in turn (RunService legacyBusy).
+    if (deviceTurns?.answering(processSessionId)) {
+      const message = "This chat is answering a connected device. Wait for that answer or stop it, then send again.";
+      processRunRegistry.fail(requestId, message);
+      res.status(409).json({ error: message, code: "device_turn_active" });
+      return;
+    }
     req.once("aborted", () => processRunRegistry.cancel(requestId));
     res.once("close", () => {
       if (!res.writableEnded) processRunRegistry.cancel(requestId);
@@ -536,14 +543,17 @@ export const createRenameSessionController =
     }
   };
 
-/** On a server, a chat's device turns (RunService): refused while one runs, removed with the chat. */
-export interface SessionDeletionHooks {
+/** A chat's turns from paired devices (RunService), where this computer hosts them: the chat is not
+ * deleted while one runs and loses them with it, and this screen starts no turn in it meanwhile. */
+export interface DeviceChatTurns {
   forgetSession(sessionId: string): void;
   forgotSession(sessionId: string, deleted: boolean): void;
+  /** Whether a device's turn in this chat is queued, running or waiting for an approval. */
+  answering(sessionId: string): boolean;
 }
 
 export const createDeleteSessionController =
-  (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore, chatRuns?: SessionDeletionHooks) =>
+  (runtimeManager: RuntimeManager, sessionIndexStore: SessionIndexStore, chatRuns?: DeviceChatTurns) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const sessionId = String(req.params.sessionId);
     let forgetting = false, deleted = false;
