@@ -51,7 +51,7 @@ test("connection keys round-trip, tolerate case and line breaks, and reject typo
 });
 
 interface Fixture { host: RemoteHost; store: RemoteHostStore; hostTls: TlsIdentity; receipts: ClaimReceipt[]; now: { value: number } }
-function fixture(t: TestContext): Fixture {
+function fixture(t: TestContext, options: { expectedOwner?: () => string | undefined } = {}): Fixture {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "remote-channel-"));
   const database = HostDatabase.open(path.join(directory, "host.db"), hostMigrations);
   t.after(() => { database.close(); fs.rmSync(directory, { recursive: true, force: true }); });
@@ -60,7 +60,7 @@ function fixture(t: TestContext): Fixture {
   const hostTls = createTlsIdentity("lc-host"), now = { value: Date.now() };
   const host = new RemoteHost({ store, tls: hostTls, signing: createSigningIdentity(), hostName: "Fedora", serverVersion: "0.1.0", environment: 1, now: () => now.value,
     operations: { "host.info": (_payload, context) => ({ name: "Fedora", deviceId: context.deviceId }), "fail.known": () => { throw new RemoteOperationError("No such model.", "not_found"); },
-      "fail.unknown": () => { throw new Error("/srv/secret/path exploded"); }, "slow": () => new Promise(resolve => setTimeout(() => resolve("done"), 50)) } });
+      "fail.unknown": () => { throw new Error("/srv/secret/path exploded"); }, "slow": () => new Promise(resolve => setTimeout(() => resolve("done"), 50)) }, ...options });
   const receipts: ClaimReceipt[] = [];
   host.on("claimed", (receipt: ClaimReceipt) => receipts.push(receipt));
   t.after(() => host.disconnectAll("test"));
@@ -120,6 +120,22 @@ test("pairing is refused for a wrong secret, a reused or replayed key, another a
   await assert.rejects(pairWith(f, device("acct-2")), denied("owner_mismatch"), "a claimed server belongs to its owner");
   f.now.value += 11 * 60_000;
   await assert.rejects(pairWith(f, device(), key), denied("invitation_unknown"));
+});
+
+test("a host that belongs to the account signed in on it refuses every other account, and everyone while nobody is signed in", async t => {
+  let signedIn: string | undefined = "acct-1";
+  const f = fixture(t, { expectedOwner: () => signedIn });
+  const key = f.host.createInvitation();
+  await assert.rejects(pairWith(f, device("acct-2"), key), denied("owner_mismatch"), "a key in another account's hands");
+  assert.equal(f.store.owner(), undefined, "claims nothing");
+  const mac = device("acct-1");
+  (await pairWith(f, mac, key)).close();
+  assert.equal(f.store.owner(), "acct-1", "the key still worked for the account signed in");
+  signedIn = undefined;
+  await assert.rejects(connect(f, mac, { purpose: "connect" }), denied("not_authorized"));
+  await assert.rejects(pairWith(f, device("acct-1")), denied("owner_mismatch"));
+  signedIn = "acct-1";
+  (await connect(f, mac, { purpose: "connect" })).close();
 });
 
 test("the device refuses a server whose key does not match before sending anything", async t => {

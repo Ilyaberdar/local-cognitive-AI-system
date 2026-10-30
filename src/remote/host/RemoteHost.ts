@@ -54,6 +54,9 @@ export class RemoteHost extends EventEmitter {
   constructor(private readonly options: {
     store: RemoteHostStore; tls: TlsIdentity; signing: SigningIdentity; hostName: string; serverVersion: string;
     environment: number; operations: Record<string, RemoteOperation>; logger?: Logger; now?: () => number;
+    /** The one account that may pair and connect, where the host belongs to whoever is signed in on it
+     * (a desktop): another account holding a key is refused. A server has none: the first claim decides. */
+    expectedOwner?: () => string | undefined;
   }) { super(); }
 
   get activeSessions(): number { return [...this.sessions.values()].reduce((sum, set) => sum + set.size, 0); }
@@ -116,6 +119,7 @@ export class RemoteHost extends EventEmitter {
     const hostId = this.options.store.hostId();
     const invitation = this.secrets.get(open.invitationId ?? "");
     if (!hostId || !invitation || invitation.expiresAt <= this.now()) return "invitation_unknown";
+    if (this.options.expectedOwner && this.options.expectedOwner() !== open.accountId) return "owner_mismatch";
     const expected = pairingProof(invitation.secret, pairingExporter(channel.socket, { hostId, invitationId: open.invitationId!, ticketId: open.ticketId,
       accountId: open.accountId, deviceId: open.deviceId, deviceSpkiSha256: deviceSpki, hostSpkiSha256: this.options.tls.spkiSha256 }));
     const proof = Buffer.from(hello.proof ?? "", "base64url");
@@ -135,6 +139,7 @@ export class RemoteHost extends EventEmitter {
 
   private authorize(open: StreamOpen): RemoteGrant | keyof typeof DENIALS {
     const grant = this.options.store.activeGrant(open.deviceId);
+    if (this.options.expectedOwner && this.options.expectedOwner() !== open.accountId) return "not_authorized";
     if (!grant || grant.accountId !== open.accountId || this.options.store.owner() !== open.accountId
       || !timingSafeHexEqual(grant.deviceSpkiSha256, open.deviceSpkiSha256)) return "not_authorized";
     return grant;

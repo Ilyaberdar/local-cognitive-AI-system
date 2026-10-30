@@ -49,6 +49,8 @@ export class HostAgent extends EventEmitter {
   constructor(private readonly options: {
     cloudUrl: string; store: RemoteHostStore; vault: CredentialVault; hostName: string; serverVersion: string;
     operations: Record<string, RemoteOperation>; logger: Logger; fetchImpl?: typeof fetch; backoff?: { baseMs: number; maxMs: number };
+    /** See RemoteHost: the account a desktop host belongs to. */
+    expectedOwner?: () => string | undefined;
   }) {
     super();
     this.origin = new URL(options.cloudUrl).origin;
@@ -58,7 +60,8 @@ export class HostAgent extends EventEmitter {
   async start(): Promise<void> {
     this.identity = await this.loadIdentity();
     this.remote = new RemoteHost({ store: this.options.store, tls: this.identity.tls, signing: this.identity.signing, hostName: this.options.hostName,
-      serverVersion: this.options.serverVersion, environment: environmentOf(this.origin), operations: this.options.operations, logger: this.options.logger });
+      serverVersion: this.options.serverVersion, environment: environmentOf(this.origin), operations: this.options.operations, logger: this.options.logger,
+      ...(this.options.expectedOwner ? { expectedOwner: this.options.expectedOwner } : {}) });
     this.remote.on("claimed", (receipt: ClaimReceipt) => this.sendClaim(receipt));
     void this.connect();
   }

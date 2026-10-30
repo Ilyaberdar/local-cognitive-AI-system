@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, session, systemPreferences, shell, powerMonitor, safeStorage } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, session, systemPreferences, shell, powerMonitor, powerSaveBlocker, safeStorage } = require("electron");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
@@ -35,6 +35,7 @@ const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) app.quit();
 let account;
 let remote;
+let host;
 let updates;
 // Windows names a notification after the Start menu shortcut with this id (the installer's).
 if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? require("./app-id.cjs").APP_ID : process.execPath);
@@ -328,6 +329,10 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     apiAuth.installApiAuth(session.defaultSession, runtime.url, apiToken);
     backendHandle = await startBackend(runtime.appRoot, vault, apiToken);
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
+    // This computer as a host for paired devices, when its owner turned that on.
+    host = require("./host.cjs").registerHost({ app, ipcMain, vault, accountService: account.service, backend: backendHandle, dataRoot: runtime.dataRoot,
+      assertSender: assertAppSender, getWindow: () => mainWindow, powerSaveBlocker });
+    void host.init();
     sentry.attachLog(backendHandle.diagnosticLog);
     registerDiagnostics();
     const bugReport = require("./bug-report.cjs").registerBugReport({ app, ipcMain, dialog, assertSender: assertAppSender, getWindow: () => mainWindow, sentry,
@@ -376,6 +381,8 @@ const shutdown = () => shutdownPromise ??= (async () => {
   updates?.dispose();
   account?.dispose();
   remote?.dispose();
+  // Devices are told the host is going before the backend closes the database their sessions use.
+  host?.dispose();
   try { await Promise.all([backendHandle?.dispose(), voiceInput?.dispose()]); } catch (error) { console.error("Shutdown failed", error); }
   shutdownComplete = true;
 })();
