@@ -51,6 +51,8 @@ export class HostAgent extends EventEmitter {
     operations: Record<string, RemoteOperation>; logger: Logger; fetchImpl?: typeof fetch; backoff?: { baseMs: number; maxMs: number };
     /** See RemoteHost: the account a desktop host belongs to. */
     expectedOwner?: () => string | undefined;
+    /** What the Cloud lists the host as (a server, or a desktop that hosts), with its platform. */
+    kind?: "server" | "desktop";
   }) {
     super();
     this.origin = new URL(options.cloudUrl).origin;
@@ -149,7 +151,7 @@ export class HostAgent extends EventEmitter {
     this.setState("registering");
     const { tls, signing } = this.identity!;
     const payload = Buffer.from(JSON.stringify({ signingPublicKey: signing.publicKey.toString("base64url"), tlsSpkiSha256: tls.spkiSha256.toString("hex"),
-      name: this.options.hostName.slice(0, 120) || "Local Cognitive server", appVersion: this.options.serverVersion.slice(0, 64), protocol: PROTOCOL }));
+      name: this.options.hostName.slice(0, 120) || "Local Cognitive server", appVersion: this.options.serverVersion.slice(0, 64), protocol: PROTOCOL, ...this.describe() }));
     const response = await (this.options.fetchImpl ?? fetch)(`${this.origin}/v1/hosts/register`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ payload: payload.toString("base64url"), signature: signFor(signing, SIGNATURE_CONTEXT.register, payload).toString("base64url") }),
       signal: AbortSignal.timeout(15_000) });
@@ -158,6 +160,12 @@ export class HostAgent extends EventEmitter {
     this.options.store.setHostId(uuid.parse(hostId));
     this.options.logger.info("Registered with Local Cognitive Cloud", { hostId });
     return hostId;
+  }
+
+  /** What the Cloud lists this host as: its kind and platform. */
+  private describe(): { kind?: "server" | "desktop"; platform?: "linux" | "macos" | "windows" } {
+    const platform = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : process.platform === "linux" ? "linux" : undefined;
+    return { ...(this.options.kind ? { kind: this.options.kind } : {}), ...(platform ? { platform } : {}) };
   }
 
   private async connect(): Promise<void> {
@@ -169,7 +177,7 @@ export class HostAgent extends EventEmitter {
       const socket = new WebSocket(`${this.wsOrigin}/v1/relay/host`, { maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false, handshakeTimeout: 15_000 });
       this.control = socket;
       socket.on("open", () => socket.send(JSON.stringify({ type: "hello", hostId, protocol: PROTOCOL, lastRevocationSeq: this.options.store.revocationSeq(),
-        appVersion: this.options.serverVersion })));
+        appVersion: this.options.serverVersion, ...this.describe() })));
       socket.on("ping", () => this.arm(socket));
       socket.on("message", (data, binary) => { if (!binary) this.onControl(socket, hostId, data.toString()); });
       socket.on("error", error => { this.lastError = error.message; });

@@ -3,7 +3,9 @@ import type pg from "pg";
 
 export type Purpose = "pair" | "connect";
 export interface HostRecord { id: string; signingPublicKey: Buffer; tlsSpkiSha256: Buffer; name: string; appVersion: string; ownerAccountId: string | null;
-  revocationSeq: number; blocked: boolean; claimedAt: Date | null; lastSeenAt: Date | null }
+  revocationSeq: number; blocked: boolean; claimedAt: Date | null; lastSeenAt: Date | null; kind: HostKind | null; platform: HostPlatform | null }
+export type HostKind = "server" | "desktop";
+export type HostPlatform = "linux" | "macos" | "windows";
 export interface ConsumedTicket { ticketId: string; accountId: string; deviceId: string; hostId: string; purpose: Purpose; invitationId: string | null;
   authExpiresAt: Date; deviceSpkiSha256: Buffer; deviceName: string }
 export interface Revocation { seq: number; kind: "device" | "host"; deviceId: string | null }
@@ -15,10 +17,10 @@ export const TICKETS_PER_INVITATION = 10;
 const sha256 = (value: Buffer) => createHash("sha256").update(value).digest();
 
 interface HostRow { id: string; signing_public_key: Buffer; tls_spki_sha256: Buffer; name: string; app_version: string; owner_account_id: string | null;
-  revocation_seq: string; blocked_at: Date | null; claimed_at: Date | null; last_seen_at: Date | null }
+  revocation_seq: string; blocked_at: Date | null; claimed_at: Date | null; last_seen_at: Date | null; kind: HostKind | null; platform: HostPlatform | null }
 const toHost = (row: HostRow): HostRecord => ({ id: row.id, signingPublicKey: row.signing_public_key, tlsSpkiSha256: row.tls_spki_sha256, name: row.name,
   appVersion: row.app_version, ownerAccountId: row.owner_account_id, revocationSeq: Number(row.revocation_seq), blocked: row.blocked_at !== null,
-  claimedAt: row.claimed_at, lastSeenAt: row.last_seen_at });
+  claimedAt: row.claimed_at, lastSeenAt: row.last_seen_at, kind: row.kind ?? null, platform: row.platform ?? null });
 
 const transaction = async <T>(pool: pg.Pool, body: (client: pg.PoolClient) => Promise<T>): Promise<T> => {
   const client = await pool.connect();
@@ -44,14 +46,17 @@ const addRevocation = async (client: pg.PoolClient, hostId: string, kind: "devic
 export type RemoteRepository = ReturnType<typeof createRemoteRepository>;
 
 export const createRemoteRepository = (pool: pg.Pool) => ({
-  /** Idempotent by signing key: a host re-registering keeps its id. */
-  async registerHost(input: { signingPublicKey: Buffer; tlsSpkiSha256: Buffer; name: string; appVersion: string; protocol: number; ip: string | null }) {
+  /** Idempotent by signing key: a host re-registering keeps its id. A host that says nothing of its
+   * kind or platform (an older one) keeps what was known. */
+  async registerHost(input: { signingPublicKey: Buffer; tlsSpkiSha256: Buffer; name: string; appVersion: string; protocol: number; ip: string | null;
+    kind?: HostKind; platform?: HostPlatform }) {
     const { rows } = await pool.query<{ id: string; created: boolean }>(`
-      INSERT INTO hosts (signing_public_key, tls_spki_sha256, name, app_version, protocol_version, registered_ip) VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO hosts (signing_public_key, tls_spki_sha256, name, app_version, protocol_version, registered_ip, kind, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (signing_public_key) DO UPDATE SET tls_spki_sha256 = EXCLUDED.tls_spki_sha256, name = EXCLUDED.name,
-        app_version = EXCLUDED.app_version, protocol_version = EXCLUDED.protocol_version
+        app_version = EXCLUDED.app_version, protocol_version = EXCLUDED.protocol_version,
+        kind = coalesce(EXCLUDED.kind, hosts.kind), platform = coalesce(EXCLUDED.platform, hosts.platform)
       RETURNING id, (xmax = 0) AS created`,
-      [input.signingPublicKey, input.tlsSpkiSha256, input.name, input.appVersion, input.protocol, input.ip]);
+      [input.signingPublicKey, input.tlsSpkiSha256, input.name, input.appVersion, input.protocol, input.ip, input.kind ?? null, input.platform ?? null]);
     return { hostId: rows[0]!.id, created: rows[0]!.created };
   },
 
@@ -60,8 +65,10 @@ export const createRemoteRepository = (pool: pg.Pool) => ({
     return rows[0] ? toHost(rows[0]) : undefined;
   },
 
-  async touchHost(id: string, appVersion?: string): Promise<void> {
-    await pool.query("UPDATE hosts SET last_seen_at = now(), app_version = coalesce($2, app_version) WHERE id = $1", [id, appVersion ?? null]);
+  /** Seen now, with what it says of itself on connecting (an older host says nothing of its kind). */
+  async touchHost(id: string, seen: { appVersion?: string; kind?: HostKind; platform?: HostPlatform } = {}): Promise<void> {
+    await pool.query("UPDATE hosts SET last_seen_at = now(), app_version = coalesce($2, app_version), kind = coalesce($3, kind), platform = coalesce($4, platform) WHERE id = $1",
+      [id, seen.appVersion ?? null, seen.kind ?? null, seen.platform ?? null]);
   },
 
   async announceInvitation(hostId: string, invitationId: string, expiresAt: Date): Promise<boolean> {

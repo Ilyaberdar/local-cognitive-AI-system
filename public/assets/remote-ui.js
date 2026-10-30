@@ -104,6 +104,15 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     return date && !Number.isNaN(date.getTime()) ? ` · paired ${escape(date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }))}` : "";
   };
 
+  // What kind of computer a host is, when the Cloud knows: a sleeping laptop is not a broken server.
+  const kindOf = host => host.kind === "server" ? "Server · " : host.kind === "desktop" ? (host.platform === "macos" ? "Mac · " : host.platform === "windows" ? "PC · " : "Computer · ") : "";
+  const offlineSince = value => {
+    const date = value ? new Date(value) : undefined;
+    if (!date || Number.isNaN(date.getTime())) return "Offline";
+    const sameDay = date.toDateString() === new Date().toDateString();
+    return `Offline since ${escape(sameDay ? date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : date.toLocaleDateString(undefined, { day: "numeric", month: "short" }))}`;
+  };
+
   function serverList() {
     if (!hostsLoaded) return '<p class="settings-description" role="status">Loading your servers…</p>';
     if (hostsError) return `<p class="remote-error" role="alert">${escape(hostsError)} <button type="button" class="ghost-button" data-remote-action="reload">Try again</button></p>`;
@@ -119,7 +128,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
       ].join("");
       const devices = host.devices.map(device => `<li><span>${escape(device.name)}${device.current ? ' <span class="account-badge">This computer</span>' : ""}</span><span class="subtle">${escape(device.platform)}${pairedOn(device.grantedAt)}</span><button type="button" class="ghost-button" data-remote-action="revoke" data-host-id="${escape(host.hostId)}" data-device-id="${escape(device.deviceId)}"${pending ? " disabled" : ""}>Remove access</button></li>`).join("");
       const badge = host.self ? ' <span class="account-badge">This computer</span>' : "";
-      return `<div class="remote-host"><div class="remote-host-head"><div><strong>${escape(host.name)}</strong>${badge}<span class="subtle"><span class="status-dot ${host.online ? "is-online" : ""}"></span>${host.online ? "Online" : "Offline"} · ${escape(host.appVersion)}${current ? " · connected" : ""}${!host.paired && !host.self ? " · not paired with this computer" : ""}</span></div><div class="account-actions">${actions}</div></div>${devices ? `<ul class="remote-devices">${devices}</ul>` : ""}</div>`;
+      return `<div class="remote-host"><div class="remote-host-head"><div><strong>${escape(host.name)}</strong>${badge}<span class="subtle"><span class="status-dot ${host.online ? "is-online" : ""}"></span>${kindOf(host)}${host.online ? "Online" : offlineSince(host.lastSeenAt)} · ${escape(host.appVersion)}${current ? " · connected" : ""}${!host.paired && !host.self ? " · not paired with this computer" : ""}</span></div><div class="account-actions">${actions}</div></div>${devices ? `<ul class="remote-devices">${devices}</ul>` : ""}</div>`;
     }).join("")}</div>`;
   }
 

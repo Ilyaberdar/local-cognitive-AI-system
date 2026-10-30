@@ -17,7 +17,8 @@ const hex32 = z.string().regex(/^[0-9a-f]{64}$/).transform(value => Buffer.from(
 const base64url = z.string().max(8192).regex(/^[A-Za-z0-9_-]+$/).transform(value => Buffer.from(value, "base64url"));
 const registration = z.object({ payload: base64url, signature: base64url });
 const registrationPayload = z.object({ signingPublicKey: base64url.refine(value => value.length === 32), tlsSpkiSha256: hex32,
-  name: z.string().trim().min(1).max(120), appVersion: z.string().max(64), protocol: z.literal(PROTOCOL_VERSION) });
+  name: z.string().trim().min(1).max(120), appVersion: z.string().max(64), protocol: z.literal(PROTOCOL_VERSION),
+  kind: z.enum(["server", "desktop"]).optional(), platform: z.enum(["linux", "macos", "windows"]).optional() });
 const deviceBody = z.object({ spkiSha256: hex32, name: z.string().trim().min(1).max(120), platform: z.enum(["macos", "windows", "linux", "ios", "android"]) });
 const connectionBody = z.discriminatedUnion("purpose", [
   z.object({ purpose: z.literal("pair"), hostId: z.uuid(), deviceId: z.uuid(), invitationId: z.uuid() }),
@@ -68,6 +69,7 @@ export const createRemoteRouter = (deps: RemoteRouteDependencies) => {
     const hosts = await deps.repo.hostsFor(req.account!.id);
     res.set("Cache-Control", "no-store").json({ hosts: hosts.map(host => ({ hostId: host.id, name: host.name, appVersion: host.appVersion,
       online: deps.relay.isOnline(host.id), tlsSpkiSha256: host.tlsSpkiSha256.toString("hex"), claimedAt: host.claimedAt, lastSeenAt: host.lastSeenAt,
+      ...(host.kind ? { kind: host.kind } : {}), ...(host.platform ? { platform: host.platform } : {}),
       devices: host.devices.map(device => ({ deviceId: device.device_id, name: device.name, platform: device.platform, status: device.status,
         grantedAt: device.granted_at, revokedAt: device.revoked_at })) })) });
   }));

@@ -168,3 +168,19 @@ test("a computer that hosts shows no inference row, and the form says where a ke
   assert.match(page.root.textContent, /Connected to MacBook\s*Local Cognitive 0\.1\.12 there\./);
   assert.doesNotMatch(page.root.textContent, /Inference|on the server/);
 });
+
+test("the server list says what kind of computer each host is, and since when one is offline", async () => {
+  const today = new Date(); today.setHours(9, 5, 0, 0);
+  const hosts = async () => ({ ok: true, value: [
+    { hostId: HOST, name: "fedora", online: true, appVersion: "0.1.12", paired: true, self: false, kind: "server", platform: "linux", devices: [] },
+    { hostId: "22222222-2222-4222-8222-222222222222", name: "MacBook", online: false, appVersion: "0.1.12", paired: true, self: false, kind: "desktop", platform: "macos", lastSeenAt: today.toISOString(), devices: [] },
+    { hostId: "33333333-3333-4333-8333-333333333333", name: "old", online: false, appVersion: "0.1.9", paired: true, self: false, devices: [] }] });
+  const page = load(bridgeWith({ hosts }).bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
+  page.paint();
+  page.signIn({});
+  await flush(); await flush();
+  const rows = [...page.root.querySelectorAll(".remote-host-head .subtle")].map((row: any) => row.textContent);
+  assert.match(rows[0], /^Server · Online · 0\.1\.12/);
+  assert.match(rows[1], new RegExp(`^Mac · Offline since ${today.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })} · 0\\.1\\.12`));
+  assert.match(rows[2], /^Offline · 0\.1\.9/, "a host that never said what it is");
+});

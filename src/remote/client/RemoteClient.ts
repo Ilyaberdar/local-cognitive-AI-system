@@ -13,7 +13,9 @@ export type RemoteState = "idle" | "connecting" | "online" | "reconnecting" | "o
 export interface RemoteStatus { state: RemoteState; hostId?: string; hostName?: string; serverVersion?: string; capabilities?: string[]; error?: { code: string; message: string } }
 export interface RemoteHostSummary { hostId: string; name: string; online: boolean; appVersion: string; paired: boolean;
   /** This computer itself, when it hosts devices: not a server to connect to. */
-  self: boolean; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string; current: boolean }> }
+  self: boolean;
+  /** A server, or a computer that hosts (a Mac or a PC), and when it was last online; older Clouds and hosts say neither. */
+  kind?: "server" | "desktop"; platform?: "linux" | "macos" | "windows"; lastSeenAt?: string; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string; current: boolean }> }
 
 export class RemoteError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 
@@ -136,10 +138,12 @@ export class RemoteClient extends EventEmitter {
   async hosts(): Promise<RemoteHostSummary[]> {
     const { accountId, accessToken } = await this.requireAccount();
     const [profiles, device] = await Promise.all([this.profiles(accountId), this.storedDevice(accountId)]);
-    const body = await this.api<{ hosts: Array<{ hostId: string; name: string; online: boolean; appVersion: string; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string }> }> }>(
+    const body = await this.api<{ hosts: Array<{ hostId: string; name: string; online: boolean; appVersion: string; kind?: "server" | "desktop"; platform?: "linux" | "macos" | "windows";
+      lastSeenAt?: string | null; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string }> }> }>(
       accessToken, "GET", "/v1/hosts");
     const self = this.options.selfHostId?.();
     return body.hosts.map(host => ({ hostId: host.hostId, name: host.name, online: host.online, appVersion: host.appVersion, self: host.hostId === self,
+      ...(host.kind ? { kind: host.kind } : {}), ...(host.platform ? { platform: host.platform } : {}), ...(host.lastSeenAt ? { lastSeenAt: host.lastSeenAt } : {}),
       paired: profiles.some(profile => profile.hostId === host.hostId) && host.devices.some(entry => entry.deviceId === device?.deviceId && entry.status === "active"),
       devices: host.devices.filter(entry => entry.status === "active").map(entry => ({ ...entry, current: entry.deviceId === device?.deviceId })) }));
   }

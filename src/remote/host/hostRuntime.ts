@@ -88,7 +88,7 @@ export const startHostAgent = async (input: { host: HostServices; vault: Credent
   status: () => Record<string, unknown>; operations: Record<string, RemoteOperation>; usage?: UsageOutbox; expectedOwner?: () => string | undefined }): Promise<HostAgent> => {
   const store = new RemoteHostStore(input.host.database);
   const agent = new HostAgent({ cloudUrl: input.cloudUrl, store, vault: input.vault, hostName: input.hostName, serverVersion: appVersion(), logger: input.logger,
-    operations: { ...builtInHostOperations(input), ...input.operations }, ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}) });
+    operations: { ...builtInHostOperations(input), ...input.operations }, kind: input.kind, ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}) });
   await agent.start();
   input.usage?.setSender(hostUsageSender({ cloudUrl: input.cloudUrl, hostId: () => store.hostId(), owner: () => store.owner(), sign: payload => agent.signUsage(payload) }));
   return agent;

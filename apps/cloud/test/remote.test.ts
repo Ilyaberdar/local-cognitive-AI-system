@@ -21,7 +21,7 @@ const token = (subject: string, verified = true) => new SignJWT({ [`${ns}email`]
   .setProtectedHeader({ alg: "RS256", kid: "k1" }).setIssuer(issuer).setAudience(audience).setSubject(subject).setIssuedAt().setExpirationTime("5m").sign(privateKey);
 const signFor = (key: KeyObject, context: string, message: Buffer) => sign(null, Buffer.concat([Buffer.from(context), Buffer.from([0]), message]), key);
 
-async function cloud(t: TestContext) {
+async function cloud(t: TestContext, registrationsPerHour = 3) {
   const pool = await createTestDatabase(t);
   await migrate(pool, MIGRATIONS_DIR);
   const repo = createRemoteRepository(pool);
@@ -29,7 +29,7 @@ async function cloud(t: TestContext) {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const relay = new Relay({ repo, origin, limits: { authTimeoutMs: 500, attachTimeoutMs: 1000 } });
-  server.on("request", createApp({ pool, auth: { issuer, audience, keys }, remote: { repo, relay, limits: { registrationsPerHour: 3 } } }));
+  server.on("request", createApp({ pool, auth: { issuer, audience, keys }, remote: { repo, relay, limits: { registrationsPerHour } } }));
   server.on("upgrade", relay.handleUpgrade);
   t.after(() => new Promise<void>(resolve => { relay.close(); server.closeAllConnections(); server.close(() => resolve()); }));
   const api = async (method: string, url: string, body?: unknown, bearer?: string) => {
@@ -51,18 +51,17 @@ const watch = (socket: WebSocket) => {
     opened: new Promise<void>((resolve, reject) => { socket.once("open", () => resolve()); socket.once("error", reject); }) };
 };
 
-async function registerHost(c: Cloud, name = "Fedora") {
-  const signing = generateKeyPairSync("ed25519");
+async function registerHost(c: Cloud, name = "Fedora", about: Record<string, string> = {}, signing = generateKeyPairSync("ed25519")) {
   const signingPublicKey = Buffer.from(signing.publicKey.export({ format: "jwk" }).x!, "base64url");
-  const payload = Buffer.from(JSON.stringify({ signingPublicKey: signingPublicKey.toString("base64url"), tlsSpkiSha256: randomBytes(32).toString("hex"), name, appVersion: "0.1.0", protocol: 1 }));
+  const payload = Buffer.from(JSON.stringify({ signingPublicKey: signingPublicKey.toString("base64url"), tlsSpkiSha256: randomBytes(32).toString("hex"), name, appVersion: "0.1.0", protocol: 1, ...about }));
   const response = await c.api("POST", "/v1/hosts/register", { payload: payload.toString("base64url"), signature: signFor(signing.privateKey, SIGNATURE_CONTEXT.register, payload).toString("base64url") });
   return { hostId: response.body.hostId as string, status: response.status, signing: signing.privateKey, payload };
 }
 
-async function connectHost(c: Cloud, host: { hostId: string; signing: KeyObject }, lastRevocationSeq = 0, appVersion?: string) {
+async function connectHost(c: Cloud, host: { hostId: string; signing: KeyObject }, lastRevocationSeq = 0, appVersion?: string, about: Record<string, string> = {}) {
   const socket = c.ws(RELAY_PATHS.host), control = watch(socket);
   await control.opened;
-  socket.send(JSON.stringify({ type: "hello", hostId: host.hostId, protocol: 1, lastRevocationSeq, ...(appVersion ? { appVersion } : {}) }));
+  socket.send(JSON.stringify({ type: "hello", hostId: host.hostId, protocol: 1, lastRevocationSeq, ...(appVersion ? { appVersion } : {}), ...about }));
   const challenge = await control.next();
   socket.send(JSON.stringify({ type: "auth", signature: signFor(host.signing, SIGNATURE_CONTEXT.relayAuth, relayAuthMessage(host.hostId, challenge.nonce, c.origin)).toString("base64url") }));
   return { socket, control, ready: await control.next(), send: (message: object) => socket.send(JSON.stringify(message)) };
@@ -195,6 +194,33 @@ test("pairing: tickets, relayed bytes, a signed claim, then connect tickets; rev
   assert.deepEqual(await back.control.next(), { type: "revocation", seq: 2, kind: "host", deviceId: null });
   assert.deepEqual((await c.api("GET", "/v1/hosts", undefined, alice.bearer)).body.hosts, []);
   back.socket.close();
+});
+
+test("a host says what kind of computer it is when it registers and each time it connects, and when it was last seen", { skip: databaseSkip }, async t => {
+  const c = await cloud(t, 10);
+  const row = async (hostId: string) => (await c.pool.query("SELECT kind, platform, last_seen_at FROM hosts WHERE id = $1", [hostId])).rows[0];
+  const mac = await registerHost(c, "MacBook", { kind: "desktop", platform: "macos" });
+  assert.deepEqual(await row(mac.hostId), { kind: "desktop", platform: "macos", last_seen_at: null });
+  const signing = generateKeyPairSync("ed25519");
+  const old = await registerHost(c, "fedora", {}, signing);
+  assert.deepEqual([(await row(old.hostId)).kind, (await row(old.hostId)).platform], [null, null], "an older host says nothing of itself");
+  assert.equal((await registerHost(c, "fedora", { kind: "laptop" }, signing)).status, 400, "only the kinds there are");
+  const fedora = { ...old, signing: signing.privateKey };
+  const connected = await connectHost(c, fedora, 0, "0.1.12", { kind: "server", platform: "linux" });
+  assert.equal(connected.ready.type, "ready");
+  assert.deepEqual([(await row(old.hostId)).kind, (await row(old.hostId)).platform], ["server", "linux"], "learned on connecting");
+  assert.equal((await registerHost(c, "fedora", {}, signing)).status, 200);
+  assert.equal((await row(old.hostId)).kind, "server", "registering again without it keeps it");
+  const owner = await user(c, "owner");
+  await c.pool.query("UPDATE hosts SET owner_account_id = $1 WHERE id = $2", [owner.accountId, old.hostId]);
+  const listed = (await c.api("GET", "/v1/hosts", undefined, owner.bearer)).body.hosts[0];
+  assert.deepEqual([listed.kind, listed.platform, listed.online], ["server", "linux", true]);
+  const before = new Date((await row(old.hostId)).last_seen_at).getTime();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  connected.socket.close();
+  await connected.control.closed;
+  for (let i = 0; i < 50 && new Date((await row(old.hostId)).last_seen_at).getTime() <= before; i++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(new Date((await row(old.hostId)).last_seen_at).getTime() > before, "seen last when it went away: offline since then");
 });
 
 test("an invitation issues a bounded number of tickets and a host must attach in time", { skip: databaseSkip }, async t => {
