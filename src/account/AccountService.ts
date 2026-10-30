@@ -36,6 +36,10 @@ export interface AccountServiceOptions {
   openExternal(url: string): Promise<void>;
   /** Brings the app to the front after the browser step. */
   onCompleted?(): void;
+  /** Whether the success page offers "Open Local Cognitive" (localcognitive://); true when absent.
+   * macOS brings the window forward by itself, where the link would only add the browser's prompt
+   * naming http://127.0.0.1:17850; Windows may keep a background app behind the browser. */
+  appLink?: boolean;
   fetch?: FetchLike;
   now?: () => number;
   signInTimeoutMs?: number;
@@ -290,7 +294,7 @@ export class AccountService extends EventEmitter {
       this.lastProfileCheck = this.now();
       this.completed.set(attempt.id, this.now() + 5 * 60_000);
       sendAuthPage(response, 200, { outcome: "success", title: "You’re signed in", message: "Local Cognitive is connected to your account.",
-        appLink: `localcognitive://auth/complete/${attempt.id}` });
+        appLink: this.options.appLink === false ? undefined : `localcognitive://auth/complete/${attempt.id}` });
     } catch (error) {
       failure = errorStatus(error instanceof AccountError ? error.code : "token_exchange_failed");
       if (tokens?.refresh_token) void revokeRefreshToken(config, tokens.refresh_token, this.fetchImpl);

@@ -13,7 +13,7 @@ function registerProtocol(app) {
 
 function registerAccount({ app, ipcMain, shell, vault, assertSender, getWindow, focusWindow }) {
   const service = new AccountService({ config: resolveAccountConfig({ env: process.env, packaged: app.isPackaged }), vault,
-    openExternal: url => shell.openExternal(url), onCompleted: focusWindow });
+    openExternal: url => shell.openExternal(url), onCompleted: focusWindow, appLink: process.platform !== "darwin" });
   service.on("change", status => {
     const window = getWindow();
     if (window && !window.isDestroyed()) window.webContents.send("account:changed", status);

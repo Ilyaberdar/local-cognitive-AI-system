@@ -101,6 +101,16 @@ test("sign-in stores only a refresh token, returns a safe status and survives a 
   assert.equal(f.state.tokenCalls.at(-1)!.get("refresh_token"), "refresh-1");
 });
 
+test("the success page leaves out the app link where the window comes forward by itself (macOS)", async t => {
+  const f = await setup(t, { appLink: false });
+  await f.service.signIn("google");
+  const page = await browserReturn(f.opened[0]!, { code: "code-1" });
+  assert.equal(page.status, 200);
+  assert.match(page.text, /You’re signed in/);
+  assert.doesNotMatch(page.text, /localcognitive:|Open Local Cognitive/);
+  assert.equal(f.completions(), 1, "the app is still brought to the front");
+});
+
 test("Sign in with Apple starts only where the build offers it, and the profile says how the session signed in", async t => {
   const off = await setup(t);
   assert.deepEqual(off.service.methods(), ["google", "email", "signup"]);
