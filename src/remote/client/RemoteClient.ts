@@ -11,7 +11,9 @@ import { RemoteSession } from "./RemoteSession";
 export interface RemoteProfile { hostId: string; hostName: string; hostSpkiSha256: string; deviceId: string; pairedAt: string }
 export type RemoteState = "idle" | "connecting" | "online" | "reconnecting" | "offline" | "revoked" | "identity_changed" | "error";
 export interface RemoteStatus { state: RemoteState; hostId?: string; hostName?: string; serverVersion?: string; capabilities?: string[]; error?: { code: string; message: string } }
-export interface RemoteHostSummary { hostId: string; name: string; online: boolean; appVersion: string; paired: boolean; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string; current: boolean }> }
+export interface RemoteHostSummary { hostId: string; name: string; online: boolean; appVersion: string; paired: boolean;
+  /** This computer itself, when it hosts devices: not a server to connect to. */
+  self: boolean; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string; current: boolean }> }
 
 export class RemoteError extends Error { constructor(message: string, readonly code: string) { super(message); } }
 
@@ -50,6 +52,8 @@ export class RemoteClient extends EventEmitter {
   constructor(private readonly options: {
     cloudUrl: string; vault: CredentialVault; account: () => Promise<{ accountId: string; accessToken: string } | undefined>;
     deviceName: string; platform: "macos" | "windows" | "linux"; fetchImpl?: typeof fetch; backoff?: { baseMs: number; maxMs: number };
+    /** This computer's own host id when it hosts: its key is for other devices, not for itself. */
+    selfHostId?: () => string | undefined;
   }) {
     super();
     this.origin = new URL(options.cloudUrl).origin;
@@ -62,6 +66,7 @@ export class RemoteClient extends EventEmitter {
     let key;
     try { key = decodeConnectionKey(keyText, { environment: environmentOf(this.origin) }); }
     catch (error) { if (error instanceof ConnectionKeyError) throw new RemoteError(error.message, `key_${error.code}`); throw error; }
+    if (key.hostId === this.options.selfHostId?.()) throw new RemoteError("This key connects other devices to this computer. Use it on the phone or computer you want to connect.", "key_self");
     const generation = this.reset();
     this.set({ state: "connecting", hostId: key.hostId });
     try {
@@ -133,9 +138,17 @@ export class RemoteClient extends EventEmitter {
     const [profiles, device] = await Promise.all([this.profiles(accountId), this.storedDevice(accountId)]);
     const body = await this.api<{ hosts: Array<{ hostId: string; name: string; online: boolean; appVersion: string; devices: Array<{ deviceId: string; name: string; platform: string; status: string; grantedAt?: string }> }> }>(
       accessToken, "GET", "/v1/hosts");
-    return body.hosts.map(host => ({ hostId: host.hostId, name: host.name, online: host.online, appVersion: host.appVersion,
+    const self = this.options.selfHostId?.();
+    return body.hosts.map(host => ({ hostId: host.hostId, name: host.name, online: host.online, appVersion: host.appVersion, self: host.hostId === self,
       paired: profiles.some(profile => profile.hostId === host.hostId) && host.devices.some(entry => entry.deviceId === device?.deviceId && entry.status === "active"),
       devices: host.devices.filter(entry => entry.status === "active").map(entry => ({ ...entry, current: entry.deviceId === device?.deviceId })) }));
+  }
+
+  /** Removes a server from the account (one that was reinstalled, say): every device loses access to it. */
+  async removeHost(hostId: string): Promise<void> {
+    const { accessToken } = await this.requireAccount();
+    await this.api(accessToken, "DELETE", `/v1/hosts/${encodeURIComponent(hostId)}`);
+    await this.forget(hostId);
   }
 
   async revokeDevice(hostId: string, deviceId: string): Promise<void> {

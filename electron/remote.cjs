@@ -23,7 +23,7 @@ const allowed = (set, op) => { if (typeof op !== "string" || !set.has(op)) throw
 
 // Remote (spec §6): the device key, pins and session live in the main process; the renderer
 // gets statuses and host summaries, never keys, tickets or tokens.
-function registerRemote({ app, ipcMain, vault, accountService, assertSender, getWindow }) {
+function registerRemote({ app, ipcMain, vault, accountService, assertSender, getWindow, selfHostId }) {
   const config = resolveAccountConfig({ env: process.env, packaged: app.isPackaged });
   const handle = (name, action) => ipcMain.handle(`remote:${name}`, async (event, ...args) => {
     assertSender(event);
@@ -33,10 +33,10 @@ function registerRemote({ app, ipcMain, vault, accountService, assertSender, get
   if (!config.cloudUrl) {
     const unavailable = () => ({ state: "unavailable" });
     for (const name of ["status", "pair", "connect", "disconnect", "forget"]) handle(name, unavailable);
-    for (const name of ["hosts", "revoke-device", "host-status", "runtime-request", "runtime-send", "runtime-subscribe", "runtime-unsubscribe", "runtime-watch", "runtime-unwatch"]) handle(name, () => { throw Object.assign(new Error("Remote is not configured in this build."), { code: "not_configured" }); });
+    for (const name of ["hosts", "revoke-device", "remove-host", "host-status", "runtime-request", "runtime-send", "runtime-subscribe", "runtime-unsubscribe", "runtime-watch", "runtime-unwatch"]) handle(name, () => { throw Object.assign(new Error("Remote is not configured in this build."), { code: "not_configured" }); });
     return { dispose() {} };
   }
-  const client = new RemoteClient({ cloudUrl: config.cloudUrl, vault, deviceName: os.hostname().replace(/\.local$/, ""), platform: devicePlatform(),
+  const client = new RemoteClient({ cloudUrl: config.cloudUrl, vault, deviceName: os.hostname().replace(/\.local$/, ""), platform: devicePlatform(), selfHostId,
     account: async () => {
       const status = accountService.status();
       if (status.state !== "signed-in") return undefined;
@@ -59,6 +59,7 @@ function registerRemote({ app, ipcMain, vault, accountService, assertSender, get
   handle("disconnect", () => client.disconnect());
   handle("forget", hostId => client.forget(id(hostId)));
   handle("revoke-device", (hostId, deviceId) => client.revokeDevice(id(hostId), id(deviceId)));
+  handle("remove-host", hostId => client.removeHost(id(hostId)));
   handle("host-status", () => client.request("host.status"));
   // The selected server's runtime for the app's screens (R4 chat, R5 Models). Every call names
   // the server the screen shows; after a switch, a late click is refused instead of reaching

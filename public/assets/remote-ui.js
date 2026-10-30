@@ -106,12 +106,16 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
     if (!hosts.length) return '<p class="settings-description">No servers yet. The first key you use links its server to your account.</p>';
     return `<div class="remote-hosts">${hosts.map(host => {
       const current = status.hostId === host.hostId && status.state === "online";
-      const actions = [
+      // This computer is listed when it hosts devices: nothing to connect to or forget, only its devices.
+      const actions = host.self ? "" : [
         host.paired && !current ? `<button type="button" class="ghost-button" data-remote-action="connect" data-host-id="${escape(host.hostId)}"${pending || !host.online ? " disabled" : ""}>Connect</button>` : "",
-        host.paired ? `<button type="button" class="ghost-button" data-remote-action="forget" data-host-id="${escape(host.hostId)}"${pending ? " disabled" : ""}>Forget</button>` : ""
+        host.paired ? `<button type="button" class="ghost-button" data-remote-action="forget" data-host-id="${escape(host.hostId)}"${pending ? " disabled" : ""}>Forget</button>` : "",
+        // A server that is gone (reinstalled, say) stays listed until it is removed from the account.
+        !host.online && !current ? `<button type="button" class="ghost-button" data-remote-action="remove-host" data-host-id="${escape(host.hostId)}" data-host-name="${escape(host.name)}"${pending ? " disabled" : ""}>Remove from account</button>` : ""
       ].join("");
       const devices = host.devices.map(device => `<li><span>${escape(device.name)}${device.current ? ' <span class="account-badge">This computer</span>' : ""}</span><span class="subtle">${escape(device.platform)}${pairedOn(device.grantedAt)}</span><button type="button" class="ghost-button" data-remote-action="revoke" data-host-id="${escape(host.hostId)}" data-device-id="${escape(device.deviceId)}"${pending ? " disabled" : ""}>Remove access</button></li>`).join("");
-      return `<div class="remote-host"><div class="remote-host-head"><div><strong>${escape(host.name)}</strong><span class="subtle"><span class="status-dot ${host.online ? "is-online" : ""}"></span>${host.online ? "Online" : "Offline"} · ${escape(host.appVersion)}${current ? " · connected" : ""}${!host.paired ? " · not paired with this computer" : ""}</span></div><div class="account-actions">${actions}</div></div>${devices ? `<ul class="remote-devices">${devices}</ul>` : ""}</div>`;
+      const badge = host.self ? ' <span class="account-badge">This computer</span>' : "";
+      return `<div class="remote-host"><div class="remote-host-head"><div><strong>${escape(host.name)}</strong>${badge}<span class="subtle"><span class="status-dot ${host.online ? "is-online" : ""}"></span>${host.online ? "Online" : "Offline"} · ${escape(host.appVersion)}${current ? " · connected" : ""}${!host.paired && !host.self ? " · not paired with this computer" : ""}</span></div><div class="account-actions">${actions}</div></div>${devices ? `<ul class="remote-devices">${devices}</ul>` : ""}</div>`;
     }).join("")}</div>`;
   }
 
@@ -172,6 +176,9 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
       if (action === "connect") void act("connect", async () => { adopt(await call("connect", hostId)); if (status.error) notice = status.error.message; });
       if (action === "forget") void act("forget", async () => { adopt(await call("forget", hostId)); await loadHosts(); });
       if (action === "revoke") void act("revoke", async () => { await call("revokeDevice", hostId, deviceId); await loadHosts(); });
+      if (action === "remove-host" && window.confirm(`Remove ${button.dataset.hostName || "this server"} from your account? Every device loses access to it; to use it again, connect it with a new key.`)) {
+        void act("remove-host", async () => { await call("removeHost", hostId); await loadHosts(); });
+      }
     });
   }
 

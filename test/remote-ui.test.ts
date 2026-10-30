@@ -127,3 +127,31 @@ test("a newer release of the connected server is shown with how to install it; i
   assert.equal(page.root.querySelectorAll("script").length, 0, "the notes are shown as text");
   assert.match(page.root.querySelector(".remote-update-notes").textContent, /Faster <script>/);
 });
+
+test("this computer, when it hosts, is listed as itself without Connect or Forget; a server that is gone can be removed from the account", async () => {
+  const SELF = "11111111-2222-4333-8444-555555555555", GONE = "99999999-8888-4777-8666-555555555555";
+  const hosts = async () => ({ ok: true, value: [
+    { hostId: SELF, name: "MacBook", online: true, appVersion: "0.1.12", paired: false, self: true, devices: [{ deviceId: DEVICE, name: "iPhone", platform: "ios", status: "active", current: false }] },
+    { hostId: GONE, name: "old-fedora", online: false, appVersion: "0.1.9", paired: false, self: false, devices: [] }] });
+  const { bridge, calls } = bridgeWith({ hosts, removeHost: async () => ({ ok: true, value: undefined }) });
+  const page = load(bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
+  page.paint();
+  page.signIn({});
+  await flush(); await flush();
+  const [self, gone] = [...page.root.querySelectorAll(".remote-host")];
+  assert.match(self.textContent, /MacBook\s*This computer/);
+  assert.doesNotMatch(self.textContent, /not paired with this computer/);
+  assert.equal(self.querySelectorAll('[data-remote-action="connect"], [data-remote-action="forget"], [data-remote-action="remove-host"]').length, 0);
+  assert.ok(self.querySelector('[data-remote-action="revoke"]'), "its devices can lose access from here too");
+  const confirmations: string[] = [];
+  let answer = false;
+  page.dom.window.confirm = (text: string) => { confirmations.push(text); return answer; };
+  gone.querySelector('[data-remote-action="remove-host"]').click();
+  await flush();
+  assert.equal(calls.some(call => call[0] === "removeHost"), false, "nothing is removed without a yes");
+  answer = true;
+  page.root.querySelector('[data-remote-action="remove-host"]').click();
+  await flush(); await flush();
+  assert.deepEqual(calls.find(call => call[0] === "removeHost"), ["removeHost", GONE]);
+  assert.match(confirmations[0]!, /Remove old-fedora from your account\? Every device loses access/);
+});

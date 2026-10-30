@@ -317,7 +317,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       getWindow: () => mainWindow, focusWindow });
     await account.init();
     remote = require("./remote.cjs").registerRemote({ app, ipcMain, vault, accountService: account.service, assertSender: assertAppSender,
-      getWindow: () => mainWindow });
+      getWindow: () => mainWindow, selfHostId: () => host?.hostId() });
     voiceInput = require("./voice-input.cjs").registerVoiceInput({ app, ipcMain, systemPreferences, shell, powerMonitor,
       getWindow: () => mainWindow, origin: runtime.url,
       root: path.join(runtime.dataRoot, "speech"),

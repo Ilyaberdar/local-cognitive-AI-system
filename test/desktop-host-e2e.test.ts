@@ -92,6 +92,14 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   assert.deepEqual(await call("revoke-device", laptopId), { revoked: true });
   await until(() => laptop.status().state, value => value === "revoked");
 
+  // This computer as a client of the same account lists itself, refuses its own key, and can remove itself.
+  const self = new RemoteClient({ cloudUrl: cloud.origin, vault: memoryVault(), account: async () => other, deviceName: "MacBook", platform: "macos", selfHostId: () => host.hostId() });
+  t.after(() => self.dispose());
+  assert.deepEqual((await self.hosts()).map(entry => [entry.name, entry.self]), [["MacBook", true]]);
+  await assert.rejects(self.pair((await call("connect-key")).key), (error: any) => error.code === "key_self");
+  await self.removeHost(host.hostId());
+  assert.deepEqual(await self.hosts(), []);
+
   await call("set", { enabled: false });
   assert.equal(state(), "off");
   assert.equal(blocker.active.size, 0);

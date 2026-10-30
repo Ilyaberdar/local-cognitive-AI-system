@@ -152,6 +152,8 @@ function registerHost({ app, ipcMain, vault, accountService, backend, dataRoot, 
   return {
     init: () => start(),
     status,
+    /** This computer's id as a host, once it has registered with the Cloud. */
+    hostId: () => store?.hostId(),
     agent: () => agent,
     dispose: () => {
       disposed = true;

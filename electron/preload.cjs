@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld("desktopRemote", {
   disconnect: () => ipcRenderer.invoke("remote:disconnect"),
   forget: hostId => ipcRenderer.invoke("remote:forget", hostId),
   revokeDevice: (hostId, deviceId) => ipcRenderer.invoke("remote:revoke-device", hostId, deviceId),
+  removeHost: hostId => ipcRenderer.invoke("remote:remove-host", hostId),
   hostStatus: () => ipcRenderer.invoke("remote:host-status"),
   onChange: callback => {
     const listener = (_event, status) => callback(status);
