@@ -112,7 +112,8 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   };
   const launch = expectedOwner => {
     // Commands and files outside a chat's folder are approved here, unless devices were allowed to.
-    composition ??= createHostOperations({ backend, dataRoot, approvalPolicy: operation => settings.allowDeviceCommands ? undefined : deviceApprovalRefusal(operation, hostName) });
+    composition ??= createHostOperations({ backend, dataRoot, deviceFilesOnly: true,
+      approvalPolicy: operation => settings.allowDeviceCommands ? undefined : deviceApprovalRefusal(operation, hostName) });
     return startHostAgent({ host: backend.host, vault, cloudUrl, hostName, kind: "desktop", logger, status: hostStatus, operations: composition.operations, expectedOwner });
   };
 
@@ -162,6 +163,14 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     if (!patch || typeof patch !== "object") throw failure("Invalid request.", "invalid_request");
     const next = { ...settings };
     for (const key of SWITCHES) if (typeof patch[key] === "boolean") next[key] = patch[key];
+    // Asked here, not only in the window: anything a device writes is shown in that window.
+    if (next.allowDeviceCommands && !settings.allowDeviceCommands) {
+      const window = getWindow();
+      const { response } = await dialog.showMessageBox(window && !window.isDestroyed() ? window : undefined, { type: "warning", buttons: ["Allow", "Cancel"], defaultId: 1, cancelId: 1,
+        message: "Let your devices approve commands and files on this computer?",
+        detail: "A paired device could then run any command and change any file here, as you can. Turn this on only if you trust every device paired with this computer." });
+      if (response !== 0) next.allowDeviceCommands = false;
+    }
     if (next.enabled && !store) throw failure("Hosting is unavailable on this computer: its database could not be opened.", "unavailable");
     writeSettings(file, next);
     settings = next;

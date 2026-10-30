@@ -54,7 +54,7 @@ export function protectedPathsFor(config: PathConfig, options: { userDataDir?: s
   if (platform !== "win32") roots.push("/etc/local-cognitive");
   if (home) roots.push(path.join(home, ".config", "local-cognitive"));
   if (env.XDG_CONFIG_HOME?.trim()) roots.push(path.join(path.resolve(env.XDG_CONFIG_HOME.trim()), "local-cognitive"));
-  const carveOuts = [config.outputDir, path.join(appData, "workspaces", "tasks"), path.join(appData, "workspaces", "workflow-runs"),
+  const carveOuts = [config.outputDir, path.join(appData, "workspaces", "tasks"), path.join(appData, "workspaces", "workflow-runs"), path.join(appData, "workspaces", "devices"),
     ...(dataRoot ? [path.join(dataRoot, "projects")] : [])];
   return { roots: unique(roots), carveOuts: unique(carveOuts) };
 }

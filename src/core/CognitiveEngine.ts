@@ -67,8 +67,10 @@ export class CognitiveEngine {
     const sessionId=request.actor?.sessionId ?? "default-session";
     const needsToolWorkspace = Boolean(await this.pluginManager?.hasEnabled()) ||
       (!withoutHostMcp(request.metadata) && Boolean(await this.externalMcpAvailable?.()));
+    // A paired device's turn on a desktop keeps its files in a folder of the chat's own (WorkspaceResolver.forDeviceChat).
+    const deviceFolder = request.metadata?.deviceOutputOnly === true;
     const workspace=request.execution?.workspace??await this.workspaceResolver?.forSession(sessionId) ??
-      (needsToolWorkspace ? await this.workspaceResolver?.forPluginChat(sessionId, { outputOnly: request.metadata?.deviceOutputOnly === true }) : undefined);
+      (needsToolWorkspace ? await (deviceFolder ? this.workspaceResolver?.forDeviceChat(sessionId) : this.workspaceResolver?.forPluginChat(sessionId)) : undefined);
     if(workspace)await this.workspaceResolver?.validate(workspace);
     const actor = {
       sessionId,
@@ -153,7 +155,7 @@ export class CognitiveEngine {
       requestMetadata: request.metadata,
       onProgress: request.onProgress,
       requestApproval: request.requestApproval,
-      workspace
+      workspace: workspace ?? (deviceFolder ? await this.workspaceResolver?.forDeviceChat(sessionId) : undefined)
     }));
     if ("response" in result && result.toolPayload && !tools.some((tool) => tool.tool === "file")) {
       result.response = result.toolPayload;

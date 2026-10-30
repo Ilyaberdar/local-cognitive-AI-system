@@ -13,7 +13,7 @@ import { hostMigrations } from "../src/runtime/db/hostSchema";
 import { createEventStreamOperations } from "../src/runtime/eventStreams";
 import { EventJournal } from "../src/runtime/EventJournal";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
-import { createOrchestrationOperations, createWorkflowRunStreams } from "../src/runtime/orchestrationOperations";
+import { createOrchestrationOperations, createWorkflowRunStreams, type OrchestrationOperationDependencies } from "../src/runtime/orchestrationOperations";
 import { addAdminFolder, HostFolders, removeAdminFolder } from "../src/runtime/hostFolders";
 import { createProjectAccess } from "../src/runtime/projectOperations";
 import { ScheduleService } from "../src/schedules/ScheduleService";
@@ -74,8 +74,8 @@ async function setup(t: TestContext, { withProjects = false } = {}) {
   const agentRuns = new AgentRunStore(path.join(root, "agents"));
   const runtimeManager = { getRuntime: () => ({ taskService, scheduleService, workflowStore, workflowRunStore, workflowRunner, agentLoopRunner: { store: agentRuns }, projectStore }) } as unknown as RuntimeManager;
   const projectAccess = withProjects ? { projects: createProjectAccess({ runtimeManager, folders }), folders } : {};
-  const operations = (ledger = new CommandLedger(host)) => createOrchestrationOperations({ runtimeManager, ledger, ...projectAccess,
-    scopeOf: ({ accountId, deviceId }) => `remote:${accountId}:${deviceId}`, isDraining: () => state.draining, journalEpoch: () => "epoch-1", hostDirectories: [root] });
+  const operations = (ledger = new CommandLedger(host), extra: Partial<OrchestrationOperationDependencies> = {}) => createOrchestrationOperations({ runtimeManager, ledger, ...projectAccess,
+    scopeOf: ({ accountId, deviceId }) => `remote:${accountId}:${deviceId}`, isDraining: () => state.draining, journalEpoch: () => "epoch-1", hostDirectories: [root], ...extra });
   const ops = { ...operations(), ...createEventStreamOperations({ journal: new EventJournal(host), requireSession: async () => undefined,
     sources: [createWorkflowRunStreams({ runtimeManager, journalEpoch: () => "epoch-1", hostDirectories: [root] })] }) };
   const call = <T = any>(op: string, payload?: unknown, ctx = context()) => Promise.resolve(ops[op]!(payload, ctx)) as Promise<T>;
@@ -508,4 +508,23 @@ test("a device cannot save or start a workflow with an MCP step: it runs only wh
   const workflow = reviewWorkflow({ nodes: [...reviewWorkflow().nodes, { id: "shot", type: "mcp_call", label: "Blender", position: { x: 0, y: 0 }, config: { serverId: "blender", toolName: "look" } }] as never });
   await assert.rejects(f.call("workflows.save", { commandId: "cmd-save-mcp-step", workflow, expectedUpdatedAt: null }), code("unsupported"));
   await assert.rejects(f.call("workflows.runs.start", { commandId: "cmd-start-mcp-step", workflow }), code("unsupported"));
+});
+
+test("where the host keeps operations' approvals to itself, a device still approves a Human Review step; a host task a device changes becomes the device's", async t => {
+  const f = await setup(t);
+  await f.call("workflows.save", { commandId: "cmd-save-1", workflow: reviewWorkflow(), expectedUpdatedAt: null });
+  const strict = f.operations(undefined, { approvalPolicy: () => "Devices cannot approve this on MacBook." });
+  const call = <T = any>(op: string, payload: unknown) => Promise.resolve(strict[op]!(payload, context())).catch(error => { throw new Error(`${op}: ${error.message}`); }) as Promise<T>;
+  const task = await call("tasks.create", { commandId: "cmd-task-review", title: "Report", workflowId: "review-flow" });
+  const { runId } = await call("tasks.run", { commandId: "cmd-run-review", taskId: task.id });
+  await until(() => f.workflowRunStore.getRun(runId), run => run?.status === "waiting");
+  const waiting = [...await f.workflowRunStore.listNodeRuns(runId)].reverse().find(item => item.status === "waiting")!;
+  await call("workflows.runs.review", { commandId: "cmd-review-1", runId, approved: true, waitingNodeRunId: waiting.id });
+  assert.equal((await until(() => f.workflowRunStore.getRun(runId), run => run?.status === "done"))?.status, "done", "a review step approves no operation: it is not refused");
+
+  const hostTask = await f.taskService.create({ title: "Host's", description: "Mine", workflowId: "review-flow" } as never);
+  await call("tasks.update", { taskId: hostTask.id, patch: { status: "todo" } });
+  assert.notEqual((await f.taskService.get(hostTask.id))?.metadata?.deviceOrigin, true, "moving it between columns changes nothing of it");
+  await call("tasks.update", { taskId: hostTask.id, patch: { description: "Theirs" } });
+  assert.equal((await f.taskService.get(hostTask.id))?.metadata?.deviceOrigin, true, "its prompt is a device's now: no host MCP tools when it runs");
 });

@@ -100,6 +100,9 @@ export interface ChatOperationDependencies {
   projects?: ProjectAccess;
   /** Why a device may not approve this operation, on a host that keeps some approvals to itself. */
   approvalPolicy?: (operation: Record<string, unknown>) => string | undefined;
+  /** On a desktop: the only folders a chat's files may be opened from by a device (its chat's own
+   * folder and the shared folders), whatever the chat's file actions touched. */
+  deviceFileRoots?: (sessionId: string) => Promise<string[]>;
 }
 
 /** Replaces the host's folders in a chat's history, approvals and events: a project chat's project
@@ -199,10 +202,13 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
    * It is opened once, without following a link, and must still be the file that was granted. One
    * answer for a missing file and one that is not the chat's: nothing tells which paths exist. */
   const openChatFile = async (sessionId: string, ref: string) => {
-    const [scrub, grants] = await Promise.all([scrubber(sessionId), grantsOf(sessionId)]);
+    const [scrub, grants, roots] = await Promise.all([scrubber(sessionId), grantsOf(sessionId), deps.deviceFileRoots?.(sessionId)]);
     const label = /^(<[a-z]+>)(?=[\\/]|$)/.exec(ref)?.[1];
     const candidates = label ? scrub.pairs.filter(([, name]) => name === label).map(([dir]) => dir + ref.slice(label.length)) : path.isAbsolute(ref) ? [ref] : [];
-    const granted = (file: string) => (grants.workspaceRoot && inside(file, grants.workspaceRoot)) || grants.files.has(file);
+    // On a desktop, a file the owner's own turns read elsewhere (their home, a folder from Settings)
+    // stays there: only files in the device's places are sent.
+    const reachable = (file: string) => !roots || roots.some(root => inside(file, root));
+    const granted = (file: string) => reachable(file) && ((grants.workspaceRoot && inside(file, grants.workspaceRoot)) || grants.files.has(file));
     for (const candidate of candidates.map(item => path.resolve(item))) {
       if (!granted(candidate)) continue;
       let real: string;

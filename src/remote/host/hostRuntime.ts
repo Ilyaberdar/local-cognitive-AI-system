@@ -28,7 +28,9 @@ export type HostKind = "server" | "desktop";
  * userData): devices never see it named, and its "projects" folder is the one they manage. */
 export const createHostOperations = (input: { backend: BackendHandle; dataRoot: string; consentFile?: string;
   /** On a desktop: what devices may not approve (deviceApprovals.ts), read at every approval. */
-  approvalPolicy?: (operation: Record<string, unknown>) => string | undefined }): {
+  approvalPolicy?: (operation: Record<string, unknown>) => string | undefined;
+  /** On a desktop: devices open a chat's files only from its own folder and the shared folders. */
+  deviceFilesOnly?: boolean }): {
   operations: Record<string, RemoteOperation>; folders: HostFolders; stop(): void;
 } => {
   const { backend } = input;
@@ -58,7 +60,9 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   sweep.unref();
   const operations: Record<string, RemoteOperation> = {
     ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
-      runService: host.runService, journal: host.journal, scopeOf, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}) }),
+      runService: host.runService, journal: host.journal, scopeOf, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
+      ...(input.deviceFilesOnly ? { deviceFileRoots: async (sessionId: string) => [backend.runtimeManager.getRuntime().workspaceResolver.deviceChatFolder(sessionId),
+        ...folders.roots().map(root => root.path)] } : {}) }),
     ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
       sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
     ...createModelOperations({ runtimeManager: backend.runtimeManager }),

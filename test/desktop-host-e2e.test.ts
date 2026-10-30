@@ -213,3 +213,20 @@ test("main reads whether to start in the background without loading the backend,
   const loaded = execFileSync(process.execPath, ["-e", `require(${JSON.stringify(path.resolve("electron/host-settings.cjs"))}); console.log(JSON.stringify(Object.keys(require.cache)))`], { encoding: "utf8" });
   assert.deepEqual(JSON.parse(loaded).filter((file: string) => !file.endsWith("host-settings.cjs")), [], "an early backend module would read its configuration before main sets it");
 });
+
+test("letting devices approve commands is confirmed by the system's dialog, not by the window alone", async t => {
+  const { backend, root } = await startTestBackend(t, "desktop");
+  const ipc = fakeIpc(), asked: string[] = [];
+  let answer = 1;
+  const dialog = { showMessageBox: async (_window: unknown, options: { message: string }) => { asked.push(options.message); return { response: answer }; } };
+  const host = registerHost({ app: { isPackaged: false }, ipcMain: ipc, dialog, vault: memoryVault(), accountService: new FakeAccount(), backend, dataRoot: root,
+    assertSender: () => undefined, getWindow: () => undefined, powerSaveBlocker: fakeBlocker(), cloudUrl: "http://127.0.0.1:9", hostName: "MacBook" });
+  t.after(() => host.dispose());
+  assert.equal((await ipc.invoke("set", { allowDeviceCommands: true })).value.allowDeviceCommands, false, "Cancel keeps it off");
+  answer = 0;
+  assert.equal((await ipc.invoke("set", { allowDeviceCommands: true })).value.allowDeviceCommands, true);
+  assert.equal((await ipc.invoke("set", { allowDeviceCommands: true })).value.allowDeviceCommands, true);
+  assert.deepEqual(asked, ["Let your devices approve commands and files on this computer?", "Let your devices approve commands and files on this computer?"], "asked when turning it on, not again");
+  assert.equal((await ipc.invoke("set", { allowDeviceCommands: false })).value.allowDeviceCommands, false, "turning it off needs no question");
+  assert.equal(asked.length, 2);
+});

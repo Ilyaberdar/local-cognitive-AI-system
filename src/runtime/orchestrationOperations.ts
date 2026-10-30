@@ -250,7 +250,10 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       if (reason) throw unsupported(reason);
       if (patch.workflowId) await allowedWorkflow(patch.workflowId);
       await requireProject(patch.projectId);
-      const task = await runtime().taskService.update(taskId, { ...patch, ...(patch.description === undefined ? {} : { description: patch.description.trim() }) });
+      // What a device changes in a task (its prompt, its workflow) is the device's: no host MCP tools when it runs, as for schedules.
+      const deviceMade = Object.keys(patch).some(key => key !== "status");
+      const task = await runtime().taskService.update(taskId, { ...patch, ...(patch.description === undefined ? {} : { description: patch.description.trim() }),
+        ...(deviceMade ? { metadata: { ...current.metadata, ...DEVICE_ORIGIN } } : {}) });
       if (!task) throw notFound("task");
       return safeTask(task);
     }),
@@ -393,7 +396,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
             beforeApprove: waiting => {
               if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST());
               if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST());
-              const refusal = deps.approvalPolicy?.(waiting);
+              // An operation waiting for approval; a Human Review step approves no operation.
+              const refusal = waiting.permissionRequired === true ? deps.approvalPolicy?.(waiting) : undefined;
               if (refusal) throw new RemoteOperationError(refusal, "approval_host_only");
             } }));
       }, { target: input.runId, allowWhileDraining: true });

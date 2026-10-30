@@ -34,45 +34,73 @@ test("on a desktop a device approves file changes inside its own folders and pub
 });
 
 async function fileFixture(t: TestContext) {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-device-files-")));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const output = path.join(root, "output"), documents = path.join(root, "Documents");
-  await fs.mkdir(output); await fs.mkdir(documents);
-  const store = new SessionSettingsStore({ baseDir: path.join(root, "sessions") }, { providerId: "local" }, {});
+  // The owner's output folder is their home here (Settings allow any folder), and they allowed Documents.
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-device-files-")));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const documents = path.join(home, "Documents"), appData = path.join(home, "Library", "Local Cognitive", "app");
+  await fs.mkdir(documents); await fs.mkdir(appData, { recursive: true });
+  const resolver = new WorkspaceResolver({ appDataDir: appData, outputDir: home, filesystem: { allowedDirectories: [documents] } } as never, {} as never, {} as never);
+  const store = new SessionSettingsStore({ baseDir: path.join(home, "sessions") }, { providerId: "local" }, {});
   const settings = await store.update("chat", { defaultAccessMode: "default" });
   const asked: ApprovalOperation[] = [];
-  const context = (metadata?: Record<string, unknown>): ExecutionContext => ({ actor: { sessionId: "chat", channel: "http" }, memory: [], conversation: [], providerId: "local",
-    activeTarget: { providerId: "local" }, sessionSettings: structuredClone(settings),
-    ...(metadata ? { requestMetadata: metadata } : {}), requestApproval: async operation => { asked.push(operation); return false; } });
-  // The owner allowed Documents for their own chats in Settings.
-  const file = new FileTool({ outputDir: output, allowedDirectories: [documents], accessMode: "restricted" });
-  const request = (rawInput: string, metadata?: Record<string, unknown>): ToolExecutionRequest => ({ rawInput, title: "t", content: "hello", context: context(metadata),
+  const context = (extra: Partial<ExecutionContext> = {}): ExecutionContext => ({ actor: { sessionId: "chat", channel: "http" }, memory: [], conversation: [], providerId: "local",
+    activeTarget: { providerId: "local" }, sessionSettings: structuredClone(settings), requestApproval: async operation => { asked.push(operation); return false; }, ...extra });
+  const file = new FileTool({ outputDir: home, allowedDirectories: [documents], accessMode: "restricted" });
+  const request = (rawInput: string, extra: Partial<ExecutionContext> = {}): ToolExecutionRequest => ({ rawInput, title: "t", content: "hello", context: context(extra),
     result: { response: "hello", provider: "local", model: "test" } });
-  return { output, documents, file, request, asked };
+  return { home, documents, resolver, file, request, asked };
 }
 
-test("a device's turn on a desktop reaches the app's output folder without asking, and the owner's allowed folders only through an approval marked outside", async t => {
+test("a device's turn on a desktop keeps its files in its chat's own folder, and reaches the owner's home or allowed folders only through an approval marked outside", async t => {
   const f = await fileFixture(t);
-  const device = { deviceRun: true, deviceOutputOnly: true };
   assert.equal((await f.file.execute(f.request(`Write file \`${f.documents}/mine.txt\``))).ok, true, "the owner's own chat writes there freely");
   assert.equal(f.asked.length, 0);
-  const result = await f.file.execute(f.request(`Write file \`${f.documents}/theirs.txt\``, device));
-  assert.equal(result.metadata?.cancelled, true);
-  assert.deepEqual(f.asked.map(operation => [operation.operation, operation.scope]), [["write", "outside"]]);
-  await assert.rejects(fs.access(path.join(f.documents, "theirs.txt")), "nothing was written");
-  assert.equal((await f.file.execute(f.request("Write file `note.txt`", device))).ok, true, "its own output folder needs no approval");
-  await fs.access(path.join(f.output, "note.txt"));
+  const workspace = await f.resolver.forDeviceChat("chat");
+  assert.equal(workspace.rootPath.startsWith(path.join(f.home, "Library", "Local Cognitive", "app", "workspaces", "devices")), true);
+  const device = { requestMetadata: { deviceRun: true, deviceOutputOnly: true }, workspace };
+  for (const target of [`${f.documents}/theirs.txt`, `${f.home}/.zshrc`]) {
+    assert.equal((await f.file.execute(f.request(`Write file \`${target}\``, device))).metadata?.cancelled, true, target);
+    await assert.rejects(fs.access(target), "nothing was written");
+  }
+  assert.deepEqual(f.asked.map(operation => [operation.operation, operation.scope]), [["write", "outside"], ["write", "outside"]]);
+  assert.equal((await f.file.execute(f.request("Write file `note.txt`", device))).ok, true, "its own folder needs no approval");
+  await fs.access(path.join(workspace.rootPath, "note.txt"));
   assert.equal((await f.file.execute(f.request("Delete file `note.txt`", device))).metadata?.cancelled, true);
-  assert.deepEqual(f.asked.at(-1)!.scope, "workspace", "a delete there asks, and a device may approve it");
+  assert.equal(f.asked.at(-1)!.scope, "workspace", "a delete there asks, and a device may approve it");
+  const lost = await f.file.execute(f.request("Write file `note.txt`", { requestMetadata: { deviceRun: true, deviceOutputOnly: true } }));
+  assert.deepEqual([lost.ok, lost.output], [false, "Files are not available in this chat from a device."], "no folder of its own, no files");
 });
 
-test("an agent's workspace for a device's turn on a desktop is the output folder alone", async t => {
+test("a device's chat folder is its own, in the app's data, and a link put in its place is refused", async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-device-workspace-")));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const resolver = new WorkspaceResolver({ appDataDir: path.join(root, "app"), outputDir: path.join(root, "output"), filesystem: { allowedDirectories: ["/Users/me/Documents"] } } as never,
-    {} as never, {} as never);
-  assert.deepEqual((await resolver.forPluginChat("chat")).allowedDirectories, [path.join(root, "output"), "/Users/me/Documents"]);
-  assert.deepEqual((await resolver.forPluginChat("chat", { outputOnly: true })).allowedDirectories, [path.join(root, "output")]);
+  const appData = path.join(root, "app");
+  const resolver = new WorkspaceResolver({ appDataDir: appData, outputDir: root, filesystem: { allowedDirectories: [root] } } as never, {} as never, {} as never);
+  const first = await resolver.forDeviceChat("chat-1"), second = await resolver.forDeviceChat("chat-2");
+  assert.notEqual(first.rootPath, second.rootPath);
+  assert.deepEqual(first.allowedDirectories, [first.rootPath]);
+  assert.equal(first.outputDir, first.rootPath);
+  assert.equal(path.dirname(first.rootPath), await fs.realpath(path.join(appData, "workspaces", "devices")));
+  const planted = resolver.deviceChatFolder("chat-3");
+  await fs.symlink(root, planted);
+  await assert.rejects(resolver.forDeviceChat("chat-3"), /changed while being created/);
+});
+
+test("on a desktop a device opens a chat's files only from its places, whatever the owner's turns in that chat read", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lc-device-reads-")));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const mine = path.join(root, "ssh-config"), theirs = path.join(root, "device", "note.txt");
+  await fs.mkdir(path.dirname(theirs)); await fs.writeFile(mine, "secret"); await fs.writeFile(theirs, "hello");
+  const tools = [mine, theirs].map(filePath => ({ tool: "file", ok: true, metadata: { filePath } }));
+  const runtime = { sessionSettingsStore: { get: async () => ({ defaultAccessMode: "default", codeAgents: [], hypothesisAgents: [], subagents: [] }) }, projectStore: { get: async () => null },
+    memoryService: { recent: async () => [{ metadata: { tools } }] }, sessionIndexStore: { get: async (id: string) => ({ id }) } };
+  const ops = createChatOperations({ runtimeManager: { getRuntime: () => runtime, getSettings: async () => ({ ui: {}, memory: { localProfileId: "p" } }) } as unknown as RuntimeManager,
+    sessionIndexStore: { get: async (id: string) => ({ id }) } as unknown as SessionIndexStore, runService: {} as RunService, journal: {} as EventJournal,
+    scopeOf: () => "device", deviceFileRoots: async () => [path.dirname(theirs)] });
+  const context: OperationContext = { accountId: "a", deviceId: "d", signal: new AbortController().signal };
+  const read = (file: string) => Promise.resolve(ops["files.read"]!({ sessionId: "chat", path: file, as: "text" }, context)) as Promise<{ content: string }>;
+  assert.equal((await read(theirs)).content, "hello");
+  await assert.rejects(read(mine), (error: unknown) => error instanceof RemoteOperationError && error.code === "file_unavailable", "the owner's file stays on the computer");
 });
 
 test("a device's approval that the host keeps to itself is refused before it reaches the turn; declining always goes through", async () => {

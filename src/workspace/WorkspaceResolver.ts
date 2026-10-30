@@ -28,17 +28,33 @@ export class WorkspaceResolver {
       taskId: task.id, memoryScope: `task:${task.id}` };
   }
 
-  /** Ordinary chats keep their built-in output folder when plugins enable the tool loop, with the
-   * folders allowed in Settings; a paired device's turn on a desktop (`outputOnly`) has the output
-   * folder alone. */
-  async forPluginChat(sessionId: string, options: { outputOnly?: boolean } = {}): Promise<WorkspaceSnapshot> {
+  /** Ordinary chats keep their built-in output folder when plugins enable the tool loop. */
+  async forPluginChat(sessionId: string): Promise<WorkspaceSnapshot> {
     const id = `chat-${createHash("sha256").update(sessionId).digest("hex")}`;
     let rootPath: string;
     if (this.config.outputDir) {
       await fs.mkdir(this.config.outputDir, { recursive: true }); rootPath = await fs.realpath(this.config.outputDir);
     } else rootPath = (await this.managedWorkspaces.ensure(id)).rootPath;
     return { version: 1, kind: "legacy-chat", rootPath, outputDir: rootPath,
-      allowedDirectories: options.outputOnly ? [rootPath] : [...new Set([rootPath, ...(this.config.filesystem?.allowedDirectories ?? [])])], memoryScope: `session:${sessionId}` };
+      allowedDirectories: [...new Set([rootPath, ...(this.config.filesystem?.allowedDirectories ?? [])])], memoryScope: `session:${sessionId}` };
+  }
+
+  /** Where a paired device's turns in a chat keep their files on a desktop that hosts: a folder of the
+   * chat's own in the app's data, whatever Settings make the output folder (it may be the owner's
+   * home). Neither the output folder nor the folders allowed in Settings are part of it. */
+  deviceChatFolder(sessionId: string): string {
+    return path.join(this.config.appDataDir, "workspaces", "devices", `chat-${createHash("sha256").update(sessionId).digest("hex")}`);
+  }
+
+  async forDeviceChat(sessionId: string): Promise<WorkspaceSnapshot> {
+    const parent = path.join(this.config.appDataDir, "workspaces", "devices");
+    await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+    const planned = path.join(await fs.realpath(parent), path.basename(this.deviceChatFolder(sessionId)));
+    await fs.mkdir(planned, { recursive: true, mode: 0o700 });
+    // A folder already there must be that folder, not a link to another one.
+    const rootPath = await fs.realpath(planned);
+    if (rootPath !== planned) throw new ProjectError(409, "The device's chat folder changed while being created.");
+    return { version: 1, kind: "legacy-chat", rootPath, outputDir: rootPath, allowedDirectories: [rootPath], memoryScope: `session:${sessionId}` };
   }
 
   async forWorkflowRun(runId: string, options: { projectId?: string; rootPath?: string }): Promise<WorkspaceSnapshot> {

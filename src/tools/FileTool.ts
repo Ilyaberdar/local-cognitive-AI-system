@@ -48,8 +48,8 @@ export class FileTool implements Tool {
   async execute(request: ToolExecutionRequest): Promise<ToolExecutionResult> {
     const workspace=request.context.workspace;
     if(workspace)return new FileTool({...this.options,outputDir:workspace.outputDir,allowedDirectories:workspace.allowedDirectories}).executeScoped(request);
-    // A paired device's turn on a desktop: the output folder only, not the folders allowed in Settings.
-    if(request.context.requestMetadata?.deviceOutputOnly===true)return new FileTool({...this.options,allowedDirectories:[this.options.outputDir]}).executeScoped(request);
+    // A paired device's turn on a desktop has its chat's own folder as its workspace; without one, no files.
+    if(request.context.requestMetadata?.deviceOutputOnly===true)return {tool:this.name,ok:false,output:"Files are not available in this chat from a device."};
     return this.executeScoped(request);
   }
 
