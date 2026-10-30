@@ -5,7 +5,7 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { RemoteOperationError } from "../src/remote/host/RemoteHost";
 import { createFolderOperations } from "../src/runtime/folderOperations";
-import { addAdminFolder, FolderError, HostFolders, listAdminFolders, removeAdminFolder } from "../src/runtime/hostFolders";
+import { addAdminFolder, FolderError, HostFolders, listAdminFolders, removeAdminFolder, setAdminFolderOptions } from "../src/runtime/hostFolders";
 import { OPERATIONS } from "../src/runtime/operationCatalog";
 
 const context = { accountId: "account", deviceId: "mac", signal: new AbortController().signal };
@@ -110,4 +110,22 @@ test("a listing stops at 500 entries", async t => {
   for (let index = 0; index < 505; index++) fs.writeFileSync(path.join(f.data, "projects", `file-${String(index).padStart(3, "0")}.txt`), "");
   const listing = await f.call("fs.browse", { rootId: "projects" });
   assert.deepEqual([listing.entries.length, listing.truncated], [500, true]);
+});
+
+test("on a desktop the data root is the app's folder in the owner's home: the home and Library cannot be shared, Documents can", t => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lc-home-")));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const userData = path.join(home, "Library", "Application Support", "Local Cognitive"), documents = path.join(home, "Documents");
+  fs.mkdirSync(userData, { recursive: true }); fs.mkdirSync(documents);
+  for (const folder of [home, path.join(home, "Library"), userData, path.join(userData, "app")]) {
+    if (!fs.existsSync(folder)) fs.mkdirSync(folder);
+    assert.throws(() => addAdminFolder(userData, folder), (error: unknown) => error instanceof FolderError && /data folder, or a folder holding it/.test(error.message), folder);
+  }
+  const shared = addAdminFolder(userData, documents);
+  assert.equal(shared.path, documents);
+  assert.equal(setAdminFolderOptions(userData, shared.id, { allowCreate: true }), true);
+  assert.deepEqual(listAdminFolders(userData).map(folder => [folder.id, folder.allowCreate]), [[shared.id, true]], "the id projects name stays");
+  setAdminFolderOptions(userData, shared.id, { allowCreate: false });
+  assert.equal(listAdminFolders(userData)[0]!.allowCreate, undefined);
+  assert.equal(setAdminFolderOptions(userData, "11111111-2222-4333-8444-555555555555", { allowCreate: true }), false);
 });

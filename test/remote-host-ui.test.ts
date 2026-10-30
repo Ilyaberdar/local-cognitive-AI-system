@@ -155,3 +155,35 @@ test("Remote has a tab for this computer, remembered; without the desktop app it
   none.view().innerHTML = none.ui.inner();
   assert.match(none.text(), /Available in the desktop app/);
 });
+
+test("shared folders: the app's own Projects folder, folders shared here with their switch, and stop sharing after a yes", async () => {
+  const FOLDER = "11111111-2222-4333-8444-555555555555";
+  const list = [{ id: "projects", label: "Projects", managed: true, allowCreate: true, location: "~/Library/Application Support/Local Cognitive/projects" },
+    { id: FOLDER, label: "Work <i>", managed: false, allowCreate: false, location: "~/Documents/Work" }];
+  const ok = (value: unknown) => ({ ok: true, value });
+  const { bridge, calls } = bridgeWith(status({ enabled: true, state: "online" }), { folders: async () => ok(list), addFolder: async () => ok(list), openFolder: async () => ok(undefined),
+    setFolder: async () => ok(list), removeFolder: async () => ok(list.slice(0, 1)) });
+  const page = load(bridge);
+  page.view().innerHTML = page.ui.inner();
+  await flush();
+  const rows = [...page.view().querySelectorAll(".remote-host-folders .settings-row")];
+  assert.match(rows[0].textContent, /Projects.*this app's own folder/s);
+  assert.equal(rows[0].querySelector('[data-host-action="remove-folder"]'), null, "the app's own folder stays shared");
+  assert.equal(page.view().querySelectorAll("i").length, 0);
+  page.view().querySelector('[data-host-action="add-folder"]').click();
+  await flush();
+  assert.ok(calls.some(call => call[0] === "addFolder" && call.length === 1), "the window asks; it names no path");
+  const create = page.view().querySelector(`[data-folder-create="${FOLDER}"]`);
+  create.checked = true;
+  create.dispatchEvent(new page.dom.window.Event("change", { bubbles: true }));
+  await flush();
+  assert.equal(JSON.stringify(calls.find(call => call[0] === "setFolder")), JSON.stringify(["setFolder", FOLDER, { allowCreate: true }]));
+  page.view().querySelectorAll('[data-host-action="open-folder"]')[1].click();
+  await flush();
+  assert.deepEqual(calls.find(call => call[0] === "openFolder"), ["openFolder", FOLDER]);
+  page.view().querySelector('[data-host-action="remove-folder"]').click();
+  await flush();
+  assert.deepEqual(calls.find(call => call[0] === "removeFolder"), ["removeFolder", FOLDER]);
+  assert.match(page.confirmations.at(-1)!, /Stop sharing Work <i>\? .*nothing in it is deleted/);
+  assert.equal(page.view().querySelectorAll(".remote-host-folders .settings-row").length, 1);
+});

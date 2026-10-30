@@ -330,7 +330,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
     backendHandle = await startBackend(runtime.appRoot, vault, apiToken);
     require("./usage.cjs").registerUsage({ app, ipcMain, assertSender: assertAppSender, accountService: account.service, backend: backendHandle });
     // This computer as a host for paired devices, when its owner turned that on.
-    host = require("./host.cjs").registerHost({ app, ipcMain, vault, accountService: account.service, backend: backendHandle, dataRoot: runtime.dataRoot,
+    host = require("./host.cjs").registerHost({ app, ipcMain, dialog, shell, vault, accountService: account.service, backend: backendHandle, dataRoot: runtime.dataRoot,
       assertSender: assertAppSender, getWindow: () => mainWindow, powerSaveBlocker });
     void host.init();
     sentry.attachLog(backendHandle.diagnosticLog);

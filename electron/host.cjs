@@ -4,6 +4,7 @@ const path = require("path");
 const { resolveAccountConfig } = require("../dist/src/account/accountConfig.js");
 const { createHostOperations, startHostAgent } = require("../dist/src/remote/host/hostRuntime.js");
 const { RemoteHostStore } = require("../dist/src/remote/host/RemoteHostStore.js");
+const { addAdminFolder, listAdminFolders, MANAGED_ROOT_ID, removeAdminFolder, setAdminFolderOptions } = require("../dist/src/runtime/hostFolders.js");
 const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
 const { Logger } = require("../dist/src/utils/Logger.js");
@@ -30,7 +31,7 @@ const writeSettings = (file, settings) => {
 // app runs and hosting is on. It belongs to the account signed in here: another account's key is
 // refused, and signing out pauses it. The host key and grants live in the app's vault and host.db;
 // the renderer gets statuses, the connection key it shows, and device names, never a path or token.
-function registerHost({ app, ipcMain, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker, showQr = PHONE_APP_SHIPPED,
+function registerHost({ app, ipcMain, dialog, shell, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker, showQr = PHONE_APP_SHIPPED,
   cloudUrl = resolveAccountConfig({ env: process.env, packaged: app.isPackaged }).cloudUrl, logger = new Logger(),
   hostName = os.hostname().replace(/\.local$/, "").slice(0, 120) || "Computer" }) {
   const file = path.join(dataRoot, "remote-host.json");
@@ -150,6 +151,41 @@ function registerHost({ app, ipcMain, vault, accountService, backend, dataRoot, 
       target.resetOwner();
     } finally { temporary?.stop(); }
   }).then(() => { paused = undefined; return start(); }).then(status));
+
+  // Folders devices may use: the app's own Projects folder, and folders its owner shares here. A path
+  // only ever comes from the system's folder dialog, opened by this process; the window sends ids.
+  const home = os.homedir();
+  const shown = location => location === home || location.startsWith(home + path.sep) ? `~${location.slice(home.length)}` : location;
+  const folders = () => [
+    { id: MANAGED_ROOT_ID, label: "Projects", managed: true, allowCreate: true, location: shown(path.join(dataRoot, MANAGED_ROOT_ID)) },
+    ...listAdminFolders(dataRoot).map(folder => ({ id: folder.id, label: folder.label ?? path.basename(folder.path), managed: false, allowCreate: Boolean(folder.allowCreate), location: shown(folder.path) }))
+  ];
+  const folderPath = folderId => folderId === MANAGED_ROOT_ID ? path.join(dataRoot, MANAGED_ROOT_ID) : listAdminFolders(dataRoot).find(folder => folder.id === id(folderId))?.path;
+  handle("folders", () => folders());
+  handle("add-folder", async () => {
+    const window = getWindow();
+    const result = await dialog.showOpenDialog(window && !window.isDestroyed() ? window : undefined,
+      { title: "Share a folder with your devices", buttonLabel: "Share", properties: ["openDirectory", "createDirectory"] });
+    const chosen = result.canceled ? undefined : result.filePaths[0];
+    if (!chosen) return folders();
+    // macOS asks for access to Documents, Desktop or Downloads on the first read: now, while the owner is here.
+    try { fs.readdirSync(chosen); } catch { /* Refused or unreadable: addAdminFolder says what it can. */ }
+    addAdminFolder(dataRoot, chosen);
+    return folders();
+  });
+  handle("set-folder", (folderId, options) => {
+    if (typeof options?.allowCreate !== "boolean" || !setAdminFolderOptions(dataRoot, id(folderId), { allowCreate: options.allowCreate })) throw failure("This folder is not shared.", "not_found");
+    return folders();
+  });
+  // Devices lose it at once: shared folders are read at every use.
+  handle("remove-folder", folderId => { removeAdminFolder(dataRoot, id(folderId)); return folders(); });
+  handle("open-folder", async folderId => {
+    const location = folderPath(folderId);
+    if (!location) throw failure("This folder is not shared.", "not_found");
+    if (folderId === MANAGED_ROOT_ID) fs.mkdirSync(location, { recursive: true, mode: 0o700 });
+    const error = await shell.openPath(location);
+    if (error) throw failure(error, "error");
+  });
 
   return {
     init: () => start(),

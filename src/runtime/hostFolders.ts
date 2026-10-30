@@ -35,8 +35,8 @@ const containsByIdentity = (parent: string, child: string): boolean => {
  * inside it) and the folders of given files (the credential key). */
 const shareable = (real: string, dataRoot: string, protectedFiles: string[] = []): string | undefined => {
   if (path.parse(real).root === real) return "The filesystem root cannot be shared.";
-  if (containsByIdentity(dataRoot, real) || containsByIdentity(real, dataRoot)) return "The server's data directory, or a folder holding it, cannot be shared.";
-  if (protectedFiles.some(file => containsByIdentity(real, path.dirname(file)))) return "A folder holding the server's credential key cannot be shared.";
+  if (containsByIdentity(dataRoot, real) || containsByIdentity(real, dataRoot)) return "Local Cognitive's data folder, or a folder holding it, cannot be shared.";
+  if (protectedFiles.some(file => containsByIdentity(real, path.dirname(file)))) return "A folder holding Local Cognitive's credential key cannot be shared.";
   return undefined;
 };
 
@@ -76,6 +76,16 @@ export const removeAdminFolder = (dataRoot: string, id: string): boolean => {
   const kept = folders.filter(folder => folder.id !== id);
   if (kept.length === folders.length) return false;
   writeAdminFolders(dataRoot, kept);
+  return true;
+};
+
+/** Whether devices may make folders in a shared folder; its id (which projects name) stays. */
+export const setAdminFolderOptions = (dataRoot: string, id: string, options: { allowCreate: boolean }): boolean => {
+  const folders = readAdminFolders(dataRoot);
+  const folder = folders.find(item => item.id === id);
+  if (!folder) return false;
+  const { allowCreate: _previous, ...rest } = folder;
+  writeAdminFolders(dataRoot, folders.map(item => item === folder ? { ...rest, ...(options.allowCreate ? { allowCreate: true } : {}) } : item));
   return true;
 };
 

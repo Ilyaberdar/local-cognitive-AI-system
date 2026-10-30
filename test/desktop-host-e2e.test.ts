@@ -119,3 +119,31 @@ test("hosting stays off and says why where this computer cannot host", async t =
   assert.equal((await ipc.invoke("set", "nonsense")).error?.code, "invalid_request");
   assert.equal((await ipc.invoke("revoke-device", "../etc")).error?.code, "invalid_request");
 });
+
+test("shared folders come from the folder dialog the main process opens, never from the window", async t => {
+  const { backend, root } = await startTestBackend(t, "test");
+  const ipc = fakeIpc(), opened: string[] = [];
+  const documents = fs.realpathSync(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "lc-documents-")));
+  t.after(() => fs.rmSync(documents, { recursive: true, force: true }));
+  let chosen: string | undefined = documents;
+  const dialog = { showOpenDialog: async () => chosen ? { canceled: false, filePaths: [chosen] } : { canceled: true, filePaths: [] } };
+  const host = registerHost({ app: { isPackaged: false }, ipcMain: ipc, dialog, shell: { openPath: async (location: string) => { opened.push(location); return ""; } }, vault: memoryVault(),
+    accountService: new FakeAccount(), backend, dataRoot: root, assertSender: () => undefined, getWindow: () => undefined, powerSaveBlocker: fakeBlocker(), cloudUrl: "http://127.0.0.1:9", hostName: "PC" });
+  t.after(() => host.dispose());
+  const value = async (name: string, ...args: unknown[]) => { const result = await ipc.invoke(name, ...args); assert.ok(result.ok, JSON.stringify(result.error)); return result.value; };
+  assert.deepEqual((await value("folders")).map((folder: any) => [folder.id, folder.managed]), [["projects", true]]);
+  const added = await value("add-folder", "/etc", { path: "/etc" });
+  assert.deepEqual(added.map((folder: any) => folder.label), ["Projects", path.basename(documents)], "the window's arguments are ignored");
+  const id = added[1].id;
+  assert.equal((await value("set-folder", id, { allowCreate: true }))[1].allowCreate, true);
+  await value("open-folder", id);
+  await value("open-folder", "projects");
+  assert.deepEqual(opened, [documents, path.join(root, "projects")]);
+  chosen = root;
+  assert.match((await ipc.invoke("add-folder")).error!.message, /data folder, or a folder holding it, cannot be shared/);
+  chosen = undefined;
+  assert.equal((await value("add-folder")).length, 2, "a cancelled dialog changes nothing");
+  assert.equal((await ipc.invoke("remove-folder", "../x")).error!.code, "invalid_request");
+  assert.equal((await ipc.invoke("open-folder", "../x")).error!.code, "invalid_request");
+  assert.deepEqual((await value("remove-folder", id)).map((folder: any) => folder.id), ["projects"]);
+});

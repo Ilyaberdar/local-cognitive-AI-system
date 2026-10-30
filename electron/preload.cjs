@@ -111,6 +111,11 @@ contextBridge.exposeInMainWorld("desktopRemoteHost", {
   invitation: invitationId => ipcRenderer.invoke("remote-host:invitation", invitationId),
   revokeDevice: deviceId => ipcRenderer.invoke("remote-host:revoke-device", deviceId),
   unlink: () => ipcRenderer.invoke("remote-host:unlink"),
+  folders: () => ipcRenderer.invoke("remote-host:folders"),
+  addFolder: () => ipcRenderer.invoke("remote-host:add-folder"),
+  setFolder: (folderId, options) => ipcRenderer.invoke("remote-host:set-folder", folderId, options),
+  removeFolder: folderId => ipcRenderer.invoke("remote-host:remove-folder", folderId),
+  openFolder: folderId => ipcRenderer.invoke("remote-host:open-folder", folderId),
   onChange: callback => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("remote-host:changed", listener);

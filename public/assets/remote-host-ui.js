@@ -5,7 +5,7 @@ const busyStates = ["starting", "registering", "connecting"];
 // Local Cognitive Cloud. The main process keeps the host's keys; this page gets statuses, the
 // one-time connection key it shows, and device names.
 export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account, onChange = () => {} } = {}) {
-  let status = null, loadError = "", pending = "", notice = "", shown = null, waiting = null, ticking = null;
+  let status = null, folders = [], loadError = "", pending = "", notice = "", shown = null, waiting = null, ticking = null;
 
   const call = async (method, ...args) => {
     const result = await bridge[method](...args);
@@ -21,6 +21,7 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
   if (bridge) {
     bridge.onChange?.(next => { adopt(next); changed(); });
     void call("status").then(next => { adopt(next); changed(); }, error => { loadError = error.message; changed(); });
+    void call("folders").then(list => { folders = list; changed(); }, () => {});
   }
 
   async function act(name, task) {
@@ -111,10 +112,20 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
       <button type="button" class="ghost-button" data-host-action="revoke" data-device-id="${escape(device.deviceId)}" data-device-name="${escape(device.name)}"${pending ? " disabled" : ""}>Remove access</button></li>`).join("")}</ul></section>`;
   }
 
+  function folderList() {
+    if (!status.available) return "";
+    const open = folder => `<button type="button" class="ghost-button" data-host-action="open-folder" data-folder-id="${escape(folder.id)}">Open</button>`;
+    const rows = folders.map(folder => `<div class="settings-row"><div><span class="settings-row-label">${escape(folder.label)}</span><p class="remote-folder-location">${escape(folder.location)}${folder.managed ? " · this app's own folder" : ""}</p>
+      ${folder.managed ? "" : `<label class="settings-control remote-folder-create"><input type="checkbox" role="switch" data-folder-create="${escape(folder.id)}" ${folder.allowCreate ? "checked" : ""}${pending ? " disabled" : ""} /><span>Devices may make folders here</span></label>`}</div>
+      <div class="settings-control remote-folder-actions">${folder.managed ? "" : `<button type="button" class="ghost-button" data-host-action="remove-folder" data-folder-id="${escape(folder.id)}" data-folder-label="${escape(folder.label)}"${pending ? " disabled" : ""}>Stop sharing</button>`}${open(folder)}</div></div>`).join("");
+    return `<section class="remote-section"><div class="remote-section-head"><div><h2>Shared folders</h2><p class="subtle remote-section-note">Devices make projects and save their files only in these folders.</p></div>
+      <button type="button" class="ghost-button" data-host-action="add-folder"${pending ? " disabled" : ""}>Share a folder…</button></div><div class="settings-rows remote-host-folders">${rows}</div></section>`;
+  }
+
   function inner() {
     if (!bridge) return '<div class="account-card"><div><h2>Available in the desktop app</h2><p>Open the Local Cognitive desktop app to let your devices connect to this computer.</p></div></div>';
     if (!status) return loadError ? `<p class="remote-error" role="alert">${escape(loadError)}</p>` : '<p class="settings-description" role="status">Loading…</p>';
-    return `${statusCard()}${notice ? `<p class="remote-error" role="alert">${escape(notice)}</p>` : ""}${switches()}${connectDevice()}${deviceList()}
+    return `${statusCard()}${notice ? `<p class="remote-error" role="alert">${escape(notice)}</p>` : ""}${switches()}${connectDevice()}${deviceList()}${folderList()}
       <p class="settings-footnote">Traffic between your devices and this computer is end-to-end encrypted; Local Cognitive Cloud only routes it. Devices see this computer's chats (not those of its projects) and models; they never use its MCP tools.</p>`;
   }
 
@@ -125,6 +136,8 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
 
   function bind(root) {
     root.addEventListener("change", event => {
+      const folderId = event.target.dataset?.folderCreate;
+      if (folderId) { const allowCreate = event.target.checked; void act("set-folder", async () => { folders = await call("setFolder", folderId, { allowCreate }); }); return; }
       const name = event.target.dataset?.hostSetting;
       if (!name) return;
       const value = event.target.checked;
@@ -139,6 +152,11 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
       if (action === "copy-key" && shown) void navigator.clipboard.writeText(shown.key).then(() => { shown = { ...shown, copied: true }; changed(); }, () => { notice = "The key could not be copied. Select it and copy it."; changed(); });
       if (action === "revoke" && window.confirm(`Remove ${button.dataset.deviceName || "this device"}'s access to this computer? It is disconnected at once and needs a new key to connect again.`)) {
         void act("revoke", async () => { await call("revokeDevice", button.dataset.deviceId); adopt(await call("status")); });
+      }
+      if (action === "add-folder") void act("add-folder", async () => { folders = await call("addFolder"); });
+      if (action === "open-folder") void call("openFolder", button.dataset.folderId).catch(error => { notice = error.message; changed(); });
+      if (action === "remove-folder" && window.confirm(`Stop sharing ${button.dataset.folderLabel || "this folder"}? Devices can no longer use it or the projects in it; nothing in it is deleted.`)) {
+        void act("remove-folder", async () => { folders = await call("removeFolder", button.dataset.folderId); });
       }
       if (action === "unlink" && window.confirm("Unlink this computer from the account it was set up for? Every device of that account loses access; this account's devices can then connect.")) {
         void act("unlink", async () => { adopt(await call("unlink")); });

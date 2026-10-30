@@ -281,7 +281,7 @@ test("folders: an admin shares, lists and stops sharing folders for connected co
   assert.match(run("folders", "list").stdout, new RegExp(`${folder.id}  Work  ${shared.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   const refused = run("folders", "add", root);
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stderr, /data directory/);
+  assert.match(refused.stderr, /data folder, or a folder holding it, cannot be shared/);
   assert.notEqual(run("folders", "add").status, 0, "a path is required");
   assert.equal(run("folders", "remove", folder.id).status, 0);
   assert.equal(run("folders", "remove", folder.id).status, 1);
