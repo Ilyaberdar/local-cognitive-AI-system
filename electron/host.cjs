@@ -4,6 +4,7 @@ const path = require("path");
 const { resolveAccountConfig } = require("../dist/src/account/accountConfig.js");
 const { createHostOperations, startHostAgent } = require("../dist/src/remote/host/hostRuntime.js");
 const { RemoteHostStore } = require("../dist/src/remote/host/RemoteHostStore.js");
+const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
 const { Logger } = require("../dist/src/utils/Logger.js");
 
@@ -29,7 +30,7 @@ const writeSettings = (file, settings) => {
 // app runs and hosting is on. It belongs to the account signed in here: another account's key is
 // refused, and signing out pauses it. The host key and grants live in the app's vault and host.db;
 // the renderer gets statuses, the connection key it shows, and device names, never a path or token.
-function registerHost({ app, ipcMain, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker,
+function registerHost({ app, ipcMain, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker, showQr = PHONE_APP_SHIPPED,
   cloudUrl = resolveAccountConfig({ env: process.env, packaged: app.isPackaged }).cloudUrl, logger = new Logger(),
   hostName = os.hostname().replace(/\.local$/, "").slice(0, 120) || "Computer" }) {
   const file = path.join(dataRoot, "remote-host.json");
@@ -124,7 +125,8 @@ function registerHost({ app, ipcMain, vault, accountService, backend, dataRoot, 
   handle("connect-key", () => {
     if (!agent) throw failure("Turn on remote connections first.", "off");
     const { key, invitationId, expiresAt } = agent.connectKey(KEY_TTL_MS);
-    return { key, invitationId, expiresAt };
+    // For the phone app to scan; drawn here from the key alone.
+    return { key, invitationId, expiresAt, ...(showQr ? { qrSvg: qrSvg(connectionKeyQr(key)) } : {}) };
   });
   handle("invitation", raw => {
     const invitationId = id(raw);

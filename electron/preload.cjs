@@ -102,6 +102,22 @@ contextBridge.exposeInMainWorld("desktopUsage", {
 
 // Remote statuses and host summaries; keys, tickets and tokens stay in the main process.
 // Each call resolves with { ok, value } or { ok: false, error: { code, message } }.
+// This computer as a host for paired devices: statuses, switches, a one-time key to show, and the
+// devices' names; the host's keys stay in the main process.
+contextBridge.exposeInMainWorld("desktopRemoteHost", {
+  status: () => ipcRenderer.invoke("remote-host:status"),
+  set: patch => ipcRenderer.invoke("remote-host:set", patch),
+  connectKey: () => ipcRenderer.invoke("remote-host:connect-key"),
+  invitation: invitationId => ipcRenderer.invoke("remote-host:invitation", invitationId),
+  revokeDevice: deviceId => ipcRenderer.invoke("remote-host:revoke-device", deviceId),
+  unlink: () => ipcRenderer.invoke("remote-host:unlink"),
+  onChange: callback => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on("remote-host:changed", listener);
+    return () => ipcRenderer.removeListener("remote-host:changed", listener);
+  }
+});
+
 contextBridge.exposeInMainWorld("desktopRemote", {
   status: () => ipcRenderer.invoke("remote:status"),
   hosts: () => ipcRenderer.invoke("remote:hosts"),

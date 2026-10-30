@@ -10,6 +10,7 @@ import { createUpdatePill } from "./updates-ui.js";
 import { createCudaOffer } from "./gpu-runtime-ui.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
+import { createRemoteHostUi } from "./remote-host-ui.js";
 import { createChatTarget, reduceSessionEvents, readRemoteSetup, remoteImageGuidance, remoteModelSelect, renderRemoteSetupPanel, renderTargetBanner, renderTargetSwitch, runProgress } from "./chat-target.js";
 import { createServerModels } from "./server-models.js";
 import { createServerOrchestration } from "./server-orchestration.js";
@@ -520,7 +521,7 @@ function applyCodeFontSize(value) {
 }
 // One account store for the app; Remote (R3+) subscribes to the same state.
 const accountState = createAccountState(window.desktopAccount);
-const remoteUi = createRemoteUi({ account: accountState });
+const remoteUi = createRemoteUi({ account: accountState, hostUi: window.desktopRemoteHost ? createRemoteHostUi({ account: accountState }) : undefined });
 chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountState,
   onChange: ({ cameOnline } = {}) => {
     repaintChatTarget();

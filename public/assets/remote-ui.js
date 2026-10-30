@@ -6,8 +6,11 @@ const busyStates = ["connecting", "reconnecting"];
 // Remote → Connect (spec §6, R3): pair this computer with a server by its one-time key,
 // reconnect to paired servers, and manage which computers may connect. Keys, tickets and
 // tokens never reach this page; the desktop bridge returns statuses only.
-export function createRemoteUi({ bridge = window.desktopRemote, account, onChange = () => {} }) {
+// With `hostUi`, a second tab, This computer, lets devices connect to this computer (remote-host-ui.js).
+export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi, onChange = () => {} }) {
   let status = { state: bridge ? "idle" : "unavailable" };
+  let tab = "connect";
+  try { if (hostUi && localStorage.getItem("lcai.remoteTab") === "host") tab = "host"; } catch { /* No storage: the first tab. */ }
   let hosts = [], hostsLoaded = false, hostsError = "", hostStatus = null, keyDraft = "", pending = "", notice = "", root;
 
   const call = async (method, ...args) => {
@@ -132,7 +135,11 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
   const note = (title, text) => `<div class="account-card"><div><h2>${escape(title)}</h2><p>${text}</p></div></div>`;
 
   function render() {
-    return `<div class="remote-page"><header class="remote-header"><h1>${icon("remote")}<span>Remote</span></h1><p class="subtle">Use Local Cognitive on another computer — for example a server with a GPU.</p></header><div data-remote-root>${inner()}</div></div>`;
+    const tabButton = (id, label) => `<button type="button" role="tab" class="orchestration-tab remote-tab ${tab === id ? "active" : ""}" aria-selected="${tab === id}" data-remote-tab="${id}">${label}</button>`;
+    const tabs = hostUi ? `<div class="segmented-control remote-tabs" role="tablist" aria-label="Remote">${tabButton("connect", "Connect to a server")}${tabButton("host", "This computer")}</div>` : "";
+    const subtitle = hostUi && tab === "host" ? "Let your phone or another computer use this one." : "Use Local Cognitive on another computer — for example a server with a GPU.";
+    const body = hostUi && tab === "host" ? `<div data-remote-host-root>${hostUi.inner()}</div>` : `<div data-remote-root>${inner()}</div>`;
+    return `<div class="remote-page"><header class="remote-header"><h1>${icon("remote")}<span>Remote</span></h1><p class="subtle">${subtitle}</p></header>${tabs}${body}</div>`;
   }
 
   function repaint() {
@@ -147,6 +154,15 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, onChang
   function bind(element) {
     if (!element || element === root) return;
     root = element;
+    hostUi?.bind(root);
+    root.addEventListener("click", event => {
+      const choice = event.target.closest("[data-remote-tab]")?.dataset.remoteTab;
+      if (!choice || choice === tab) return;
+      tab = choice;
+      try { localStorage.setItem("lcai.remoteTab", tab); } catch { /* Remembered for this window only. */ }
+      root.innerHTML = render();
+      onChange();
+    });
     root.addEventListener("input", event => {
       if (!event.target.matches("[data-remote-key]")) return;
       keyDraft = event.target.value;
