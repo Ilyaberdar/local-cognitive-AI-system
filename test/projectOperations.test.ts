@@ -61,7 +61,7 @@ test("a project set up on the server is listed by name, may only be archived, an
     await assert.rejects(f.call("projects.update", { projectId: own.id, ...patch }), code("unsupported"), JSON.stringify(patch));
   }
   assert.equal((await f.call("projects.update", { projectId: own.id, archived: true })).archived, true);
-  assert.equal((await f.access.usable(own.id)).reason, PROJECT_ON_HOST);
+  assert.equal((await f.access.usable(own.id)).reason, PROJECT_ON_HOST());
 });
 
 test("a project in an admin's folder is usable until the folder is no longer shared, and not while archived", async t => {
@@ -75,7 +75,7 @@ test("a project in an admin's folder is usable until the folder is no longer sha
   assert.match(String((await f.access.usable(project.id)).reason), /archived/);
   await f.call("projects.update", { projectId: project.id, archived: false });
   removeAdminFolder(f.data, work.id);
-  assert.equal((await f.access.usable(project.id)).reason, PROJECT_ON_HOST, "unshared at once");
+  assert.equal((await f.access.usable(project.id)).reason, PROJECT_ON_HOST(), "unshared at once");
   await assert.rejects(f.access.usable("missing"), code("project_unknown"));
 });
 
@@ -84,7 +84,7 @@ test("a project the host set up stays the host's even inside a shared folder", a
   const hostMade = await f.store.create({ name: "Host site", rootPath: path.join(f.data, "projects", "site") });
   const [listed] = await f.call("projects.list");
   assert.deepEqual([listed.id, listed.hostOnly, listed.folder], [hostMade.id, true, undefined]);
-  assert.equal((await f.access.usable(hostMade.id)).reason, PROJECT_ON_HOST);
+  assert.equal((await f.access.usable(hostMade.id)).reason, PROJECT_ON_HOST());
   assert.equal(await f.access.visible(hostMade.id), false, "its chats are not a device's to see");
   await assert.rejects(f.call("projects.update", { projectId: hostMade.id, archived: false }), code("unsupported"));
 });

@@ -7,6 +7,7 @@ import { encodeConnectionKey } from "../connectionKey";
 import type { SigningIdentity, TlsIdentity } from "../identity";
 import { helloMessage, MAX_REQUESTS_IN_FLIGHT, requestMessage, type HelloMessage } from "../messages";
 import type { RemoteGrant, RemoteHostStore } from "./RemoteHostStore";
+import { hostIsServer, place, Place } from "../../runtime/hostPlace";
 
 /** What the Cloud vouches for when it opens a stream: a consumed ticket for this account,
  * device (with its registered key) and purpose. */
@@ -31,19 +32,22 @@ export class RemoteOperationError extends Error { constructor(message: string, r
 export interface ClaimReceipt { receiptId: string; hostId: string; invitationId: string; ticketId: string; accountId: string; deviceId: string; deviceSpkiSha256: string; grantedAt: string }
 
 const HELLO_TIMEOUT_MS = 10_000;
-const DENIALS: Record<string, string> = {
+/** Why a connection is refused, in the words for this host. */
+const denials = () => ({
   device_key_mismatch: "This device's key is not the one registered for it.",
   hello_mismatch: "The connection request does not match the ticket.",
-  invitation_unknown: "The connection key is unknown or has expired. Create a new one on the server.",
-  invitation_used: "The connection key was already used. Create a new one on the server.",
-  invitation_expired: "The connection key has expired. Create a new one on the server.",
-  owner_mismatch: "This server belongs to another account.",
-  proof_invalid: "The connection key is not valid for this server.",
-  not_authorized: "This device has no access to this server. Connect it again with a new key.",
-  protocol: "This version of Local Cognitive cannot talk to this server.",
-  client_too_old: "Local Cognitive on this computer is too old for this server. Update the app on this computer.",
-  server_too_old: "Local Cognitive on the server is older than this app. Update the server: sudo local-cognitive-server update --data-dir <data dir>."
-};
+  invitation_unknown: `The connection key is unknown or has expired. Create a new one on ${place()}.`,
+  invitation_used: `The connection key was already used. Create a new one on ${place()}.`,
+  invitation_expired: `The connection key has expired. Create a new one on ${place()}.`,
+  owner_mismatch: `${Place()} belongs to another account.`,
+  proof_invalid: `The connection key is not valid for ${place()}.`,
+  not_authorized: `This device has no access to ${place()}. Connect it again with a new key.`,
+  protocol: `This version of Local Cognitive cannot talk to ${place()}.`,
+  client_too_old: `Local Cognitive on this computer is too old for ${place()}. Update the app on this computer.`,
+  server_too_old: hostIsServer() ? "Local Cognitive on the server is older than this app. Update the server: sudo local-cognitive-server update --data-dir <data dir>."
+    : `Local Cognitive on ${place()} is older than this app. Update it there: Settings → About.`
+});
+type Denial = keyof ReturnType<typeof denials>;
 
 /** The host end of Remote sessions (spec §6.2–6.3). Transport-agnostic: the agent hands it a
  * byte stream per device connection, normally a relayed WebSocket. */
@@ -67,7 +71,7 @@ export class RemoteHost extends EventEmitter {
   /** A one-time key for `connect-key`. The secret lives only in this process. */
   createInvitation(ttlMs = 10 * 60_000): { key: string; invitationId: string; expiresAt: number } {
     const hostId = this.options.store.hostId();
-    if (!hostId) throw new RemoteOperationError("The server is not registered with Local Cognitive Cloud yet.", "not_registered");
+    if (!hostId) throw new RemoteOperationError(`${Place()} is not registered with Local Cognitive Cloud yet.`, "not_registered");
     const invitationId = crypto.randomUUID(), secret = crypto.randomBytes(32), now = this.now();
     const expiresAt = Math.floor((now + ttlMs) / 1000) * 1000;
     this.options.store.createInvitation(invitationId, new Date(now), new Date(expiresAt));
@@ -84,10 +88,10 @@ export class RemoteHost extends EventEmitter {
       const { socket, deviceSpkiSha256 } = await acceptTls(transport, this.options.tls);
       channel = new FramedChannel(socket);
       channel.on("failure", (error: Error) => this.options.logger?.warn("Remote session error", { streamId: open.streamId, error: error.message }));
-      const deny = (code: keyof typeof DENIALS) => {
+      const deny = (code: Denial) => {
         this.options.logger?.warn("Remote connection refused", { streamId: open.streamId, deviceId: open.deviceId, code });
         // The server's version, so the computer can say which side to update.
-        channel!.send({ type: "denied", code, message: DENIALS[code], serverVersion: this.options.serverVersion.slice(0, 64) });
+        channel!.send({ type: "denied", code, message: denials()[code], serverVersion: this.options.serverVersion.slice(0, 64) });
         channel!.close();
       };
       if (!timingSafeHexEqual(deviceSpkiSha256.toString("hex"), open.deviceSpkiSha256)) { deny("device_key_mismatch"); return; }
@@ -115,7 +119,7 @@ export class RemoteHost extends EventEmitter {
   disconnectDevice(deviceId: string): void { for (const channel of this.sessions.get(deviceId) ?? []) shut(channel, "revoked"); }
   disconnectAll(reason: string): void { for (const set of this.sessions.values()) for (const channel of set) shut(channel, reason); }
 
-  private pair(channel: FramedChannel, open: StreamOpen, hello: HelloMessage, deviceSpki: Buffer): RemoteGrant | keyof typeof DENIALS {
+  private pair(channel: FramedChannel, open: StreamOpen, hello: HelloMessage, deviceSpki: Buffer): RemoteGrant | Denial {
     const hostId = this.options.store.hostId();
     const invitation = this.secrets.get(open.invitationId ?? "");
     if (!hostId || !invitation || invitation.expiresAt <= this.now()) return "invitation_unknown";
@@ -137,7 +141,7 @@ export class RemoteHost extends EventEmitter {
     return claimed.grant;
   }
 
-  private authorize(open: StreamOpen): RemoteGrant | keyof typeof DENIALS {
+  private authorize(open: StreamOpen): RemoteGrant | Denial {
     const grant = this.options.store.activeGrant(open.deviceId);
     if (this.options.expectedOwner && this.options.expectedOwner() !== open.accountId) return "not_authorized";
     if (!grant || grant.accountId !== open.accountId || this.options.store.owner() !== open.accountId
@@ -169,14 +173,14 @@ export class RemoteHost extends EventEmitter {
       const { id, op, payload } = request.data;
       if (inFlight >= MAX_REQUESTS_IN_FLIGHT) { channel.send({ type: "error", id, code: "too_many_requests", message: "Too many requests at once." }); return; }
       const operation = Object.hasOwn(this.options.operations, op) ? this.options.operations[op] : undefined;
-      if (!operation) { channel.send({ type: "error", id, code: "unknown_operation", message: `The server does not support ${op}.` }); return; }
+      if (!operation) { channel.send({ type: "error", id, code: "unknown_operation", message: `${Place()} does not support ${op}.` }); return; }
       inFlight++;
       void Promise.resolve().then(() => operation(payload, context)).then(
         result => reply({ type: "response", id, result }, id),
         (error: unknown) => {
           const known = error instanceof RemoteOperationError;
           if (!known) this.options.logger?.warn("Remote operation failed", { op, error: error instanceof Error ? error.message : String(error) });
-          reply({ type: "error", id, code: known ? error.code : "operation_failed", message: known ? error.message : "The operation failed on the server." }, id);
+          reply({ type: "error", id, code: known ? error.code : "operation_failed", message: known ? error.message : `The operation failed on ${place()}.` }, id);
         }
       ).catch(error => this.options.logger?.warn("Remote reply failed", { op, error: error instanceof Error ? error.message : String(error) }))
         .finally(() => { inFlight--; });

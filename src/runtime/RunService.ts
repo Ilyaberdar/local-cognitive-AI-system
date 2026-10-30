@@ -8,6 +8,7 @@ import type { HostDatabase } from "./db/HostDatabase";
 import type { EventJournal, JournalEvent } from "./EventJournal";
 import type { Scrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
+import { place, Place } from "./hostPlace";
 
 export type RunStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted" | "needs_review";
 const ACTIVE: RunStatus[] = ["queued", "running", "waiting_approval"];
@@ -91,8 +92,8 @@ export class RunService {
     const command = { sessionId: request.sessionId, input, ...(ids.length ? { attachmentIds: ids } : {}) };
     const replay = this.replay(scope, request.commandId, command);
     if (replay) return replay;
-    if (!this.accepting) throw new RunServiceError("The server is shutting down. Try again when it is back.", "host_draining");
-    if (!await this.deps.sessionExists(request.sessionId)) throw new RunServiceError("The chat does not exist on the server.", "session_unknown");
+    if (!this.accepting) throw new RunServiceError(`${Place()} is shutting down. Try again when it is back.`, "host_draining");
+    if (!await this.deps.sessionExists(request.sessionId)) throw new RunServiceError(`The chat does not exist on ${place()}.`, "session_unknown");
     let admitted: { attachments?: ChatAttachment[] } | void;
     try { admitted = await admit?.(); }
     catch (error) {
@@ -111,7 +112,7 @@ export class RunService {
       // Checked again inside the transaction: the async checks above may have interleaved.
       const existing = this.replay(scope, request.commandId, command);
       if (existing) return { ack: existing, appended: [] };
-      if (this.deleting.has(request.sessionId)) throw new RunServiceError("The chat does not exist on the server.", "session_unknown");
+      if (this.deleting.has(request.sessionId)) throw new RunServiceError(`The chat does not exist on ${place()}.`, "session_unknown");
       const commandId = randomUUID(), runId = randomUUID(), userMessageId = randomUUID(), assistantMessageId = randomUUID();
       db.prepare(`INSERT INTO commands(command_id, scope, idempotency_key, operation, target, payload_sha256, payload_json, status, accepted_at, updated_at)
         VALUES (?, ?, ?, 'chat.runs.start', ?, ?, ?, 'accepted', ?, ?)`).run(commandId, scope, request.commandId, request.sessionId, sha256(payloadJson), payloadJson, at, at);
@@ -150,7 +151,7 @@ export class RunService {
   /** Cancel is its own command; a disconnect never cancels. Finished runs return their status. */
   cancel(runId: string): RunView {
     const run = this.get(runId);
-    if (!run) throw new RunServiceError("The run does not exist on the server.", "run_unknown");
+    if (!run) throw new RunServiceError(`The run does not exist on ${place()}.`, "run_unknown");
     this.active.get(runId)?.controller.abort("cancel");
     return run;
   }
@@ -233,7 +234,7 @@ export class RunService {
         db.prepare("UPDATE messages SET status = 'completed', updated_at = ? WHERE run_id = ? AND role = 'user' AND status = 'interrupted'").run(at, run.run_id);
         db.prepare("UPDATE commands SET status = 'interrupted', updated_at = ? WHERE run_id = ? AND status IN ('accepted','running')").run(at, run.run_id);
         events.push(this.deps.journal.append(db, streamOf(String(run.session_id)), { type: `run.${status}`, runId: String(run.run_id),
-          payload: { runId: String(run.run_id), error: "The server restarted while answering." } }));
+          payload: { runId: String(run.run_id), error: `${Place()} restarted while answering.` } }));
       }
       return events;
     });
@@ -293,11 +294,11 @@ export class RunService {
       this.flush(run);
       const reason = run.controller.signal.aborted ? run.controller.signal.reason : undefined;
       if (reason === "cancel") this.finish(run, "cancelled");
-      else if (reason === "host_shutdown") this.finish(run, "interrupted", "The server stopped while answering.");
+      else if (reason === "host_shutdown") this.finish(run, "interrupted", `${Place()} stopped while answering.`);
       else if (reason === "host_only") this.finish(run, "failed", run.stopReason);
       else {
         diagnostics().record("chat_run.failed", { category: errorCategory(error) });
-        this.finish(run, "failed", error instanceof Error ? error.message : "The answer failed on the server.");
+        this.finish(run, "failed", error instanceof Error ? error.message : `The answer failed on ${place()}.`);
       }
     }
   }

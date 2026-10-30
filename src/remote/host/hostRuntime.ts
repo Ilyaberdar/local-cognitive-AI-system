@@ -49,7 +49,7 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   host.runService.setGuard(async sessionId => {
     const projectId = (await sessionIndexStore.get(sessionId))?.projectId;
     if (!projectId) return undefined;
-    if (!await projects.visible(projectId)) return PROJECT_ON_HOST;
+    if (!await projects.visible(projectId)) return PROJECT_ON_HOST();
     return (await projects.usable(projectId)).reason;
   });
   // Attachments devices send for their next turn; expired ones are dropped even when none arrive.

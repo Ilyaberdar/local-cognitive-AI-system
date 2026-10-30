@@ -4,6 +4,7 @@ import { RemoteOperationError, type RemoteOperation } from "../remote/host/Remot
 import type { UsageLedger } from "../usage/UsageLedger";
 import type { UsageOutbox } from "../usage/UsageOutbox";
 import { addTotals, daysFromQuarters, emptyTotals, knownTimeZone } from "../usage/UsageProjection";
+import { place } from "./hostPlace";
 
 const pendingInput = z.object({
   timeZone: z.string().max(64),
@@ -20,7 +21,7 @@ export const createUsageOperations = (deps: { ledger?: UsageLedger; outbox?: Usa
     const input = pendingInput.safeParse(payload);
     if (!input.success) throw new RemoteOperationError("The request is not valid.", "invalid_request");
     const owner = deps.owner();
-    if (!owner || owner !== context.accountId) throw new RemoteOperationError("Usage of this server is its owner's.", "forbidden");
+    if (!owner || owner !== context.accountId) throw new RemoteOperationError(`Usage of ${place()} is its owner's.`, "forbidden");
     if (!deps.ledger) return { available: false };
     await deps.outbox?.flush(3_000, true).catch(() => undefined);
     const timeZone = knownTimeZone(input.data.timeZone);

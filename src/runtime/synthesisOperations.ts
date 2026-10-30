@@ -9,6 +9,7 @@ import { pathScrubber, type Scrubber } from "./orchestrationDto";
 import { PROJECT_ON_HOST, type ProjectAccess } from "./projectOperations";
 import { publicError } from "./publicError";
 import { runDetail, runSummary, safeAgent, safeAgents, safeModule } from "./synthesisDto";
+import { place, Place } from "./hostPlace";
 
 /** What a diff answer carries at most; larger files are fetched one by one (`synthesis.runs.file`). */
 const MAX_DIFF_BYTES = 768 * 1024, MAX_FILE_BYTES = 512 * 1024;
@@ -61,7 +62,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
   const requireProject = async (projectId: string, use: boolean) => {
     if (!await deps.projects.visible(projectId)) {
       const exists = await deps.runtimeManager.getRuntime().projectStore.get(projectId);
-      throw exists ? new RemoteOperationError(PROJECT_ON_HOST, "unsupported") : new RemoteOperationError("The project does not exist on the server.", "project_unknown");
+      throw exists ? new RemoteOperationError(PROJECT_ON_HOST(), "unsupported") : new RemoteOperationError(`The project does not exist on ${place()}.`, "project_unknown");
     }
     if (use) {
       const { reason } = await deps.projects.usable(projectId);
@@ -72,17 +73,17 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
    * started may be stopped also once its project is no longer the device's to see. */
   const requireRun = async (id: string, use: boolean, stop = false) => {
     const run = await service().existing(id);
-    if (!run) throw new RemoteOperationError("The Synthesis run does not exist on the server.", "not_found");
+    if (!run) throw new RemoteOperationError(`The Synthesis run does not exist on ${place()}.`, "not_found");
     await requireProject(run.projectId, use).catch(error => {
       if (stop && run.startedBy === "device") return;
-      if (error instanceof RemoteOperationError && error.code === "project_unknown") throw new RemoteOperationError("The Synthesis run does not exist on the server.", "not_found");
+      if (error instanceof RemoteOperationError && error.code === "project_unknown") throw new RemoteOperationError(`The Synthesis run does not exist on ${place()}.`, "not_found");
       throw error;
     });
     return run;
   };
   /** A device's run stops once the device may no longer use its project (archived, folder unshared). */
   const device = (projectId: string) => ({ guard: async () =>
-    await deps.projects.visible(projectId) ? (await deps.projects.usable(projectId)).reason : PROJECT_ON_HOST });
+    await deps.projects.visible(projectId) ? (await deps.projects.usable(projectId)).reason : PROJECT_ON_HOST() });
   /** Service refusals keep a code and a short, path-free text; anything else is reported generically. */
   const known = async <T>(projectId: string | undefined, task: () => Promise<T>): Promise<T> => {
     try { return await task(); }
@@ -268,7 +269,7 @@ export const createSynthesisOperations = (deps: SynthesisOperationDependencies):
           reconcile: async () => {
             const outcome = await service().applyOutcome(input.runId);
             if (outcome === "none") return undefined;
-            if (outcome === "partial") throw new RemoteOperationError("The server restarted while applying this run and only some files were written. Check the project's files.", "unknown_outcome");
+            if (outcome === "partial") throw new RemoteOperationError(`${Place()} restarted while applying this run and only some files were written. Check the project's files.`, "unknown_outcome");
             return { ok: true, appliedAt: (await service().existing(input.runId))?.appliedAt ?? new Date().toISOString() };
           } });
       });

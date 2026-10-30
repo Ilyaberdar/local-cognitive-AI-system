@@ -155,3 +155,16 @@ test("this computer, when it hosts, is listed as itself without Connect or Forge
   assert.deepEqual(calls.find(call => call[0] === "removeHost"), ["removeHost", GONE]);
   assert.match(confirmations[0]!, /Remove old-fedora from your account\? Every device loses access/);
 });
+
+test("a computer that hosts shows no inference row, and the form says where a key comes from on a computer and on a server", async () => {
+  const { bridge, emit } = bridgeWith({ hostStatus: async () => ({ ok: true, value: { kind: "desktop", version: "0.1.12", phase: "running", activeWork: { total: 0 }, loadedModels: [] } }) });
+  const page = load(bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
+  page.paint();
+  page.signIn({});
+  await flush();
+  assert.match(page.root.textContent, /Remote → This computer → Show connection key; on a server, run sudo local-cognitive-server pair/);
+  emit({ state: "online", hostId: HOST, hostName: "MacBook", serverVersion: "0.1.12" });
+  await flush(); await flush();
+  assert.match(page.root.textContent, /Connected to MacBook\s*Local Cognitive 0\.1\.12 there\./);
+  assert.doesNotMatch(page.root.textContent, /Inference|on the server/);
+});

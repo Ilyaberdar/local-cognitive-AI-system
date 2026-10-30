@@ -12,11 +12,12 @@ import { PROVIDER_PRESETS, providerPreset, type ProviderPreset } from "../llm/pr
 import { SECRET_ENV_KEYS } from "../config/secrets";
 import { CUSTOM_PROVIDER_ENV } from "../config/environmentProviders";
 import { Logger } from "../utils/Logger";
+import { place, Place } from "./hostPlace";
 
 const TEST_TIMEOUT_MS = 300_000;
-const HOST_ONLY = "This is set on the server itself: filesystem access, folders, provider addresses, the models folder, the MCP server and Telegram can only be changed there.";
-const LATER = "MCP servers and plugins on the server come in a later update.";
-const CLIENT_SETTING = "Appearance, keyboard shortcuts and profile are kept on each device and are not sent to the server.";
+const HOST_ONLY = (): string => `This is set on ${place()} itself: filesystem access, folders, provider addresses, the models folder, the MCP server and Telegram can only be changed there.`;
+const LATER = (): string => `MCP servers and plugins on ${place()} come in a later update.`;
+const CLIENT_SETTING = (): string => `Appearance, keyboard shortcuts and profile are kept on each device and are not sent to ${place()}.`;
 const CLIENT_UI = ["theme", "accentColor", "backgroundColor", "foregroundColor", "fontScale", "codeFontSize", "animations", "sendKey", "shortcuts"];
 
 const providerId = z.string().min(1).max(100);
@@ -67,10 +68,10 @@ const refuseByField = (raw: unknown): void => {
   const memory = record(patch.memory);
   if (has(patch, "filesystem") || has(patch, "telegram") || has(patch.mcp, "server") || has(patch.localModels, "modelsDir")
     || has(memory, "baseDir") || has(memory.openMemory, "dbPath") || Object.values(record(patch.providers)).some(provider => has(provider, "baseUrl"))) {
-    throw new RemoteOperationError(HOST_ONLY, "host_only");
+    throw new RemoteOperationError(HOST_ONLY(), "host_only");
   }
-  if (has(patch.mcp, "client") || has(patch, "plugins")) throw new RemoteOperationError(LATER, "unsupported");
-  if (has(patch, "profile") || CLIENT_UI.some(key => has(patch.ui, key))) throw new RemoteOperationError(CLIENT_SETTING, "client_setting");
+  if (has(patch.mcp, "client") || has(patch, "plugins")) throw new RemoteOperationError(LATER(), "unsupported");
+  if (has(patch, "profile") || CLIENT_UI.some(key => has(patch.ui, key))) throw new RemoteOperationError(CLIENT_SETTING(), "client_setting");
 };
 
 /** Keys the server has from its environment: masked in every answer a device gets, like saved ones. */
@@ -81,10 +82,10 @@ const environmentSecrets = (): string[] => Object.entries(process.env)
  * override in the environment, or the catalog's), never one the device sends. */
 const addablePreset = (id: string, region: string | undefined): { preset: ProviderPreset; baseUrl: string } => {
   const preset = providerPreset(id);
-  if (!preset) throw new RemoteOperationError("The server has no such provider type.", "invalid_request");
-  if (preset.builtIn) throw new RemoteOperationError(`${preset.name} is already on the server: enter its key on its page.`, "invalid_request");
+  if (!preset) throw new RemoteOperationError(`${Place()} has no such provider type.`, "invalid_request");
+  if (preset.builtIn) throw new RemoteOperationError(`${preset.name} is already on ${place()}: enter its key on its page.`, "invalid_request");
   const area = region === undefined ? undefined : preset.regions?.find(item => item.id === region);
-  if (region !== undefined && !area) throw new RemoteOperationError("The server has no such region for this provider.", "invalid_request");
+  if (region !== undefined && !area) throw new RemoteOperationError(`${Place()} has no such region for this provider.`, "invalid_request");
   return { preset, baseUrl: area?.baseUrl ?? (process.env[preset.env.baseUrl]?.trim() || preset.baseUrl) };
 };
 /** The presets a device can add on this server: what Add provider shows, without their environment names. */
@@ -100,7 +101,7 @@ export interface SettingsOperationDependencies {
  * settings, changes within an allowlist (keys written or cleared, never read), and a provider
  * test whose answer never carries a key. Calls the settings store directly, never the HTTP API. */
 export const createSettingsOperations = (deps: SettingsOperationDependencies): Record<string, RemoteOperation> => {
-  const draining = () => new RemoteOperationError("The server is shutting down. Try again when it is back.", "host_draining");
+  const draining = () => new RemoteOperationError(`${Place()} is shutting down. Try again when it is back.`, "host_draining");
   const runtimeStatus = () => {
     try { return deps.runtimeManager.getRuntime().localModelService.snapshot().runtime.status; } catch { return undefined; }
   };
@@ -129,7 +130,7 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
       // Only providers the host has, as its own entries: an unknown id would create one, and a name
       // such as "toString" or "constructor" must not pass for a provider through the prototype.
       for (const id of [...Object.keys(input.providers ?? {}), ...(input.llm ? [input.llm.defaultProvider] : [])]) {
-        if (!Object.hasOwn(current.providers, id)) throw new RemoteOperationError(`The provider ${publicError(id)} does not exist on the server.`, "invalid_request");
+        if (!Object.hasOwn(current.providers, id)) throw new RemoteOperationError(`The provider ${publicError(id)} does not exist on ${place()}.`, "invalid_request");
       }
       const providers: NonNullable<AppSettingsPatch["providers"]> = {};
       for (const [id, fields] of Object.entries(input.providers ?? {})) {
@@ -137,7 +138,7 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
         const added = current.providers[id]?.kind === "openai-compatible" && !providerPreset(id)?.builtIn && current.providers[id]?.source !== "environment";
         if (fields === null || fields.name !== undefined) {
           if (current.providers[id]?.source === "environment") throw new RemoteOperationError(`${publicError(current.providers[id]?.name ?? id)} is set in the server's environment file: change it there.`, "host_only");
-          if (!added) throw new RemoteOperationError(fields === null ? "Only a provider added on the server can be removed. Turn this one off instead." : "Only a provider added on the server can be renamed.", "invalid_request");
+          if (!added) throw new RemoteOperationError(fields === null ? `Only a provider added on ${place()} can be removed. Turn this one off instead.` : `Only a provider added on ${place()} can be renamed.`, "invalid_request");
         }
         if (fields === null) { providers[id] = null; continue; }
         const { apiKey: key, ...rest } = fields;
@@ -177,7 +178,7 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
       const current = await deps.runtimeManager.getSettings();
       let id = preset.id;
       for (let suffix = 2; Object.hasOwn(current.providers, id); suffix++) {
-        if (suffix > 20) throw new RemoteOperationError(`The server has too many ${preset.name} providers already.`, "invalid_request");
+        if (suffix > 20) throw new RemoteOperationError(`${Place()} has too many ${preset.name} providers already.`, "invalid_request");
         id = `${preset.id}-${suffix}`;
       }
       const name = input.name ?? (id === preset.id ? preset.name : `${preset.name} ${id.slice(preset.id.length + 1)}`);
@@ -190,10 +191,10 @@ export const createSettingsOperations = (deps: SettingsOperationDependencies): R
     "providers.test": async (payload, context: OperationContext) => {
       const { providerId: id, model } = parse(schemas.test, payload);
       if (deps.isDraining()) throw draining();
-      if (id === "llamacpp") throw new RemoteOperationError("Load and use the server's models from Models.", "unsupported");
+      if (id === "llamacpp") throw new RemoteOperationError(`Load and use the models of ${place()} from Models.`, "unsupported");
       const settings = await deps.runtimeManager.getSettings();
       const provider = Object.hasOwn(settings.providers, id) ? settings.providers[id] : undefined;
-      if (!provider) throw new RemoteOperationError("The provider does not exist on the server.", "invalid_request");
+      if (!provider) throw new RemoteOperationError(`The provider does not exist on ${place()}.`, "invalid_request");
       if (!provider.enabled) return { ok: false, providerId: id, message: "Provider is disabled." };
       // Every key the runtime may have used, read from the vault (and any kept from before), and the environment's.
       const keys = await deps.runtimeManager.providerKeys(settings);

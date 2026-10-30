@@ -65,6 +65,7 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   assert.equal((await phone.pair(key)).state, "online");
   assert.deepEqual(await phone.request("host.info").then((info: any) => [info.name, info.kind]), ["MacBook", "desktop"]);
   assert.equal((await phone.request("host.status") as any).kind, "desktop");
+  await assert.rejects(phone.request("chat.runs.get", { runId: "4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d11" }), /The run does not exist on MacBook\./, "a desktop names itself, not the server");
   assert.deepEqual(host.status().devices.map((entry: any) => [entry.name, entry.connected]), [["iPhone", true]]);
   assert.equal((await call("invitation", invitationId)).consumed, true);
 

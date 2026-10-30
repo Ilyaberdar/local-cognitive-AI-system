@@ -58,7 +58,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     const card = (title, text, actions = "", tone = "") =>
       `<div class="account-card remote-status ${tone}" role="status"><div><h2><span class="status-dot"></span>${title}</h2><p>${text}</p>${error}</div>${actions ? `<div class="account-actions">${actions}</div>` : ""}</div>`;
     switch (status.state) {
-      case "online": return card(`Connected to ${host}`, `Local Cognitive ${escape(status.serverVersion || "")} on the server. This computer stays paired: Connect works again without a key.`, disconnect, "is-online");
+      case "online": return card(`Connected to ${host}`, `Local Cognitive ${escape(status.serverVersion || "")} there. This computer stays paired: Connect works again without a key.`, disconnect, "is-online");
       case "connecting": return card(`Connecting to ${host}…`, "Setting up an end-to-end encrypted connection through Local Cognitive Cloud.", disconnect, "is-busy");
       case "reconnecting": case "offline": return card(`Reconnecting to ${host}…`, "The connection dropped. Local Cognitive keeps trying in the background.", disconnect, "is-busy");
       case "revoked": return card("Access removed", "This computer can no longer connect to the server. Ask for a new key on the server to connect again.", forget, "is-warning");
@@ -74,10 +74,11 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     const inference = hostStatus.inference || {};
     const backend = inference.active || inference.backend || "unknown";
     const update = hostStatus.update?.available;
+    // A computer that hosts (kind "desktop") reports no inference preference: it has no admin flags.
     const rows = [
       ["Version", `${escape(hostStatus.version || status.serverVersion || "")}${update ? ` · <strong>${escape(update.version)} available</strong>` : ""}`],
       ["State", hostStatus.phase === "draining" ? "Finishing work, then stopping" : "Running"],
-      ["Inference", `${escape(backend)}${inference.fallbackReason ? ` · ${escape(inference.fallbackReason)}` : ""}`],
+      ...(hostStatus.inference ? [["Inference", `${escape(backend)}${inference.fallbackReason ? ` · ${escape(inference.fallbackReason)}` : ""}`]] : []),
       ["Loaded models", hostStatus.loadedModels?.length ? hostStatus.loadedModels.map(escape).join(", ") : "None"],
       ["Active work", work ? `${work} task${work === 1 ? "" : "s"}` : "Idle"]
     ];
@@ -91,7 +92,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   function connectForm() {
     const disabled = pending || busyStates.includes(status.state) ? " disabled" : "";
     return `<form class="account-card remote-connect" data-remote-form>
-      <div><h2>Connect a server</h2><p>On the server, run <code>sudo local-cognitive-server pair</code> and paste the key here. A key works once and expires after 10 minutes.</p></div>
+      <div><h2>Connect a server</h2><p>On a computer with Local Cognitive, open Remote → This computer → Show connection key; on a server, run <code>sudo local-cognitive-server pair</code>. Paste the key here. A key works once and expires after 10 minutes.</p></div>
       <textarea class="remote-key" data-remote-key rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="LCR1-…" aria-label="Connection key"${disabled}>${escape(keyDraft)}</textarea>
       <div class="account-actions"><button type="submit" class="primary-button"${disabled || !keyDraft.trim() ? " disabled" : ""}>${pending === "pair" ? "Connecting…" : "Connect"}</button></div>
     </form>`;

@@ -4,8 +4,9 @@ import { ProjectError, PROJECT_COLORS, type Project } from "../projects/types";
 import { RemoteOperationError, type OperationContext, type RemoteOperation } from "../remote/host/RemoteHost";
 import type { CommandLedger } from "./CommandLedger";
 import { FolderError, type HostFolders } from "./hostFolders";
+import { place as hostPlace } from "./hostPlace";
 
-export const PROJECT_ON_HOST = "This project's folder was chosen on the server, so its chats can only be used there.";
+export const PROJECT_ON_HOST = (): string => `This project's folder was chosen on ${hostPlace()}, so its chats can only be used there.`;
 const ARCHIVED = "The project is archived. Restore it to use its chats.";
 
 /** A project made from a device whose folder is still shared: the only kind a device may use. One
@@ -38,8 +39,8 @@ export const createProjectAccess = (deps: { runtimeManager: RuntimeManager; fold
   },
   async usable(projectId) {
     const project = await deps.runtimeManager.getRuntime().projectStore.get(projectId);
-    if (!project) throw new RemoteOperationError("The project does not exist on the server.", "project_unknown");
-    if (!deviceFolder(project, deps.folders)) return { project, reason: PROJECT_ON_HOST };
+    if (!project) throw new RemoteOperationError(`The project does not exist on ${hostPlace()}.`, "project_unknown");
+    if (!deviceFolder(project, deps.folders)) return { project, reason: PROJECT_ON_HOST() };
     if (project.archivedAt) return { project, reason: ARCHIVED };
     return { project };
   }
@@ -103,13 +104,13 @@ export const createProjectOperations = (deps: ProjectOperationDependencies): Rec
     "projects.update": payload => known(async () => {
       const { projectId, ...patch } = parse(schemas.update, payload);
       const project = await store().get(projectId);
-      if (!project) throw new RemoteOperationError("The project does not exist on the server.", "project_unknown");
+      if (!project) throw new RemoteOperationError(`The project does not exist on ${hostPlace()}.`, "project_unknown");
       // A project set up on the server may be archived from a device, nothing more.
       if (!deviceFolder(project, deps.folders) && (patch.name !== undefined || patch.color !== undefined || patch.archived !== true)) {
-        throw new RemoteOperationError(PROJECT_ON_HOST.replace("its chats can only be used there", "it can only be changed there"), "unsupported");
+        throw new RemoteOperationError(PROJECT_ON_HOST().replace("its chats can only be used there", "it can only be changed there"), "unsupported");
       }
       const saved = await store().update(projectId, patch);
-      if (!saved) throw new RemoteOperationError("The project does not exist on the server.", "project_unknown");
+      if (!saved) throw new RemoteOperationError(`The project does not exist on ${hostPlace()}.`, "project_unknown");
       return safeProject(saved, deps.folders);
     })
   };

@@ -17,6 +17,7 @@ import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./R
 import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore";
 import type { ProjectAccess } from "./projectOperations";
 import { protectedPathReason } from "../security/protectedPaths";
+import { place, Place } from "./hostPlace";
 
 const MAX_HISTORY_BYTES = 768 * 1024;
 const MAX_SUBAGENTS = 4, MAX_ADVISORS = 5;
@@ -26,8 +27,8 @@ const TEXT_LIMIT = 400 * 1024, FILE_CHUNK_BYTES = 512 * 1024, COPY_LIMIT = 100 *
 const UNAVAILABLE = "The file is not available to this chat: it was moved or deleted, or this chat did not create or open it.";
 const inside = (child: string, parent: string) => child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
 /** Work the host set up with full access stays there: a device may stop, decline or delete it. */
-export const CHAT_ON_HOST = "This chat has full access on the server, so it can only be used or changed there.";
-const FULL_FROM_DEVICE = "Full access can only be given on the server itself.";
+export const CHAT_ON_HOST = (): string => `This chat has full access on ${place()}, so it can only be used or changed there.`;
+const FULL_FROM_DEVICE = (): string => `Full access can only be given on ${place()} itself.`;
 const id = z.string().min(1).max(200);
 const uuid = z.uuid();
 const target = z.object({ providerId: z.string().min(1).max(100), model: z.string().max(300).optional() }).strict();
@@ -124,7 +125,7 @@ export const createChatScrubber = (deps: { runtimeManager: RuntimeManager; hostD
  * history and an event journal the device polls. Project chats and attachments come in R5. */
 /** Why a chat can be used only on the host, if it can: full access skips every approval. */
 export const chatHostOnly = (settings: Pick<SessionSettings, "defaultAccessMode" | "codeAgents">): string | undefined =>
-  settings.defaultAccessMode === "full" || settings.codeAgents?.some(agent => agent.accessMode === "full") ? CHAT_ON_HOST : undefined;
+  settings.defaultAccessMode === "full" || settings.codeAgents?.some(agent => agent.accessMode === "full") ? CHAT_ON_HOST() : undefined;
 
 /** A chat a device may read: an ordinary chat, or one in a project whose folder is shared (a
  * project set up on the server keeps its chats there, as if they did not exist). Whether it may
@@ -132,7 +133,7 @@ export const chatHostOnly = (settings: Pick<SessionSettings, "defaultAccessMode"
 export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string, projects?: ProjectAccess) => {
   const session = await store.get(sessionId);
   if (!session || (session.projectId && !(projects && await projects.visible(session.projectId)))) {
-    throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+    throw new RemoteOperationError(`The chat does not exist on ${place()}.`, "session_unknown");
   }
   return session;
 };
@@ -148,7 +149,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     if (reason) return reason;
     const projectId = (await deps.sessionIndexStore.get(sessionId))?.projectId;
     if (!projectId) return undefined;
-    if (!deps.projects) return "Project chats on this server are used there.";
+    if (!deps.projects) return `Project chats on ${place()} are used there.`;
     return (await deps.projects.usable(projectId)).reason;
   };
   const requireUsable = async (sessionId: string) => {
@@ -175,7 +176,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     const others = [patch.defaultTarget, ...codeAgents, ...hypothesisAgents.filter(agent => agent.role !== "judge"),
       patch.debate?.support, patch.debate?.attack].filter(item => item !== undefined);
     for (const item of [...judges.filter(judge => judge.providerId !== "local"), ...others]) {
-      if (!known.has(item.providerId)) throw new RemoteOperationError(`The provider ${publicError(item.providerId)} does not exist on the server.`, "invalid_request");
+      if (!known.has(item.providerId)) throw new RemoteOperationError(`The provider ${publicError(item.providerId)} does not exist on ${place()}.`, "invalid_request");
     }
     const roles = patch.hypothesisAgents?.map(agent => agent.role) ?? [];
     for (const role of ["support", "attack", "judge"] as const) {
@@ -252,7 +253,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const { handle, stat, path: shown, name } = await openChatFile(sessionId, ref);
       try {
         if (as === "text") {
-          const tooLarge = () => new RemoteOperationError("Review shows files up to 400 KB from a server. Save a copy to open this one.", "too_large");
+          const tooLarge = () => new RemoteOperationError(`Review shows files up to 400 KB from ${place()}. Save a copy to open this one.`, "too_large");
           if (stat.size > TEXT_LIMIT) throw tooLarge();
           const { buffer, bytesRead } = await handle.read(Buffer.alloc(TEXT_LIMIT + 1), 0, TEXT_LIMIT + 1, 0);
           if (bytesRead > TEXT_LIMIT) throw tooLarge();
@@ -306,7 +307,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "sessions.create": async payload => {
       const { title, projectId } = parse(schemas.sessionsCreate, payload) ?? {};
       if (projectId) {
-        if (!deps.projects) throw new RemoteOperationError("Project chats on this server are used there.", "unsupported");
+        if (!deps.projects) throw new RemoteOperationError(`Project chats on ${place()} are used there.`, "unsupported");
         const { reason } = await deps.projects.usable(projectId);
         if (reason) throw new RemoteOperationError(reason, "unsupported");
       }
@@ -336,7 +337,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       await requireSession(sessionId);
       await requireUsable(sessionId);
       const session = await deps.sessionIndexStore.rename(sessionId, title);
-      if (!session) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+      if (!session) throw new RemoteOperationError(`The chat does not exist on ${place()}.`, "session_unknown");
       return { id: session.id, title: session.title, updatedAt: session.updatedAt };
     },
 
@@ -352,7 +353,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
         const current = runtime();
         await current.sessionSettingsStore.delete(sessionId);
         await current.memoryService.deleteSession(sessionId);
-        if (!await deps.sessionIndexStore.delete(sessionId)) throw new RemoteOperationError("The chat does not exist on the server.", "session_unknown");
+        if (!await deps.sessionIndexStore.delete(sessionId)) throw new RemoteOperationError(`The chat does not exist on ${place()}.`, "session_unknown");
         deps.uploads?.dropSession(sessionId);
         deleted = true;
       } finally { deps.runService.forgotSession(sessionId, deleted); }
@@ -378,7 +379,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     "sessions.settings.update": async payload => {
       const raw = (payload as { patch?: Record<string, unknown> } | undefined)?.patch;
       if (raw && typeof raw === "object" && (raw.defaultAccessMode === "full" || (Array.isArray(raw.codeAgents) && raw.codeAgents.some(agent => agent?.accessMode === "full")))) {
-        throw new RemoteOperationError(FULL_FROM_DEVICE, "unsupported");
+        throw new RemoteOperationError(FULL_FROM_DEVICE(), "unsupported");
       }
       const { sessionId, patch } = parse(schemas.settingsUpdate, payload);
       await requireSession(sessionId);
@@ -414,7 +415,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       const request = parse(schemas.start, payload);
       await requireSession(request.sessionId);
       const owner = deps.scopeOf(context), ids = request.attachmentIds ?? [];
-      if (ids.length && !deps.uploads) throw new RemoteOperationError("This server takes text messages only.", "unsupported");
+      if (ids.length && !deps.uploads) throw new RemoteOperationError(`${Place()} takes text messages only.`, "unsupported");
       // Checked after a resent command got its first answer, and again by the engine when it runs.
       const ack = await deps.runService.start(owner, request, async () => {
         await requireUsable(request.sessionId);
@@ -429,7 +430,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
     "chat.runs.get": payload => known(() => {
       const run = deps.runService.get(parse(schemas.run, payload).runId);
-      if (!run) throw new RemoteOperationError("The run does not exist on the server.", "run_unknown");
+      if (!run) throw new RemoteOperationError(`The run does not exist on ${place()}.`, "run_unknown");
       return run;
     }),
 

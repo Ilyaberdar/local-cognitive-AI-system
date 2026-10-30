@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RemoteOperationError, type RemoteOperation } from "../remote/host/RemoteHost";
 import { FolderError, type HostFolders } from "./hostFolders";
+import { place } from "./hostPlace";
 
 const segments = z.array(z.string().min(1).max(255)).max(32);
 const schemas = {
@@ -17,7 +18,7 @@ const known = async <T>(task: () => Promise<T>): Promise<T> => {
   try { return await task(); }
   catch (error) {
     if (error instanceof FolderError) throw new RemoteOperationError(error.message, error.code);
-    throw new RemoteOperationError("The folder could not be read on the server.", "folder_unavailable");
+    throw new RemoteOperationError(`The folder could not be read on ${place()}.`, "folder_unavailable");
   }
 };
 

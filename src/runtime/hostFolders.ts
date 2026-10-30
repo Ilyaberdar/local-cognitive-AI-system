@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { place } from "./hostPlace";
 
 /** The folder every server offers its devices: created in the data directory, where folders may be made. */
 export const MANAGED_ROOT_ID = "projects";
@@ -128,7 +129,7 @@ export class HostFolders {
    * symlinks, and still inside the root. A link leading out answers as a missing path does. */
   async resolve(rootId: string, segments: string[] = []): Promise<{ root: FolderRoot; real: string; realRoot: string }> {
     const root = this.roots().find(item => item.rootId === rootId);
-    if (!root) throw new FolderError("This folder is not shared by the server.", "not_found");
+    if (!root) throw new FolderError(`This folder is not shared by ${place()}.`, "not_found");
     if (segments.length > MAX_DEPTH || segments.join("/").length > MAX_PATH) throw new FolderError("The path is too long.", "invalid_path");
     for (const segment of segments) {
       if (!segment || segment === "." || segment === ".." || /[\\/\u0000]/.test(segment) || Buffer.byteLength(segment) > 255) {
@@ -136,10 +137,10 @@ export class HostFolders {
       }
     }
     const realRoot = this.realRoot(root);
-    if (!realRoot) throw new FolderError("This folder is not available on the server.", "not_found");
+    if (!realRoot) throw new FolderError(`This folder is not available on ${place()}.`, "not_found");
     let real: string;
     try { real = await fsp.realpath(path.join(realRoot, ...segments)); } catch { real = ""; }
-    if (!real || !inside(real, realRoot)) throw new FolderError("This path does not exist on the server.", "not_found");
+    if (!real || !inside(real, realRoot)) throw new FolderError(`This path does not exist on ${place()}.`, "not_found");
     return { root, real, realRoot };
   }
 
@@ -189,7 +190,7 @@ export class HostFolders {
     const placed = await fsp.realpath(made).catch(() => "");
     if (!placed || !inside(placed, realRoot)) {
       await fsp.rmdir(made).catch(() => undefined);
-      throw new FolderError("This path does not exist on the server.", "not_found");
+      throw new FolderError(`This path does not exist on ${place()}.`, "not_found");
     }
     return [...segments, name];
   }

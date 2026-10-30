@@ -16,6 +16,7 @@ import { agentTraceDto, orchestrationLists, runDetail, safeRun, safeSchedule, sa
 import { FolderError, type HostFolders } from "./hostFolders";
 import type { ProjectAccess } from "./projectOperations";
 import { publicError } from "./publicError";
+import { place, Place } from "./hostPlace";
 
 const MAX_WORKFLOW_BYTES = 200 * 1024;
 const MAX_HISTORY_EVENTS = 500, MAX_HISTORY_BYTES = 256 * 1024;
@@ -63,52 +64,52 @@ const schemas = {
   agentTrace: z.object({ runId, agentRunId: z.string().min(1).max(500) }).strict()
 };
 
-const LATER = {
-  attachments: "Attachments for tasks on the server come in a later update.",
-  project: "Projects and folders for work on the server come in a later update.",
-  fullAccess: "Full access is not available from a device yet: on the server, steps ask for approval.",
-  plugins: "Plugins in workflows on the server come in a later update.",
-  mcp: "Steps that call an application's MCP tools are set up and started on the server."
-};
+const LATER = () => ({
+  attachments: `Attachments for tasks on ${place()} come in a later update.`,
+  project: `Projects and folders for work on ${place()} come in a later update.`,
+  fullAccess: `Full access is not available from a device yet: on ${place()}, steps ask for approval.`,
+  plugins: `Plugins in workflows on ${place()} come in a later update.`,
+  mcp: `Steps that call an application's MCP tools are set up and started on ${place()}.`
+});
 // What the host set up with full access, or bound to a folder or project chosen there, stays the
 // host's: a device can delete, cancel or pause it, never start, continue or change it.
-const FULL_ON_HOST = "This runs with full access on the server, so it can only be started or changed there.";
-const FOLDER_ON_HOST = "This runs in a folder or project chosen on the server, so it can only be started or changed there.";
+const FULL_ON_HOST = (): string => `This runs with full access on ${place()}, so it can only be started or changed there.`;
+const FOLDER_ON_HOST = (): string => `This runs in a folder or project chosen on ${place()}, so it can only be started or changed there.`;
 const unsupported = (message: string) => new RemoteOperationError(message, "unsupported");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 /** Settings a device cannot make on the host (yet), checked before the schema so the answer says
  * why. A folder of the host is never sent; a project only to a server that offers projects. */
 const refuseLater = (fields: Record<string, unknown>, projects = false): void => {
-  if (Array.isArray(fields.attachments) && fields.attachments.length) throw unsupported(LATER.attachments);
-  if ((fields.rootPath !== undefined && fields.rootPath !== null) || (!projects && fields.projectId !== undefined && fields.projectId !== null)) throw unsupported(LATER.project);
-  if (fields.accessMode === "full") throw unsupported(LATER.fullAccess);
+  if (Array.isArray(fields.attachments) && fields.attachments.length) throw unsupported(LATER().attachments);
+  if ((fields.rootPath !== undefined && fields.rootPath !== null) || (!projects && fields.projectId !== undefined && fields.projectId !== null)) throw unsupported(LATER().project);
+  if (fields.accessMode === "full") throw unsupported(LATER().fullAccess);
 };
 
 /** What a workflow sent from a device may not contain yet (see LATER). */
 /** Tasks and schedules a device makes: their runs get no MCP tools of the host (`WorkflowRun.deviceOrigin`). */
 const DEVICE_ORIGIN = { deviceOrigin: true };
-const MCP_ON_HOST = "This step calls a tool of an application on the server (MCP). Approve it on the server; from here you can reject it.";
+const MCP_ON_HOST = (): string => `This step calls a tool of an application on ${place()} (MCP). Approve it on ${place()}; from here you can reject it.`;
 /** A web step's page on the server's own computer or its local network: what is there is the host's. */
-const PAGE_ON_HOST = "This page is on the server's computer or its local network. Approve it on the server; from here you can reject it.";
+const PAGE_ON_HOST = (): string => `This page is on ${place()} or its local network. Approve it on ${place()}; from here you can reject it.`;
 
 export const workflowLimits = (definition: unknown): string[] => {
   const value = record(definition), runDefaults = record(value.runDefaults), problems = new Set<string>();
-  if (runDefaults.accessMode === "full") problems.add(LATER.fullAccess);
-  if (runDefaults.rootPath !== undefined || runDefaults.projectId !== undefined) problems.add(LATER.project);
+  if (runDefaults.accessMode === "full") problems.add(LATER().fullAccess);
+  if (runDefaults.rootPath !== undefined || runDefaults.projectId !== undefined) problems.add(LATER().project);
   for (const node of Array.isArray(value.nodes) ? value.nodes : []) {
     const config = record(record(node).config);
-    if (config.approval === "never" || config.access === "full") problems.add(LATER.fullAccess);
-    if (record(node).type === "agent" && Array.isArray(config.pluginIds) && config.pluginIds.length) problems.add(LATER.plugins);
+    if (config.approval === "never" || config.access === "full") problems.add(LATER().fullAccess);
+    if (record(node).type === "agent" && Array.isArray(config.pluginIds) && config.pluginIds.length) problems.add(LATER().plugins);
     // The host's applications stay the host's: a device's runs have no MCP tools.
-    if (record(node).type === "mcp_call") problems.add(LATER.mcp);
+    if (record(node).type === "mcp_call") problems.add(LATER().mcp);
   }
   return [...problems];
 };
 
 /** Whether running this would skip approvals: nothing a device sends may lead there (R5-2). */
 const skipsApproval = (workflow: WorkflowDefinition | null | undefined, accessMode?: string): boolean =>
-  accessMode === "full" || workflowLimits(workflow).includes(LATER.fullAccess);
+  accessMode === "full" || workflowLimits(workflow).includes(LATER().fullAccess);
 /** A run continues with what it started with: its own access and its snapshot of the workflow. */
 const runSkipsApproval = (run: WorkflowRun): boolean => skipsApproval(run.workflowSnapshot, run.executionSnapshot?.accessMode);
 const hasFolder = (workflow: WorkflowDefinition | null | undefined) => workflow?.runDefaults?.rootPath !== undefined || workflow?.runDefaults?.projectId !== undefined;
@@ -137,7 +138,7 @@ const known = async <T>(task: () => Promise<T>): Promise<T> => {
     throw new RemoteOperationError(publicError((error as Error).message), code);
   }
 };
-const notFound = (what: string) => new RemoteOperationError(`The ${what} does not exist on the server.`, "not_found");
+const notFound = (what: string) => new RemoteOperationError(`The ${what} does not exist on ${place()}.`, "not_found");
 
 export interface OrchestrationOperationDependencies {
   runtimeManager: RuntimeManager;
@@ -163,7 +164,7 @@ export interface OrchestrationOperationDependencies {
  * command resent after a lost answer acts once. */
 export const createOrchestrationOperations = (deps: OrchestrationOperationDependencies): Record<string, RemoteOperation> => {
   const runtime = () => deps.runtimeManager.getRuntime();
-  const draining = () => new RemoteOperationError("The server is shutting down. Try again when it is back.", "host_draining");
+  const draining = () => new RemoteOperationError(`${Place()} is shutting down. Try again when it is back.`, "host_draining");
   const mutable = () => { if (deps.isDraining()) throw draining(); };
   const workflowOf = (workflowId: string, version?: number) => runtime().workflowStore.get(workflowId, version);
   /** A task or schedule a device creates or retargets must point at an existing workflow none of
@@ -172,7 +173,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
   const allowedWorkflow = async (workflowId: string) => {
     const versions = (await runtime().workflowStore.list()).filter(workflow => workflow.id === workflowId);
     if (!versions.length) throw notFound("workflow");
-    if (versions.some(workflow => skipsApproval(workflow))) throw unsupported(FULL_ON_HOST);
+    if (versions.some(workflow => skipsApproval(workflow))) throw unsupported(FULL_ON_HOST());
   };
   /** Whether a device may use this project now (checked at every use: archived or unshared ends it). */
   const projectUsable = async (projectId: string) => {
@@ -181,21 +182,21 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
   };
   const requireProject = async (projectId: string | null | undefined) => {
     if (!projectId) return;
-    if (!deps.projects) throw unsupported(LATER.project);
+    if (!deps.projects) throw unsupported(LATER().project);
     const { reason } = await deps.projects.usable(projectId);
     if (reason) throw unsupported(reason);
   };
   /** Why only the host may start or change this task or schedule, if so. */
   const hostOnly = async (item: { workflowId: string; workflowVersion?: number; accessMode?: string; projectId?: string }) =>
-    skipsApproval(await workflowOf(item.workflowId, item.workflowVersion), item.accessMode) ? FULL_ON_HOST
-      : item.projectId && !await projectUsable(item.projectId) ? FOLDER_ON_HOST : undefined;
+    skipsApproval(await workflowOf(item.workflowId, item.workflowVersion), item.accessMode) ? FULL_ON_HOST()
+      : item.projectId && !await projectUsable(item.projectId) ? FOLDER_ON_HOST() : undefined;
   /** Why only the host may continue this run, if so: its access, or a project or folder that is not
    * (or no longer) one a device may use. */
   const runHostOnly = async (run: WorkflowRun): Promise<string | undefined> => {
-    if (runSkipsApproval(run)) return FULL_ON_HOST;
-    if (hasFolder(run.workflowSnapshot)) return FOLDER_ON_HOST;
-    if (run.workspace?.kind === "project") return run.workspace.projectId && await projectUsable(run.workspace.projectId) ? undefined : FOLDER_ON_HOST;
-    if (chosenFolder(run)) return deps.folders?.locate(run.workspace!.rootPath) ? undefined : FOLDER_ON_HOST;
+    if (runSkipsApproval(run)) return FULL_ON_HOST();
+    if (hasFolder(run.workflowSnapshot)) return FOLDER_ON_HOST();
+    if (run.workspace?.kind === "project") return run.workspace.projectId && await projectUsable(run.workspace.projectId) ? undefined : FOLDER_ON_HOST();
+    if (chosenFolder(run)) return deps.folders?.locate(run.workspace!.rootPath) ? undefined : FOLDER_ON_HOST();
     return undefined;
   };
   const requireRun = async (id: string) => {
@@ -341,7 +342,7 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         const { folder, projectId, ...options } = input.options ?? {};
         if (folder && projectId) throw new RemoteOperationError("Choose a project or a folder, not both.", "invalid_request");
         await requireProject(projectId);
-        if (folder && !deps.folders) throw unsupported(LATER.project);
+        if (folder && !deps.folders) throw unsupported(LATER().project);
         const rootPath = folder ? (await deps.folders!.resolve(folder.rootId, folder.path)).real : undefined;
         const run = await runtime().workflowRunner.startStandalone(definition, { ...options, ...(projectId ? { projectId } : {}), ...(rootPath ? { rootPath } : {}) },
           { runId: reserved.runId, device: true });
@@ -390,8 +391,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
             // approves it (a device may still reject it, which stops the step). Checked under the
             // run's lock, on the operation being approved.
             beforeApprove: waiting => {
-              if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST);
-              if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST);
+              if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST());
+              if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST());
               const refusal = deps.approvalPolicy?.(waiting);
               if (refusal) throw new RemoteOperationError(refusal, "approval_host_only");
             } }));
@@ -424,8 +425,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
         // were given there, and a task may run any version of it: all of them count.
         const [tasks, schedules, workflows] = await Promise.all([runtime().taskService.list(), runtime().scheduleService.list(), runtime().workflowStore.list()]);
         const users = [...tasks, ...schedules].filter(item => item.workflowId === definition.id);
-        if (users.some(item => item.accessMode === "full")) throw unsupported(FULL_ON_HOST);
-        if (users.some(item => item.projectId) || workflows.some(item => item.id === definition.id && hasFolder(item))) throw unsupported(FOLDER_ON_HOST);
+        if (users.some(item => item.accessMode === "full")) throw unsupported(FULL_ON_HOST());
+        if (users.some(item => item.projectId) || workflows.some(item => item.id === definition.id && hasFolder(item))) throw unsupported(FOLDER_ON_HOST());
         // What a device wrote runs later without the host's MCP tools (its prompts would drive the
         // host's applications), until the host saves it in its own editor.
         return safeWorkflow(await runtime().workflowStore.save({ ...definition, deviceOrigin: true }, { expectedUpdatedAt: input.expectedUpdatedAt }));

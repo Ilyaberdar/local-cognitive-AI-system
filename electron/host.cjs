@@ -5,6 +5,7 @@ const { resolveAccountConfig } = require("../dist/src/account/accountConfig.js")
 const { createHostOperations, startHostAgent } = require("../dist/src/remote/host/hostRuntime.js");
 const { RemoteHostStore } = require("../dist/src/remote/host/RemoteHostStore.js");
 const { deviceApprovalRefusal } = require("../dist/src/remote/host/deviceApprovals.js");
+const { setHostPlace } = require("../dist/src/runtime/hostPlace.js");
 const { addAdminFolder, listAdminFolders, MANAGED_ROOT_ID, removeAdminFolder, setAdminFolderOptions } = require("../dist/src/runtime/hostFolders.js");
 const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
@@ -25,6 +26,8 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   powerMonitor, Tray, Menu, nativeImage, Notification, openWindow = () => undefined, platform = process.platform,
   cloudUrl = resolveAccountConfig({ env: process.env, packaged: app.isPackaged }).cloudUrl, logger = new Logger(),
   hostName = os.hostname().replace(/\.local$/, "").slice(0, 120) || "Computer" }) {
+  // What devices are told names this computer, not "the server".
+  setHostPlace(hostName);
   const file = path.join(dataRoot, "remote-host.json");
   let settings = readSettings(file);
   const store = backend.host ? new RemoteHostStore(backend.host.database) : undefined;

@@ -4,6 +4,7 @@ import type { DiagnosticLog } from "../diagnostics/DiagnosticLog";
 import { readConsent, writeConsent } from "../diagnostics/consentFile";
 import { collectRuntimeDiagnostics } from "../diagnostics/snapshot";
 import { RemoteOperationError, type RemoteOperation } from "../remote/host/RemoteHost";
+import { place } from "./hostPlace";
 
 const input = z.object({ includeLog: z.boolean().optional() }).strict();
 const LOG_BYTES = 256 * 1024;
@@ -17,7 +18,7 @@ export const createDiagnosticsOperations = (deps: { runtimeManager: RuntimeManag
   status: () => { phase: string; activeWork: object }; consentFile?: string }): Record<string, RemoteOperation> => {
   const ownerOnly = (context: { accountId: string }) => {
     const owner = deps.owner();
-    if (!owner || owner !== context.accountId) throw new RemoteOperationError("Diagnostics of this server are its owner's.", "forbidden");
+    if (!owner || owner !== context.accountId) throw new RemoteOperationError(`Diagnostics of ${place()} are its owner's.`, "forbidden");
   };
   return {
   // The server's error reports to the developer: its owner's choice, from their computer.
@@ -29,7 +30,7 @@ export const createDiagnosticsOperations = (deps: { runtimeManager: RuntimeManag
     const request = consentInput.safeParse(payload);
     if (!request.success) throw new RemoteOperationError("The request is not valid.", "invalid_request");
     ownerOnly(context);
-    if (!deps.consentFile) throw new RemoteOperationError("Error reports are not available on this server.", "unavailable");
+    if (!deps.consentFile) throw new RemoteOperationError(`Error reports are not available on ${place()}.`, "unavailable");
     return { available: true, ...writeConsent(deps.consentFile, request.data.automatic) };
   },
   "diagnostics.collect": async (payload, context) => {
