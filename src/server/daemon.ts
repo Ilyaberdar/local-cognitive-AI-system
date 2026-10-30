@@ -5,14 +5,11 @@ import { config } from "../config/config";
 import { startBackend } from "../index";
 import { apiTokenFilePath, createApiToken } from "../api/localApiAuth";
 import { HostDatabaseError } from "../runtime/db/HostDatabase";
-import { createUsageOperations } from "../runtime/usageOperations";
-import { createDiagnosticsOperations } from "../runtime/diagnosticsOperations";
 import { consentFilePath, liveConsent } from "../diagnostics/consentFile";
 import { flushServerErrorReports, startServerErrorReports } from "../diagnostics/serverSentry";
 import { UpdateChecker } from "../update/updateChecker";
 import { RELEASE_KEYS } from "../update/releaseKeys";
 import { DEFAULT_MANIFEST_URL } from "./updateCommand";
-import { RemoteHostStore } from "../remote/host/RemoteHostStore";
 import { DataRootLockedError } from "../runtime/db/DataRootLock";
 import { resolveHeadlessVault } from "../security/headlessVault";
 import { appVersion } from "../utils/appVersion";
@@ -26,16 +23,7 @@ import { CliError, ExitCode } from "./exitCodes";
 import type { InferenceSelection } from "./inference";
 import { serveMcpSession } from "./mcpBridge";
 import { startRemote } from "./remote";
-import { createChatOperations, createChatScrubber, requireRemoteSession } from "../runtime/chatOperations";
-import { UploadStore } from "../runtime/uploadStore";
-import { createFolderOperations } from "../runtime/folderOperations";
-import { HostFolders } from "../runtime/hostFolders";
-import { createProjectAccess, createProjectOperations, PROJECT_ON_HOST } from "../runtime/projectOperations";
-import { createSynthesisOperations } from "../runtime/synthesisOperations";
-import { createEventStreamOperations } from "../runtime/eventStreams";
-import { createModelOperations } from "../runtime/modelOperations";
-import { createOrchestrationOperations, createWorkflowRunStreams } from "../runtime/orchestrationOperations";
-import { createSettingsOperations } from "../runtime/settingsOperations";
+import { createHostOperations } from "../remote/host/hostRuntime";
 import { publicError } from "../runtime/publicError";
 import { systemMetricsSnapshot } from "../local/systemMetrics";
 
@@ -102,44 +90,9 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
     return { preference: options.inference.preference, runtimeId: options.inference.runtimeId, backend: options.inference.backend,
       active: active.backend, fallbackReason: active.fallbackReason ?? options.inference.fallbackReason };
   };
-  const host = backend.host!;
-  const sessionIndexStore = backend.runtimeManager.getRuntime().sessionIndexStore;
-  // Run outputs and events a device receives name no folder of this server.
-  const orchestration = { runtimeManager: backend.runtimeManager, journalEpoch: () => host.journal.epoch, hostDirectories: [path.dirname(config.appDataDir)] };
-  // The folders devices may browse and use: the server's own "Projects" and those its admin shared.
-  const folders = new HostFolders(path.dirname(config.appDataDir));
-  folders.ensureManaged();
-  // A project a device may use lies in one of those folders, checked at every use.
-  const projects = createProjectAccess({ runtimeManager: backend.runtimeManager, folders });
-  // A device's turn in a project chat stops once the project is archived or its folder unshared.
-  host.runService.setGuard(async sessionId => {
-    const projectId = (await sessionIndexStore.get(sessionId))?.projectId;
-    if (!projectId) return undefined;
-    if (!await projects.visible(projectId)) return PROJECT_ON_HOST;
-    return (await projects.usable(projectId)).reason;
-  });
-  // Attachments devices send for their next turn; expired ones are dropped even when none arrive.
-  const uploads = new UploadStore();
-  setInterval(() => uploads.sweep(), 60 * 60 * 1000).unref();
-  const remote = await startRemote({ host, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger, usage: backend.usageOutbox,
-    operations: {
-      ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
-        runService: host.runService, journal: host.journal, scopeOf: context => `remote:${context.accountId}:${context.deviceId}` }),
-      ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
-        sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
-      ...createModelOperations({ runtimeManager: backend.runtimeManager }),
-      ...createUsageOperations({ ledger: backend.usage, outbox: backend.usageOutbox, owner: () => new RemoteHostStore(host.database).owner() }),
-      ...createDiagnosticsOperations({ runtimeManager: backend.runtimeManager, diagnosticLog: backend.diagnosticLog, owner: () => new RemoteHostStore(host.database).owner(),
-        status: () => backend.status(), consentFile }),
-      ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders,
-        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
-      ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining: () => backend.status().phase === "draining" }),
-      ...createFolderOperations({ folders }),
-      ...createSynthesisOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger, projects, hostDirectories: orchestration.hostDirectories,
-        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" }),
-      ...createProjectOperations({ runtimeManager: backend.runtimeManager, folders, ledger: host.ledger,
-        scopeOf: context => `remote:${context.accountId}:${context.deviceId}`, isDraining: () => backend.status().phase === "draining" })
-    },
+  // What devices may do here, the same set a desktop that hosts offers.
+  const { operations } = createHostOperations({ backend, dataRoot: path.dirname(config.appDataDir), consentFile });
+  const remote = await startRemote({ host: backend.host!, vault: vault.vault, vaultConfigured: vault.configured, env: process.env, logger, usage: backend.usageOutbox, operations,
     status: () => {
       const { phase, activeWork, scheduler, telegram } = backend.status();
       let loadedModels: string[] = [];

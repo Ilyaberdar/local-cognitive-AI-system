@@ -1,11 +1,10 @@
 import os from "os";
 import type { HostServices } from "../index";
 import type { CredentialVault } from "../plugins/contracts";
-import { HostAgent } from "../remote/host/HostAgent";
+import type { HostAgent } from "../remote/host/HostAgent";
 import type { RemoteOperation } from "../remote/host/RemoteHost";
-import { RemoteHostStore } from "../remote/host/RemoteHostStore";
-import { hostUsageSender, type UsageOutbox } from "../usage/UsageOutbox";
-import { appVersion } from "../utils/appVersion";
+import { startHostAgent } from "../remote/host/hostRuntime";
+import type { UsageOutbox } from "../usage/UsageOutbox";
 import type { Logger } from "../utils/Logger";
 
 export const DEFAULT_CLOUD_URL = "https://api.local-cognitive.com";
@@ -30,19 +29,11 @@ export const startRemote = async (input: { host: HostServices; vault: Credential
   if (!input.vaultConfigured) return off("credential storage is not configured; run local-cognitive-server init.");
   let cloudUrl: string;
   try { cloudUrl = remoteCloudUrl(input.env); } catch (error) { return off(error instanceof Error ? error.message : String(error)); }
-  const hostName = os.hostname().slice(0, 120);
-  // Host operations plus the chat operations (R4); every screen arrives in R5. Nothing here returns paths.
-  const operations: Record<string, RemoteOperation> = {
-    "session.ping": () => ({ at: Date.now() }),
-    "host.info": () => ({ name: hostName, version: appVersion(), platform: process.platform, arch: process.arch }),
-    "host.status": () => input.status(),
-    ...input.operations
-  };
-  const store = new RemoteHostStore(input.host.database);
-  const agent = new HostAgent({ cloudUrl, store, vault: input.vault, hostName, serverVersion: appVersion(), operations, logger: input.logger });
-  try { await agent.start(); } catch (error) { return off(error instanceof Error ? error.message : String(error)); }
-  // Usage goes to the Cloud signed by this server, for its owner only.
-  input.usage?.setSender(hostUsageSender({ cloudUrl, hostId: () => store.hostId(), owner: () => store.owner(), sign: payload => agent.signUsage(payload) }));
+  let agent: HostAgent;
+  try {
+    agent = await startHostAgent({ host: input.host, vault: input.vault, cloudUrl, hostName: os.hostname().slice(0, 120), kind: "server", logger: input.logger,
+      status: input.status, operations: input.operations ?? {}, ...(input.usage ? { usage: input.usage } : {}) });
+  } catch (error) { return off(error instanceof Error ? error.message : String(error)); }
   // The backend owns the database and closes it after the agent stopped.
   return { agent, close() { agent.stop(); } };
 };
