@@ -724,6 +724,32 @@ test("an empty answer is asked for once more with room to think; a cut-off answe
   assert.ok(html[1].request.prompt.includes("cut off at the token limit"), "the next attempt is told why");
 });
 
+// From the 2026-10 study: DeepSeek spent the 2,600 tokens for a file of about 700 thinking, and was told
+// to write a shorter file for twelve iterations. The limit read is the one the provider sent.
+test("an answer cut off while the model thinks says so, at the provider's limit, instead of asking for a shorter file", async (t) => {
+  const answers: Record<string, number> = {};
+  const length = {raw: {choices: [{finish_reason: "length"}]}};
+  const f = await fixture(t, {templateMode: "focused", models: () => [tiny], source: (file) => {
+    const call = answers[file] = (answers[file] ?? 0) + 1;
+    if (file === "calculator.js" && call === 1) return {text: "", usage: {inputTokens: 50, outputTokens: 16_000, reasoningTokens: 16_000}, ...length};
+    if (file === "index.html" && call === 1) return {text: workingFiles[file].slice(0, 80), usage: {inputTokens: 50, outputTokens: 16_000, reasoningTokens: 15_900}, ...length};
+    return workingFiles[file];
+  }});
+  const result = await f.run();
+  assert.equal(result.status, "accepted", result.error);
+  const failed = result.events.filter(event => event.step === "agent.generate" && event.status === "failed").map(event => event.message);
+  assert.ok(failed.includes("calculator.js: The model spent the whole token limit (16000 tokens) thinking and wrote none of the file. Think briefly, then write the file."), failed.join("\n"));
+  assert.ok(failed.includes("index.html: Thinking took 15900 of the 16000-token limit, so the file is incomplete. Think briefly, then write the file."), failed.join("\n"));
+  assert.ok(!failed.some(message => message.includes("Write a shorter file")));
+  const generation = result.events.find(event => event.file === "calculator.js" && event.generation?.finish === "length")?.generation;
+  assert.equal(generation?.maxTokens, 2600, "the record keeps the cap the engine asked for");
+  assert.equal(generation?.outputTokens, 16_000);
+  assert.equal(generation?.reasoningTokens, 16_000);
+  const calculator = f.textRequests.filter(item => item.file === "calculator.js");
+  assert.equal(calculator.length, 2, "a cut-off answer is not asked for again in the same iteration");
+  assert.ok(calculator[1].request.prompt.includes("Think briefly, then write the file."), "the next attempt is told why");
+});
+
 test("a candidate with none of its files is not evaluated gate by gate: one clear failure, and the flow goes on", async (t) => {
   let iteration1 = true;
   const f = await fixture(t, {templateMode: "focused", models: () => [tiny], source: (file, _call, request) => {

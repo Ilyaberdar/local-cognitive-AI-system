@@ -1160,14 +1160,19 @@ export class SynthesisService {
         signal.throwIfAborted(); this.usage(record, response.usage);
         const finish = (response.raw as {choices?: Array<{finish_reason?: string}>} | undefined)?.choices?.[0]?.finish_reason;
         const cutOff = finish === "length";
-        const problem = cutOff ? `The answer was cut off at the token limit (${maxTokens} tokens), so the file is incomplete. Write a shorter file.`
+        // A cloud model that thinks before it answers (DeepSeek) can spend the limit thinking, which a
+        // shorter file does not fix. The limit is the one the provider sent (it may raise the asked one).
+        const limit = Math.max(maxTokens, response.usage?.outputTokens ?? 0), thought = response.usage?.reasoningTokens ?? 0;
+        const problem = cutOff ? (!response.text.trim() ? `The model spent the whole token limit (${limit} tokens) thinking and wrote none of the file. Think briefly, then write the file.`
+            : thought * 2 > limit ? `Thinking took ${thought} of the ${limit}-token limit, so the file is incomplete. Think briefly, then write the file.`
+            : `The answer was cut off at the token limit (${limit} tokens), so the file is incomplete. Write a shorter file.`)
           : response.error ?? (!content ? (reply === "edit" ? "The answer was not SEARCH/REPLACE blocks that apply to the file." : "The answer was not one complete file (no code, or code mixed with prose).")
             : Buffer.byteLength(content) > MAX_ARTIFACT_BYTES ? "The file is larger than allowed." : undefined);
         const generation: GenerationRecord = {mode, seed, temperature, topP: synthesisSampling.topP, topK: synthesisSampling.topK, minP: synthesisSampling.minP,
           repeatPenalty: synthesisSampling.repeatPenalty, thinking, ...(thinking ? {budgetMessage: BUDGET_MESSAGE} : {}), maxTokens,
           promptHash: hash(`${ask.system}\n\n${ask.prompt}`).slice(0, 16), promptChars: ask.system.length + ask.prompt.length,
           ...(response.usage?.inputTokens !== undefined ? {inputTokens: response.usage.inputTokens} : {}), ...(response.usage?.outputTokens !== undefined ? {outputTokens: response.usage.outputTokens} : {}),
-          ...(finish ? {finish} : {}), ms: Date.now() - started, ...(content !== undefined && !problem ? {unchanged: content === before} : {})};
+          ...(response.usage?.reasoningTokens !== undefined ? {reasoningTokens: response.usage.reasoningTokens} : {}), ...(finish ? {finish} : {}), ms: Date.now() - started, ...(content !== undefined && !problem ? {unchanged: content === before} : {})};
         await this.event(record, "agent.generate", `${file}: ${mode} request, seed ${seed}${thinking ? `, thinking ${thinking}` : ""}: ${problem ? "no usable file" : generation.unchanged ? "the same file" : `${Buffer.byteLength(content!)} bytes`}`,
           problem ? "failed" : "ok", {model: model.displayName, file, generation});
         return {content: problem ? undefined : content, response, problem, cutOff};

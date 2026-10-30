@@ -26,7 +26,8 @@ export interface GenerationRecord {
   mode: "write" | "retry" | "focus" | "edit" | "whole";
   seed: number; temperature?: number; topP?: number; topK?: number; minP?: number; repeatPenalty?: number;
   thinking: number; budgetMessage?: string; maxTokens: number; promptHash: string; promptChars: number;
-  inputTokens?: number; outputTokens?: number; finish?: string; ms: number;
+  /** `reasoningTokens`: the part of the output the model spent thinking, when the provider says. */
+  inputTokens?: number; outputTokens?: number; reasoningTokens?: number; finish?: string; ms: number;
   /** The answer, when it was a file: the same file as before. */
   unchanged?: boolean;
 }
