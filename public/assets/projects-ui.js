@@ -38,7 +38,7 @@ export function createProjectsUi(options) {
     try { localStorage.setItem(sectionStorageKey, JSON.stringify([...collapsedSections])); } catch { /* Keep the in-memory preference. */ }
   };
   const expandedLists = new Set();
-  const sectionToggle = (section, label) => `<button id="sidebar-toggle-${section}" class="sidebar-section-label" type="button" data-action="toggle-sidebar-section" data-sidebar-section="${section}" aria-expanded="${!collapsedSections.has(section)}" aria-controls="sidebar-${section}-content">${icon(collapsedSections.has(section) ? "chevronRight" : "chevronDown")}<span>${label}</span></button>`;
+  const sectionToggle = (section, label) => `<button id="sidebar-toggle-${section}" class="sidebar-section-label" type="button" data-action="toggle-sidebar-section" data-sidebar-section="${section}" aria-expanded="${!collapsedSections.has(section)}" aria-controls="sidebar-${section}-content">${icon(collapsedSections.has(section) ? "chevronRight" : "chevronDown")}<span title="${label}">${label}</span></button>`;
   const sessionRow = (session, activeId) => {
     const state = options.getState();
     const running = state.activeChatRequest?.sessionId === session.id || state.pendingRequest?.sessionId === session.id;
@@ -85,7 +85,7 @@ export function createProjectsUi(options) {
       </section>` : "";
     return `<div class="sidebar-conversations" data-sidebar-scroll="conversations">${projects}
       <section class="sidebar-section sidebar-chats" aria-label="Chats on ${host}">
-        <div class="sidebar-header"><span class="sidebar-section-label">${icon("remote")}<span>Chats on ${host}</span></span><button class="icon-button" type="button" data-action="new-session" data-project-id="" aria-label="New chat on ${host}" title="New chat on ${host}">${icon("plus")}</button></div>
+        <div class="sidebar-header"><span class="sidebar-section-label">${icon("remote")}<span title="Chats on ${host}">Chats on ${host}</span></span><button class="icon-button" type="button" data-action="new-session" data-project-id="" aria-label="New chat on ${host}" title="New chat on ${host}">${icon("plus")}</button></div>
         <div class="session-list">${chats.map(row).join("") || `<p class="sidebar-empty">${remote.loaded ? "No chats on this server yet" : "Loading…"}</p>`}</div>
       </section>
     </div>`;
