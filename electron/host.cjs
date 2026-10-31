@@ -8,6 +8,7 @@ const { deviceApprovalRefusal } = require("../dist/src/remote/host/deviceApprova
 const { setHostPlace } = require("../dist/src/runtime/hostPlace.js");
 const { addAdminFolder, listAdminFolders, MANAGED_ROOT_ID, removeAdminFolder, setAdminFolderOptions } = require("../dist/src/runtime/hostFolders.js");
 const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
+const { publicError } = require("../dist/src/runtime/publicError.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
 const { Logger } = require("../dist/src/utils/Logger.js");
 const { readSettings, SWITCHES, writeSettings } = require("./host-settings.cjs");
@@ -99,12 +100,14 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
       { label: "Quit Local Cognitive", click: () => app.quit() }
     ]));
   };
-  // What a device's status line shows: no update notice yet, nor anything a server's admin runs.
+  // What a device's status line shows: no update notice yet, nor anything a server's admin runs. The
+  // backend the models run on (metal, cuda, cpu) without a preference: a desktop has no --inference.
   const hostStatus = () => {
     const { phase, activeWork, scheduler, telegram } = backend.status();
-    let loadedModels = [];
-    try { loadedModels = backend.runtimeManager.getRuntime().localModelService.snapshot().runtime.loadedModelIds ?? []; } catch { /* Runtime not built. */ }
-    return { kind: "desktop", version: appVersion(), phase, activeWork, scheduler, telegram, loadedModels };
+    let runtime = {};
+    try { runtime = backend.runtimeManager.getRuntime().localModelService.snapshot().runtime; } catch { /* Runtime not built. */ }
+    const inference = runtime.backend ? { inference: { backend: runtime.backend, ...(runtime.fallbackReason ? { fallbackReason: publicError(runtime.fallbackReason) } : {}) } } : {};
+    return { kind: "desktop", version: appVersion(), phase, activeWork, scheduler, telegram, loadedModels: runtime.loadedModelIds ?? [], ...inference };
   };
   const keepAwake = on => {
     if (on && blocker === undefined) blocker = powerSaveBlocker.start("prevent-app-suspension");
