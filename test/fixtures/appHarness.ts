@@ -52,6 +52,10 @@ export interface BootOptions {
   remote?: { bridge: any; account?: any };
   /** The desktop app's update bridge (window.desktopUpdates). */
   updates?: any;
+  /** The desktop app's hosting bridge (window.desktopRemoteHost): this computer hosts devices. */
+  host?: any;
+  /** The desktop app's dictation bridge (window.desktopVoice). */
+  voice?: any;
   /** Answers a request before the defaults; return undefined to fall through. */
   route?: (method: string, url: string, body?: string) => unknown;
   bootstrap?: () => object;
@@ -116,6 +120,8 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
       [name, name === "onEvent" ? fn : record(`runtime.${name}`, fn as (...args: any[]) => any)])) };
   }
   if (options.updates) window.desktopUpdates = options.updates;
+  if (options.host) window.desktopRemoteHost = options.host;
+  if (options.voice) window.desktopVoice = options.voice;
   window.eval(bundled());
   await flush(30);
   return {

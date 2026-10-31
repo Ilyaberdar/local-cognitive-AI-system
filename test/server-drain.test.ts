@@ -20,7 +20,7 @@ test("while draining, new work is refused but accepted work can be reviewed, can
   draining = true;
   assert.equal(await status("POST", "/sessions"), 503);
   assert.equal(await status("POST", "/chat"), 503);
-  for (const url of ["/process-runs/r1/cancel", "/process-runs/r1/review", "/workflow-runs/w1/cancel", "/local/downloads/d1/pause", "/local/models/unload"]) {
+  for (const url of ["/process-runs/r1/cancel", "/process-runs/r1/review", "/workflow-runs/w1/cancel", "/device-turns/t1/cancel", "/local/downloads/d1/pause", "/local/models/unload"]) {
     assert.equal(await status("POST", url), 200, url);
   }
   assert.equal(await status("GET", "/sessions"), 200);

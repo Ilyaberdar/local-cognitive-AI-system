@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 // While draining, work that is already accepted can still be reviewed, cancelled or freed.
 const allowedWhileDraining = [
   /^\/(?:process-runs|workflow-runs)\/[^/]+\/(?:review|cancel)$/,
+  /^\/device-turns\/[^/]+\/cancel$/,
   /^\/local\/downloads\/[^/]+\/(?:pause|cancel)$/,
   /^\/local\/models\/unload$/
 ];

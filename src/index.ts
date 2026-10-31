@@ -186,7 +186,19 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     app.use(createDrainGate(() => draining));
     app.use("/", createApiRouter(runtimeManager, sessionIndexStore, host ? {
       forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted),
-      answering: sessionId => Boolean(host!.runService.activeRun(sessionId)) } : undefined));
+      answering: sessionId => Boolean(host!.runService.activeRun(sessionId)),
+      cancel: runId => { host!.runService.cancel(runId); },
+      unfinished: sessionId => host!.runService.unfinishedTurns(sessionId),
+      overview: () => {
+        const { active, changed } = host!.runService.turnsOverview();
+        // A device's scope is remote:<account>:<device>; its name is the one it paired with.
+        let names = new Map<string, string | undefined>();
+        try { names = new Map(new RemoteHostStore(host!.database).grants().map(grant => [grant.deviceId, grant.deviceName])); } catch { /* Named without it. */ }
+        return { changed, active: active.map(({ scope, createdAt, ...turn }) => {
+          const device = scope.startsWith("remote:") ? names.get(scope.split(":")[2] ?? "") : undefined;
+          return { ...turn, startedAt: createdAt, ...(device ? { device } : {}) };
+        }) };
+      } } : undefined));
     // The headless server has no UI: clients bring their own (desktop app).
     if (config.ui.serve !== false) {
       app.use(uiSecurityHeaders);

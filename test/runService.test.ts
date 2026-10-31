@@ -97,6 +97,23 @@ test("cancel is explicit, keeps the partial answer and frees the session", async
   assert.equal((await f.service.start("local:p", { commandId: "c2", sessionId: "s1", input: "next" })).status, "accepted");
 });
 
+test("the host's window learns which chats answer which device, and when each chat's turns last changed", async t => {
+  const f = setup(t);
+  assert.deepEqual(f.service.turnsOverview(), { active: [], changed: [] });
+  const first = await f.service.start("remote:a:phone", { commandId: "c1", sessionId: "s1", input: "hello" });
+  await until(() => f.script.calls.length === 1);
+  const { active, changed } = f.service.turnsOverview();
+  assert.deepEqual(active.map(turn => [turn.runId, turn.sessionId, turn.scope]), [[first.runId, "s1", "remote:a:phone"]]);
+  assert.equal(changed[0]!.sessionId, "s1");
+  const stamp = changed[0]!.updatedAt;
+  f.script.finish(first.runId!);
+  await until(() => f.service.get(first.runId!)?.status === "completed");
+  const after = f.service.turnsOverview();
+  assert.deepEqual(after.active, [], "a finished turn is not listed");
+  assert.ok(after.changed[0]!.updatedAt >= stamp, "its chat changed when it ended");
+  assert.equal(after.changed.length, 1, "one entry per chat");
+});
+
 test("approvals wait for the matching decision and a provider error fails the run", async t => {
   const f = setup(t);
   const ack = await f.service.start("local:p", { commandId: "c1", sessionId: "s1", input: "delete it" });

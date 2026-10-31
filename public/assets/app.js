@@ -117,6 +117,8 @@ const state = {
   route: "chat",
   loading: false,
   chatRequests: new Map(),
+  /** Chats on this computer answering a paired device, by chat: { runId, status, device }. */
+  deviceTurns: new Map(),
   get chatSubmitting() { return Boolean(this.activeChatRequest); },
   accessSaving: false,
   get activeChatRequest() { return this.chatRequests.get(this.activeSessionId) || null; },
@@ -229,6 +231,8 @@ const api = {
     }),
   getProcessRun: (requestId) => request(`/process-runs/${encodeURIComponent(requestId)}`),
   listRunningProcessRuns: () => request("/process-runs?status=running"),
+  listDeviceTurns: () => request("/device-turns"),
+  cancelDeviceTurn: (runId) => request(`/device-turns/${encodeURIComponent(runId)}/cancel`, { method: "POST" }),
   cancelProcessRun: (requestId) =>
     request(`/process-runs/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
   readWorkspaceFile: (filePath, sessionId) => isServerChat(sessionId) ? chatTarget.readFile(sessionId, filePath) :
@@ -407,7 +411,7 @@ const voiceInput = createVoiceInput({
   sessionId: () => state.activeSessionId,
   isChat: () => state.route === "chat" && document.getElementById('settings-root')?.hidden !== false,
   hasSession: id => isServerChat(id) || (state.bootstrap?.sessions ?? []).some(session => session.id === id),
-  sendBusy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving || chatTarget?.blocksSend()),
+  sendBusy: () => Boolean(state.chatSubmitting || state.activeChatRequest || state.accessSaving || chatTarget?.blocksSend() || state.deviceTurns.has(state.activeSessionId)),
   icon,
   appendText: (sessionId, text) => {
     state.drafts[sessionId] = appendDictation(state.drafts[sessionId] || "", text);
@@ -639,8 +643,63 @@ function followExternalRuns() {
       }
       if (newChat) { await refreshBootstrap(); render(); }
     } catch { /* Tried again on the next tick. */ }
+    try { await followDeviceTurns(); } catch { /* Tried again on the next tick. */ }
     finally { externalRunsBusy = false; }
   }, 1500);
+}
+
+/** Chats this computer answers its paired devices in: a chat a device starts shows in the list, a
+ * chat answering one says so, and each shows its answer once it ends. A turn that began and ended
+ * between two looks is seen by when its chat last changed. */
+let deviceTurnsSeen = null;
+async function followDeviceTurns() {
+  if (!window.desktopRemoteHost) return;
+  const { active = [], changed = [] } = await api.listDeviceTurns();
+  const before = state.deviceTurns;
+  const stamps = new Map(changed.map((entry) => [entry.sessionId, entry.updatedAt]));
+  const updated = deviceTurnsSeen ? [...stamps].filter(([sessionId, at]) => deviceTurnsSeen.get(sessionId) !== at).map(([sessionId]) => sessionId) : [];
+  deviceTurnsSeen = stamps;
+  state.deviceTurns = new Map(active.filter((turn) => turn.sessionId && !isServerChat(turn.sessionId)).map((turn) => [turn.sessionId, turn]));
+  const listed = () => JSON.stringify((state.bootstrap?.sessions ?? []).map((session) => [session.id, session.title]));
+  const known = new Set((state.bootstrap?.sessions ?? []).map((session) => session.id));
+  const activeChat = state.activeSessionId;
+  // The open chat started or stopped answering: its send button and banner change.
+  let repaint = state.route === "chat" && before.has(activeChat) !== state.deviceTurns.has(activeChat);
+  if (updated.length || [...state.deviceTurns.keys()].some((sessionId) => !known.has(sessionId))) {
+    const list = listed();
+    await refreshBootstrap();
+    const answered = updated.includes(activeChat) && !state.deviceTurns.has(activeChat);
+    if (answered && state.activeSessionId === activeChat) await loadActiveSession().catch(() => undefined);
+    repaint ||= listed() !== list || (state.route === "chat" && answered);
+  }
+  if (repaint) render();
+  else if (state.route === "chat" && JSON.stringify(before.get(activeChat) ?? null) !== JSON.stringify(state.deviceTurns.get(activeChat) ?? null)) repaintDeviceTurn();
+}
+
+/** The banner of a chat answering a paired device, and its send button. */
+function renderDeviceTurn(sessionId) {
+  const turn = state.deviceTurns.get(sessionId);
+  if (!turn) return "";
+  const device = turn.device || "a paired device";
+  // The question came from the device; the answer is written here.
+  const text = turn.status === "waiting_approval" ? `Answering a message from ${device} on this computer: waiting for ${device} to approve a step.`
+    : `Answering a message from ${device} on this computer. The answer shows here when it ends.`;
+  return `<section class="chat-approval chat-target-banner" role="status" data-device-turn><div class="chat-approval__heading">${icon("remote")}<strong>${escapeHtml(text)}</strong></div>
+    <div class="chat-approval__actions"><button type="button" class="ghost-button" data-action="stop-device-turn" data-run-id="${escapeAttr(turn.runId)}">Stop the answer</button></div></section>`;
+}
+
+// The banner is repainted in place, so its button is handled here rather than bound on render.
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest?.("[data-action='stop-device-turn']");
+  if (!button) return;
+  button.disabled = true;
+  try { await api.cancelDeviceTurn(button.dataset.runId); }
+  catch (error) { pushToast(`Could not stop the answer: ${error.message}`, "danger"); button.disabled = false; }
+});
+
+function repaintDeviceTurn() {
+  const banner = document.querySelector(".chat-shell [data-chat-target-banner]");
+  if (banner && !isServerChat(state.activeSessionId)) banner.innerHTML = renderDeviceTurn(state.activeSessionId);
 }
 
 async function finishExternalRun(active) {
@@ -1177,7 +1236,7 @@ function renderChatRoute() {
           aria-label="Scroll to latest message"
         >${icon("arrowDown")}</button>
 
-        <div class="chat-approval-slot" data-chat-target-banner>${serverChat ? renderTargetBanner(chatTarget, state.activeSessionId) : ""}</div>
+        <div class="chat-approval-slot" data-chat-target-banner>${serverChat ? renderTargetBanner(chatTarget, state.activeSessionId) : renderDeviceTurn(state.activeSessionId)}</div>
         <div class="chat-approval-slot" data-chat-approval>${renderChatApproval()}</div>
         <form class="composer liquid-glass" id="chat-form" data-session-key="${escapeAttr(state.activeSessionId)}">
           <input id="chat-attachment-input" type="file" multiple class="sr-only" accept="${ATTACHMENT_ACCEPT}" />
@@ -1198,7 +1257,7 @@ function renderChatRoute() {
               ${renderEffortControl(settings)}
               ${voiceInput.renderButton()}
               ${state.chatSubmitting ? `<button class="icon-button stop-button" type="button" data-action="stop-chat" aria-label="Stop generation" title="${escapeAttr(`Stop generation${shortcutHint("stopGeneration")}`)}"${shortcuts().stopGeneration ? ` aria-keyshortcuts="${escapeAttr(shortcutAria(shortcuts().stopGeneration, MAC))}"` : ""}>${icon("stop")}</button>` : ""}
-              <button class="primary-button send-button" type="submit" aria-label="Send message" aria-keyshortcuts="${sendKey() === "mod-enter" ? (MAC ? "Meta+Enter" : "Control+Enter") : "Enter"}" title="${escapeAttr(`${serverChat ? `Send to ${chatTarget.hostName()}` : "Send message"} (${sendKeyCaps(sendKey(), MAC).send.join(MAC ? "" : "+")})`)}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || (serverChat && (chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly)) ? "disabled" : ""}>${icon("arrowUp")}</button>
+              <button class="primary-button send-button" type="submit" aria-label="Send message" aria-keyshortcuts="${sendKey() === "mod-enter" ? (MAC ? "Meta+Enter" : "Control+Enter") : "Enter"}" title="${escapeAttr(`${serverChat ? `Send to ${chatTarget.hostName()}` : "Send message"} (${sendKeyCaps(sendKey(), MAC).send.join(MAC ? "" : "+")})`)}" ${state.chatSubmitting || state.accessSaving || preparingAttachments || attachmentGuidance.blocked || state.deviceTurns.has(state.activeSessionId) || (serverChat && (chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly)) ? "disabled" : ""}>${icon("arrowUp")}</button>
             </div>
           </div>
         </form>
@@ -5949,7 +6008,7 @@ function updateAttachmentGuidance() {
     element.classList.toggle("is-blocked", guidance.blocked);
   }
   const submit = document.querySelector("#chat-form button[type='submit']");
-  if (submit) submit.disabled = Boolean(state.chatSubmitting || state.accessSaving || pending || guidance.blocked);
+  if (submit) submit.disabled = Boolean(state.chatSubmitting || state.accessSaving || pending || guidance.blocked || state.deviceTurns.has(state.activeSessionId));
   const activityModel = document.querySelector(".chat-activity-bar .activity-model");
   if (activityModel && !state.chatSubmitting && !state.pendingRequest) {
     const target = settings?.defaultTarget || {};
@@ -7016,8 +7075,9 @@ function handleRemoteUpdate(key, update) {
   if (effects.has("resync")) { void reloadRemoteChat(); return; }
   syncRemoteRequest(key, view);
   if (terminal && terminal.status !== "completed") {
-    const messages = { cancelled: "Generation interrupted.", failed: terminal.error || "The answer failed on the server.",
-      interrupted: terminal.error || "The server stopped while answering.", needs_review: "The server stopped during an action. Check what changed before retrying." };
+    const host = chatTarget.hostName();
+    const messages = { cancelled: "Generation interrupted.", failed: terminal.error || `The answer failed on ${host}.`,
+      interrupted: terminal.error || `${host} stopped while answering.`, needs_review: `${host} stopped during an action. Check what changed before retrying.` };
     pushToast(messages[terminal.status] || "The answer did not finish.", terminal.status === "cancelled" ? "info" : "danger");
   }
   if (terminal || effects.has("reload")) { void reloadRemoteChat(); return; }
@@ -7243,10 +7303,11 @@ async function deleteServerChat(key) {
   });
 }
 
-/** How a server turn ended when it did not complete. */
+/** How a turn of a device or on another computer ended when it did not complete. */
 function renderRunStatusNote(message) {
-  const notes = { failed: "The answer failed on the server.", cancelled: "Stopped.", interrupted: "Interrupted: the server stopped while answering.",
-    needs_review: "Interrupted during an action on the server. Check what changed before sending again.", running: "Answering…", queued: "Waiting…" };
+  const where = isServerChat(state.activeSessionId) ? chatTarget.hostName() : "this computer";
+  const notes = { failed: `The answer failed on ${where}.`, cancelled: "Stopped.", interrupted: `Interrupted: ${where} stopped while answering.`,
+    needs_review: `Interrupted during an action on ${where}. Check what changed before sending again.`, running: "Answering…", queued: "Waiting…" };
   if (!message.runStatus || message.runStatus === "completed" || !notes[message.runStatus]) return "";
   const retry = ["failed", "interrupted", "needs_review"].includes(message.runStatus)
     ? `<button type="button" class="ghost-button" data-action="remote-turn-draft" data-run-id="${escapeAttr(message.runId)}">Use as draft</button>` : "";

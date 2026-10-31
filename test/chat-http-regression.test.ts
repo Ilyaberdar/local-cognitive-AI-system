@@ -342,3 +342,28 @@ test("a chat answering a paired device takes no turn from this screen; other cha
   answering.delete("busy");
   assert.equal((await h.call("POST", "/chat", { requestId: "r-after", input: "Hi", sessionId: "busy" })).status, 200, "once the device's answer is done");
 });
+
+test("this computer's window reads devices' turns and stops one; without hosting it reads none", async (t) => {
+  const stopped: string[] = [];
+  const overview = { active: [{ runId: "run-1", sessionId: "busy", status: "running", startedAt: "2026-10-31T13:40:00.000Z", device: "iPhone" }],
+    changed: [{ sessionId: "busy", updatedAt: "2026-10-31T13:40:00.000Z" }] };
+  const h = await startChatHarness(t, { deviceTurns: { answering: () => true, forgetSession: () => undefined, forgotSession: () => undefined, overview: () => overview,
+    cancel: runId => { if (runId !== "run-1") throw new Error("The run does not exist on this computer."); stopped.push(runId); } } });
+  assert.deepEqual((await h.call("GET", "/device-turns")).body, overview);
+  assert.deepEqual(await h.call("POST", "/device-turns/run-1/cancel"), { status: 200, body: { ok: true } });
+  assert.deepEqual(await h.call("POST", "/device-turns/other/cancel"), { status: 404, body: { error: "The run does not exist on this computer." } });
+  assert.deepEqual(stopped, ["run-1"]);
+  const plain = await startChatHarness(t);
+  assert.deepEqual((await plain.call("GET", "/device-turns")).body, { active: [], changed: [] });
+  assert.equal((await plain.call("POST", "/device-turns/run-1/cancel")).status, 404);
+});
+
+test("this computer's window sees a device's question and how its turn ended when it did not complete", async (t) => {
+  const at = (seconds: number) => `2026-10-31T13:40:0${seconds}.000Z`;
+  const turn = [{ id: "u", role: "user", content: "Write a long poem", createdAt: at(1), runId: "r", runStatus: "cancelled" },
+    { id: "a", role: "assistant", content: "", createdAt: at(1), runId: "r", runStatus: "cancelled" }];
+  const h = await startChatHarness(t, { deviceTurns: { answering: () => false, forgetSession: () => undefined, forgotSession: () => undefined,
+    unfinished: sessionId => sessionId === "s-phone" ? turn as never : [] } });
+  assert.deepEqual((await h.call("GET", "/sessions/s-phone/messages")).body, turn);
+  assert.deepEqual((await h.call("GET", "/sessions/s-other/messages")).body, []);
+});

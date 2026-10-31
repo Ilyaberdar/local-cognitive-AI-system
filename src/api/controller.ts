@@ -4,6 +4,7 @@ import path from "path";
 import { NextFunction, Request, Response } from "express";
 import {
   AppSettingsPatch,
+  ChatMessage,
   LanguagePreference,
   OutputStyle,
   SessionMode,
@@ -550,6 +551,18 @@ export interface DeviceChatTurns {
   forgotSession(sessionId: string, deleted: boolean): void;
   /** Whether a device's turn in this chat is queued, running or waiting for an approval. */
   answering(sessionId: string): boolean;
+  /** For this computer's window: the chats devices are being answered in, by whom, and when each
+   * chat's turns last changed. */
+  overview?(): DeviceTurnsOverview;
+  /** Stops a device's turn from this computer. */
+  cancel?(runId: string): void;
+  /** The chat's turns from devices that did not complete (failed, stopped, interrupted), which
+   * history from memory does not contain. */
+  unfinished?(sessionId: string): ChatMessage[];
+}
+export interface DeviceTurnsOverview {
+  active: Array<{ runId: string; sessionId: string; status: string; startedAt: string; device?: string }>;
+  changed: Array<{ sessionId: string; updatedAt: string }>;
 }
 
 export const createDeleteSessionController =
@@ -586,11 +599,14 @@ export const createDeleteSessionController =
   };
 
 export const createGetSessionMessagesController =
-  (runtimeManager: RuntimeManager) =>
+  (runtimeManager: RuntimeManager, chatRuns?: DeviceChatTurns) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { messages } = await loadSessionMessages(runtimeManager, String(req.params.sessionId));
-      res.status(200).json(messages);
+      const sessionId = String(req.params.sessionId);
+      const { messages } = await loadSessionMessages(runtimeManager, sessionId);
+      // A device's turn that did not complete is not in memory: its question and how it ended are kept with it.
+      const unfinished = chatRuns?.unfinished?.(sessionId) ?? [];
+      res.status(200).json(unfinished.length ? [...messages, ...unfinished].sort((left, right) => left.createdAt.localeCompare(right.createdAt)) : messages);
     } catch (error) {
       next(error);
     }

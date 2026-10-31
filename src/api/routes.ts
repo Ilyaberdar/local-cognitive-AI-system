@@ -134,7 +134,7 @@ export const createApiRouter = (
   router.post("/sessions", createCreateSessionController(sessionIndexStore, runtimeManager));
   router.patch("/sessions/:sessionId", createRenameSessionController(sessionIndexStore));
   router.delete("/sessions/:sessionId", createDeleteSessionController(runtimeManager, sessionIndexStore, chatRuns));
-  router.get("/sessions/:sessionId/messages", createGetSessionMessagesController(runtimeManager));
+  router.get("/sessions/:sessionId/messages", createGetSessionMessagesController(runtimeManager, chatRuns));
   router.get("/sessions/:sessionId/settings", createGetSessionSettingsController(runtimeManager));
   router.put("/sessions/:sessionId/settings", createUpdateSessionSettingsController(runtimeManager));
 
@@ -196,6 +196,15 @@ export const createApiRouter = (
   router.get("/process-runs", createListProcessRunsController());
   router.get("/process-runs/:requestId", createProcessRunStatusController());
   router.post("/process-runs/:requestId/cancel", createCancelProcessRunController());
+  // This computer's window follows the chats its paired devices are answered in, and can stop a turn.
+  router.get("/device-turns", (_req, res) => { res.json(chatRuns?.overview?.() ?? { active: [], changed: [] }); });
+  router.post("/device-turns/:runId/cancel", (req, res) => {
+    try {
+      if (!chatRuns?.cancel) throw new Error("No device's turn runs on this computer.");
+      chatRuns.cancel(String(req.params.runId));
+      res.json({ ok: true });
+    } catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : "The turn is not running." }); }
+  });
   router.post("/workspace/editor", createOpenWorkspaceEditorController(runtimeManager));
   router.get("/workspace/file", createReadWorkspaceFileController(runtimeManager));
   router.post("/workspace/reveal", createRevealWorkspacePathController(runtimeManager));

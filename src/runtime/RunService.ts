@@ -183,6 +183,20 @@ export class RunService {
     return { ...view, partialText: live?.text ?? "", ...(live?.progress ? { progress: live.progress } : {}), ...(live?.approval ? { pendingApproval: live.approval.view } : {}) };
   }
 
+  /** For the host's own window: the turns queued, running or waiting for an approval, with who asked
+   * (their command's scope), and when each chat's turns last changed, so a turn that began and ended
+   * between two looks still brings its chat up to date. */
+  turnsOverview(limit = 20): { active: Array<{ runId: string; sessionId: string; status: RunStatus; createdAt: string; scope: string }>;
+    changed: Array<{ sessionId: string; updatedAt: string }> } {
+    const db = this.deps.host.db;
+    const active = db.prepare(`SELECT r.run_id, r.session_id, r.status, r.created_at, c.scope FROM runs r JOIN commands c ON c.command_id = r.command_id
+      WHERE r.kind = 'chat' AND r.status IN ('queued','running','waiting_approval') ORDER BY r.created_at`).all()
+      .map(row => ({ runId: String(row.run_id), sessionId: String(row.session_id), status: row.status as RunStatus, createdAt: String(row.created_at), scope: String(row.scope) }));
+    const changed = db.prepare("SELECT session_id, MAX(updated_at) AS updated_at FROM runs WHERE kind = 'chat' GROUP BY session_id ORDER BY updated_at DESC LIMIT ?").all(limit)
+      .map(row => ({ sessionId: String(row.session_id), updatedAt: String(row.updated_at) }));
+    return { active, changed };
+  }
+
   /** Starts deleting a chat: refused while it is answering, here or on the host's own screen. New
    * turns are refused, and its turns, their commands (with their inputs) and its journal go. */
   forgetSession(sessionId: string): void {
