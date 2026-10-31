@@ -135,3 +135,24 @@ test("code in C++ and the other common languages is highlighted, under their usu
     assert.ok(f.root.querySelector("pre code .hljs-keyword, pre code .hljs-type, pre code .hljs-built_in"), fence);
   }
 });
+
+test("a file a model writes shows as its code under its path, never as the raw <<<FILE>>> markers, and copies as Markdown", t => {
+  // "Create a file named notes.txt" in General showed <<<FILE:notes.txt>>> … <<<END FILE>>> as text (2026-10-31).
+  const f = fixture(t);
+  const answer = "Here it is:\n\n<<<FILE:src/app.ts>>>\nconst a = 1;\nconsole.log(`a`);\n<<<END FILE>>>\n<<<FILE:notes.txt>>>\nhello from the Mac\n<<<END FILE>>>\n\nDone.";
+  f.root.innerHTML = f.renderMarkdown(answer);
+  assert.doesNotMatch(f.root.textContent, /<<<|END FILE/);
+  const blocks = [...f.root.querySelectorAll(".markdown-code")];
+  assert.deepEqual(blocks.map((block: any) => [block.querySelector(".markdown-code__header span").textContent, block.querySelector("pre code").textContent]),
+    [["src/app.ts", "const a = 1;\nconsole.log(`a`);"], ["notes.txt", "hello from the Mac"]]);
+  assert.ok(blocks[0].querySelector(".hljs-keyword"), "highlighted by its extension");
+  assert.match(f.root.querySelector("p").textContent, /Here it is:/);
+  assert.equal([...f.root.querySelectorAll("p")].at(-1).textContent, "Done.");
+  assert.equal(f.fileBlocksAsMarkdown(answer),
+    "Here it is:\n\nsrc/app.ts\n```typescript\nconst a = 1;\nconsole.log(`a`);\n```\n\nnotes.txt\n```txt\nhello from the Mac\n```\n\n\nDone.");
+  // An answer cut off inside a block shows what came; code with fences of its own keeps them.
+  f.root.innerHTML = f.renderMarkdown("<<<FILE:README.md>>>\n# Title\n```sh\nnpm i\n```\nand mo");
+  assert.equal(f.root.querySelector(".markdown-code__header span").textContent, "README.md");
+  assert.equal(f.root.querySelector("pre code").textContent, "# Title\n```sh\nnpm i\n```\nand mo");
+  assert.match(f.fileBlocksAsMarkdown("<<<FILE:README.md>>>\n```sh\nnpm i\n```\n<<<END FILE>>>"), /^README\.md\n````markdown\n```sh\nnpm i\n```\n````\n$/);
+});

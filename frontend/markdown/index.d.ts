@@ -3,3 +3,4 @@ export function renderCodeBlock(content: string, language?: string, label?: stri
 export function renderCodeLines(content: string, filePath?: string): string[];
 export function bindMarkdownActions(root: HTMLElement): void;
 export function renderReleaseNotes(html: unknown): string;
+export function fileBlocksAsMarkdown(value: unknown): string;

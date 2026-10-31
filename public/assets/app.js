@@ -21,7 +21,7 @@ import { createReviewPanel } from "./review-panel.js";
 import { createSessionSetupMotion } from "./session-setup-motion.js";
 import { createVoiceInput, appendDictation } from "./voice-input.js";
 import { watchWorkflowRun } from "./workflow-live.js";
-import { renderMarkdown, renderCodeBlock, renderCodeLines, bindMarkdownActions } from "./markdown-renderer.js";
+import { renderMarkdown, renderCodeBlock, renderCodeLines, bindMarkdownActions, fileBlocksAsMarkdown } from "./markdown-renderer.js";
 import { bindMentionPicker, pluginMentionIds, mentionedAgentNames, renderMentionText } from "./mentions.js";
 import { SHORTCUT_ACTIONS, bindComposerSend, effectiveShortcuts, isMacPlatform, sendKeyCaps, shortcutAria, shortcutFromEvent, shortcutText } from "./shortcuts.js";
 
@@ -4922,7 +4922,7 @@ function bindEvents() {
       }
 
       try {
-        await navigator.clipboard.writeText(message.content);
+        await navigator.clipboard.writeText(message.role === "assistant" ? fileBlocksAsMarkdown(message.content) : message.content);
         const original = button.textContent;
         button.textContent = "Copied";
         window.setTimeout(() => {

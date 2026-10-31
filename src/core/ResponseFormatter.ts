@@ -1,11 +1,11 @@
 import { ProcessResult, TextModeResult } from "../types";
+import { fileBlocksAsMarkdown } from "./fileBlocks";
 
 export class ResponseFormatter {
-  formatForChat(result: ProcessResult, options?: { maxChars?: number }): string {
-    const textResponse =
-      "response" in result.result
-        ? this.renderTextResponse(result.result.response, result.result.provider, result.result.model)
-        : "";
+  /** `fileBlocks: "keep"` leaves files a model wrote as their blocks, for the app's window to draw. */
+  formatForChat(result: ProcessResult, options?: { maxChars?: number; fileBlocks?: "keep" }): string {
+    const rendered = "response" in result.result ? this.renderTextResponse(result.result.response, result.result.provider, result.result.model) : "";
+    const textResponse = options?.fileBlocks === "keep" ? rendered : fileBlocksAsMarkdown(rendered);
     const hasSubagents = "response" in result.result && Boolean(result.result.subagents?.length);
     const base =
       result.mode === "hypothesis" && "arguments" in result.result

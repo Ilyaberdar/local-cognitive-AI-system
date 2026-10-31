@@ -92,7 +92,9 @@ const buildStoredMessageContent = (
           judge: { providerId: "local" }
         }
       }
-    }
+    },
+    // The window draws a written file as its code under its name.
+    { fileBlocks: "keep" }
   );
 };
 

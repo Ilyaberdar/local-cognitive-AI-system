@@ -47,8 +47,28 @@ md.renderer.rules.image = (tokens, index) => {
   return `<a href="${escape(src)}" target="_blank" rel="noopener noreferrer">${escape(token.content || "Image")}</a>`;
 };
 
+// A model writes files as <<<FILE:path>>> … <<<END FILE>>> blocks, which the app applies. An answer
+// shows each as its file's code under its path; a block cut off at the end shows what came of it.
+const FILE_BLOCK = /<<<FILE:([^\n>]+)>>>[^\S\n]*\n?([\s\S]*?)(?:<<<END FILE>>>|$)/g;
+const fileBlocks = (text, file, rest) => {
+  let out = "", last = 0;
+  for (const match of text.matchAll(FILE_BLOCK)) {
+    out += rest(text.slice(last, match.index)) + file(match[1].trim(), match[2].replace(/\r?\n$/, ""));
+    last = match.index + match[0].length;
+  }
+  return out + rest(text.slice(last));
+};
+
+/** The answer as text to copy: each file block as a fenced code block under its path. */
+export function fileBlocksAsMarkdown(value) {
+  return fileBlocks(String(value ?? ""), (filePath, content) => {
+    const fence = "`".repeat(Math.max(3, ...[...content.matchAll(/`+/g)].map(run => run[0].length + 1)));
+    return `${filePath}\n${fence}${codeLanguage(filePath)}\n${content}\n${fence}\n`;
+  }, text => text);
+}
+
 export function renderMarkdown(value) {
-  const html = md.render(String(value ?? ""));
+  const html = fileBlocks(String(value ?? ""), (filePath, content) => renderCodeBlock(content, codeLanguage(filePath), filePath), text => md.render(text));
   return `<div class="message-markdown">${DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true }, ADD_ATTR: ["target"], FORBID_TAGS: ["style", "input", "form"],
     FORBID_ATTR: ["style"], ALLOW_DATA_ATTR: true
