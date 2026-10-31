@@ -142,10 +142,15 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
   if (runtime) {
     bridge.onChange?.(next => {
       const wasOnline = api.online();
+      // One connection at a time: a computer connected in the Remote tab (a new key, or Connect)
+      // replaces the one the switch shows, which could only read as reconnecting; the switch follows.
+      // On This computer it stays: the computer is offered in the switch.
+      const movedTo = target !== "local" && next.state === "online" && next.hostId && next.hostId !== target
+        && !(status.state === "online" && status.hostId === next.hostId) ? next.hostId : undefined;
       status = next;
       // A server paired in the Remote tab joins the switch at once.
       if (next.hostId && next.state === "online" && !hosts.some(host => host.hostId === next.hostId && host.paired)) void api.refreshHosts();
-      onChange({ cameOnline: !wasOnline && api.online() });
+      onChange({ cameOnline: !wasOnline && api.online(), ...(movedTo ? { movedTo } : {}) });
     });
     runtime.onEvent?.(update => {
       if (!subscribed || update.streamId !== subscribed.streamId) return;

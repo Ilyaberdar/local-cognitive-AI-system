@@ -524,7 +524,9 @@ const accountState = createAccountState(window.desktopAccount);
 const remoteUi = createRemoteUi({ account: accountState, hostUi: window.desktopRemoteHost ? createRemoteHostUi({ account: accountState }) : undefined });
 window.desktopRemoteHost?.onOpen?.(() => { window.location.hash = "#/remote/host"; });
 chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountState,
-  onChange: ({ cameOnline } = {}) => {
+  onChange: ({ cameOnline, movedTo } = {}) => {
+    // Connected to another computer elsewhere: switch to it as a choice in the switch would.
+    if (movedTo) { void switchChatTarget(movedTo); return; }
     repaintChatTarget();
     // Back online after a drop: catch up on what the server did meanwhile.
     if (cameOnline && isServerChat(state.activeSessionId)) void reloadRemoteChat();

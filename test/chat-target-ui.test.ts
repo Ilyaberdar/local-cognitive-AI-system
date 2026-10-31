@@ -151,6 +151,27 @@ test("a server chat runs on the server only: history, sending, streaming and the
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => /\/chat|\/sessions\/|process-runs/.test(entry)), [], "nothing reached this computer's chat API");
 });
 
+test("a computer connected in the Remote tab takes the switch from the one it replaced; on This computer the switch stays", async t => {
+  const OTHER = "0d9e3a71-4b2c-4e8f-9a6d-5c1b2e3f4a5b";
+  const paired = fakeServer();
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  paired.setStatus({ hostId: OTHER, hostName: "MacBook" });
+  await settle();
+  assert.equal(app.document.querySelector(".chat-target-label").textContent, "This computer", "nothing chosen for this window");
+  paired.setStatus({ hostId: HOST, hostName: "fedora" });
+  await choose(app, HOST);
+  assert.equal(app.document.querySelector(".chat-target-label").textContent, "fedora");
+  paired.setStatus({ state: "connecting", hostId: OTHER, hostName: "MacBook" });
+  await settle();
+  assert.equal(app.document.querySelector(".chat-target-label").textContent, "fedora", "not before it is online");
+  paired.setStatus({ state: "online" });
+  await settle();
+  assert.equal(app.document.querySelector(".chat-target-label").textContent, "MacBook");
+  assert.match(app.document.querySelector(".sidebar-chats").textContent, /Chats on MacBook/);
+  assert.equal(app.document.querySelector("[data-chat-target-banner]")?.textContent.includes("reconnecting") ?? false, false);
+});
+
 test("while the server is away nothing is sent, the draft stays, and drafts never cross targets", async t => {
   const paired = fakeServer();
   const app = await bootApp({ remote: { bridge: paired.bridge } });
