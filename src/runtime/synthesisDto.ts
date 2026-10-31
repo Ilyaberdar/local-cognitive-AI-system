@@ -2,6 +2,7 @@ import type { ActivityEvent, SynthesisModule, SynthesisRun } from "../synthesis/
 import type { AgentSummary } from "../synthesis/agents";
 import type { Scrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
+import { place } from "./hostPlace";
 
 /** What a paired device sees of Synthesis on the host (R5-5): modules and runs without the
  * project's folder or the server's data directory (scrubbed to `<workspace>` / `<server>`), error
@@ -16,7 +17,7 @@ const ABSOLUTE_PATH = /\bfile:\/\/\S*|(?<![\w.~<>/-])(?:[A-Za-z]:)?[\\/](?:[^\\/
 const withoutPaths = (text: string) => text.replace(ABSOLUTE_PATH, "<path>");
 /** A failure's text as a device sees it: its first line, bounded; a model's answer stays readable. */
 const failure = (message: string) => {
-  const first = withoutPaths(message.split(/\r?\n/, 1)[0]!.trim()) || "The step failed on the server.";
+  const first = withoutPaths(message.split(/\r?\n/, 1)[0]!.trim()) || `The step failed on ${place()}.`;
   return first.length > 300 ? `${first.slice(0, 299)}…` : first;
 };
 const safeEvent = (event: ActivityEvent): ActivityEvent => ({

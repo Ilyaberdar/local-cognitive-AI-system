@@ -29,7 +29,7 @@ export function createServerModels({ target, bridge = window.desktopRemote, crea
     const call = async (op, payload) => {
       if (!target.online()) throw new Error(`${name()} is not connected. Nothing was sent.`);
       const result = await runtime.request(op, payload, hostId);
-      if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The server did not answer."), { code: result?.error?.code });
+      if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The other computer did not answer."), { code: result?.error?.code });
       return result.value;
     };
     // This selection's state: a late answer for an earlier selection never lands in it.

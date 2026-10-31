@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { RemoteOperationError } from "../remote/host/RemoteHost";
 import { canonical, sha256 } from "./canonical";
 import type { HostDatabase } from "./db/HostDatabase";
+import { place } from "./hostPlace";
 
 /** What a command knows about itself: the run id reserved for it and when it was accepted. */
 export interface CommandRecord { runId?: string; acceptedAt: string; target?: string }
@@ -112,4 +113,4 @@ export class CommandLedger {
 /** Expected refusals keep their code and text; anything else is reported generically. */
 const describe = (error: unknown): { code: string; message: string } => error instanceof RemoteOperationError
   ? { code: error.code, message: error.message }
-  : { code: "operation_failed", message: "The operation failed on the server." };
+  : { code: "operation_failed", message: `The operation failed on ${place()}.` };

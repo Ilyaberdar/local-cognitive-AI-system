@@ -47,7 +47,7 @@ export function chooseServerFolder({ call, hostName, title = "Choose a folder" }
         else ({ entries, truncated } = await call("fs.browse", { rootId: root.rootId, path }));
         shown = { root, path: [...path] };
       } catch (failure) {
-        error = failure?.message || "The server did not answer.";
+        error = failure?.message || "The other computer did not answer.";
         root = shown.root; path = [...shown.path];
       }
       busy = false; render();

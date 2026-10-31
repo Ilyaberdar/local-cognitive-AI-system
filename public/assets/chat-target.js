@@ -120,7 +120,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
   // refuses it once another server is connected.
   const call = async (op, payload, host = target) => {
     const result = await runtime.request(op, payload, host);
-    if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The server did not answer."), { code: result?.error?.code });
+    if (!result?.ok) throw Object.assign(new Error(result?.error?.message || "The other computer did not answer."), { code: result?.error?.code });
     return result.value;
   };
   const serverId = key => refs.get(key)?.sessionId;
@@ -159,7 +159,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     available: () => Boolean(runtime),
     isRemote: () => target !== "local",
     hostId: () => (target === "local" ? undefined : target),
-    hostName: () => hosts.find(host => host.hostId === target)?.name || (status.hostId === target ? status.hostName : "") || "server",
+    hostName: () => hosts.find(host => host.hostId === target)?.name || (status.hostId === target ? status.hostName : "") || "the other computer",
     status: () => status,
     online: () => target !== "local" && status.state === "online" && status.hostId === target,
     /** Remote and not connected: nothing may be sent, approved or cancelled. */
@@ -307,14 +307,14 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       for (let offset = 0, eof = stat.sizeBytes === 0; !eof;) {
         const part = await call("files.read", { sessionId, path: filePath, as: "base64", offset }, host);
         const chunk = Uint8Array.from(atob(part.data), character => character.charCodeAt(0));
-        if (!chunk.length && !part.eof) throw new Error("The file changed on the server while it was copied.");
-        if (offset + chunk.length > bytes.length) throw new Error("The file changed on the server while it was copied.");
+        if (!chunk.length && !part.eof) throw new Error("The file changed while it was copied. Try again.");
+        if (offset + chunk.length > bytes.length) throw new Error("The file changed while it was copied. Try again.");
         bytes.set(chunk, offset);
         offset += chunk.length;
         eof = part.eof;
       }
       const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
-      if (digest !== stat.sha256) throw new Error("The file changed on the server while it was copied. Try again.");
+      if (digest !== stat.sha256) throw new Error("The file changed while it was copied. Try again.");
       return { name: stat.name, bytes };
     },
     async send(key, input, attachmentIds = []) {

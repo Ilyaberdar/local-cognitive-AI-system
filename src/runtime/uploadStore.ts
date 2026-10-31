@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { RemoteOperationError } from "../remote/host/RemoteHost";
 import type { ChatAttachment } from "../types";
 import { AttachmentError, validateAttachments } from "../utils/attachments";
+import { place } from "./hostPlace";
 
 /** Characters per chunk: a chunk's request stays well under the 256 KiB a window may send. */
 export const CHUNK_CHARS = 128 * 1024;
@@ -116,7 +117,7 @@ export class UploadStore {
     return ids.map(id => {
       const upload = this.uploads.get(id);
       if (!upload || upload.owner !== owner || upload.sessionId !== sessionId || !upload.attachment) {
-        throw refuse("An attachment is no longer on the server. Attach it again.", "attachment_unknown");
+        throw refuse(`An attachment is no longer on ${place()}. Attach it again.`, "attachment_unknown");
       }
       return upload.attachment;
     });
@@ -133,7 +134,7 @@ export class UploadStore {
   private own(owner: string, uploadId: string): Upload {
     this.sweep();
     const upload = this.uploads.get(uploadId);
-    if (!upload || upload.owner !== owner) throw refuse("The upload is not on the server. Attach the file again.", "upload_unknown");
+    if (!upload || upload.owner !== owner) throw refuse(`The upload is not on ${place()}. Attach the file again.`, "upload_unknown");
     return upload;
   }
 

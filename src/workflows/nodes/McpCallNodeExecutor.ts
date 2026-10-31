@@ -3,8 +3,9 @@ import { NodeResult } from "../types";
 import { readConfigString, renderWorkflowTemplate } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
 import { executeWorkflowOperation } from "./WorkflowOperation";
+import { place } from "../../runtime/hostPlace";
 
-const ON_HOST = "This step calls a tool of an application on the server (MCP). It runs only in workflows started on the server.";
+const ON_HOST = () => `This step calls a tool of an application on ${place()} (MCP). It runs only in workflows started on ${place()}.`;
 
 /** A JSON value with every string rendered as a template: results of earlier steps are inserted
  * as text, so they can never change the arguments' structure. */
@@ -26,7 +27,7 @@ export class McpCallNodeExecutor implements NodeExecutor {
     context.signal?.throwIfAborted();
     const fail = (summary: string): NodeResult => ({ status: "failed", event: "mcp_call.failed", summary, data: {}, error: summary });
     // A device started this run, or wrote the workflow it runs: the host's applications stay the host's.
-    if (context.run.deviceOrigin) return fail(ON_HOST);
+    if (context.run.deviceOrigin) return fail(ON_HOST());
     if (!this.operations?.mcp) return fail("External MCP tools are unavailable in this runtime.");
     const config = context.node.config;
     const serverId = readConfigString(config, "serverId", ""), toolName = readConfigString(config, "toolName", "");

@@ -150,7 +150,7 @@ test("Remote has a tab for this computer, remembered; without the desktop app it
   const root = dom.window.document.querySelector(".route--remote");
   root.innerHTML = context.ui.render();
   context.ui.bind(root);
-  assert.deepEqual([...root.querySelectorAll("[data-remote-tab]")].map((tab: any) => [tab.textContent, tab.getAttribute("aria-selected")]), [["Connect to a server", "true"], ["This computer", "false"]]);
+  assert.deepEqual([...root.querySelectorAll("[data-remote-tab]")].map((tab: any) => [tab.textContent, tab.getAttribute("aria-selected")]), [["Other computers", "true"], ["This computer", "false"]]);
   root.querySelector('[data-remote-tab="host"]').click();
   assert.ok(root.querySelector("[data-host-page]"));
   assert.equal(dom.window.localStorage.getItem("lcai.remoteTab"), "host");

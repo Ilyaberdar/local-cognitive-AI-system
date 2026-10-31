@@ -2,6 +2,7 @@ import { resolveAbortSignal } from "../../llm/provider-utils";
 import { NodeResult } from "../types";
 import { readConfigNumber, readConfigString, renderWorkflowTemplate } from "../template";
 import { NodeExecutionContext, NodeExecutor } from "./NodeExecutor";
+import { place } from "../../runtime/hostPlace";
 
 interface WebSearchNodeExecutorOptions {
   braveApiKey?: string;
@@ -44,7 +45,7 @@ export class WebSearchNodeExecutor implements NodeExecutor {
     // which could be any address on the host's own network.
     const baseUrl = readConfigString(config, "baseUrl", this.options.searxngUrl ?? "");
     if (provider !== "brave" && context.run.deviceOrigin && baseUrl.trim() && baseUrl.trim() !== (this.options.searxngUrl ?? "").trim()) {
-      throw new Error("A web search step from a device uses the server's own SearXNG address (SEARXNG_URL); set it on the server instead of in the step.");
+      throw new Error(`A web search step from a device uses ${place()}'s own SearXNG address (SEARXNG_URL); set it on ${place()} instead of in the step.`);
     }
 
     const results = provider === "brave"

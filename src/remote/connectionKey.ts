@@ -19,7 +19,7 @@ export class ConnectionKeyError extends Error {
   constructor(readonly code: ConnectionKeyErrorCode) {
     super({ format: "This is not a Local Cognitive connection key.", checksum: "The connection key has a typo. Copy it again.",
       version: "This connection key needs a newer version of Local Cognitive.", environment: "This connection key belongs to another Local Cognitive service.",
-      expired: "The connection key has expired. Create a new one on the server." }[code]);
+      expired: "The connection key has expired. Create a new one and try again." }[code]);
   }
 }
 

@@ -32,7 +32,7 @@ export class RemoteSession extends EventEmitter {
     super();
     channel.on("message", (message: unknown) => this.receive(message));
     channel.once("close", () => {
-      for (const [, request] of this.pending) { clearTimeout(request.timer); request.reject(new RemoteRequestError("The connection to the server was lost.", "disconnected")); }
+      for (const [, request] of this.pending) { clearTimeout(request.timer); request.reject(new RemoteRequestError("The connection to the other computer was lost.", "disconnected")); }
       this.pending.clear();
       this.emit("close", this.closeReason);
     });
@@ -59,7 +59,7 @@ export class RemoteSession extends EventEmitter {
     // A server answers in a version this app speaks, or it is too new for it.
     if (welcome.data.protocol < MIN_PROTOCOL_VERSION || welcome.data.protocol > PROTOCOL_VERSION) {
       channel.destroy();
-      throw new RemoteRequestError(`Local Cognitive on the server (${welcome.data.serverVersion}) is newer than this app. Update the app on this computer.`, "client_too_old");
+      throw new RemoteRequestError(`Local Cognitive on the other computer (${welcome.data.serverVersion}) is newer than this app. Update the app on this computer.`, "client_too_old");
     }
     return new RemoteSession(channel, welcome.data);
   }
@@ -67,7 +67,7 @@ export class RemoteSession extends EventEmitter {
   get isOpen(): boolean { return this.channel.isOpen; }
 
   request<T = unknown>(op: string, payload?: unknown, timeoutMs = 30_000): Promise<T> {
-    if (!this.channel.isOpen) return Promise.reject(new RemoteRequestError("The connection to the server was lost.", "disconnected"));
+    if (!this.channel.isOpen) return Promise.reject(new RemoteRequestError("The connection to the other computer was lost.", "disconnected"));
     if (this.pending.size >= MAX_REQUESTS_IN_FLIGHT) return Promise.reject(new RemoteRequestError("Too many requests at once.", "too_many_requests"));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {

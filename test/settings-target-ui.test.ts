@@ -272,7 +272,7 @@ test("with fedora selected, host pages show and change fedora's settings; appear
     assert.ok(app.document.querySelector('#settings-root [data-server-action="use-local"]'));
   }
   open(app, "about"); await settle();
-  assert.match(text(app, ".settings-content"), /Selected server\s*fedora · 0\.2\.0/);
+  assert.match(text(app, ".settings-content"), /Runs on\s*fedora · 0\.2\.0/);
   open(app, "appearance"); await settle();
   assert.match(text(app, ".settings-target-note"), /kept on this device\. fedora has its own/);
   inRoot(app, '[data-appearance-theme="light"]').click(); await settle();

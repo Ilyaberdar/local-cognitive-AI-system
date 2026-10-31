@@ -4,6 +4,7 @@ import path from "path";
 import { defaultTaskWorkflow } from "./defaultWorkflows";
 import { validateRunOptions } from "./runOptions";
 import { parsePluginSelection } from "../plugins/PluginSelection";
+import { place } from "../runtime/hostPlace";
 import {
   WorkflowConflictError,
   WorkflowDefinition,
@@ -107,8 +108,8 @@ export class WorkflowStore {
       const current = index >= 0 ? record.workflows[index] : undefined;
       if (options.expectedUpdatedAt === null ? current : current?.updatedAt !== options.expectedUpdatedAt) {
         throw new WorkflowConflictError(current
-          ? "This workflow was changed on the server since you opened it. Reload it, then make your changes again."
-          : "This workflow no longer exists on the server.");
+          ? `This workflow was changed on ${place()} since you opened it. Reload it, then make your changes again.`
+          : `This workflow no longer exists on ${place()}.`);
       }
       // Strictly later than the version it replaces, so the next save can tell them apart.
       let updatedAt = new Date().toISOString();

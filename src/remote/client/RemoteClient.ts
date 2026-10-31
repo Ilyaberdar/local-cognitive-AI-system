@@ -22,21 +22,21 @@ export class RemoteError extends Error { constructor(message: string, readonly c
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const RELAY_CLOSE: Record<number, [string, string]> = {
   4401: ["ticket_rejected", "The connection was not authorized. Try again."],
-  4403: ["revoked", "This computer's access to the server was removed."],
-  4404: ["host_offline", "The server is offline or not connected to Local Cognitive."],
+  4403: ["revoked", "Access from this computer was removed."],
+  4404: ["host_offline", "The other computer is offline or not connected to Local Cognitive."],
   4408: ["timeout", "The connection timed out."],
   4410: ["auth_expired", "The session expired."],
-  4429: ["too_many_sessions", "Too many connections to this server. Close another window and try again."]
+  4429: ["too_many_sessions", "Too many connections to the other computer. Close another window and try again."]
 };
 const API_ERRORS: Record<string, string> = {
-  email_unverified: "Verify your email address before connecting a server.",
-  host_offline: "The server is offline or not connected to Local Cognitive.",
-  host_owned_by_other: "This server belongs to another account.",
-  invitation_unknown: "The connection key is unknown or has expired. Create a new one on the server.",
-  invitation_used: "The connection key was already used. Create a new one on the server.",
-  invitation_expired: "The connection key has expired. Create a new one on the server.",
-  invitation_exhausted: "Too many attempts with this key. Create a new one on the server.",
-  not_authorized: "This computer has no access to the server. Connect it again with a new key.",
+  email_unverified: "Verify your email address before connecting a computer.",
+  host_offline: "The other computer is offline or not connected to Local Cognitive.",
+  host_owned_by_other: "That computer belongs to another account.",
+  invitation_unknown: "The connection key is unknown or has expired. Create a new one and try again.",
+  invitation_used: "The connection key was already used. Create a new one and try again.",
+  invitation_expired: "The connection key has expired. Create a new one and try again.",
+  invitation_exhausted: "Too many attempts with this key. Create a new one and try again.",
+  not_authorized: "This computer has no access to the other one. Connect it again with a new key.",
   rate_limited: "Too many attempts. Wait a minute and try again."
 };
 
@@ -176,7 +176,7 @@ export class RemoteClient extends EventEmitter {
     try {
       const { accountId, accessToken } = await this.requireAccount();
       const profile = (await this.profiles(accountId)).find(entry => entry.hostId === hostId);
-      if (!profile) throw new RemoteError("This computer is not paired with the server. Connect it with a key.", "not_paired");
+      if (!profile) throw new RemoteError("This computer is not paired with that computer. Connect it with a key.", "not_paired");
       const device = await this.device(accountId, accessToken);
       if (device.deviceId !== profile.deviceId) throw new RemoteError("This computer's key changed. Connect it again with a new key.", "not_paired");
       const ticket = await this.ticket(accessToken, { purpose: "connect", hostId, deviceId: device.deviceId });
@@ -197,7 +197,7 @@ export class RemoteClient extends EventEmitter {
     session.once("close", (reason?: string) => {
       if (generation !== this.generation) return;
       this.session = undefined;
-      if (reason === "revoked") { this.set({ ...this.current, state: "revoked", error: { code: "revoked", message: "This computer's access to the server was removed." } }); return; }
+      if (reason === "revoked") { this.set({ ...this.current, state: "revoked", error: { code: "revoked", message: "Access from this computer was removed." } }); return; }
       // Expired authorization, a relay restart or a network drop: reconnect quietly.
       this.scheduleReconnect(session.welcome.hostId, generation);
     });
@@ -243,7 +243,7 @@ export class RemoteClient extends EventEmitter {
     const socket = new WebSocket(`${this.origin.replace(/^http/, "ws")}/v1/relay/client`, { maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false, handshakeTimeout: 15_000 });
     if (generation === this.generation) this.socket = socket;
     const closed = new Promise<never>((_resolve, reject) => socket.once("close", code => {
-      const [errorCode, message] = RELAY_CLOSE[code] ?? ["closed", "The connection to the server closed."];
+      const [errorCode, message] = RELAY_CLOSE[code] ?? ["closed", "The connection closed."];
       reject(new RemoteError(message, errorCode));
     }));
     closed.catch(() => undefined);

@@ -51,9 +51,9 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   }
 
   function statusCard() {
-    const host = escape(status.hostName || "the server");
+    const host = escape(status.hostName || "the other computer");
     const disconnect = `<button type="button" class="ghost-button" data-remote-action="disconnect"${pending ? " disabled" : ""}>Disconnect</button>`;
-    const forget = status.hostId ? `<button type="button" class="ghost-button" data-remote-action="forget" data-host-id="${escape(status.hostId)}"${pending ? " disabled" : ""}>Forget server</button>` : "";
+    const forget = status.hostId ? `<button type="button" class="ghost-button" data-remote-action="forget" data-host-id="${escape(status.hostId)}"${pending ? " disabled" : ""}>Forget</button>` : "";
     const error = status.error ? `<p class="remote-error" role="alert">${escape(status.error.message)}</p>` : "";
     const card = (title, text, actions = "", tone = "") =>
       `<div class="account-card remote-status ${tone}" role="status"><div><h2><span class="status-dot"></span>${title}</h2><p>${text}</p>${error}</div>${actions ? `<div class="account-actions">${actions}</div>` : ""}</div>`;
@@ -61,10 +61,10 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
       case "online": return card(`Connected to ${host}`, `Local Cognitive ${escape(status.serverVersion || "")} there. This computer stays paired: Connect works again without a key.`, disconnect, "is-online");
       case "connecting": return card(`Connecting to ${host}…`, "Setting up an end-to-end encrypted connection through Local Cognitive Cloud.", disconnect, "is-busy");
       case "reconnecting": case "offline": return card(`Reconnecting to ${host}…`, "The connection dropped. Local Cognitive keeps trying in the background.", disconnect, "is-busy");
-      case "revoked": return card("Access removed", "This computer can no longer connect to the server. Ask for a new key on the server to connect again.", forget, "is-warning");
-      case "identity_changed": return card("The server's identity changed", "The server answered with a different key than when you paired. If it was reinstalled, forget it and connect with a new key; otherwise the connection may be intercepted.", forget, "is-warning");
+      case "revoked": return card("Access removed", `This computer can no longer connect to ${host}. Get a new connection key from ${host} to connect again.`, forget, "is-warning");
+      case "identity_changed": return card(`${host} has a different identity`, `${host} answered with a different key than when you paired. If it was reinstalled, forget it and connect with a new key; otherwise the connection may be intercepted.`, forget, "is-warning");
       case "error": return card("Not connected", "Everything runs on this computer.", "", "is-warning");
-      default: return card("This computer", "Everything runs on this computer. Connect a server to use its GPU and models.");
+      default: return card("This computer", "Everything runs on this computer. Connect another one, such as a server with a GPU, to use its models.");
     }
   }
 
@@ -74,7 +74,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     const inference = hostStatus.inference || {};
     const backend = inference.active || inference.backend || "unknown";
     const update = hostStatus.update?.available;
-    // A computer that hosts (kind "desktop") reports no inference preference: it has no admin flags.
+    // A computer that hosts (kind "desktop") reports what its models run on, without a preference: it has no admin flags.
     const rows = [
       ["Version", `${escape(hostStatus.version || status.serverVersion || "")}${update ? ` · <strong>${escape(update.version)} available</strong>` : ""}`],
       ["State", hostStatus.phase === "draining" ? "Finishing work, then stopping" : "Running"],
@@ -92,7 +92,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   function connectForm() {
     const disabled = pending || busyStates.includes(status.state) ? " disabled" : "";
     return `<form class="account-card remote-connect" data-remote-form>
-      <div><h2>Connect a server</h2><p>On a computer with Local Cognitive, open Remote → This computer → Show connection key; on a server, run <code>sudo local-cognitive-server pair</code>. Paste the key here. A key works once and expires after 10 minutes.</p></div>
+      <div><h2>Connect a computer</h2><p>On a computer with Local Cognitive, open Remote → This computer → Show connection key; on a server, run <code>sudo local-cognitive-server pair</code>. Paste the key here. A key works once and expires after 10 minutes.</p></div>
       <textarea class="remote-key" data-remote-key rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="LCR1-…" aria-label="Connection key"${disabled}>${escape(keyDraft)}</textarea>
       <div class="account-actions"><button type="submit" class="primary-button"${disabled || !keyDraft.trim() ? " disabled" : ""}>${pending === "pair" ? "Connecting…" : "Connect"}</button></div>
     </form>`;
@@ -114,9 +114,9 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   };
 
   function serverList() {
-    if (!hostsLoaded) return '<p class="settings-description" role="status">Loading your servers…</p>';
+    if (!hostsLoaded) return '<p class="settings-description" role="status">Loading your computers…</p>';
     if (hostsError) return `<p class="remote-error" role="alert">${escape(hostsError)} <button type="button" class="ghost-button" data-remote-action="reload">Try again</button></p>`;
-    if (!hosts.length) return '<p class="settings-description">No servers yet. The first key you use links its server to your account.</p>';
+    if (!hosts.length) return '<p class="settings-description">No computers yet. The first key you use links its computer to your account.</p>';
     return `<div class="remote-hosts">${hosts.map(host => {
       const current = status.hostId === host.hostId && status.state === "online";
       // This computer is listed when it hosts devices: nothing to connect to or forget, only its devices.
@@ -133,20 +133,20 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   }
 
   function inner() {
-    if (status.state === "unavailable") return note("Remote is available in the desktop app", "Open the Local Cognitive desktop app to connect to a server.");
+    if (status.state === "unavailable") return note("Remote is available in the desktop app", "Open the Local Cognitive desktop app to connect to another computer.");
     const view = account?.get?.() || { state: "signed-out" };
     if (view.state === "loading") return '<p class="settings-description" role="status">Checking your account…</p>';
     if (view.state !== "signed-in") return note("Sign in to use Remote", 'Remote connects this app to Local Cognitive on another computer you own, through your account. <a href="#/settings/account">Open Account settings</a>.');
-    const unverified = view.profile && !view.profile.emailVerified ? `<p class="remote-error" role="status">${icon("info")}<span>Verify your email address to connect servers, then choose Check again in Account settings.</span></p>` : "";
+    const unverified = view.profile && !view.profile.emailVerified ? `<p class="remote-error" role="status">${icon("info")}<span>Verify your email address to connect computers, then choose Check again in Account settings.</span></p>` : "";
     return `${unverified}${statusCard()}${serverStatus()}${notice ? `<p class="remote-error" role="alert">${escape(notice)}</p>` : ""}${connectForm()}
-      <section class="remote-section"><div class="remote-section-head"><h2>Your servers</h2><button type="button" class="ghost-button" data-remote-action="reload"${pending ? " disabled" : ""}>Refresh</button></div>${serverList()}</section>
-      <p class="settings-footnote">Traffic between this computer and the server is end-to-end encrypted; Local Cognitive Cloud only routes it. To chat on a server, choose it in the switch at the top of the chat screen; its answers continue even when this app is closed.</p>`;
+      <section class="remote-section"><div class="remote-section-head"><h2>Your computers</h2><button type="button" class="ghost-button" data-remote-action="reload"${pending ? " disabled" : ""}>Refresh</button></div>${serverList()}</section>
+      <p class="settings-footnote">Traffic between this computer and the other one is end-to-end encrypted; Local Cognitive Cloud only routes it. To chat on another computer, choose it in the switch at the top of the chat screen; its answers continue even when this app is closed.</p>`;
   }
   const note = (title, text) => `<div class="account-card"><div><h2>${escape(title)}</h2><p>${text}</p></div></div>`;
 
   function render() {
     const tabButton = (id, label) => `<button type="button" role="tab" class="orchestration-tab remote-tab ${tab === id ? "active" : ""}" aria-selected="${tab === id}" data-remote-tab="${id}">${label}</button>`;
-    const tabs = hostUi ? `<div class="segmented-control remote-tabs" role="tablist" aria-label="Remote">${tabButton("connect", "Connect to a server")}${tabButton("host", "This computer")}</div>` : "";
+    const tabs = hostUi ? `<div class="segmented-control remote-tabs" role="tablist" aria-label="Remote">${tabButton("connect", "Other computers")}${tabButton("host", "This computer")}</div>` : "";
     const subtitle = hostUi && tab === "host" ? "Let your phone or another computer use this one." : "Use Local Cognitive on another computer — for example a server with a GPU.";
     const body = hostUi && tab === "host" ? `<div data-remote-host-root>${hostUi.inner()}</div>` : `<div data-remote-root>${inner()}</div>`;
     return `<div class="remote-page"><header class="remote-header"><h1>${icon("remote")}<span>Remote</span></h1><p class="subtle">${subtitle}</p></header>${tabs}${body}</div>`;
@@ -202,7 +202,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
       if (action === "connect") void act("connect", async () => { adopt(await call("connect", hostId)); if (status.error) notice = status.error.message; });
       if (action === "forget") void act("forget", async () => { adopt(await call("forget", hostId)); await loadHosts(); });
       if (action === "revoke") void act("revoke", async () => { await call("revokeDevice", hostId, deviceId); await loadHosts(); });
-      if (action === "remove-host" && window.confirm(`Remove ${button.dataset.hostName || "this server"} from your account? Every device loses access to it; to use it again, connect it with a new key.`)) {
+      if (action === "remove-host" && window.confirm(`Remove ${button.dataset.hostName || "it"} from your account? Every device loses access to it; to use it again, connect it with a new key.`)) {
         void act("remove-host", async () => { await call("removeHost", hostId); await loadHosts(); });
       }
     });

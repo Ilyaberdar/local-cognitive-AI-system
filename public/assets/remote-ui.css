@@ -24,7 +24,9 @@
 .remote-hosts { display: grid; gap: 10px; }
 .remote-host { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 .remote-host-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
-.remote-host-head strong { display: block; font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; overflow-wrap: anywhere; }
+.remote-host-head strong { font-size: calc(13px * var(--font-scale, 1)); font-weight: 550; overflow-wrap: anywhere; }
+/* "This computer" stays beside the name; the status line goes below both. */
+.remote-host-head strong + .account-badge { margin-left: 8px; vertical-align: 1px; }
 .remote-host-head .subtle { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: calc(11px * var(--font-scale, 1)); }
 .remote-host-head .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); box-shadow: none; }
 .remote-host-head .status-dot.is-online { background: var(--success); }
