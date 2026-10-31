@@ -8,6 +8,7 @@ export class LlamaCppProvider implements LLMProvider {
   readonly defaultModel: string;
   constructor(private readonly service: LocalModelService, private readonly options: { model: string; enabled?: boolean }) { this.defaultModel = options.model; }
   isConfigured(): boolean { return this.options.enabled !== false && this.service.available; }
+  unavailableReason(): string | undefined { return this.options.enabled === false ? "Local models are turned off in Settings." : this.service.unavailableReason; }
   getContextWindow(modelId?: string): number { return this.service.getContextWindow(modelId); }
   getDescriptor(): ProviderDescriptor { return { id: this.id, name: this.name, defaultModel: this.defaultModel, configured: this.isConfigured(),
     capabilities: { local: true, managed: true, jsonMode: true, structuredOutputs: true, reasoning: false, vision: true } }; }

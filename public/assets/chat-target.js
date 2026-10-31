@@ -407,7 +407,7 @@ export function remoteModelSelect(name, providerId, model, models) {
   const choices = remoteModelOptions(models, providerId);
   const unknown = model && !choices.some(choice => choice.id === model);
   return `<select name="${escape(name)}" data-remote-model>
-    <option value="">${models ? (choices.length ? "Server default" : "No models on the server") : "Loading models…"}</option>
+    <option value="">${models ? (choices.length ? "Default" : "No models installed") : "Loading models…"}</option>
     ${unknown ? `<option value="${escape(model)}" selected>${escape(model)}</option>` : ""}
     ${choices.map(choice => option(choice.id, model, `${choice.label}${choice.loaded ? " · Loaded" : ""}`)).join("")}
   </select>`;

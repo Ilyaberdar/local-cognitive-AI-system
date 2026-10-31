@@ -73,6 +73,12 @@ export class LocalModelService implements LocalModelManager {
   }
   get enabled(): boolean { return this.options.enabled; }
   get available(): boolean { return this.options.enabled && !this.initializationError && this.runtime.status !== "unavailable"; }
+  /** Why local models cannot answer: turned off, the library unreadable, or the runtime missing. */
+  get unavailableReason(): string | undefined {
+    if (!this.options.enabled) return "Local models are turned off in Settings.";
+    if (this.initializationError) return `The local model library could not be opened: ${this.initializationError}`;
+    return this.runtime.status === "unavailable" ? this.runtime.snapshot().error ?? "The local model runtime is not available." : undefined;
+  }
 
   resolveModelId(id?: string): string | undefined {
     if (this.initializationError) return id; // An unreadable library is not an empty library.

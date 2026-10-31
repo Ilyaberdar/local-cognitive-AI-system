@@ -4911,13 +4911,18 @@ function bindEvents() {
     });
   });
 
-  document.querySelectorAll("[data-action='dismiss-toast']").forEach((button) => {
+  bindToastButtons(document);
+}
+
+/** Close and Copy on the toasts in `root` (the page, or a stack painted on its own). */
+function bindToastButtons(root) {
+  root.querySelectorAll("[data-action='dismiss-toast']").forEach((button) => {
     button.addEventListener("click", () => {
       dismissToast(button.dataset.toastId);
     });
   });
 
-  document.querySelectorAll("[data-action='copy-toast']").forEach((button) => {
+  root.querySelectorAll("[data-action='copy-toast']").forEach((button) => {
     button.addEventListener("click", async () => {
       const toast = state.toasts.find((item) => item.id === button.dataset.toastId);
 
@@ -5305,6 +5310,19 @@ function pushToast(message, tone = "danger") {
   window.setTimeout(() => {
     dismissToast(id, false);
   }, 5000);
+  paintToasts();
+}
+
+/** Shows the toasts at once: many are raised where nothing renders the page again (an approval the
+ * host refused, a failed copy), and they were seen only at the next render, if before they expired. */
+function paintToasts() {
+  const main = document.querySelector("main.main");
+  if (!main) return;
+  main.querySelector(".toast-stack")?.remove();
+  const html = renderToasts();
+  if (!html) return;
+  main.insertAdjacentHTML("beforeend", html);
+  bindToastButtons(main.querySelector(".toast-stack"));
 }
 
 function dismissToast(id, rerender = true) {

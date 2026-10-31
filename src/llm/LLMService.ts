@@ -49,7 +49,7 @@ export class LLMService {
     const targetProviderId = providerId ?? this.defaultProviderId;
     const provider = this.registry.get(targetProviderId);
     if (!provider.isConfigured()) {
-      return { provider: provider.id, model: request.model ?? provider.defaultModel, text: "", error: `Provider ${provider.name} is disabled or not configured.` };
+      return { provider: provider.id, model: request.model ?? provider.defaultModel, text: "", error: provider.unavailableReason?.() ?? `Provider ${provider.name} is disabled or not configured.` };
     }
     const images = validateImages(request.images ?? currentInferenceImages());
     const onProgress = request.onProgress ?? currentInferenceProgress();
