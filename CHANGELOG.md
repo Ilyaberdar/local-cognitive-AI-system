@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.12 — 2026-10-31
+
+Your Mac or PC can host your own devices, as a server does: another computer (and, next, the phone app) uses its chats, models, tasks and workflows through Local Cognitive Cloud, while a paired device cannot run commands or reach your files there on its own. A file the model writes shows as its code, Sign in with Apple is ready for when its service is set up, and DeepSeek has room to think before it writes a Synthesis file.
 
 ### Account and plugins
 
@@ -15,9 +17,9 @@
 
 ### Remote
 
-- **Your Mac or PC can host your own devices.** Remote → This computer lets your phone or another computer use this one through Local Cognitive Cloud, end-to-end encrypted, while the app runs: its chats, models, tasks and workflows, as with a server. It belongs to the account signed in here: a key in anyone else's hands connects nothing, and signing out pauses it. Show connection key gives a one-time key for the other device (Remote → Connect a server) and waits until it is used; Devices lists who is paired and connected, each with Remove access; Shared folders are where devices make projects, chosen in the system's folder dialog (never your home folder or the app's data). While connections are allowed the computer does not sleep when idle (a closed laptop still does), an icon in the menu bar or the tray shows the state, closing the window on Windows leaves the app in the tray, and Open at login starts it without a window after a restart. Quitting while devices are connected asks first.
+- **Your Mac or PC can host your own devices.** Remote → This computer lets your phone or another computer use this one through Local Cognitive Cloud, end-to-end encrypted, while the app runs: its chats, models, tasks and workflows, as with a server. It belongs to the account signed in here: a key in anyone else's hands connects nothing, and signing out pauses it. Show connection key gives a one-time key for the other device (Remote → Connect a computer) and waits until it is used; Devices lists who is paired and connected, each with Remove access; Shared folders are where devices make projects, chosen in the system's folder dialog (never your home folder or the app's data). While connections are allowed the computer does not sleep when idle (a closed laptop still does), an icon in the menu bar or the tray shows the state, closing the window on Windows leaves the app in the tray, and Open at login starts it without a window after a restart. Quitting while devices are connected asks first.
 - **A paired device cannot run commands or reach your files on its own.** On a computer that hosts, a device's turns in a chat keep their files in a folder of that chat's own in the app's data, never your output folder or the folders you allowed for your own chats, and a device can approve only file changes inside it; a command or a file anywhere else it can decline, not approve, unless you turn on Devices may approve commands and files (which the system asks you to confirm). A device opens a chat's files only from its own folder and the shared folders, even in a chat of yours that read files elsewhere. A task a device changes runs without this computer's MCP tools, like one it made. Its turn and yours never run in one chat at once: this window says the chat is answering a device.
-- **Your servers says what each one is**: a server, a Mac or a PC, and since when one that sleeps is offline. This computer, when it hosts, is listed as itself; a server that is gone can be removed from the account; and what a device is told names the computer, not "the server".
+- **Your computers says what each one is**: a server, a Mac or a PC, and since when one that sleeps is offline. This computer, when it hosts, is listed as itself; a server that is gone can be removed from the account; and what a device is told names the computer, not "the server".
 - **The computer that hosts shows what its devices do.** A chat a device starts appears in its list, a chat answering a device says so, with Stop the answer, and sends nothing meanwhile, and the answer shows when it ends; a device's turn that was stopped or failed shows there too.
 
 ### Synthesis
