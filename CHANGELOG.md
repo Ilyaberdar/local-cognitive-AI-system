@@ -6,6 +6,10 @@
 
 - **A Mac or PC that hosts appears in Your computers on your other devices right away**, before any of them connects to it, as long as it is signed in to the same account; until now it was listed only after the first device paired with its key. Devices still connect to it with a key from it (or, in the phone app to come, its QR code). A computer removed from the account that still hosts for it is listed again; Remote offers removing only a computer that is offline.
 
+### Window
+
+- **The cursor no longer flickers over buttons on an external monitor.** On a display under 2x (a monitor at 1x on a Mac), buttons and cards lifted a pixel or two when hovered, which moved their edge off a resting cursor: the cursor jumped between the arrow and the hand along the edges and as it moved. There they now keep their place and show the hover by their colour; a Retina display keeps the lift.
+
 ## 0.1.12 — 2026-10-31
 
 Your Mac or PC can host your own devices, as a server does: another computer (and, next, the phone app) uses its chats, models, tasks and workflows through Local Cognitive Cloud, while a paired device cannot run commands or reach your files there on its own. A file the model writes shows as its code, Sign in with Apple is ready for when its service is set up, and DeepSeek has room to think before it writes a Synthesis file.

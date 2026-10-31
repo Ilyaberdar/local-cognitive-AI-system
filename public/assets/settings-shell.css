@@ -390,6 +390,14 @@ html[data-motion=off] *, html[data-motion=off] *::before, html[data-motion=off] 
 }
 html[data-motion=off] :is(button, .nav-button, .card, .session-item, .model-card):hover { transform: none !important; }
 html[data-motion=off] .liquid-glass { --light-x: 50% !important; --light-y: 50% !important; }
+/* On a display under 2x (an external monitor at 1x) a lift of a pixel or two moves the edge of what is
+   hovered off a resting cursor: the hover ends, it drops back under the cursor, the hover starts again,
+   and the cursor flickers between the arrow and the hand. There, buttons and cards keep their place and
+   show the hover by their colour; a Retina display keeps the lift. */
+@media (max-resolution: 1.99dppx) {
+  :is(button, .action-button, .ghost-button, .primary-button, .chip-button, .send-button, .account-provider-button, .nav-button, .card, .session-item, .model-card,
+    .appearance-theme-card, .task-card:not(.is-dragging)):hover:not(:active) { transform: none !important; }
+}
 
 .settings-control :is(input, select, textarea):hover, .settings-input:hover { border-color: var(--line-strong); }
 .settings-control :is(input, textarea)::placeholder, .settings-input::placeholder { color: var(--faint); }
