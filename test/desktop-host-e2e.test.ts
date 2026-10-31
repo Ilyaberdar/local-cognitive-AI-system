@@ -210,6 +210,31 @@ test("while hosting is on: a tray or menu bar icon with the state, open at login
   assert.equal(startsInBackground({ app, argv: ["--background"], platform: "win32", dataRoot: root }), false, "nothing to wait for in the background");
 });
 
+test("on Windows, turning remote connections off from the tray with no window open opens the window, so the app does not run on unseen", async t => {
+  const { backend, root } = await startTestBackend(t, "desktop");
+  const ipc = fakeIpc(), tray = fakeTray(), opened: unknown[] = [];
+  let window: object | undefined;
+  const host = registerHost({ app: { isPackaged: false, quit: () => opened.push("quit") }, ipcMain: ipc, vault: memoryVault(), accountService: new FakeAccount({ accountId: "a", accessToken: "t" }),
+    backend, dataRoot: root, assertSender: () => undefined, getWindow: () => window, powerSaveBlocker: fakeBlocker(), cloudUrl: "http://127.0.0.1:9", hostName: "PC",
+    Tray: tray.Tray, Menu: tray.Menu, openWindow: (target?: string) => opened.push(target ?? "app"), platform: "win32" });
+  t.after(() => host.dispose());
+  await host.init();
+  const turnOff = async () => {
+    tray.trays.at(-1)!.items.find(item => item.label === "Turn off remote connections").click();
+    await until(() => host.keepsRunning(), running => running === false);
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  window = { isDestroyed: () => false, webContents: { send: () => undefined } };
+  await ipc.invoke("set", { enabled: true });
+  await turnOff();
+  assert.deepEqual(opened, [], "the window is open already");
+  window = undefined;
+  await ipc.invoke("set", { enabled: true });
+  await turnOff();
+  assert.equal(tray.trays.at(-1)!.destroyed, true);
+  assert.deepEqual(opened, ["app"]);
+});
+
 test("main reads whether to start in the background without loading the backend, whose configuration is set after", () => {
   const { execFileSync } = require("node:child_process");
   const loaded = execFileSync(process.execPath, ["-e", `require(${JSON.stringify(path.resolve("electron/host-settings.cjs"))}); console.log(JSON.stringify(Object.keys(require.cache)))`], { encoding: "utf8" });

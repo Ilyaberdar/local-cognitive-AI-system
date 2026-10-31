@@ -95,7 +95,8 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
       { type: "separator" },
       { label: "Open Local Cognitive", click: () => openWindow() },
       { label: "Connect a device…", enabled: agent?.status().state === "online", click: () => openWindow("remote-host") },
-      { label: "Turn off remote connections", click: () => { void setSwitches({ enabled: false }); } },
+      // The icon goes with them: on Windows, with no window open, the app would run on unseen.
+      { label: "Turn off remote connections", click: () => { void setSwitches({ enabled: false }).then(() => { if (platform !== "darwin" && !getWindow()) openWindow(); }); } },
       { type: "separator" },
       { label: "Quit Local Cognitive", click: () => app.quit() }
     ]));
