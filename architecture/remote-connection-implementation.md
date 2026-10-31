@@ -1416,6 +1416,10 @@ Cloud HTTPS:
   POST   /v1/hosts/register                 ограниченный proof-of-possession flow
   POST   /v1/hosts/:hostId/claim-confirm     подписанное idempotent подтверждение host
   GET    /v1/hosts
+  POST   /v1/hosts/:hostId/owner            desktop-хост без владельца: токен аккаунта + подпись хоста
+                                            (lc-host-owner/v1, {hostId, accountId, at} не старше 5 мин);
+                                            хост появляется в списке аккаунта до первого pairing,
+                                            доступ устройствам по-прежнему только по ключу
   POST   /v1/connections                    pairing/reconnect ticket
   DELETE /v1/hosts/:hostId/devices/:deviceId отзыв с доставкой host
   POST   /v1/usage/events:batch

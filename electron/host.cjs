@@ -118,7 +118,9 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     // Commands and files outside a chat's folder are approved here, unless devices were allowed to.
     composition ??= createHostOperations({ backend, dataRoot, deviceFilesOnly: true,
       approvalPolicy: operation => settings.allowDeviceCommands ? undefined : deviceApprovalRefusal(operation, hostName) });
-    return startHostAgent({ host: backend.host, vault, cloudUrl, hostName, kind: "desktop", logger, status: hostStatus, operations: composition.operations, expectedOwner });
+    // With the account's token, a computer no device has paired with yet is listed under the account.
+    return startHostAgent({ host: backend.host, vault, cloudUrl, hostName, kind: "desktop", logger, status: hostStatus, operations: composition.operations, expectedOwner,
+      accountToken: () => accountService.getAccessToken().catch(() => undefined) });
   };
 
   const start = () => serial(async () => {

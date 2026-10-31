@@ -16,6 +16,7 @@ class FakeAccount extends EventEmitter {
   constructor(private current?: Account) { super(); }
   status() { return this.current ? { state: "signed-in", profile: { accountId: this.current.accountId } } : { state: "signed-out" }; }
   set(next?: Account) { this.current = next; this.emit("change", this.status()); }
+  getAccessToken() { return this.current ? Promise.resolve(this.current.accessToken) : Promise.reject(new Error("Signed out.")); }
 }
 const fakeIpc = () => {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<{ ok: boolean; value?: any; error?: { code: string; message: string } }>>();
@@ -56,10 +57,16 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   assert.deepEqual(readSettings(path.join(root, "remote-host.json")), { enabled: true, keepAwake: true, openAtLogin: false, allowDeviceCommands: false, backgroundNoticeShown: false });
   assert.ok(sent.some(([channel, status]) => channel === "remote-host:changed" && status.state === "online"), "the window hears of it");
 
+  // Before any device pairs, the account's other computers see it (listed under the account signed in here).
+  const lister = device(owner, "Lister");
+  assert.deepEqual(await until(() => lister.hosts(), hosts => hosts.length > 0).then(hosts => hosts.map(entry => [entry.name, entry.kind, entry.paired, entry.devices.length])),
+    [["MacBook", "desktop", false, 0]]);
+  assert.deepEqual(await device(other, "Other").hosts(), [], "never under another account");
+
   // A key in another account's hands pairs nothing; the same key still pairs the owner's phone.
   const { key, invitationId } = await call("connect-key");
   const stranger = device(other, "Stranger");
-  assert.equal((await stranger.pair(key)).error?.code, "owner_mismatch");
+  assert.equal((await stranger.pair(key)).error?.code, "host_owned_by_other");
   assert.equal((await call("invitation", invitationId)).consumed, false);
   const phone = device(owner, "iPhone");
   assert.equal((await phone.pair(key)).state, "online");
@@ -96,13 +103,15 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   assert.deepEqual(await call("revoke-device", laptopId), { revoked: true });
   await until(() => laptop.status().state, value => value === "revoked");
 
-  // This computer as a client of the same account lists itself, refuses its own key, and can remove itself.
+  // This computer as a client of the same account lists itself, refuses its own key, and can remove itself;
+  // while it still hosts for this account it is listed again (Remote offers removing only a computer offline).
   const self = new RemoteClient({ cloudUrl: cloud.origin, vault: memoryVault(), account: async () => other, deviceName: "MacBook", platform: "macos", selfHostId: () => host.hostId() });
   t.after(() => self.dispose());
   assert.deepEqual((await self.hosts()).map(entry => [entry.name, entry.self]), [["MacBook", true]]);
   await assert.rejects(self.pair((await call("connect-key")).key), (error: any) => error.code === "key_self");
   await self.removeHost(host.hostId());
-  assert.deepEqual(await self.hosts(), []);
+  assert.deepEqual(await until(() => self.hosts(), hosts => hosts.length > 0).then(hosts => hosts.map(entry => [entry.name, entry.self, entry.devices.length])), [["MacBook", true, 0]],
+    "listed again, with no device's access");
 
   await call("set", { enabled: false });
   assert.equal(state(), "off");

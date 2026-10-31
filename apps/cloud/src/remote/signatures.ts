@@ -7,7 +7,8 @@ export const SIGNATURE_CONTEXT = {
   relayAuth: "lc-relay-host-auth/v1",
   usageBatch: "lc-usage-batch/v1",
   claim: "lc-claim-receipt/v1",
-  revoke: "lc-host-revoke/v1"
+  revoke: "lc-host-revoke/v1",
+  owner: "lc-host-owner/v1"
 } as const;
 
 export const verifyHostSignature = (publicKey: Buffer, context: string, message: Buffer, signature: Buffer): boolean => {

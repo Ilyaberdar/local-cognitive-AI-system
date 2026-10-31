@@ -89,10 +89,12 @@ export const builtInHostOperations = (input: { hostName: string; kind: HostKind;
 /** Connects this host to Local Cognitive Cloud: its identity in the vault, registration and the relay.
  * A server's usage goes signed by it for its owner; a desktop sends its own with the account's token. */
 export const startHostAgent = async (input: { host: HostServices; vault: CredentialVault; cloudUrl: string; hostName: string; kind: HostKind; logger: Logger;
-  status: () => Record<string, unknown>; operations: Record<string, RemoteOperation>; usage?: UsageOutbox; expectedOwner?: () => string | undefined }): Promise<HostAgent> => {
+  status: () => Record<string, unknown>; operations: Record<string, RemoteOperation>; usage?: UsageOutbox; expectedOwner?: () => string | undefined;
+  accountToken?: () => Promise<string | undefined> }): Promise<HostAgent> => {
   const store = new RemoteHostStore(input.host.database);
   const agent = new HostAgent({ cloudUrl: input.cloudUrl, store, vault: input.vault, hostName: input.hostName, serverVersion: appVersion(), logger: input.logger,
-    operations: { ...builtInHostOperations(input), ...input.operations }, kind: input.kind, ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}) });
+    operations: { ...builtInHostOperations(input), ...input.operations }, kind: input.kind, ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}),
+    ...(input.accountToken ? { accountToken: input.accountToken } : {}) });
   await agent.start();
   input.usage?.setSender(hostUsageSender({ cloudUrl: input.cloudUrl, hostId: () => store.hostId(), owner: () => store.owner(), sign: payload => agent.signUsage(payload) }));
   return agent;

@@ -25,18 +25,22 @@ const connectionBody = z.discriminatedUnion("purpose", [
   z.object({ purpose: z.literal("connect"), hostId: z.uuid(), deviceId: z.uuid() })
 ]);
 const ids = z.object({ hostId: z.uuid(), deviceId: z.uuid().optional() });
+const ownerPayload = z.object({ hostId: z.uuid(), accountId: z.uuid(), at: z.number().int().positive() }).strict();
+/** How old a host's owner signature may be: it is made for this request, never stored. */
+export const OWNER_PROOF_TTL_MS = 5 * 60_000;
 
 const TICKET_ERRORS: Record<TicketDenial, number> = { device_unknown: 404, host_unknown: 404, invitation_unknown: 404, invitation_used: 410,
   invitation_expired: 410, invitation_exhausted: 429, host_owned_by_other: 403, not_authorized: 403 };
 
 export interface RemoteRouteDependencies { repo: RemoteRepository; relay: Relay; auth: AuthOptions; accounts: AccountRepository; logger?: Logger;
-  limits?: { registrationsPerHour?: number; ticketsPerMinute?: number } }
+  limits?: { registrationsPerHour?: number; ticketsPerMinute?: number; ownerBindingsPerHour?: number } }
 
 /** Host registration, devices, connection tickets and revocation (spec §6, §13). */
 export const createRemoteRouter = (deps: RemoteRouteDependencies) => {
   const router = express.Router();
   const registrations = createRateLimiter(deps.limits?.registrationsPerHour ?? 20, 3_600_000);
   const tickets = createRateLimiter(deps.limits?.ticketsPerMinute ?? 30, 60_000);
+  const bindings = createRateLimiter(deps.limits?.ownerBindingsPerHour ?? 30, 3_600_000);
   const authed = [requireAuth(deps.auth), requireAccount(deps.accounts, deps.logger)];
   const handle = (body: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response, next: NextFunction) => { body(req, res).catch(next); };
   const invalid = (res: Response) => { res.status(400).json({ error: "invalid_request" }); };
@@ -86,6 +90,31 @@ export const createRemoteRouter = (deps: RemoteRouteDependencies) => {
     if (!ticket.ok) { res.status(TICKET_ERRORS[ticket.code]).json({ error: ticket.code }); return; }
     res.status(201).set("Cache-Control", "no-store").json({ ticketId: ticket.ticketId, ticket: ticket.token.toString("base64url"),
       expiresAt: ticket.expiresAt.toISOString(), authExpiresAt: ticket.authExpiresAt.toISOString() });
+  }));
+
+  // A computer that hosts for the account signed in on it, before any device paired with a key, is
+  // listed under that account: the account's token and the host's signature over both ids, made just
+  // now. Only a host with no owner yet (or already this account's); devices still pair with a key.
+  router.post("/v1/hosts/:hostId/owner", ...authed, handle(async (req, res) => {
+    if (!req.account!.emailVerified) { res.status(403).json({ error: "email_unverified" }); return; }
+    const params = ids.safeParse(req.params), body = registration.safeParse(req.body);
+    if (!params.success || !body.success) { invalid(res); return; }
+    if (!bindings.take(req.account!.id)) { res.status(429).json({ error: "rate_limited" }); return; }
+    let parsed: unknown;
+    try { parsed = JSON.parse(body.data.payload.toString("utf8")); } catch { invalid(res); return; }
+    const proof = ownerPayload.safeParse(parsed);
+    if (!proof.success || proof.data.hostId !== params.data.hostId || proof.data.accountId !== req.account!.id
+      || Math.abs(Date.now() - proof.data.at) > OWNER_PROOF_TTL_MS) { invalid(res); return; }
+    const host = await deps.repo.host(params.data.hostId);
+    if (!host || host.blocked) { res.status(404).json({ error: "host_unknown" }); return; }
+    if (!verifyHostSignature(host.signingPublicKey, SIGNATURE_CONTEXT.owner, body.data.payload, body.data.signature)) {
+      res.status(401).json({ error: "signature_invalid" }); return;
+    }
+    const result = await deps.repo.bindOwner(host.id, req.account!.id);
+    if (result === "host_unknown") { res.status(404).json({ error: "host_unknown" }); return; }
+    if (result === "host_owned_by_other") { res.status(409).json({ error: "host_owned_by_other" }); return; }
+    deps.relay.ownerBound(host.id, req.account!.id);
+    res.set("Cache-Control", "no-store").json({ ownerAccountId: req.account!.id, bound: result === "bound" });
   }));
 
   router.delete("/v1/hosts/:hostId/devices/:deviceId", ...authed, handle(async (req, res) => {

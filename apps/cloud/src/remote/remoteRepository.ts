@@ -179,6 +179,21 @@ export const createRemoteRepository = (pool: pg.Pool) => ({
     });
   },
 
+  /** Lists a host under the account signed in on it (a desktop that hosts, before any device paired):
+   * only a host with no owner, or already this account's. Grants are unchanged. */
+  async bindOwner(hostId: string, accountId: string): Promise<"bound" | "unchanged" | "host_owned_by_other" | "host_unknown"> {
+    return transaction(pool, async client => {
+      const host = await client.query<{ owner_account_id: string | null }>("SELECT owner_account_id FROM hosts WHERE id = $1 AND blocked_at IS NULL FOR UPDATE", [hostId]);
+      if (!host.rows[0]) return "host_unknown";
+      const owner = host.rows[0].owner_account_id;
+      if (owner === accountId) return "unchanged";
+      if (owner) return "host_owned_by_other";
+      await client.query("UPDATE hosts SET owner_account_id = $2, claimed_at = now() WHERE id = $1", [hostId, accountId]);
+      await client.query("INSERT INTO audit_events (kind, account_id, host_id) VALUES ('host_bound', $1, $2)", [accountId, hostId]);
+      return "bound";
+    });
+  },
+
   /** Revokes one device's grant. `accountId` null means the host itself asked (signed). */
   async revokeDevice(hostId: string, deviceId: string, accountId: string | null, by: string): Promise<Revocation | undefined> {
     return transaction(pool, async client => {

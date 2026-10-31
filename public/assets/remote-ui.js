@@ -116,7 +116,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   function serverList() {
     if (!hostsLoaded) return '<p class="settings-description" role="status">Loading your computers…</p>';
     if (hostsError) return `<p class="remote-error" role="alert">${escape(hostsError)} <button type="button" class="ghost-button" data-remote-action="reload">Try again</button></p>`;
-    if (!hosts.length) return '<p class="settings-description">No computers yet. The first key you use links its computer to your account.</p>';
+    if (!hosts.length) return '<p class="settings-description">No computers yet. A Mac or PC that hosts while signed in to this account appears here by itself; a server, once you connect it with its key.</p>';
     return `<div class="remote-hosts">${hosts.map(host => {
       const current = status.hostId === host.hostId && status.state === "online";
       // This computer is listed when it hosts devices: nothing to connect to or forget, only its devices.

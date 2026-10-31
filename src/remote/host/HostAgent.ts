@@ -43,6 +43,7 @@ export class HostAgent extends EventEmitter {
   private watchdog?: NodeJS.Timeout;
   private lastError?: string;
   private stopped = false;
+  private binding = false;
   private readonly origin: string;
   private readonly wsOrigin: string;
 
@@ -53,6 +54,9 @@ export class HostAgent extends EventEmitter {
     expectedOwner?: () => string | undefined;
     /** What the Cloud lists the host as (a server, or a desktop that hosts), with its platform. */
     kind?: "server" | "desktop";
+    /** The token of the account signed in here (a desktop): a host the Cloud lists under no account yet is
+     * listed under this one, so the account's other devices see it before any of them pairs. */
+    accountToken?: () => Promise<string | undefined>;
   }) {
     super();
     this.origin = new URL(options.cloudUrl).origin;
@@ -210,6 +214,7 @@ export class HostAgent extends EventEmitter {
           if (receipt) this.sendClaim(receipt);
         }
         for (const grant of this.options.store.unsyncedRevocations()) this.sendRevoke("device", grant.deviceId);
+        if (data.ownerAccountId === null) void this.bindOwner(hostId);
         return;
       case "stream.open":
         this.openStream(data);
@@ -234,6 +239,9 @@ export class HostAgent extends EventEmitter {
     if (!applied) return;
     this.options.logger.info("Applied a Remote revocation", { kind: revocation.kind, deviceId: revocation.deviceId });
     if (revocation.kind === "host") this.remote?.disconnectAll("revoked"); else if (revocation.deviceId) this.remote?.disconnectDevice(revocation.deviceId);
+    // Removed from the account while it still hosts for the account signed in here: listed under it again.
+    const hostId = this.options.store.hostId();
+    if (revocation.kind === "host" && hostId) void this.bindOwner(hostId);
   }
 
   private openStream(open: z.infer<typeof controlMessage> & { type: "stream.open" }): void {
@@ -245,6 +253,27 @@ export class HostAgent extends EventEmitter {
         deviceId: open.deviceId, deviceSpkiSha256: open.deviceSpkiSha256, ...(open.deviceName ? { deviceName: open.deviceName } : {}),
         ...(open.invitationId ? { invitationId: open.invitationId } : {}), authExpiresAt: open.authExpiresAt });
     });
+  }
+
+  /** Lists this computer under the account signed in on it: the account's token and this host's
+   * signature over both ids. The Cloud accepts it only while the host has no owner. */
+  private async bindOwner(hostId: string): Promise<void> {
+    const accountId = this.options.expectedOwner?.();
+    if (!accountId || !this.options.accountToken || this.binding) return;
+    this.binding = true;
+    try {
+      const token = await this.options.accountToken();
+      if (!token) return;
+      const payload = Buffer.from(JSON.stringify({ hostId, accountId, at: Date.now() }));
+      const response = await (this.options.fetchImpl ?? fetch)(`${this.origin}/v1/hosts/${encodeURIComponent(hostId)}/owner`, { method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ payload: payload.toString("base64url"), signature: signFor(this.identity!.signing, SIGNATURE_CONTEXT.owner, payload).toString("base64url") }),
+        signal: AbortSignal.timeout(15_000) });
+      if (response.ok) this.options.logger.info("Listed under the account in Local Cognitive Cloud", { hostId });
+      else this.options.logger.warn("Local Cognitive Cloud did not list this computer under the account", { status: response.status });
+    } catch (error) {
+      this.options.logger.warn("Could not list this computer under the account", { error: error instanceof Error ? error.message : String(error) });
+    } finally { this.binding = false; }
   }
 
   /** Signs a usage batch for the Cloud (spec §10); nothing before the identity is loaded. */

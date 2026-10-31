@@ -249,3 +249,38 @@ test("an invitation issues a bounded number of tickets and a host must attach in
   assert.equal(await events.closed, CLOSE.hostOffline);
   host.socket.close();
 });
+
+test("a desktop that hosts is listed under the account signed in on it, with that account's token and its own fresh signature, while it has no owner", { skip: databaseSkip }, async t => {
+  const c = await cloud(t);
+  const host = await registerHost(c, "MacBook", { kind: "desktop", platform: "macos" });
+  const alice = await user(c, "alice"), bob = await user(c, "bob");
+  const proof = (accountId: string, at = Date.now(), context: string = SIGNATURE_CONTEXT.owner, hostId = host.hostId) => {
+    const payload = Buffer.from(JSON.stringify({ hostId, accountId, at }));
+    return { payload: payload.toString("base64url"), signature: signFor(host.signing, context, payload).toString("base64url") };
+  };
+  const bind = (body: unknown, bearer: string, hostId = host.hostId) => c.api("POST", `/v1/hosts/${hostId}/owner`, body, bearer);
+  assert.deepEqual((await c.api("GET", "/v1/hosts", undefined, alice.bearer)).body.hosts, [], "a host no device paired with is listed under nobody");
+
+  assert.equal((await bind(proof(alice.accountId), bob.bearer)).status, 400, "the signature names another account");
+  assert.equal((await bind(proof(alice.accountId, Date.now() - 6 * 60_000), alice.bearer)).status, 400, "an old signature");
+  assert.equal((await bind(proof(alice.accountId, Date.now(), SIGNATURE_CONTEXT.register), alice.bearer)).status, 401, "a signature made for something else");
+  const other = await registerHost(c, "Other");
+  assert.equal((await bind(proof(alice.accountId, Date.now(), SIGNATURE_CONTEXT.owner, other.hostId), alice.bearer, other.hostId)).status, 401, "another host's key");
+  assert.equal((await bind(proof(alice.accountId), await token("carol", false))).status, 403, "an account without a verified email");
+  assert.equal((await c.api("POST", `/v1/hosts/${host.hostId}/owner`, proof(alice.accountId))).status, 401, "no account");
+
+  assert.deepEqual((await bind(proof(alice.accountId), alice.bearer)).body, { ownerAccountId: alice.accountId, bound: true });
+  assert.deepEqual((await c.api("GET", "/v1/hosts", undefined, alice.bearer)).body.hosts.map((h: any) => [h.name, h.kind, h.devices.length]), [["MacBook", "desktop", 0]]);
+  assert.deepEqual((await bind(proof(alice.accountId), alice.bearer)).body, { ownerAccountId: alice.accountId, bound: false }, "again: nothing changes");
+  const bobProof = proof(bob.accountId);
+  assert.deepEqual(await bind(bobProof, bob.bearer), { status: 409, body: { error: "host_owned_by_other" } }, "a host with an owner is never taken");
+  assert.deepEqual((await c.api("GET", "/v1/hosts", undefined, bob.bearer)).body.hosts, []);
+
+  // A host the account removed has no owner again, and is listed again when it says so.
+  assert.equal((await c.api("DELETE", `/v1/hosts/${host.hostId}`, undefined, alice.bearer)).status, 204);
+  assert.deepEqual((await c.api("GET", "/v1/hosts", undefined, alice.bearer)).body.hosts, []);
+  assert.equal((await bind(bobProof, bob.bearer)).status, 200);
+  assert.deepEqual((await c.api("GET", "/v1/hosts", undefined, bob.bearer)).body.hosts.map((h: any) => h.name), ["MacBook"]);
+  const { rows } = await c.pool.query("SELECT kind FROM audit_events WHERE host_id = $1 AND kind = 'host_bound'", [host.hostId]);
+  assert.equal(rows.length, 2);
+});

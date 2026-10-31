@@ -112,6 +112,11 @@ export class Relay {
   disconnectDevice(hostId: string, deviceId: string): void {
     for (const [streamId, stream] of this.streams) if (stream.ticket.hostId === hostId && stream.ticket.deviceId === deviceId) this.endStream(streamId, CLOSE.revoked, "revoked");
   }
+  /** The host was listed under an account (owner binding): its connection knows it at once. */
+  ownerBound(hostId: string, accountId: string): void {
+    const host = this.hosts.get(hostId);
+    if (host && !host.ownerAccountId) host.ownerAccountId = accountId;
+  }
   disconnectHost(hostId: string): void {
     for (const [streamId, stream] of this.streams) if (stream.ticket.hostId === hostId) this.endStream(streamId, CLOSE.revoked, "revoked");
     const host = this.hosts.get(hostId);
