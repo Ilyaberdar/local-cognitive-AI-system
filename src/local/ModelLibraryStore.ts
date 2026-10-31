@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { createHash, randomUUID } from "crypto";
 import { LibraryModel, DownloadJob, LocalModelError } from "./types";
@@ -15,6 +16,21 @@ export const validateArtifactPath = (filePath: string): string => {
 
 export const modelLibraryId = (repoId: string, revision: string, variantId: string): string =>
   `gguf-${createHash("sha256").update(JSON.stringify([repoId, revision, variantId])).digest("hex").slice(0, 24)}`;
+
+/** Whether the process a library lock names is gone, so the lock was left behind: no process has
+ * its PID, one of another user does (the app runs as one user, so that is not the app), or the lock
+ * was made before this computer started, its PID now someone else's, as after a power cut. */
+export const ownerGone = (owner: { pid: number; createdAt?: string }, now = Date.now(), uptimeSeconds = os.uptime()): boolean => {
+  const created = Date.parse(owner.createdAt ?? "");
+  // A minute of slack for a clock set after the computer started.
+  if (Number.isFinite(created) && created < now - uptimeSeconds * 1000 - 60_000) return true;
+  try { process.kill(owner.pid, 0); return false; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH" || code === "EPERM") return true;
+    throw error;
+  }
+};
 
 export class ModelLibraryStore {
   private models = new Map<string, LibraryModel>();
@@ -156,11 +172,10 @@ export class ModelLibraryStore {
         this.lockToken = token; return;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        let existing: { pid?: number; token?: string };
+        let existing: { pid?: number; token?: string; createdAt?: string };
         try { existing = JSON.parse(await fs.readFile(lock, "utf8")); } catch { throw new LocalModelError("The library ownership file cannot be read. Another process may be starting.", 409, "library_owned"); }
         if (!Number.isInteger(existing.pid) || !existing.token) throw new LocalModelError("The model library ownership file is invalid.", 409, "library_owned");
-        try { process.kill(existing.pid!, 0); throw new LocalModelError("Another application process owns this local model library. Close it before loading or changing models.", 409, "library_owned"); }
-        catch (check) { if ((check as NodeJS.ErrnoException).code !== "ESRCH") throw check; }
+        if (!ownerGone({ pid: existing.pid!, createdAt: existing.createdAt })) throw new LocalModelError("Another application process owns this local model library. Close it before loading or changing models.", 409, "library_owned");
         const current = JSON.parse(await fs.readFile(lock, "utf8"));
         if (current.token !== existing.token) continue;
         await fs.unlink(lock).catch((remove: NodeJS.ErrnoException) => { if (remove.code !== "ENOENT") throw remove; });
