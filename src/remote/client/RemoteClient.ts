@@ -172,7 +172,9 @@ export class RemoteClient extends EventEmitter {
   }
 
   private async connectAs(hostId: string, generation: number, state: "connecting" | "reconnecting"): Promise<RemoteStatus> {
-    this.set({ state, hostId, ...(this.current.hostName ? { hostName: this.current.hostName } : {}) });
+    // Trying again keeps why the last try failed: the screen does not change with every attempt.
+    const lastError = state === "reconnecting" && this.current.hostId === hostId ? this.current.error : undefined;
+    this.set({ state, hostId, ...(this.current.hostName ? { hostName: this.current.hostName } : {}), ...(lastError ? { error: lastError } : {}) });
     try {
       const { accountId, accessToken } = await this.requireAccount();
       const profile = (await this.profiles(accountId)).find(entry => entry.hostId === hostId);
@@ -221,7 +223,8 @@ export class RemoteClient extends EventEmitter {
 
   private scheduleReconnect(hostId: string, generation: number): void {
     clearTimeout(this.reconnectTimer);
-    const { baseMs, maxMs } = this.options.backoff ?? { baseMs: 1000, maxMs: 30_000 };
+    // A computer that stays away is asked less and less often, at most every two minutes; Try now asks at once.
+    const { baseMs, maxMs } = this.options.backoff ?? { baseMs: 1000, maxMs: 120_000 };
     const delay = Math.min(maxMs, baseMs * 2 ** this.attempt++) * (0.5 + Math.random() / 2);
     if (this.current.state !== "offline") this.set({ ...this.current, state: "reconnecting" });
     this.reconnectTimer = setTimeout(() => { if (generation === this.generation) void this.connectAs(hostId, generation, "reconnecting"); }, delay);

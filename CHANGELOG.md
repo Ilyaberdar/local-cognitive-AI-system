@@ -6,6 +6,10 @@
 
 - **A Mac or PC that hosts appears in Your computers on your other devices right away**, before any of them connects to it, as long as it is signed in to the same account; until now it was listed only after the first device paired with its key. Devices still connect to it with a key from it (or, in the phone app to come, its QR code). A computer removed from the account that still hosts for it is listed again; Remote offers removing only a computer that is offline.
 
+- **A computer that is away no longer shakes the window.** While another computer was down, every attempt to reach it again drew the window anew: the Remote card grew and shrank with the reason, the switch at the top and screens such as Synthesis were drawn again, every few seconds. Now only what changes is drawn: the card says Reconnecting until the computer is back, with Try now to ask at once, and attempts slow down to one every two minutes the longer it is away. A key for another computer can be used meanwhile.
+- **The iPhone app scans a computer's connection key**: Remote → This computer → Show connection key shows its QR code beside the key, and `local-cognitive-server pair` prints it.
+- When Your computers is empty, it says that each way of signing in (Google, Apple or email) is its own account.
+
 ### Window
 
 - **The cursor no longer flickers over buttons on an external monitor.** On a display under 2x (a monitor at 1x on a Mac), buttons and cards lifted a pixel or two when hovered, which moved their edge off a resting cursor: the cursor jumped between the arrow and the hand along the edges and as it moved. There they now keep their place and show the hover by their colour; a Retina display keeps the lift.

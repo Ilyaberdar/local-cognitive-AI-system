@@ -185,3 +185,23 @@ test("the server list says what kind of computer each host is, and since when on
   assert.match(rows[1], new RegExp(`^Mac · Offline since ${today.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })} · 0\\.1\\.12`));
   assert.match(rows[2], /^Offline · 0\.1\.9/, "a host that never said what it is");
 });
+
+test("a computer that stays away is tried again without the page changing at every attempt, and Try now asks at once", async () => {
+  // The owner saw Remote jerk with every attempt while the other computer was down (2026-10-31).
+  const { bridge, calls, emit } = bridgeWith({ connect: async () => ({ ok: true, value: { state: "reconnecting", hostId: HOST, hostName: "Fedora" } }) });
+  const page = load(bridge, { state: "signed-in", profile: { accountId: "a", emailVerified: true } });
+  page.paint();
+  page.signIn({});
+  await flush(); await flush();
+  const away = { code: "host_offline", message: "The other computer is offline or not connected to Local Cognitive." };
+  emit({ state: "offline", hostId: HOST, hostName: "Fedora", error: away });
+  const card = page.root.querySelector(".remote-status");
+  assert.match(card.textContent, /Reconnecting to Fedora…/);
+  for (const state of ["reconnecting", "offline", "reconnecting", "offline"]) emit({ state, hostId: HOST, hostName: "Fedora", error: away });
+  assert.equal(page.root.querySelector(".remote-status"), card, "the same card stays: nothing was drawn again");
+  (page.root.querySelector('[data-remote-action="connect"]') as any).click();
+  await flush();
+  assert.deepEqual(calls.filter(call => call[0] === "connect"), [["connect", HOST]], "Try now connects at once");
+  emit({ state: "online", hostId: HOST, hostName: "Fedora", serverVersion: "0.1.12" });
+  assert.match(page.root.querySelector(".remote-status").textContent, /Connected to Fedora/);
+});

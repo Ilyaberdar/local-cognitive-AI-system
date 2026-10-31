@@ -451,3 +451,29 @@ test("a server's projects group its chats; a chat and a project are made there, 
   assert.match(sidebar().textContent, /site2/);
   assert.deepEqual(app.requests.slice(localBefore).filter(entry => /\/projects|\/sessions/.test(entry)), [], "this computer's projects are not asked");
 });
+
+test("another try at a computer that is away does not draw the window again on any screen; coming back does", async t => {
+  // The owner saw the window jerk with every attempt while the other computer was down (2026-10-31).
+  const paired = fakeServer();
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const away = { code: "host_offline", message: "The other computer is offline or not connected to Local Cognitive." };
+  paired.setStatus({ state: "offline", error: away });
+  await settle();
+  for (const route of ["#/chat", "#/synthesis", "#/models", "#/orchestration"]) {
+    app.window.location.hash = route;
+    await settle();
+    const shell = app.document.querySelector(".shell"), switcher = app.document.querySelector(".chat-target");
+    for (const state of ["reconnecting", "offline", "reconnecting", "offline"]) { paired.setStatus({ state, error: away }); await settle(); }
+    assert.equal(app.document.querySelector(".shell"), shell, `${route}: the window was not drawn again`);
+    assert.equal(app.document.querySelector(".chat-target"), switcher, `${route}: the switch stayed`);
+  }
+  app.window.location.hash = "#/chat";
+  await settle();
+  assert.match(app.document.querySelector("[data-chat-target-banner]").textContent, /fedora is reconnecting/);
+  paired.setStatus({ state: "online", error: undefined });
+  await settle();
+  assert.equal(app.document.querySelector("[data-chat-target-banner]").textContent.trim(), "", "back online: the banner goes");
+  assert.match(app.document.querySelector(".chat-target-trigger").className, /is-online/);
+});

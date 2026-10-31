@@ -528,10 +528,10 @@ const accountState = createAccountState(window.desktopAccount);
 const remoteUi = createRemoteUi({ account: accountState, hostUi: window.desktopRemoteHost ? createRemoteHostUi({ account: accountState }) : undefined });
 window.desktopRemoteHost?.onOpen?.(() => { window.location.hash = "#/remote/host"; });
 chatTarget = createChatTarget({ bridge: window.desktopRemote, account: accountState,
-  onChange: ({ cameOnline, movedTo } = {}) => {
+  onChange: ({ cameOnline, movedTo, significant } = {}) => {
     // Connected to another computer elsewhere: switch to it as a choice in the switch would.
     if (movedTo) { void switchChatTarget(movedTo); return; }
-    repaintChatTarget();
+    repaintChatTarget({ significant });
     // Back online after a drop: catch up on what the server did meanwhile.
     if (cameOnline && isServerChat(state.activeSessionId)) void reloadRemoteChat();
   },
@@ -1046,8 +1046,7 @@ function renderAppTopbar(nativeTitlebar) {
       ${updatePill ? `<span class="update-pill-slot" data-update-pill>${updatePill.html()}</span>` : ""}
       ${quickReport ? `<button type="button" class="icon-button topbar-report" data-action="quick-report" aria-label="Report a bug" title="Report a bug">${icon("bug")}</button>` : ""}
       ${state.route === "chat" ? `<span class="topbar-mode">${escapeHtml(capitalize(getEffectiveSetupMode(state.sessionSettings || {})))}</span>` : ""}
-      ${chatTarget?.visible() ? renderTargetSwitch(chatTarget)
-        : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`}
+      ${targetSwitchHtml()}
     </div>
   </header>`;
 }
@@ -7161,25 +7160,45 @@ async function cancelRemoteRun(active) {
 }
 
 /** Status changes repaint the switch, banner and send button only: typing is not interrupted. */
-function repaintChatTarget() {
-  if (settingsShell.isOpen()) { serverSettings?.statusChanged(); settingsShell.targetChanged(); }
+/** What was last put on screen of the connection: the same again is not drawn again. */
+const paintedTarget = new WeakMap();
+const paintIfChanged = (element, html, paint) => {
+  if (paintedTarget.get(element) === html) return false;
+  paint();
+  return true;
+};
+/** The top bar's switch, as last drawn (by a render or a repaint). */
+let lastSwitchHtml = "";
+function targetSwitchHtml() {
+  lastSwitchHtml = chatTarget?.visible() ? renderTargetSwitch(chatTarget) : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`;
+  return lastSwitchHtml;
+}
+
+/** The connection changed. Another try at a computer that is away (`significant` false) changes only
+ * what it says, and only where the words differ: the screens are not drawn again with every attempt. */
+function repaintChatTarget({ significant = true } = {}) {
+  if (settingsShell.isOpen() && significant) { serverSettings?.statusChanged(); settingsShell.targetChanged(); }
   const actions = document.querySelector(".app-topbar__actions");
   const existing = actions?.querySelector(".chat-target, .local-indicator");
   if (existing) {
-    existing.outerHTML = chatTarget?.visible() ? renderTargetSwitch(chatTarget) : `<span class="local-indicator" title="Runs on your computer"><span class="status-dot"></span>Local</span>`;
-    bindChatTargetControls();
+    const drawn = lastSwitchHtml, html = targetSwitchHtml();
+    if (html !== drawn) { existing.outerHTML = html; bindChatTargetControls(); }
   }
+  if (!significant && state.route !== "chat") return;
   if (state.route === "models" && serverModels?.statusChanged()) { render(); return; }
   if (state.route === "orchestration" && serverOrchestration?.statusChanged()) { render(); return; }
   // Synthesis follows the selected server and its connection (its screen is kept across renders).
   if (state.route === "synthesis" && (chatTarget?.isRemote() || serverSynthesisHandle)) { render(); return; }
   if (state.route !== "chat") return;
   if (!isServerChat(state.activeSessionId)) {
-    if (chatTarget?.isRemote() && !state.activeSessionId) render();
+    if (significant && chatTarget?.isRemote() && !state.activeSessionId) render();
     return;
   }
   const banner = document.querySelector(".chat-shell [data-chat-target-banner]");
-  if (banner) { banner.innerHTML = renderTargetBanner(chatTarget, state.activeSessionId); bindChatTargetControls(); }
+  if (banner) {
+    const html = renderTargetBanner(chatTarget, state.activeSessionId);
+    paintIfChanged(banner, html, () => { banner.innerHTML = html; paintedTarget.set(banner, html); bindChatTargetControls(); });
+  }
   const send = document.querySelector("#chat-form button[type='submit']");
   if (send) send.disabled = Boolean(state.chatSubmitting || state.accessSaving || chatTarget.blocksSend() || chatTarget.setup(state.activeSessionId).hostOnly);
   const slot = document.querySelector("[data-chat-approval]");

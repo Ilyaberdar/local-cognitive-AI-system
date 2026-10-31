@@ -138,10 +138,14 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
     return key;
   };
   const changed = () => onChange({});
+  /** What the screens show of a status: the computer, and whether it is online, being tried again, or
+   * needs the user. Another try at a computer that is away changes none of it. */
+  const phase = value => [value.hostId ?? "", value.state === "online" ? "online" : ["connecting", "reconnecting", "offline"].includes(value.state) ? "waiting" : value.state,
+    value.state === "online" ? (value.capabilities ?? []).join(",") : ""].join("|");
 
   if (runtime) {
     bridge.onChange?.(next => {
-      const wasOnline = api.online();
+      const wasOnline = api.online(), significant = phase(status) !== phase(next);
       // One connection at a time: a computer connected in the Remote tab (a new key, or Connect)
       // replaces the one the switch shows, which could only read as reconnecting; the switch follows.
       // On This computer it stays: the computer is offered in the switch.
@@ -150,7 +154,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       status = next;
       // A server paired in the Remote tab joins the switch at once.
       if (next.hostId && next.state === "online" && !hosts.some(host => host.hostId === next.hostId && host.paired)) void api.refreshHosts();
-      onChange({ cameOnline: !wasOnline && api.online(), ...(movedTo ? { movedTo } : {}) });
+      onChange({ cameOnline: !wasOnline && api.online(), significant, ...(movedTo ? { movedTo } : {}) });
     });
     runtime.onEvent?.(update => {
       if (!subscribed || update.streamId !== subscribed.streamId) return;
@@ -355,12 +359,13 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
   return api;
 }
 
-const STATE_LABEL = { online: "Online", connecting: "Connecting…", reconnecting: "Reconnecting…", offline: "Offline", revoked: "Access removed", identity_changed: "Identity changed", error: "Not connected", idle: "Not connected" };
+// "offline" is a computer that is away while it is tried again: for the user, reconnecting.
+const STATE_LABEL = { online: "Online", connecting: "Connecting…", reconnecting: "Reconnecting…", offline: "Reconnecting…", revoked: "Access removed", identity_changed: "Identity changed", error: "Not connected", idle: "Not connected" };
 
 /** The window's "This computer / <server>" switch for the top bar: chats and models follow it. */
 export function renderTargetSwitch(target) {
   const status = target.status(), remote = target.isRemote();
-  const tone = !remote ? "is-local" : target.online() ? "is-online" : ["connecting", "reconnecting"].includes(status.state) ? "is-busy" : "is-warning";
+  const tone = !remote ? "is-local" : target.online() ? "is-online" : ["connecting", "reconnecting", "offline"].includes(status.state) ? "is-busy" : "is-warning";
   const label = remote ? target.hostName() : "This computer";
   const rows = target.pairedHosts().map(host => {
     const current = status.hostId === host.hostId ? status.state : "idle";
@@ -372,9 +377,9 @@ export function renderTargetSwitch(target) {
       <span class="status-dot"></span><span class="chat-target-label">${escape(label)}</span>${icon("chevronDown")}</button>
     <div id="chat-target-menu" class="chat-target-menu access-menu" popover="auto" role="group" aria-label="Where chats and models run">
       <div class="access-menu__heading">Where should chats and models run?</div>
-      <button type="button" class="chat-target-option" data-chat-target="local" aria-pressed="${!remote}">${icon("chat")}<span><strong>This computer</strong><small>Chats and models on this Mac</small></span><span class="chat-target-option__check">${!remote ? icon("check") : ""}</span></button>
+      <button type="button" class="chat-target-option" data-chat-target="local" aria-pressed="${!remote}">${icon("chat")}<span><strong>This computer</strong><small>Chats and models on this computer</small></span><span class="chat-target-option__check">${!remote ? icon("check") : ""}</span></button>
       ${rows}
-      <a class="access-menu__footer chat-target-manage" href="#/remote">Manage servers</a>
+      <a class="access-menu__footer chat-target-manage" href="#/remote">Manage computers</a>
     </div></span>`;
 }
 

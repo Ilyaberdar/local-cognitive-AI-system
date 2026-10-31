@@ -1,7 +1,9 @@
 import { icon } from "./ui-primitives.js";
 
 const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
-const busyStates = ["connecting", "reconnecting"];
+// Only a connection the user started holds the form: while a computer that is away is tried again, a
+// key for another one can still be used.
+const busyStates = ["connecting"];
 
 // Remote → Connect (spec §6, R3): pair this computer with a server by its one-time key,
 // reconnect to paired servers, and manage which computers may connect. Keys, tickets and
@@ -60,7 +62,8 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     switch (status.state) {
       case "online": return card(`Connected to ${host}`, `Local Cognitive ${escape(status.serverVersion || "")} there. This computer stays paired: Connect works again without a key.`, disconnect, "is-online");
       case "connecting": return card(`Connecting to ${host}…`, "Setting up an end-to-end encrypted connection through Local Cognitive Cloud.", disconnect, "is-busy");
-      case "reconnecting": case "offline": return card(`Reconnecting to ${host}…`, "The connection dropped. Local Cognitive keeps trying in the background.", disconnect, "is-busy");
+      case "reconnecting": case "offline": return card(`Reconnecting to ${host}…`, "The connection dropped. Local Cognitive keeps trying in the background, less often the longer it lasts.",
+        `${status.hostId ? `<button type="button" class="ghost-button" data-remote-action="connect" data-host-id="${escape(status.hostId)}"${pending ? " disabled" : ""}>Try now</button>` : ""}${disconnect}`, "is-busy");
       case "revoked": return card("Access removed", `This computer can no longer connect to ${host}. Get a new connection key from ${host} to connect again.`, forget, "is-warning");
       case "identity_changed": return card(`${host} has a different identity`, `${host} answered with a different key than when you paired. If it was reinstalled, forget it and connect with a new key; otherwise the connection may be intercepted.`, forget, "is-warning");
       case "error": return card("Not connected", "Everything runs on this computer.", "", "is-warning");
@@ -116,7 +119,7 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
   function serverList() {
     if (!hostsLoaded) return '<p class="settings-description" role="status">Loading your computers…</p>';
     if (hostsError) return `<p class="remote-error" role="alert">${escape(hostsError)} <button type="button" class="ghost-button" data-remote-action="reload">Try again</button></p>`;
-    if (!hosts.length) return '<p class="settings-description">No computers yet. A Mac or PC that hosts while signed in to this account appears here by itself; a server, once you connect it with its key.</p>';
+    if (!hosts.length) return '<p class="settings-description">No computers yet. A Mac or PC that hosts while signed in to this account appears here by itself; a server, once you connect it with its key. Signed in another way there (Google, Apple or email)? Each way is its own account: sign in here the same way.</p>';
     return `<div class="remote-hosts">${hosts.map(host => {
       const current = status.hostId === host.hostId && status.state === "online";
       // This computer is listed when it hosts devices: nothing to connect to or forget, only its devices.
@@ -152,12 +155,17 @@ export function createRemoteUi({ bridge = window.desktopRemote, account, hostUi,
     return `<div class="remote-page"><header class="remote-header"><h1>${icon("remote")}<span>Remote</span></h1><p class="subtle">${subtitle}</p></header>${tabs}${body}</div>`;
   }
 
+  // The same words again are not drawn again: a computer that is away is tried again and again.
+  let painted = { container: null, html: "" };
   function repaint() {
     const container = document.querySelector("[data-remote-root]");
     if (!container) return;
+    const html = inner();
+    if (painted.container === container && painted.html === html) return;
+    painted = { container, html };
     const focused = document.activeElement?.matches?.("[data-remote-key]");
     const caret = focused ? document.activeElement.selectionStart : 0;
-    container.innerHTML = inner();
+    container.innerHTML = html;
     if (focused) { const field = container.querySelector("[data-remote-key]"); field?.focus(); field?.setSelectionRange(caret, caret); }
   }
 
