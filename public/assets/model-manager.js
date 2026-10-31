@@ -130,7 +130,8 @@ export function createModelManager({ request, getContext, onLibraryChange, onUse
     const metrics = getContext().systemMetrics;
     const resources = runtime?.resources || runtime?.limits || {};
     const compatibility = models().find((model) => model.compatibility)?.compatibility || state.catalog.flatMap(variantsOf).find((variant) => variant.compatibility)?.compatibility;
-    const totalMemory = resources.totalMemoryBytes ?? resources.totalRamBytes ?? metrics?.memoryTotalBytes ?? compatibility?.totalMemoryBytes;
+    // Not the compatibility total: that is RAM and VRAM together, what a model may fill.
+    const totalMemory = resources.totalMemoryBytes ?? resources.totalRamBytes ?? metrics?.memoryTotalBytes;
     const freeMemory = resources.freeMemoryBytes ?? (metrics?.memoryTotalBytes ? metrics.memoryTotalBytes - metrics.memoryUsedBytes : undefined);
     const freeDisk = resources.freeDiskBytes ?? resources.availableDiskBytes ?? compatibility?.freeDiskBytes;
     const status = runtime?.status || "idle";

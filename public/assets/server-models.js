@@ -58,6 +58,8 @@ export function createServerModels({ target, bridge = window.desktopRemote, crea
       onUse
     });
     void own.loadSettings();
+    // RAM and GPUs when the tab opens, not five seconds later at the first poll.
+    void own.metrics().then(metrics => { if (isCurrent()) { own.systemMetrics = metrics; manager?.updateLiveView(); } }, () => undefined);
     return manager;
   }
 

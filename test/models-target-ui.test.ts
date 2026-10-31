@@ -198,6 +198,18 @@ test("with fedora selected, the Models tab runs on fedora and asks this computer
   }
 });
 
+test("fedora's RAM is its RAM as soon as the tab opens, never RAM and VRAM together", async t => {
+  // A PC with 64 GB and an 8 GB GPU read "71.9 GB RAM" until the first metrics poll (2026-10-31).
+  const fedora = fedoraWithModels({ model: { compatibility: { ...compatibility, totalMemoryBytes: 40e9 } } });
+  const app = await bootApp({ ...localModels(), remote: { bridge: fedora.bridge } });
+  t.after(() => app.close());
+  await selectFedora(app);
+  app.window.location.hash = "#/models";
+  await settle();
+  assert.match(text(app, ".mm-resource-list"), /17\.7 GB available \/ 29\.8 GB RAM/);
+  assert.doesNotMatch(text(app, ".mm-resource-list"), /37\.3 GB/);
+});
+
 test("offline, fedora's tab keeps the last state and sends nothing; This computer's models come back untouched", async t => {
   const fedora = fedoraWithModels();
   const app = await bootApp({ ...localModels(), remote: { bridge: fedora.bridge } });

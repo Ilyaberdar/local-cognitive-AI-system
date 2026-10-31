@@ -28,7 +28,7 @@ export function chooseServerFolder({ call, hostName, title = "Choose a folder" }
       const crumbs = root ? [`<button type="button" class="ghost-button" data-folder-crumb="-1">${escape(root.label)}</button>`,
         ...path.map((name, index) => `<button type="button" class="ghost-button" data-folder-crumb="${index}">${escape(name)}</button>`)].join(`<span aria-hidden="true">›</span>`) : "";
       const rows = !root
-        ? roots.map(item => `<button type="button" class="folder-browser-row" data-folder-root="${escape(item.rootId)}">${icon("folder")}<span>${escape(item.label)}</span><small>${item.kind === "managed" ? `On ${escape(hostName)}` : "Shared by the server"}</small></button>`).join("")
+        ? roots.map(item => `<button type="button" class="folder-browser-row" data-folder-root="${escape(item.rootId)}">${icon("folder")}<span>${escape(item.label)}</span><small>${item.kind === "managed" ? `On ${escape(hostName)}` : "Shared folder"}</small></button>`).join("")
         : entries.filter(entry => entry.kind === "dir").map(entry => `<button type="button" class="folder-browser-row" data-folder-open="${escape(entry.name)}">${icon("folder")}<span>${escape(entry.name)}</span></button>`).join("")
           || `<p class="subtle">No folders here.</p>`;
       dialog.innerHTML = `<div class="project-dialog-header"><h2 id="folder-browser-title">${escape(title)}</h2><button class="icon-button" type="button" data-folder-close aria-label="Close">${icon("close")}</button></div>

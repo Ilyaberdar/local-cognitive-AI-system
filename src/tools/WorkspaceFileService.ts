@@ -102,9 +102,13 @@ export class WorkspaceFileService {
   }
 
   private async read(target: string): Promise<string> {
-    const handle = await fs.open(target, "r");
+    // A folder says so, and what to do instead: a small model told only "text files up to 5 MB"
+    // read the same folder again until its corrections ran out.
+    const folder = "This is a folder, not a file: list it to see its files, then read one of them.";
+    const handle = await fs.open(target, "r").catch((error: NodeJS.ErrnoException) => { throw error.code === "EISDIR" ? new Error(folder) : error; });
     try {
       const stat = await handle.stat();
+      if (stat.isDirectory()) throw new Error(folder);
       if (!stat.isFile() || stat.size > maxReadBytes) throw new Error("Read supports text files up to 5 MB.");
       const buffer = Buffer.alloc(maxReadBytes + 1);
       let size = 0;

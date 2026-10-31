@@ -147,3 +147,13 @@ test("a model's include pattern full of wildcards is matched in linear time, not
   assert.ok(Date.now() - started < 1000, `${Date.now() - started} ms`);
   assert.equal((await search({ include: ["*.ts"] })).matches.length, 1, "ordinary filters still match at any depth");
 });
+
+test("file.read of a folder says it is a folder and to list it, not that only small text files are read", async t => {
+  const search = await fixture(t, { "site/index.html": "<h1>Hi</h1>" });
+  const service = new WorkspaceFileService();
+  const workspace: WorkspaceSnapshot = { version: 1, kind: "project", rootPath: search.root, outputDir: search.root, allowedDirectories: [search.root], memoryScope: "file-search-test" };
+  for (const folder of ["site", "site/", "."]) {
+    const action = await service.prepare(parseAgentAction({ tool: "file.read", arguments: { path: folder } }), workspace);
+    await assert.rejects(service.execute(action, workspace), /^Error: This is a folder, not a file: list it to see its files/, folder);
+  }
+});

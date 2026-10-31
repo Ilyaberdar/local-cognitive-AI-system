@@ -65,6 +65,12 @@ export const orchestrationLists = (input: { tasks: Task[]; schedules: Schedule[]
 
 export type Scrubber = (<T>(value: T) => T) & { readonly dirs: readonly string[]; readonly pairs: ReadonlyArray<readonly [string, string]> };
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const windowsFolder = (dir: string) => /^[A-Za-z]:[\\/]/.test(dir);
+/** A folder as a pattern. A Windows folder is matched as Windows reads it, which is also how a model
+ * may write it: either slash, with or without its drive, in any case (C:\Users\me\site is also
+ * /users/me/site; not D:\Users\me\site). */
+const folderPattern = (dir: string) => !windowsFolder(dir) ? escapeRegExp(dir)
+  : `(?:${escapeRegExp(dir.slice(0, 2))})?[\\\\/]+${dir.slice(3).split(/[\\/]+/).map(escapeRegExp).join("[\\\\/]+")}`;
 
 /** Replaces each folder by its label in a whole value (longest folder first, so a folder inside
  * another is replaced by its own label). Only whole folders: `/srv/out` is not part of `/srv/outbox`.
@@ -73,7 +79,7 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&
 export const pathScrubber = (pairs: Array<[string, string]>): Scrubber => {
   const sorted = pairs.map(([dir, label]) => [dir.replace(/(.)[\\/]+$/, "$1"), label] as [string, string]).filter(([dir]) => dir.length > 1)
     .sort((a, b) => b[0].length - a[0].length);
-  const patterns = sorted.map(([dir, label]) => [new RegExp(`(?<![\\w./-])${escapeRegExp(dir)}(?![\\w.-])`, "g"), label] as [RegExp, string]);
+  const patterns = sorted.map(([dir, label]) => [new RegExp(windowsFolder(dir) ? `(?<![\\w./:-])${folderPattern(dir)}(?![\\w.-])` : `(?<![\\w./-])${folderPattern(dir)}(?![\\w.-])`, windowsFolder(dir) ? "gi" : "g"), label] as [RegExp, string]);
   const text = (value: string) => patterns.reduce((result, [pattern, label]) => result.replace(pattern, () => label), value);
   const walk = (value: unknown): unknown => typeof value === "string" ? text(value)
     : Array.isArray(value) ? value.map(walk)

@@ -84,6 +84,20 @@ html[data-theme="light"] [data-project-color="purple"] { --project-color: #8664b
 .project-color-option input:focus-visible + .project-color-preview { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
 .project-dialog-footer { display: flex; justify-content: space-between; gap: 12px; padding-top: 6px; }
 .project-form-error { color: var(--danger); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; }
+/* The folder picker for another computer's projects (folder-browser.js): its places, then their folders, one row each. */
+.folder-browser > p.subtle { margin: -12px 0 12px; }
+.folder-browser-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; color: var(--muted); }
+.folder-browser-crumbs .ghost-button { min-height: 28px; padding: 3px 8px; }
+.folder-browser-list { display: grid; gap: 2px; max-height: min(320px, 50dvh); overflow: auto; margin-bottom: 14px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; }
+.folder-browser-list > p.subtle { margin: 8px 10px; }
+.folder-browser-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 7px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.folder-browser-row:hover { background: var(--highlight); }
+.folder-browser-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.folder-browser-row .ui-icon { flex: 0 0 auto; width: 18px; height: 18px; color: var(--muted); }
+.folder-browser-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-browser-row small { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.folder-browser-new { display: flex; gap: 8px; margin-bottom: 14px; }
+.folder-browser-new input { flex: 1; min-width: 0; }
 .archived-project-list { display: grid; gap: 12px; }
 .archived-project-list > div { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .archived-project-list span { overflow-wrap: anywhere; }
