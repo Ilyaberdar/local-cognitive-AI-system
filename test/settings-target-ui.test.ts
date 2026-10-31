@@ -424,7 +424,7 @@ test("with fedora selected, Add provider adds one of fedora's presets with a key
   await selectFedora(app);
   const before = app.bridgeCalls.length;
   open(app, "providers/new"); await settle();
-  assert.match(text(app, ".settings-content"), /Connect a cloud service on fedora[\s\S]*environment file/);
+  assert.match(text(app, ".settings-content"), /Connect a cloud service on fedora[\s\S]*added on fedora itself: in its Settings, or a server's environment file\./);
   assert.equal(app.document.querySelector("#settings-root #add-provider-address"), null, "no address: fedora has its own for each preset");
   assert.deepEqual([...app.document.querySelectorAll("#settings-root [data-add-provider-preset] option")].map((option: any) => option.value), ["deepseek", "perplexity"], "fedora's presets, no other service");
   change(app, "#add-provider-key", "sk-device-key-for-fedora-1", "input");
