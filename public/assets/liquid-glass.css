@@ -149,9 +149,8 @@ html, body {
 html[data-desktop="darwin"], html[data-desktop="darwin"] body { background: transparent; }
 html[data-desktop="darwin"] .shell { background: transparent; }
 html[data-desktop="darwin"] .sidebar::after { backdrop-filter: none; }
-html:is([data-desktop="darwin"], [data-desktop="win32"]) {
-  --desktop-titlebar-height: env(titlebar-area-height, 60px);
-}
+/* Windows' caption buttons stop a pixel above the bar's bottom line, so the line runs under them. */
+html[data-desktop="win32"] { --desktop-titlebar-height: calc(env(titlebar-area-height, 59px) + 1px); }
 html[data-desktop="darwin"] { --desktop-titlebar-height: env(titlebar-area-height, 28px); }
 html:is([data-desktop="darwin"], [data-desktop="win32"]) .app-topbar { -webkit-app-region: drag; }
 html:is([data-desktop="darwin"], [data-desktop="win32"]) :is(button, input, select, textarea, a) { -webkit-app-region: no-drag; }

@@ -10,7 +10,8 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
  * the theme's defaults. */
 function windowsTitleBarOverlay(dark, colors = {}) {
   return {
-    height: TITLEBAR_HEIGHT,
+    // A pixel short of the bar: its bottom line, which the buttons would paint over, runs under them too.
+    height: TITLEBAR_HEIGHT - 1,
     color: HEX_COLOR.test(colors.color ?? "") ? colors.color : dark ? "#111214" : "#f8f9fb",
     symbolColor: HEX_COLOR.test(colors.symbolColor ?? "") ? colors.symbolColor : dark ? "#ecedef" : "#272b34"
   };

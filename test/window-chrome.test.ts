@@ -25,8 +25,14 @@ test("Windows retains OS caption buttons and their geometry across themes", () =
   assert.deepEqual(windowChromeOptions("linux", true), {});
 });
 
+test("Windows caption buttons stop a pixel above the title bar's bottom line, so it runs under them", () => {
+  const glass = fs.readFileSync("public/assets/liquid-glass.css", "utf8");
+  assert.equal(windowsTitleBarOverlay(true).height, 59);
+  assert.match(glass, /html\[data-desktop="win32"\] \{ --desktop-titlebar-height: calc\(env\(titlebar-area-height, 59px\) \+ 1px\); \}/);
+});
+
 test("Windows caption buttons take the title bar's reported colors, hex colors only", () => {
-  assert.deepEqual(windowsTitleBarOverlay(true, { color: "#0c1117", symbolColor: "#e8eef8" }), { height: 60, color: "#0c1117", symbolColor: "#e8eef8" });
+  assert.deepEqual(windowsTitleBarOverlay(true, { color: "#0c1117", symbolColor: "#e8eef8" }), { height: 59, color: "#0c1117", symbolColor: "#e8eef8" });
   assert.deepEqual(windowsTitleBarOverlay(true, { color: "red; background: url(x)", symbolColor: "" }), windowsTitleBarOverlay(true), "anything else keeps the theme's defaults");
   assert.equal(windowsTitleBarOverlay(false, { color: "#E9EDF2" }).color, "#E9EDF2");
 });
