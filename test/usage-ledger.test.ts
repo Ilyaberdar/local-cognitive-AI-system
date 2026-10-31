@@ -33,7 +33,7 @@ test("a host.db of the previous version gains the ledger and keeps its device gr
   old.close();
   const host = HostDatabase.open(target, hostMigrations);
   t.after(() => host.close());
-  assert.equal(host.schemaVersion(), 3);
+  assert.equal(host.schemaVersion(), hostMigrations.length);
   assert.equal(host.db.prepare("SELECT count(*) AS n FROM remote_grants").get()?.n, 1);
   assert.equal(host.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'usage_outbox'").get()?.n, 0, "the unused v1 outbox is gone");
   const ledger = new UsageLedger(host, () => ({}));

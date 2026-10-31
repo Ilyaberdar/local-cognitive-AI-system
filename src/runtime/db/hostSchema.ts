@@ -167,4 +167,15 @@ CREATE INDEX usage_events_sync ON usage_events(sync_state, account_id, next_sync
     meta.run("usage.id_salt", randomBytes(32).toString("base64url"));
     meta.run("usage.ledger_started_at", new Date().toISOString());
   }
+}, {
+  // Trusted devices: a device its owner marked on the host itself may approve what other devices may
+  // not (a command, a file outside the chat's folder, an app's tool). When, and how (the window, the
+  // server's CLI, or carried over from the switch for every device).
+  version: 4, name: "remote_device_trust",
+  up(db) {
+    db.exec(`
+ALTER TABLE remote_grants ADD COLUMN trusted_at TEXT;
+ALTER TABLE remote_grants ADD COLUMN trusted_by TEXT;
+`);
+  }
 }];

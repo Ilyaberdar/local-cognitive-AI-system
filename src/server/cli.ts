@@ -194,9 +194,9 @@ const pair = async (args: ServerArgs, wait: boolean) => {
 };
 
 const devices = async (args: ServerArgs) => {
-  const { devices: list } = await remoteRequest(args, { op: "devices" }) as { devices: Array<{ deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string }> };
+  const { devices: list } = await remoteRequest(args, { op: "devices" }) as { devices: Array<{ deviceId: string; deviceName?: string; status: string; grantedAt: string; lastConnectedAt?: string; trustedAt?: string }> };
   const active = list.filter(device => device.status === "active");
-  print(args, active.length ? active.map(device => `${device.deviceId}  ${device.deviceName ? printable(device.deviceName) : "(unnamed)"}  paired ${device.grantedAt.slice(0, 10)}${device.lastConnectedAt ? `, last seen ${device.lastConnectedAt.slice(0, 16).replace("T", " ")}` : ""}`).join("\n")
+  print(args, active.length ? active.map(device => `${device.deviceId}  ${device.deviceName ? printable(device.deviceName) : "(unnamed)"}  paired ${device.grantedAt.slice(0, 10)}${device.lastConnectedAt ? `, last seen ${device.lastConnectedAt.slice(0, 16).replace("T", " ")}` : ""}${device.trustedAt ? ", trusted" : ""}`).join("\n")
     : "No computers can connect yet. Run pair to add one.", { devices: list });
   return ExitCode.ok;
 };
@@ -479,6 +479,13 @@ export const main = async (argv: string[]): Promise<number> => {
         const { revoked } = await remoteRequest(args, { op: "revoke-device", deviceId: args.deviceId }) as { revoked: boolean };
         print(args, revoked ? "Access removed. The computer was disconnected." : "No active access for this device.", { revoked });
         return revoked ? ExitCode.ok : ExitCode.failure;
+      }
+      case "trust-device": case "untrust-device": {
+        const result = await remoteRequest(args, { op: args.command, deviceId: args.deviceId }) as { trusted: boolean; changed: boolean };
+        print(args, !result.changed ? "No active access for this device." : result.trusted
+          ? "Trusted. It may approve commands, files anywhere and apps' tools on this server, one action at a time."
+          : "No longer trusted. It approves only what any device may.", result);
+        return result.changed ? ExitCode.ok : ExitCode.failure;
       }
       case "reset-owner":
         print(args, "The server is no longer linked to an account; every computer lost access.", await remoteRequest(args, { op: "reset-owner" }));

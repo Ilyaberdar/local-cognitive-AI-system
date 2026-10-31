@@ -4,8 +4,10 @@ const path = require("path");
 // Hosting's own switches, in userData/remote-host.json. Kept apart from the app's settings, which a
 // paired device may change. backgroundNoticeShown is the app's note that it said once where it keeps
 // running. Nothing here loads the backend: main reads it before the backend's configuration exists.
+// allowDeviceCommands was the 0.1.12 switch for every device at once; it is read once to trust the
+// devices paired then (host.cjs), written false, and set no more: trust is per device now.
 const DEFAULTS = Object.freeze({ enabled: false, keepAwake: true, openAtLogin: false, allowDeviceCommands: false, backgroundNoticeShown: false });
-const SWITCHES = ["enabled", "keepAwake", "openAtLogin", "allowDeviceCommands"];
+const SWITCHES = ["enabled", "keepAwake", "openAtLogin"];
 
 const readSettings = file => {
   let saved = {};

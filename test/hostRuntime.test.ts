@@ -33,3 +33,14 @@ test("the desktop app opens the host services, so hosting can start without a re
   const plain = await startTestBackend(t, "test");
   assert.equal(plain.backend.host, undefined);
 });
+
+test("a device learns from host.info whether it is trusted here, and no operation lets a device trust itself", async () => {
+  const trusted = new Set(["phone"]);
+  const info = (deviceId: string) => builtInHostOperations({ hostName: "MacBook", kind: "desktop", status: () => ({}), trusted: context => trusted.has(context.deviceId) })["host.info"]!(
+    undefined, { accountId: "a", deviceId, signal: new AbortController().signal }) as Record<string, unknown>;
+  assert.deepEqual(info("phone").device, { trusted: true });
+  assert.deepEqual(info("laptop").device, { trusted: false });
+  assert.deepEqual((builtInHostOperations({ hostName: "h", kind: "server", status: () => ({}) })["host.info"]!(undefined, {} as never) as Record<string, unknown>).device,
+    { trusted: false }, "without a store, no device is");
+  assert.deepEqual(Object.keys(OPERATIONS).filter(op => /trust/i.test(op)), [], "trust is set only on the host itself");
+});

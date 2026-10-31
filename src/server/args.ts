@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "trust-device" | "untrust-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -43,7 +43,7 @@ export interface ServerArgs {
   ascii?: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -61,6 +61,9 @@ Commands:
   connect-key            The same as pair, without waiting
   devices                List computers that can connect to this server
   revoke-device <id>     Remove a computer's access
+  trust-device <id> --yes  Let a device approve commands, files anywhere and apps' tools (MCP), one
+                         action at a time (an iPhone asks for Face ID first)
+  untrust-device <id>    It approves only what any device may again
   reset-owner --yes      Unlink the server from its account and remove every computer
   folders                List the folders connected computers may browse and use
   folders add <path>     Share a folder with connected computers (--label, --allow-create)
@@ -93,7 +96,7 @@ Options:
   --timeout <sec>           drain: maximum time to wait
   --no-wait                 drain: return once draining started; pair: do not wait for the computer
   --ttl <minutes>           pair: key lifetime (1-60, default: 10)
-  --yes                     reset-owner: confirm
+  --yes                     reset-owner, trust-device: confirm
   --label <name>            folders add: the name computers see
   --allow-create            folders add: computers may make folders in it
   --json                    Machine-readable output
@@ -128,10 +131,12 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const command = values.help ? "help" : values.version ? "version" : (positionals[0] ?? "help") as ServerCommand;
   if (!commands.includes(command)) throw new CliError(`Unknown command: ${command}`, ExitCode.usage);
   // A project's name may hold spaces: cloud-models takes the rest of the line as it.
-  const extra = command === "revoke-device" || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" ? Infinity : 1;
+  const withDevice = command === "revoke-device" || command === "trust-device" || command === "untrust-device";
+  const extra = withDevice || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" ? Infinity : 1;
   if (positionals.length > extra) throw new CliError(`Unexpected argument: ${positionals[extra]}`, ExitCode.usage);
-  const deviceId = command === "revoke-device" ? positionals[1] : undefined;
-  if (command === "revoke-device" && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError("revoke-device needs a device id (see `devices`).", ExitCode.usage);
+  const deviceId = withDevice ? positionals[1] : undefined;
+  if (withDevice && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError(`${command} needs a device id (see \`devices\`).`, ExitCode.usage);
+  if (command === "trust-device" && !values.yes) throw new CliError("trust-device lets that device approve commands and files anywhere on this server: add --yes to confirm.", ExitCode.usage);
   if (command === "reset-owner" && !values.yes) throw new CliError("reset-owner removes every computer's access: add --yes to confirm.", ExitCode.usage);
   let folders: ServerArgs["folders"];
   if (command === "folders") {
@@ -175,7 +180,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "api-token", "console", "pair", "connect-key", "devices", "revoke-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "api-token", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,

@@ -84,7 +84,7 @@ export const COMMANDS: Array<[string, string]> = [
   ["status", "What the server is doing right now"],
   ["watch", "Follow it live: computers, models, GPU, work"],
   ["pair", "Connect a computer (Remote → Connect on it)"],
-  ["devices", "Computers that can connect (revoke <id>)"],
+  ["devices", "Computers that can connect (revoke, trust or untrust <id>)"],
   ["logs", "Follow the server's log (Ctrl+C returns here)"],
   ["start / stop / restart", "The server's service"],
   ["update", "Install the newest release"],
@@ -264,7 +264,7 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
       paint(s, GREY, "Ready when you are. Type a command to get started.")]);
   };
 
-  const names = ["status", "watch", "pair", "devices", "revoke", "logs", "start", "stop", "restart", "update", "config", "cloud-models", "deps", "clear", "help", "exit"];
+  const names = ["status", "watch", "pair", "devices", "revoke", "trust", "untrust", "logs", "start", "stop", "restart", "update", "config", "cloud-models", "deps", "clear", "help", "exit"];
   const following: Record<string, string[]> = { config: ["error-reports"], "error-reports": ["on", "off"], "cloud-models": ["allow", "deny"] };
   /** One Tab completes a single match (with a space); two list them. Words after the first: config's. */
   const completer = (line: string): [string[], string] => {
@@ -377,6 +377,9 @@ export const runConsole = async (options: ConsoleOptions): Promise<number> => {
       case "revoke":
         if (!rest[0]) { write([`  ${paint(s, YELLOW, "Use: revoke <device id> (see devices)")}`]); return true; }
         await handOver(["revoke-device", rest[0]]); return true;
+      case "trust": case "untrust":
+        if (!rest[0]) { write([`  ${paint(s, YELLOW, `Use: ${command} <device id> (see devices)`)}`]); return true; }
+        await handOver(command === "trust" ? ["trust-device", rest[0], "--yes"] : ["untrust-device", rest[0]]); return true;
       case "config":
         if (rest[0] === "error-reports" && ["on", "off"].includes(rest[1] ?? "")) await handOver(["error-reports", rest[1]!]);
         else {

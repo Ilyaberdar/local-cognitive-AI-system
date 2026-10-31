@@ -528,3 +528,22 @@ test("where the host keeps operations' approvals to itself, a device still appro
   await call("tasks.update", { taskId: hostTask.id, patch: { description: "Theirs" } });
   assert.equal((await f.taskService.get(hostTask.id))?.metadata?.deviceOrigin, true, "its prompt is a device's now: no host MCP tools when it runs");
 });
+
+test("a device trusted on the host approves a waiting MCP call it may only reject otherwise; the trust is read under the run's lock", async t => {
+  const f = await setup(t);
+  const trusted = new Set<string>();
+  const ops = f.operations(undefined, { deviceTrust: ({ deviceId }) => trusted.has(deviceId) });
+  const as = (deviceId: string, commandId: string, runId: string) => Promise.resolve(ops["workflows.runs.review"]!({ commandId, runId, approved: true, approvalId: "a1" },
+    { accountId: "account", deviceId, signal: new AbortController().signal }));
+  const run = await f.workflowRunner.startStandalone(reviewWorkflow(), {});
+  f.workflowRunner.runInBackground(run.id);
+  await until(() => f.workflowRunStore.getRun(run.id), current => current?.status === "waiting");
+  const waiting = (await f.workflowRunStore.getRun(run.id))!;
+  const nodeResults = { ...(waiting.state.nodeResults as object), [waiting.currentNodeId!]: { status: "needs_input", data: { tool: "mcp", approvalId: "a1", permissionRequired: true } } };
+  await f.workflowRunStore.updateRun(run.id, { state: { ...waiting.state, nodeResults } });
+  await assert.rejects(as("phone", "cmd-trust-1", run.id), (error: unknown) => error instanceof RemoteOperationError && error.code === "unsupported"
+    && /or from a device trusted there/.test(error.message));
+  trusted.add("phone");
+  await as("phone", "cmd-trust-2", run.id);
+  assert.notEqual((await until(() => f.workflowRunStore.getRun(run.id), current => current?.status !== "waiting"))?.status, "waiting", "the run goes on");
+});

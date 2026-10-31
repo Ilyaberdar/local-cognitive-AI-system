@@ -16,7 +16,7 @@ import { hostUsageSender, type UsageOutbox } from "../../usage/UsageOutbox";
 import { appVersion } from "../../utils/appVersion";
 import type { Logger } from "../../utils/Logger";
 import { HostAgent } from "./HostAgent";
-import type { RemoteOperation } from "./RemoteHost";
+import type { OperationContext, RemoteOperation } from "./RemoteHost";
 import { RemoteHostStore } from "./RemoteHostStore";
 
 /** A headless server, or the desktop app hosting from the computer it runs on. */
@@ -38,6 +38,9 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   if (!host) throw new Error("Remote hosting needs the backend's host services.");
   const sessionIndexStore = backend.runtimeManager.getRuntime().sessionIndexStore;
   const isDraining = () => backend.status().phase === "draining";
+  // Whether the calling device is trusted here: only the host marks one (its window, its CLI).
+  const trust = new RemoteHostStore(host.database);
+  const deviceTrust = (context: { accountId: string; deviceId: string }) => trust.isTrusted(context.deviceId, context.accountId);
   const scopeOf = (context: { accountId: string; deviceId: string }) => `remote:${context.accountId}:${context.deviceId}`;
   const owner = () => new RemoteHostStore(host.database).owner();
   // Run outputs and events a device receives name no folder of this host.
@@ -60,7 +63,7 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   sweep.unref();
   const operations: Record<string, RemoteOperation> = {
     ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
-      runService: host.runService, journal: host.journal, scopeOf, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
+      runService: host.runService, journal: host.journal, scopeOf, deviceTrust, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
       ...(input.deviceFilesOnly ? { deviceFileRoots: async (sessionId: string) => [backend.runtimeManager.getRuntime().workspaceResolver.deviceChatFolder(sessionId),
         ...folders.roots().map(root => root.path)] } : {}) }),
     ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
@@ -69,7 +72,8 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
     ...createUsageOperations({ ledger: backend.usage, outbox: backend.usageOutbox, owner }),
     ...createDiagnosticsOperations({ runtimeManager: backend.runtimeManager, diagnosticLog: backend.diagnosticLog, owner, status: () => backend.status(),
       ...(input.consentFile ? { consentFile: input.consentFile } : {}) }),
-    ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders, scopeOf, isDraining, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}) }),
+    ...createOrchestrationOperations({ ...orchestration, ledger: host.ledger, projects, folders, scopeOf, isDraining, deviceTrust,
+      ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}) }),
     ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining }),
     ...createFolderOperations({ folders }),
     ...createSynthesisOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger, projects, hostDirectories: orchestration.hostDirectories, scopeOf, isDraining }),
@@ -80,9 +84,12 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
 
 /** The operations every host answers itself: a ping, what it is, and its status. Nothing here
  * returns paths. */
-export const builtInHostOperations = (input: { hostName: string; kind: HostKind; status: () => Record<string, unknown> }): Record<string, RemoteOperation> => ({
+export const builtInHostOperations = (input: { hostName: string; kind: HostKind; status: () => Record<string, unknown>;
+  /** Whether the calling device is trusted here; a device reads it to know what it may approve. */
+  trusted?: (context: OperationContext) => boolean }): Record<string, RemoteOperation> => ({
   "session.ping": () => ({ at: Date.now() }),
-  "host.info": () => ({ name: input.hostName, version: appVersion(), platform: process.platform, arch: process.arch, kind: input.kind }),
+  "host.info": (_payload, context) => ({ name: input.hostName, version: appVersion(), platform: process.platform, arch: process.arch, kind: input.kind,
+    device: { trusted: input.trusted?.(context) === true } }),
   "host.status": () => input.status()
 });
 
@@ -93,7 +100,7 @@ export const startHostAgent = async (input: { host: HostServices; vault: Credent
   accountToken?: () => Promise<string | undefined> }): Promise<HostAgent> => {
   const store = new RemoteHostStore(input.host.database);
   const agent = new HostAgent({ cloudUrl: input.cloudUrl, store, vault: input.vault, hostName: input.hostName, serverVersion: appVersion(), logger: input.logger,
-    operations: { ...builtInHostOperations(input), ...input.operations }, kind: input.kind, ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}),
+    operations: { ...builtInHostOperations({ ...input, trusted: context => store.isTrusted(context.deviceId, context.accountId) }), ...input.operations }, kind: input.kind, ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}),
     ...(input.accountToken ? { accountToken: input.accountToken } : {}) });
   await agent.start();
   input.usage?.setSender(hostUsageSender({ cloudUrl: input.cloudUrl, hostId: () => store.hostId(), owner: () => store.owner(), sign: payload => agent.signUsage(payload) }));

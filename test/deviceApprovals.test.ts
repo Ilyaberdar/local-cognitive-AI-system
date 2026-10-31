@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import type { RuntimeManager } from "../src/app/RuntimeManager";
-import { deviceApprovalRefusal } from "../src/remote/host/deviceApprovals";
+import { approvalNeedsTrust, deviceApprovalRefusal } from "../src/remote/host/deviceApprovals";
 import { RemoteOperationError, type OperationContext } from "../src/remote/host/RemoteHost";
 import { createChatOperations } from "../src/runtime/chatOperations";
 import type { EventJournal } from "../src/runtime/EventJournal";
@@ -28,9 +28,18 @@ test("on a desktop a device approves file changes inside its own folders and pub
     { tool: "file", operation: "write", scope: "outside" }, { tool: "file", operation: "read" },
     { permissionRequired: true, operation: "file_write", path: "/Users/me/.ssh/config", content: "x" },
     { url: "http://printer.local/", place: "local" }, { tool: "mcp", operation: "call" }, {}
-  ]) assert.match(refused(operation) ?? "", /^Devices cannot approve this on MacBook: .*Decline it, or on MacBook allow devices to approve commands and files/, JSON.stringify(operation));
+  ]) assert.match(refused(operation) ?? "", /^Devices cannot approve this on MacBook: .*Decline it, or on MacBook mark this device as trusted \(Remote → This computer → Devices\)\.$/, JSON.stringify(operation));
   assert.match(refused({ tool: "command", operation: "command" })!, /it runs a command on that computer/);
   assert.match(refused({ tool: "file", operation: "write", scope: "outside" })!, /it reaches files outside this chat's own folder/);
+});
+
+test("what only the host or a device trusted there may approve: on a desktop what devices may not, on any host an app's tool and a page on its network", () => {
+  for (const operation of [{ tool: "command", operation: "command" }, { tool: "file", operation: "write", scope: "outside" }, { tool: "mcp", operation: "call" },
+    { url: "http://printer.local/", place: "local" }, {}]) assert.equal(approvalNeedsTrust(operation, "desktop"), true, JSON.stringify(operation));
+  for (const operation of [{ tool: "file", operation: "delete", scope: "workspace" }, { url: "https://example.com/" }]) assert.equal(approvalNeedsTrust(operation, "desktop"), false, JSON.stringify(operation));
+  // A server lets any device approve commands and files; its applications and network stay its own.
+  assert.deepEqual([{ tool: "command", operation: "command" }, { tool: "file", operation: "write", scope: "outside" }, { tool: "mcp", operation: "call" },
+    { url: "http://printer.local/", place: "local" }].map(operation => approvalNeedsTrust(operation, "server")), [false, false, true, true]);
 });
 
 async function fileFixture(t: TestContext) {
@@ -120,4 +129,32 @@ test("a device's approval that the host keeps to itself is refused before it rea
   pending = { tool: "file", operation: "delete", summary: "Delete note.txt", details: "", scope: "workspace" };
   assert.deepEqual(await resolve(true), { accepted: true });
   assert.deepEqual(decided, [false, true], "the refused approval never reached the turn");
+});
+
+test("a device trusted on the host approves what others may not, read at the moment it approves; a chat with full access stays the host's", async () => {
+  let pending: Record<string, unknown> = { tool: "command", operation: "command", summary: "Run ls", details: "ls ~", scope: "outside" };
+  const trusted = new Set(["phone"]);
+  let accessMode = "default";
+  const decided: boolean[] = [];
+  const runService = { get: () => ({ runId: RUN, sessionId: "chat", status: "waiting_approval" }), pendingApproval: () => ({ approvalId: APPROVAL, ...pending }),
+    resolveApproval: (_run: string, _approval: string, approved: boolean) => { decided.push(approved); return { accepted: true }; } };
+  const runtime = { sessionSettingsStore: { get: async () => ({ defaultAccessMode: accessMode, codeAgents: [], hypothesisAgents: [], subagents: [] }) }, projectStore: { get: async () => null } };
+  const ops = createChatOperations({ runtimeManager: { getRuntime: () => runtime, getSettings: async () => ({ ui: {} }) } as unknown as RuntimeManager,
+    sessionIndexStore: { get: async (id: string) => ({ id }) } as unknown as SessionIndexStore, runService: runService as unknown as RunService, journal: {} as EventJournal,
+    scopeOf: () => "device", approvalPolicy: operation => refused(operation), deviceTrust: context => trusted.has(context.deviceId) });
+  const as = (deviceId: string, approved = true) => Promise.resolve(ops["chat.approvals.resolve"]!({ runId: RUN, approvalId: APPROVAL, approved },
+    { accountId: "a", deviceId, signal: new AbortController().signal }));
+  const hostOnly = (error: unknown) => error instanceof RemoteOperationError && error.code === "approval_host_only";
+
+  assert.deepEqual(await as("phone"), { accepted: true }, "a command, from the trusted phone");
+  pending = { tool: "file", operation: "write", summary: "Write ~/notes.md", details: "", scope: "outside" };
+  assert.deepEqual(await as("phone"), { accepted: true }, "a file outside the chat's folder");
+  await assert.rejects(as("laptop"), hostOnly, "another device is not trusted because the phone is");
+  trusted.delete("phone");
+  await assert.rejects(as("phone"), hostOnly, "trust removed while the approval waited: the next Approve is refused");
+  assert.deepEqual(await as("phone", false), { accepted: true }, "declining still goes through");
+  trusted.add("phone");
+  accessMode = "full";
+  await assert.rejects(as("phone"), (error: unknown) => error instanceof RemoteOperationError && error.code === "unsupported", "a chat the host gave full access is used only there");
+  assert.deepEqual(decided, [true, true, false]);
 });

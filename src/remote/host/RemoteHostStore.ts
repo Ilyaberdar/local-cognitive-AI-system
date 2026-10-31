@@ -13,6 +13,9 @@ export interface RemoteGrant {
   revokedAt?: string;
   revokedBy?: string;
   cloudSyncedAt?: string;
+  /** Marked trusted on the host: when, and how ("host" the window, "cli" the server, "migrated"). */
+  trustedAt?: string;
+  trustedBy?: string;
 }
 export type ClaimDenial = "invitation_unknown" | "invitation_used" | "invitation_expired" | "owner_mismatch";
 
@@ -22,7 +25,8 @@ const toGrant = (row: Record<string, unknown>): RemoteGrant => ({
   ...(row.device_name ? { deviceName: String(row.device_name) } : {}), status: row.status as RemoteGrant["status"],
   ...(row.invitation_id ? { invitationId: String(row.invitation_id) } : {}), receiptId: String(row.receipt_id), grantedAt: String(row.granted_at),
   ...(row.last_connected_at ? { lastConnectedAt: String(row.last_connected_at) } : {}), ...(row.revoked_at ? { revokedAt: String(row.revoked_at) } : {}),
-  ...(row.revoked_by ? { revokedBy: String(row.revoked_by) } : {}), ...(row.cloud_synced_at ? { cloudSyncedAt: String(row.cloud_synced_at) } : {})
+  ...(row.revoked_by ? { revokedBy: String(row.revoked_by) } : {}), ...(row.cloud_synced_at ? { cloudSyncedAt: String(row.cloud_synced_at) } : {}),
+  ...(row.trusted_at ? { trustedAt: String(row.trusted_at) } : {}), ...(row.trusted_by ? { trustedBy: String(row.trusted_by) } : {})
 });
 
 /** Durable Remote state of a host: its Cloud id, owner, invitations and device grants. */
@@ -69,7 +73,7 @@ export class RemoteHostStore {
         VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET account_id = excluded.account_id, device_spki_sha256 = excluded.device_spki_sha256, device_name = excluded.device_name,
           status = 'active', invitation_id = excluded.invitation_id, receipt_id = excluded.receipt_id, receipt_json = NULL, granted_at = excluded.granted_at,
-          revoked_at = NULL, revoked_by = NULL, cloud_synced_at = NULL`)
+          revoked_at = NULL, revoked_by = NULL, cloud_synced_at = NULL, trusted_at = NULL, trusted_by = NULL`)
         .run(input.deviceId, input.accountId, input.deviceSpkiSha256, input.deviceName ?? null, input.invitationId, input.receiptId, at);
       return { ok: true, grant: toGrant(db.prepare("SELECT * FROM remote_grants WHERE device_id = ?").get(input.deviceId)!) } as const;
     });
@@ -84,8 +88,24 @@ export class RemoteHostStore {
 
   /** A revocation made on the host waits for the Cloud (cloud_synced_at) like a claim does. */
   revoke(deviceId: string, by: string, now: Date): boolean {
-    return Number(this.host.db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = ?, cloud_synced_at = NULL WHERE device_id = ? AND status = 'active'")
-      .run(now.toISOString(), by, deviceId).changes) > 0;
+    return Number(this.host.db.prepare(`UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = ?, cloud_synced_at = NULL, trusted_at = NULL, trusted_by = NULL
+      WHERE device_id = ? AND status = 'active'`).run(now.toISOString(), by, deviceId).changes) > 0;
+  }
+
+  /** Marks an active device trusted, or not. Only the host does this (its window or CLI): there is no
+   * Remote operation for it, so a device can never trust itself. */
+  setTrusted(deviceId: string, trusted: boolean, by: string, now: Date): boolean {
+    return Number(this.host.db.prepare("UPDATE remote_grants SET trusted_at = ?, trusted_by = ? WHERE device_id = ? AND status = 'active'")
+      .run(trusted ? now.toISOString() : null, trusted ? by : null, deviceId).changes) > 0;
+  }
+
+  /** Whether this device may approve what only a trusted one may: its grant is active, for this account,
+   * the host's owner, and still marked. Read at every decision, never cached. */
+  isTrusted(deviceId: string, accountId: string): boolean {
+    const owner = this.owner();
+    if (!owner || owner !== accountId) return false;
+    return Boolean(this.host.db.prepare("SELECT 1 FROM remote_grants WHERE device_id = ? AND account_id = ? AND status = 'active' AND trusted_at IS NOT NULL")
+      .get(deviceId, accountId));
   }
   /** Host-side revocations the Cloud has not confirmed yet. */
   unsyncedRevocations(): RemoteGrant[] {
@@ -108,7 +128,7 @@ export class RemoteHostStore {
   /** Unlinking the host: every grant is revoked and the owner removed; local data stays. */
   unlink(by: string, now: Date): void {
     this.host.transaction(db => {
-      db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = ? WHERE status = 'active'").run(now.toISOString(), by);
+      db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = ?, trusted_at = NULL, trusted_by = NULL WHERE status = 'active'").run(now.toISOString(), by);
       db.prepare("DELETE FROM host_meta WHERE key = ?").run(META.owner);
     });
   }
@@ -118,10 +138,11 @@ export class RemoteHostStore {
     return this.host.transaction(db => {
       if (revocation.seq <= this.revocationSeq()) return false;
       if (revocation.kind === "host") {
-        db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = 'cloud' WHERE status = 'active'").run(now.toISOString());
+        db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = 'cloud', trusted_at = NULL, trusted_by = NULL WHERE status = 'active'").run(now.toISOString());
         db.prepare("DELETE FROM host_meta WHERE key = ?").run(META.owner);
       } else if (revocation.deviceId) {
-        db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = 'cloud' WHERE device_id = ? AND status = 'active'").run(now.toISOString(), revocation.deviceId);
+        db.prepare("UPDATE remote_grants SET status = 'revoked', revoked_at = ?, revoked_by = 'cloud', trusted_at = NULL, trusted_by = NULL WHERE device_id = ? AND status = 'active'")
+          .run(now.toISOString(), revocation.deviceId);
         // The Cloud now knows about a revocation made here.
         db.prepare("UPDATE remote_grants SET cloud_synced_at = ? WHERE device_id = ? AND status = 'revoked'").run(now.toISOString(), revocation.deviceId);
       }

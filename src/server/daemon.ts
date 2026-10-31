@@ -133,8 +133,10 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       if (op === "devices") return { devices: agent.devices() };
       if (op === "invitation") return agent.invitation(String(request.invitationId));
       if (op === "revoke-device") return { revoked: agent.revokeDevice(String(request.deviceId)) };
-      agent.resetOwner();
-      return { reset: true };
+      if (op === "trust-device" || op === "untrust-device") return { trusted: op === "trust-device", changed: agent.setDeviceTrust(String(request.deviceId), op === "trust-device", "cli") };
+      // Named, never what is left: an op added elsewhere must not unlink the server.
+      if (op === "reset-owner") { agent.resetOwner(); return { reset: true }; }
+      throw new ControlError("This server does not know that request.", "unknown_op");
     },
     // The runtime is rebuilt when settings change: each request reaches the current one.
     cloudModels: createCloudModelsControl({ projects: () => backend.runtimeManager.getRuntime().projectStore,

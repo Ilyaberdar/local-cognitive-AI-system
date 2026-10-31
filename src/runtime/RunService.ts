@@ -22,7 +22,7 @@ export interface CommandAck { commandId: string; status: "accepted" | "rejected"
   code?: string; activeRunId?: string; replayed?: boolean }
 export interface RunView { runId: string; sessionId: string; status: RunStatus; error?: string; assistantMessageId?: string; createdAt: string; updatedAt: string }
 export interface ActiveRunView extends RunView { partialText: string; progress?: Omit<ProcessProgressEvent, "answer">; pendingApproval?: PendingApprovalView }
-export interface PendingApprovalView extends ApprovalOperation { approvalId: string; digest: string; requestedAt: string }
+export interface PendingApprovalView extends ApprovalOperation { approvalId: string; digest: string; requestedAt: string; needsTrustedDevice?: true }
 
 export interface ExecuteHooks { signal: AbortSignal; onProgress: (event: ProcessProgressEvent) => void; requestApproval: (operation: ApprovalOperation) => Promise<boolean> }
 export interface RunServiceDependencies {
@@ -38,6 +38,9 @@ export interface RunServiceDependencies {
   /** What a device may see of a turn: the host's folders replaced. Applied as events are written,
    * so streamed offsets count the text the device receives. */
   scrubber?(sessionId: string): Promise<Scrubber>;
+  /** Whether only the host or a device trusted there may approve this operation: a hint the approval
+   * carries for devices (the host's refusal decides). */
+  needsTrust?(operation: ApprovalOperation): boolean;
   logger?: Logger;
   now?: () => Date;
 }
@@ -372,7 +375,8 @@ export class RunService {
     await this.checkGuard(run, true);
     run.controller.signal.throwIfAborted();
     if (run.approval) return Promise.reject(new RunServiceError("Another approval is pending.", "approval_pending"));
-    const view: PendingApprovalView = { ...(run.scrub ? run.scrub(operation) : operation), approvalId: randomUUID(), digest: sha256(canonical(operation)), requestedAt: this.now().toISOString() };
+    const view: PendingApprovalView = { ...(run.scrub ? run.scrub(operation) : operation), approvalId: randomUUID(), digest: sha256(canonical(operation)), requestedAt: this.now().toISOString(),
+      ...(this.deps.needsTrust?.(operation) ? { needsTrustedDevice: true } : {}) };
     this.flush(run);
     this.transition(run, "waiting_approval", { type: "approval.requested", payload: { runId: run.runId, ...view } });
     return new Promise<boolean>((resolve, reject) => {

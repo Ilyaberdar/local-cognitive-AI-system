@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld("desktopRemoteHost", {
   connectKey: () => ipcRenderer.invoke("remote-host:connect-key"),
   invitation: invitationId => ipcRenderer.invoke("remote-host:invitation", invitationId),
   revokeDevice: deviceId => ipcRenderer.invoke("remote-host:revoke-device", deviceId),
+  trustDevice: (deviceId, trusted) => ipcRenderer.invoke("remote-host:trust-device", deviceId, trusted),
   unlink: () => ipcRenderer.invoke("remote-host:unlink"),
   folders: () => ipcRenderer.invoke("remote-host:folders"),
   addFolder: () => ipcRenderer.invoke("remote-host:add-folder"),

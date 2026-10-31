@@ -85,7 +85,6 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
     return `<div class="settings-rows">
       ${toggle("enabled", "Allow remote connections", "Your devices, signed in to the same account, can use this computer's chats and models.", status.enabled, off)}
       ${toggle("keepAwake", "Keep this computer awake", "While connections are allowed, it does not sleep when idle; the screen still turns off. A laptop with its lid closed sleeps anyway, and devices see it offline.", status.keepAwake, off || !status.enabled)}
-      ${toggle("allowDeviceCommands", "Devices may approve commands and files", "Off: a device approves only file changes inside its chat's own folder; commands and other files it can only decline. On: your devices approve commands and files anywhere on this computer.", status.allowDeviceCommands, off)}
       ${toggle("openAtLogin", "Open at login", status.openAtLoginAvailable
         ? `Starts without a window, in the menu bar or the tray, when you sign in to this computer, so devices can connect after a restart.${status.openAtLoginNeedsApproval ? " <strong>macOS needs your approval:</strong> System Settings → General → Login Items, then turn on Local Cognitive." : ""}`
         : "Available in the installed app.", status.openAtLogin, off || !status.enabled || !status.openAtLoginAvailable)}
@@ -110,9 +109,10 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
   };
   function deviceList() {
     if (!status.devices.length) return "";
-    return `<section class="remote-section"><div class="remote-section-head"><h2>Devices</h2></div><ul class="remote-devices remote-host-devices">${status.devices.map(device => `<li>
+    return `<section class="remote-section"><div class="remote-section-head"><div><h2>Devices</h2><p class="subtle remote-section-note">A device approves file changes inside its chat's own folder. A trusted one also approves commands, files anywhere and its applications' tools, one action at a time.</p></div></div><ul class="remote-devices remote-host-devices">${status.devices.map(device => `<li>
       <span><span class="status-dot ${device.connected ? "is-online" : ""}"></span>${escape(device.name)}</span>
-      <span class="subtle">${device.connected ? "Connected now" : device.lastConnectedAt ? `Last seen ${day(device.lastConnectedAt)}` : `Paired ${day(device.grantedAt)}`}</span>
+      <span class="subtle">${device.connected ? "Connected now" : device.lastConnectedAt ? `Last seen ${day(device.lastConnectedAt)}` : `Paired ${day(device.grantedAt)}`}${device.trusted ? " · Trusted" : ""}</span>
+      <label class="settings-control remote-device-trust"><input type="checkbox" role="switch" data-device-trust="${escape(device.deviceId)}" ${device.trusted ? "checked" : ""}${pending ? " disabled" : ""} /><span>Trusted</span></label>
       <button type="button" class="ghost-button" data-host-action="revoke" data-device-id="${escape(device.deviceId)}" data-device-name="${escape(device.name)}"${pending ? " disabled" : ""}>Remove access</button></li>`).join("")}</ul></section>`;
   }
 
@@ -130,7 +130,7 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
     if (!bridge) return '<div class="account-card"><div><h2>Available in the desktop app</h2><p>Open the Local Cognitive desktop app to let your devices connect to this computer.</p></div></div>';
     if (!status) return loadError ? `<p class="remote-error" role="alert">${escape(loadError)}</p>` : '<p class="settings-description" role="status">Loading…</p>';
     return `${statusCard()}${notice ? `<p class="remote-error" role="alert">${escape(notice)}</p>` : ""}${switches()}${connectDevice()}${deviceList()}${folderList()}
-      <p class="settings-footnote">Traffic between your devices and this computer is end-to-end encrypted; Local Cognitive Cloud only routes it. Devices see this computer's chats (not those of its projects) and models; they never use its MCP tools.</p>`;
+      <p class="settings-footnote">Traffic between your devices and this computer is end-to-end encrypted; Local Cognitive Cloud only routes it. Devices see this computer's chats (not those of its projects) and models; their own chats never use its MCP tools, and only a trusted device approves one of its tools in a workflow.</p>`;
   }
 
   function repaint() {
@@ -142,6 +142,9 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
     root.addEventListener("change", event => {
       const folderId = event.target.dataset?.folderCreate;
       if (folderId) { const allowCreate = event.target.checked; void act("set-folder", async () => { folders = await call("setFolder", folderId, { allowCreate }); }); return; }
+      // Trusting asks in the app's own dialog (the main process); Cancel leaves it off.
+      const trustId = event.target.dataset?.deviceTrust;
+      if (trustId) { const trusted = event.target.checked; void act("trust", async () => { await call("trustDevice", trustId, trusted); adopt(await call("status")); }); return; }
       const name = event.target.dataset?.hostSetting;
       if (!name) return;
       const value = event.target.checked;

@@ -32,6 +32,14 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   const file = path.join(dataRoot, "remote-host.json");
   let settings = readSettings(file);
   const store = backend.host ? new RemoteHostStore(backend.host.database) : undefined;
+  // 0.1.12 let every device approve commands and files at once: the devices paired then become
+  // trusted, once, and the switch is gone. A device paired later is trusted only when marked.
+  if (settings.allowDeviceCommands && store) {
+    const now = new Date();
+    for (const grant of store.grants()) if (grant.status === "active") store.setTrusted(grant.deviceId, true, "migrated", now);
+    settings = { ...settings, allowDeviceCommands: false };
+    writeSettings(file, settings);
+  }
   let agent, composition, blocker, paused, startError, disposed = false;
   let queue = Promise.resolve();
   const serial = task => (queue = queue.then(task, task));
@@ -40,7 +48,7 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
   const status = () => {
     const agentStatus = agent?.status();
     const connected = new Set((agent?.connectedDevices() ?? []).map(device => device.deviceId));
-    const { backgroundNoticeShown: _note, ...switches } = settings;
+    const { backgroundNoticeShown: _note, allowDeviceCommands: _old, ...switches } = settings;
     return {
       available: Boolean(store && cloudUrl), ...switches, hostName, openAtLoginAvailable: loginItemAvailable(),
       ...(loginItemNeedsApproval() ? { openAtLoginNeedsApproval: true } : {}),
@@ -48,7 +56,8 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
       ...(!agent && settings.enabled && paused ? { reason: paused } : {}),
       ...(agentStatus?.lastError || startError ? { lastError: agentStatus?.lastError ?? startError } : {}),
       devices: (store?.grants() ?? []).filter(grant => grant.status === "active").map(grant => ({ deviceId: grant.deviceId, name: grant.deviceName ?? "Device",
-        grantedAt: grant.grantedAt, ...(grant.lastConnectedAt ? { lastConnectedAt: grant.lastConnectedAt } : {}), connected: connected.has(grant.deviceId) }))
+        grantedAt: grant.grantedAt, ...(grant.lastConnectedAt ? { lastConnectedAt: grant.lastConnectedAt } : {}), connected: connected.has(grant.deviceId),
+        trusted: Boolean(grant.trustedAt), ...(grant.trustedAt ? { trustedAt: grant.trustedAt } : {}) }))
     };
   };
   const emit = () => {
@@ -115,9 +124,8 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     if (!on && blocker !== undefined) { powerSaveBlocker.stop(blocker); blocker = undefined; }
   };
   const launch = expectedOwner => {
-    // Commands and files outside a chat's folder are approved here, unless devices were allowed to.
-    composition ??= createHostOperations({ backend, dataRoot, deviceFilesOnly: true,
-      approvalPolicy: operation => settings.allowDeviceCommands ? undefined : deviceApprovalRefusal(operation, hostName) });
+    // Commands and files outside a chat's folder are approved here, or from a device trusted here.
+    composition ??= createHostOperations({ backend, dataRoot, deviceFilesOnly: true, approvalPolicy: operation => deviceApprovalRefusal(operation, hostName) });
     // With the account's token, a computer no device has paired with yet is listed under the account.
     return startHostAgent({ host: backend.host, vault, cloudUrl, hostName, kind: "desktop", logger, status: hostStatus, operations: composition.operations, expectedOwner,
       accountToken: () => accountService.getAccessToken().catch(() => undefined) });
@@ -169,14 +177,6 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     if (!patch || typeof patch !== "object") throw failure("Invalid request.", "invalid_request");
     const next = { ...settings };
     for (const key of SWITCHES) if (typeof patch[key] === "boolean") next[key] = patch[key];
-    // Asked here, not only in the window: anything a device writes is shown in that window.
-    if (next.allowDeviceCommands && !settings.allowDeviceCommands) {
-      const window = getWindow();
-      const { response } = await dialog.showMessageBox(window && !window.isDestroyed() ? window : undefined, { type: "warning", buttons: ["Allow", "Cancel"], defaultId: 1, cancelId: 1,
-        message: "Let your devices approve commands and files on this computer?",
-        detail: "A paired device could then run any command and change any file here, as you can. Turn this on only if you trust every device paired with this computer." });
-      if (response !== 0) next.allowDeviceCommands = false;
-    }
     if (next.enabled && !store) throw failure("Hosting is unavailable on this computer: its database could not be opened.", "unavailable");
     writeSettings(file, next);
     settings = next;
@@ -202,6 +202,28 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     const revoked = agent ? agent.revokeDevice(deviceId) : Boolean(store?.revoke(deviceId, "host", new Date()));
     emit();
     return { revoked };
+  });
+  // Trusted here only (there is no Remote operation for it): the device may then approve commands,
+  // files anywhere and its applications' tools, one action at a time. Asked in this process, not only
+  // in the window, so a page cannot trust a device without the person saying so.
+  handle("trust-device", async (raw, trusted) => {
+    const deviceId = id(raw);
+    if (typeof trusted !== "boolean") throw failure("Invalid request.", "invalid_request");
+    if (!store) throw failure("Hosting is unavailable on this computer: its database could not be opened.", "unavailable");
+    const grant = store.activeGrant(deviceId);
+    if (!grant) throw failure("This device no longer has access to this computer.", "not_found");
+    if (trusted && !grant.trustedAt) {
+      const name = grant.deviceName ?? "this device";
+      const window = getWindow();
+      const { response } = await dialog.showMessageBox(window && !window.isDestroyed() ? window : undefined, { type: "warning", buttons: ["Trust", "Cancel"], defaultId: 1, cancelId: 1,
+        message: `Trust ${name}?`,
+        detail: `${name} could then approve commands, changes to files anywhere on this computer and tools of its applications (MCP), one action at a time; an iPhone asks for Face ID first. It still cannot give a chat full access. Trust only a device you alone use.` });
+      if (response !== 0) return { trusted: false };
+    }
+    store.setTrusted(deviceId, trusted, "host", new Date());
+    logger.info(trusted ? "Remote device trusted" : "Remote device no longer trusted", { deviceId });
+    emit();
+    return { trusted };
   });
   // Unlinks this computer from the account it belonged to, so the one signed in now can host. The
   // Cloud must hear of it, so it happens online; meanwhile no device may pair or connect.

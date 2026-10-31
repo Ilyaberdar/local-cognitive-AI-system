@@ -100,6 +100,9 @@ export interface ChatOperationDependencies {
   projects?: ProjectAccess;
   /** Why a device may not approve this operation, on a host that keeps some approvals to itself. */
   approvalPolicy?: (operation: Record<string, unknown>) => string | undefined;
+  /** Whether the calling device is trusted on the host (its owner marked it there): it may approve what
+   * the policy refuses. Read at every decision; absent means no device is. */
+  deviceTrust?: (context: OperationContext) => boolean;
   /** On a desktop: the only folders a chat's files may be opened from by a device (its chat's own
    * folder and the shared folders), whatever the chat's file actions touched. */
   deviceFileRoots?: (sessionId: string) => Promise<string[]>;
@@ -442,13 +445,16 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
     "chat.runs.cancel": payload => known(() => deps.runService.cancel(parse(schemas.run, payload).runId)),
 
-    "chat.approvals.resolve": payload => known(async () => {
+    "chat.approvals.resolve": (payload, context) => known(async () => {
       const { runId, approvalId, approved } = parse(schemas.approval, payload);
-      // Declining is always allowed; approving only in a chat a device may use, and what the host lets it.
+      // Declining is always allowed; approving only in a chat a device may use, and what the host lets it
+      // (anything, for a device trusted there; a chat with full access stays the host's all the same).
       const run = approved ? deps.runService.get(runId) : undefined;
       if (run) await requireUsable(run.sessionId);
       const pending = approved ? deps.runService.pendingApproval(runId) : undefined;
-      const refusal = pending?.approvalId === approvalId ? deps.approvalPolicy?.(pending as unknown as Record<string, unknown>) : undefined;
+      // From here to the decision nothing waits: trust removed a moment ago is already seen.
+      const trusted = deps.deviceTrust?.(context) === true;
+      const refusal = pending?.approvalId === approvalId && !trusted ? deps.approvalPolicy?.(pending as unknown as Record<string, unknown>) : undefined;
       if (refusal) throw new RemoteOperationError(refusal, "approval_host_only");
       return deps.runService.resolveApproval(runId, approvalId, approved);
     }),

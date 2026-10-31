@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { RemoteClient } from "../src/remote/client/RemoteClient";
+import { RemoteHostStore } from "../src/remote/host/RemoteHostStore";
 import { memoryVault, remoteStackSkip, startCloud, until } from "./fixtures/remoteStack";
 import { startTestBackend } from "./fixtures/testBackend";
 
@@ -51,7 +53,8 @@ test("this computer hosts paired devices for the account signed in on it", { ski
 
   await host.init();
   assert.equal(state(), "off", "hosting is off until its owner turns it on");
-  assert.deepEqual(await call("set", { enabled: true, ignored: "x" }).then(status => [status.enabled, status.keepAwake, status.allowDeviceCommands]), [true, true, false]);
+  assert.deepEqual(await call("set", { enabled: true, ignored: "x", allowDeviceCommands: true }).then(status => [status.enabled, status.keepAwake, status.allowDeviceCommands]), [true, true, undefined],
+    "the switch for every device is gone: trust is per device");
   await until(state, value => value === "online");
   assert.equal(blocker.active.size, 1, "the computer is kept from sleeping while it hosts");
   assert.deepEqual(readSettings(path.join(root, "remote-host.json")), { enabled: true, keepAwake: true, openAtLogin: false, allowDeviceCommands: false, backgroundNoticeShown: false });
@@ -250,19 +253,51 @@ test("main reads whether to start in the background without loading the backend,
   assert.deepEqual(JSON.parse(loaded).filter((file: string) => !file.endsWith("host-settings.cjs")), [], "an early backend module would read its configuration before main sets it");
 });
 
-test("letting devices approve commands is confirmed by the system's dialog, not by the window alone", async t => {
+const PHONE = "8e0f6a52-3c1b-4f7e-9a2d-5b6c7d8e9f01", LAPTOP = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+const pairDevice = (store: RemoteHostStore, deviceId: string, name: string) => {
+  const invitationId = randomUUID(), now = new Date();
+  store.createInvitation(invitationId, now, new Date(now.getTime() + 60_000));
+  assert.ok(store.claim({ invitationId, accountId: "owner", deviceId, deviceSpkiSha256: `spki-${deviceId}`, deviceName: name, receiptId: randomUUID(), now }).ok);
+};
+
+test("a device is trusted after the system's dialog says so, not by the window alone; untrusting asks nothing", async t => {
   const { backend, root } = await startTestBackend(t, "desktop");
+  const store = new RemoteHostStore(backend.host!.database);
+  pairDevice(store, PHONE, "Ilya's iPhone");
   const ipc = fakeIpc(), asked: string[] = [];
   let answer = 1;
-  const dialog = { showMessageBox: async (_window: unknown, options: { message: string }) => { asked.push(options.message); return { response: answer }; } };
+  const dialog = { showMessageBox: async (_window: unknown, options: { message: string; detail: string }) => { asked.push(`${options.message} ${options.detail}`); return { response: answer }; } };
   const host = registerHost({ app: { isPackaged: false }, ipcMain: ipc, dialog, vault: memoryVault(), accountService: new FakeAccount(), backend, dataRoot: root,
     assertSender: () => undefined, getWindow: () => undefined, powerSaveBlocker: fakeBlocker(), cloudUrl: "http://127.0.0.1:9", hostName: "MacBook" });
   t.after(() => host.dispose());
-  assert.equal((await ipc.invoke("set", { allowDeviceCommands: true })).value.allowDeviceCommands, false, "Cancel keeps it off");
+  const trusted = () => (host.status().devices as Array<{ deviceId: string; trusted: boolean }>).find(device => device.deviceId === PHONE)?.trusted;
+  assert.equal(trusted(), false);
+  assert.deepEqual((await ipc.invoke("trust-device", PHONE, true)).value, { trusted: false }, "Cancel keeps it untrusted");
+  assert.equal(trusted(), false);
   answer = 0;
-  assert.equal((await ipc.invoke("set", { allowDeviceCommands: true })).value.allowDeviceCommands, true);
-  assert.equal((await ipc.invoke("set", { allowDeviceCommands: true })).value.allowDeviceCommands, true);
-  assert.deepEqual(asked, ["Let your devices approve commands and files on this computer?", "Let your devices approve commands and files on this computer?"], "asked when turning it on, not again");
-  assert.equal((await ipc.invoke("set", { allowDeviceCommands: false })).value.allowDeviceCommands, false, "turning it off needs no question");
-  assert.equal(asked.length, 2);
+  assert.deepEqual((await ipc.invoke("trust-device", PHONE, true)).value, { trusted: true });
+  assert.equal(trusted(), true);
+  assert.match(asked[1]!, /^Trust Ilya's iPhone\? .*approve commands, changes to files anywhere on this computer and tools of its applications \(MCP\).*cannot give a chat full access/);
+  assert.equal(store.isTrusted(PHONE, "owner"), true, "what the approvals read");
+  await ipc.invoke("trust-device", PHONE, true);
+  assert.equal(asked.length, 2, "already trusted: not asked again");
+  assert.deepEqual((await ipc.invoke("trust-device", PHONE, false)).value, { trusted: false });
+  assert.equal(asked.length, 2, "untrusting needs no question");
+  assert.equal(store.isTrusted(PHONE, "owner"), false);
+  assert.equal((await ipc.invoke("trust-device", LAPTOP, true)).error?.code, "not_found", "a device without access is not trusted");
+  assert.equal((await ipc.invoke("trust-device", "not-an-id", true)).error?.code, "invalid_request");
+});
+
+test("the 0.1.12 switch for every device trusts the devices paired then, once, and is turned off", async t => {
+  const { backend, root } = await startTestBackend(t, "desktop");
+  const store = new RemoteHostStore(backend.host!.database);
+  pairDevice(store, PHONE, "iPhone");
+  fs.writeFileSync(path.join(root, "remote-host.json"), JSON.stringify({ enabled: false, keepAwake: true, openAtLogin: false, allowDeviceCommands: true }));
+  const host = registerHost({ app: { isPackaged: false }, ipcMain: fakeIpc(), vault: memoryVault(), accountService: new FakeAccount(), backend, dataRoot: root,
+    assertSender: () => undefined, getWindow: () => undefined, powerSaveBlocker: fakeBlocker(), cloudUrl: "http://127.0.0.1:9", hostName: "MacBook" });
+  t.after(() => host.dispose());
+  assert.deepEqual([store.activeGrant(PHONE)?.trustedAt !== undefined, store.activeGrant(PHONE)?.trustedBy], [true, "migrated"]);
+  assert.equal(readSettings(path.join(root, "remote-host.json")).allowDeviceCommands, false);
+  pairDevice(store, LAPTOP, "Laptop");
+  assert.equal(store.isTrusted(LAPTOP, "owner"), false, "a device paired later is trusted only when marked");
 });

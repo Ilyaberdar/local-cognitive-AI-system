@@ -31,6 +31,7 @@ import { errorCategory } from "./diagnostics/errorCategory";
 import { CommandLedger } from "./runtime/CommandLedger";
 import { EventJournal } from "./runtime/EventJournal";
 import { createChatScrubber, withoutAttachmentData } from "./runtime/chatOperations";
+import { approvalNeedsTrust } from "./remote/host/deviceApprovals";
 import type { ChatAttachment } from "./types";
 import { RunService } from "./runtime/RunService";
 import { processRuntimeInput } from "./transports/shared/runtimeActions";
@@ -307,6 +308,7 @@ const openHostServices = (database: HostDatabase, config: AppConfig, runtimeMana
     legacyBusy: sessionId => processRunRegistry.hasActiveSession(sessionId),
     // Events are written as a device may see them: no folder of this server.
     scrubber: createChatScrubber({ runtimeManager, hostDirectories: [path.dirname(config.appDataDir)] }),
+    needsTrust: operation => approvalNeedsTrust(operation as unknown as Record<string, unknown>, desktop ? "desktop" : "server"),
     // The same entry, channel and profile as the local chat: one history per session.
     execute: async (run, hooks) => {
       const settings = await runtimeManager.getSettings();

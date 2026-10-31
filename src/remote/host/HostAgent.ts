@@ -132,6 +132,13 @@ export class HostAgent extends EventEmitter {
     return revoked;
   }
 
+  /** Marks a device trusted, or not (only here, never from a device or the Cloud). */
+  setDeviceTrust(deviceId: string, trusted: boolean, by: string): boolean {
+    const changed = this.options.store.setTrusted(deviceId, trusted, by, new Date());
+    if (changed) this.options.logger.info(trusted ? "Remote device trusted" : "Remote device no longer trusted", { deviceId, by });
+    return changed;
+  }
+
   /** Removes the owner and every grant; the next key can be claimed by any account. */
   resetOwner(): void {
     this.options.store.unlink("host", new Date());

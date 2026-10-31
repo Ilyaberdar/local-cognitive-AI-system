@@ -7,7 +7,7 @@ const { JSDOM } = require("jsdom");
 
 const PHONE = "0b6a3f0e-7f1d-4b9e-8a52-1f2c3d4e5f60", INVITATION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const flush = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
-const status = (overrides: Record<string, unknown> = {}) => ({ available: true, enabled: false, keepAwake: true, openAtLogin: false, allowDeviceCommands: false,
+const status = (overrides: Record<string, unknown> = {}) => ({ available: true, enabled: false, keepAwake: true, openAtLogin: false,
   hostName: "MacBook", state: "off", devices: [], ...overrides });
 
 /** The tab in a page of its own, with its timers in the test's hands and confirmations answered by `answer`. */
@@ -36,6 +36,7 @@ const bridgeWith = (start: Record<string, unknown>, overrides: Record<string, un
     connectKey: async () => ok({ key: "LCR1-KEY", invitationId: INVITATION, expiresAt: Date.now() + 600_000 }),
     invitation: async () => ok({ consumed: false }),
     revokeDevice: async () => ok({ revoked: true }),
+    trustDevice: async (_id: string, trusted: boolean) => ok({ trusted }),
     unlink: async () => ok({ ...start, state: "online", reason: undefined }),
     onChange: (callback: (value: unknown) => void) => { change = callback; },
     ...overrides
@@ -51,9 +52,7 @@ test("hosting is turned on with its switch, and the page says when the computer 
   await flush();
   assert.match(page.text(), /Remote connections are off\s*Devices cannot connect to MacBook/);
   assert.equal(page.view().querySelector('[data-host-setting="keepAwake"]').disabled, true, "nothing to keep awake for while off");
-  const commands = page.view().querySelector('[data-host-setting="allowDeviceCommands"]');
-  assert.equal(commands.checked, false, "devices approve only file changes in their own folder until allowed");
-  assert.match(page.text(), /commands and other files it can only decline/);
+  assert.equal(page.view().querySelector('[data-host-setting="allowDeviceCommands"]'), null, "no switch for every device at once: trust is per device");
   const enabled = page.view().querySelector('[data-host-setting="enabled"]');
   enabled.checked = true;
   enabled.dispatchEvent(new page.dom.window.Event("change", { bubbles: true }));
@@ -120,6 +119,22 @@ test("a device loses access only after a yes, and its name is shown as text", as
   await flush();
   assert.deepEqual(calls.find(call => call[0] === "revokeDevice"), ["revokeDevice", PHONE]);
   assert.match(page.confirmations[0]!, /Remove iPhone <img src=x>'s access to this computer\?/);
+});
+
+test("a device is trusted with its own switch; the app asks before it is, the page only passes it on", async () => {
+  const devices = [{ deviceId: PHONE, name: "iPhone", grantedAt: "2026-10-31T10:00:00Z", connected: true, trusted: false }];
+  const { bridge, calls } = bridgeWith(status({ enabled: true, state: "online", devices }));
+  const page = load(bridge);
+  page.view().innerHTML = page.ui.inner();
+  await flush();
+  assert.match(page.text(), /A trusted one also approves commands, files anywhere and its applications' tools, one action at a time/);
+  const trust = page.view().querySelector(`[data-device-trust="${PHONE}"]`);
+  assert.equal(trust.checked, false);
+  trust.checked = true;
+  trust.dispatchEvent(new page.dom.window.Event("change", { bubbles: true }));
+  await flush();
+  assert.equal(JSON.stringify(calls.find(call => call[0] === "trustDevice")), JSON.stringify(["trustDevice", PHONE, true]));
+  assert.equal(page.confirmations.length, 0, "the question is the app's own dialog, not the page's");
 });
 
 test("paused hosting says why: signed out, or set up for another account, which unlinking ends", async () => {

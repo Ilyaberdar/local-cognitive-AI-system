@@ -91,3 +91,6 @@
 /* A newer release of the connected server (installed on the server by its administrator). */
 .remote-update { margin-top: 16px; }
 .remote-update-notes { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--control-bg); white-space: pre-wrap; font-size: calc(11px * var(--font-scale, 1)); }
+/* A host's device row: name, when seen, Trusted, Remove access. */
+.remote-host-devices li { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.remote-host-devices .remote-device-trust { display: inline-flex; width: auto; align-items: center; gap: 8px; color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); cursor: pointer; }

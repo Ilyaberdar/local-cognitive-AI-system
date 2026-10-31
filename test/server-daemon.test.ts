@@ -32,6 +32,16 @@ test("pair waits for the computer unless told not to; connect-key only prints th
   assert.throws(() => parseServerArgs(["pair"], {}), (error: { exitCode?: number }) => error.exitCode === 64);
 });
 
+test("a device is trusted from the server's CLI with its id and a yes; untrusting needs only the id", () => {
+  const id = "8e0f6a52-3c1b-4f7e-9a2d-5b6c7d8e9f01";
+  assert.equal(parseServerArgs(["trust-device", id, "--yes", "--data-dir", "/srv/lc"]).deviceId, id);
+  assert.equal(parseServerArgs(["untrust-device", id, "--data-dir", "/srv/lc"]).deviceId, id);
+  for (const argv of [["trust-device", id, "--data-dir", "/srv/lc"], ["trust-device", "--yes", "--data-dir", "/srv/lc"], ["untrust-device", "x", "--data-dir", "/srv/lc"]]) {
+    assert.throws(() => parseServerArgs(argv, {}), (error: { exitCode?: number; message?: string }) => error.exitCode === 64, argv.join(" "));
+  }
+  assert.throws(() => parseServerArgs(["trust-device", id, "--data-dir", "/srv/lc"], {}), /add --yes to confirm/);
+});
+
 test("status says whether computers can reach the server and what to do next", () => {
   const base = { phase: "running", pid: 7, version: "0.2.0", activeWork: { total: 0 }, inference: { backend: "cuda", active: "CUDA" } };
   const online = describeStatus({ ...base, remote: { state: "online", claimed: true, devices: 2, sessions: 1 } });

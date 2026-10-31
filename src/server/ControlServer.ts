@@ -6,7 +6,7 @@ import type { CloudModelsRequest } from "./cloudModels";
 import type { WebTargetsRequest } from "./webTargets";
 
 export class ControlError extends Error { constructor(message: string, readonly code: string) { super(message); } }
-export type RemoteControlOp = "connect-key" | "invitation" | "devices" | "revoke-device" | "reset-owner";
+export type RemoteControlOp = "connect-key" | "invitation" | "devices" | "revoke-device" | "trust-device" | "untrust-device" | "reset-owner";
 export interface RemoteControlRequest { ttlSec?: number; deviceId?: string; invitationId?: string }
 
 export interface ControlHandlers {
@@ -78,12 +78,12 @@ export class ControlServer {
         socket.resume();
         return;
       }
-      if (["connect-key", "invitation", "devices", "revoke-device", "reset-owner"].includes(request.op ?? "")) {
+      if (["connect-key", "invitation", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner"].includes(request.op ?? "")) {
         if (!handlers.remote) { fail("remote_off", "Remote is not available on this server."); return; }
         const ttlSec = typeof request.ttlSec === "number" && request.ttlSec >= 60 && request.ttlSec <= 3600 ? request.ttlSec : undefined;
         const deviceId = typeof request.deviceId === "string" && /^[0-9a-f-]{36}$/i.test(request.deviceId) ? request.deviceId : undefined;
         const invitationId = typeof request.invitationId === "string" && /^[0-9a-f-]{36}$/i.test(request.invitationId) ? request.invitationId : undefined;
-        if (request.op === "revoke-device" && !deviceId) { fail("bad_request", "A device id is required."); return; }
+        if (["revoke-device", "trust-device", "untrust-device"].includes(request.op ?? "") && !deviceId) { fail("bad_request", "A device id is required."); return; }
         if (request.op === "invitation" && !invitationId) { fail("bad_request", "An invitation id is required."); return; }
         void handlers.remote(request.op as RemoteControlOp, { ...(ttlSec ? { ttlSec } : {}), ...(deviceId ? { deviceId } : {}), ...(invitationId ? { invitationId } : {}) }).then(
           result => { send({ v: 1, ok: true, result }); socket.end(); },

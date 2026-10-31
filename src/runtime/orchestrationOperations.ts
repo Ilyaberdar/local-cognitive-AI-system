@@ -89,9 +89,9 @@ const refuseLater = (fields: Record<string, unknown>, projects = false): void =>
 /** What a workflow sent from a device may not contain yet (see LATER). */
 /** Tasks and schedules a device makes: their runs get no MCP tools of the host (`WorkflowRun.deviceOrigin`). */
 const DEVICE_ORIGIN = { deviceOrigin: true };
-const MCP_ON_HOST = (): string => `This step calls a tool of an application on ${place()} (MCP). Approve it on ${place()}; from here you can reject it.`;
+const MCP_ON_HOST = (): string => `This step calls a tool of an application on ${place()} (MCP). Approve it on ${place()} or from a device trusted there; from here you can reject it.`;
 /** A web step's page on the server's own computer or its local network: what is there is the host's. */
-const PAGE_ON_HOST = (): string => `This page is on ${place()} or its local network. Approve it on ${place()}; from here you can reject it.`;
+const PAGE_ON_HOST = (): string => `This page is on ${place()} or its local network. Approve it on ${place()} or from a device trusted there; from here you can reject it.`;
 
 export const workflowLimits = (definition: unknown): string[] => {
   const value = record(definition), runDefaults = record(value.runDefaults), problems = new Set<string>();
@@ -151,6 +151,9 @@ export interface OrchestrationOperationDependencies {
   folders?: HostFolders;
   /** Why a device may not approve a waiting operation, on a host that keeps some approvals to itself. */
   approvalPolicy?: (operation: Record<string, unknown>) => string | undefined;
+  /** Whether the calling device is trusted on the host: it may approve a waiting MCP call, a page on
+   * the host's network and what the policy refuses. Read at every decision; absent means no device is. */
+  deviceTrust?: (context: OperationContext) => boolean;
   /** True while the host drains: new work is refused; reads, cancels and reviews still answer. */
   isDraining(): boolean;
   /** The event journal's epoch: workflow run streams use it, so their cursors survive restarts. */
@@ -394,6 +397,8 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
             // approves it (a device may still reject it, which stops the step). Checked under the
             // run's lock, on the operation being approved.
             beforeApprove: waiting => {
+              // A device its owner trusts on the host approves these too, read now, under the lock.
+              if (deps.deviceTrust?.(context) === true) return;
               if (waiting.tool === "mcp") throw unsupported(MCP_ON_HOST());
               if (typeof waiting.place === "string" && typeof waiting.url === "string") throw unsupported(PAGE_ON_HOST());
               // An operation waiting for approval; a Human Review step approves no operation.
