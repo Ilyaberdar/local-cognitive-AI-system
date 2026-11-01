@@ -256,6 +256,21 @@ test("a runtime uses only its own backend's devices, never nvidia-smi's CUDA num
   assert.match(oldDriver.fallbackReason ?? "", /Update the NVIDIA driver to 580 or newer\./);
 });
 
+test("split over a small and a large GPU, the vision projector goes to the one with more room, which keeps room for it", () => {
+  // A 6 GB and an 8 GB card: usable 4720 and 6720 MiB; the model needs both.
+  const vision = { ...estimate(9000), projectorBytes: 800 * MiB };
+  const result = ok(plan({ estimate: vision, devices: [gpu(0, 6000), gpu(1, 8000)] }));
+  assert.equal(result.kind, "multi-gpu");
+  assert.deepEqual(result.tensorSplit, [4720, 6720 - 880], "the larger GPU keeps the projector's room out of its share");
+  const args = result.launch.args;
+  assert.deepEqual(args.slice(args.indexOf("--mmproj-device"), args.indexOf("--mmproj-device") + 2), ["--mmproj-device", "CUDA1"]);
+  // Partly on the CPU as well: the same GPU takes it.
+  const bigger = ok(plan({ estimate: { ...estimate(14000), projectorBytes: 800 * MiB }, devices: [gpu(0, 6000), gpu(1, 8000)] }));
+  assert.equal(bigger.kind, "partial");
+  assert.deepEqual(bigger.launch.args.slice(bigger.launch.args.indexOf("--mmproj-device"), bigger.launch.args.indexOf("--mmproj-device") + 2), ["--mmproj-device", "CUDA1"]);
+  assert.equal(bigger.tensorSplit![1], 6720 - 880);
+});
+
 test("the vision projector stays on the planned GPU, or off the GPUs for a CPU plan", () => {
   const withProjector = { ...estimate(), projectorBytes: 600 * MiB };
   const vulkan: InventoryDevice = { id: "GPU-v", backendName: "Vulkan1", index: 0, name: "NVIDIA GeForce RTX 4070", kind: "gpu", totalBytes: 12 * GiB, freeBytes: 11 * GiB };
