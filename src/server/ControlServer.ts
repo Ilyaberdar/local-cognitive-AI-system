@@ -21,7 +21,11 @@ export interface ControlHandlers {
   /** The server's Synthesis projects, and the owner's choice whether each may use cloud models. */
   cloudModels?(request: CloudModelsRequest): Promise<unknown>;
   webTargets?(request: WebTargetsRequest): Promise<unknown>;
+  /** The OpenAI-compatible API: show, on/off, make or revoke a key. */
+  inferenceApi?(request: InferenceApiControlRequest): Promise<unknown>;
 }
+
+export type InferenceApiControlRequest = { action: "show" } | { action: "on"; port?: number; lan: boolean } | { action: "off" } | { action: "key"; name: string } | { action: "revoke"; id: string };
 
 const MAX_LINE = 64 * 1024;
 
@@ -57,7 +61,8 @@ export class ControlServer {
       if (end < 0) return;
       clearTimeout(timer);
       socket.off("data", onData);
-      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string; project?: unknown; allowed?: unknown; targets?: unknown };
+      let request: { v?: number; op?: string; timeoutSec?: number; ttlSec?: number; deviceId?: string; invitationId?: string; project?: unknown; allowed?: unknown; targets?: unknown;
+        action?: unknown; port?: unknown; lan?: unknown; name?: unknown; id?: unknown };
       try { request = JSON.parse(buffer.slice(0, end)); } catch { fail("bad_request", "Invalid JSON."); return; }
       if (request.v !== 1) { fail("unsupported_version", "Unsupported control protocol version."); return; }
       if (request.op === "status") { send({ v: 1, ok: true, result: handlers.status() }); socket.end(); return; }
@@ -107,6 +112,21 @@ export class ControlServer {
         const targets = request.targets;
         if (project !== undefined && targets !== undefined && (!Array.isArray(targets) || targets.length > 20 || targets.some(item => typeof item !== "string" || item.length > 2048))) { fail("bad_request", "Give up to 20 web addresses."); return; }
         void handlers.webTargets({ ...(project !== undefined ? { project, targets: (targets as string[]) ?? [] } : {}) }).then(
+          result => { send({ v: 1, ok: true, result }); socket.end(); },
+          (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
+        return;
+      }
+      if (request.op === "api") {
+        if (!handlers.inferenceApi) { fail("unknown_op", "This server has no OpenAI-compatible API: restart it after updating."); return; }
+        const action = request.action;
+        const valid = action === "show" || action === "off"
+          || (action === "on" && (request.port === undefined || (typeof request.port === "number" && Number.isInteger(request.port))) && (request.lan === undefined || typeof request.lan === "boolean"))
+          || (action === "key" && typeof request.name === "string" && request.name.trim().length > 0 && request.name.length <= 200)
+          || (action === "revoke" && typeof request.id === "string" && /^[0-9a-f-]{36}$/i.test(request.id));
+        if (!valid) { fail("bad_request", "Use: api, api on [port] [--lan], api off, api key <name>, or api revoke <id>."); return; }
+        const typed = (action === "on" ? { action, ...(request.port !== undefined ? { port: request.port as number } : {}), lan: request.lan === true }
+          : action === "key" ? { action, name: request.name as string } : action === "revoke" ? { action, id: request.id as string } : { action }) as InferenceApiControlRequest;
+        void handlers.inferenceApi(typed).then(
           result => { send({ v: 1, ok: true, result }); socket.end(); },
           (error: unknown) => fail((error as { code?: string }).code ?? "failure", error instanceof Error ? error.message : String(error)));
         return;

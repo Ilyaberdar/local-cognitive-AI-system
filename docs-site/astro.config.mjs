@@ -48,6 +48,7 @@ export default defineConfig({
 						{ label: 'Synthesis', slug: 'guides/synthesis' },
 						{ label: 'Synthesis language', slug: 'guides/synthesis-language' },
 						{ label: 'MCP and plugins', slug: 'guides/mcp-and-plugins' },
+						{ label: 'OpenAI-compatible API', slug: 'guides/openai-api' },
 						{ label: 'Voice input', slug: 'guides/voice' },
 					],
 				},

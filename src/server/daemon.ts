@@ -143,6 +143,17 @@ export const runDaemon = async (options: { drainTimeoutSec: number; inference: I
       synthesis: () => backend.runtimeManager.getRuntime().synthesis, logger }),
     webTargets: createWebTargetsControl({ projects: () => backend.runtimeManager.getRuntime().projectStore,
       synthesis: () => backend.runtimeManager.getRuntime().synthesis, logger }),
+    inferenceApi: async request => {
+      const api = backend.inferenceApi;
+      if (request.action === "key") return { key: await api.createKey(request.name), status: await api.status() };
+      if (request.action === "revoke") {
+        if (!await api.revokeKey(request.id)) throw new ControlError("No key has that id: see `api`.", "key_unknown");
+        return { revoked: request.id, status: await api.status() };
+      }
+      if (request.action === "on") return { status: await api.configure({ enabled: true, lan: request.lan, ...(request.port !== undefined ? { port: request.port } : {}) }) };
+      if (request.action === "off") return { status: await api.configure({ enabled: false }) };
+      return { status: await api.status() };
+    },
     mcp: config.mcp.server.enabled ? socket => {
       if (drained) { socket.destroy(); return; }
       mcpSessions.add(socket);

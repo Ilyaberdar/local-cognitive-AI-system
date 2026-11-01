@@ -4,7 +4,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * model call inside, nested ones too, is recorded with it; a request's `usagePurpose` says which
  * role made the call (an agent, the judge, a translation, a synthesis step, a provider test). */
 export interface UsageScope {
-  origin?: "chat" | "workflow";
+  /** "api": the OpenAI-compatible API (src/api/inference), one call per request. */
+  origin?: "chat" | "workflow" | "api";
   purpose?: string;
   runId?: string;
   sessionId?: string;

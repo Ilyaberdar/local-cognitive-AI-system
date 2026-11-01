@@ -38,6 +38,7 @@ All commands run with `sudo`. In a terminal, `sudo local-cognitive-server` on it
 | `sudo local-cognitive-server restore <backup>` | Restore one |
 | `sudo local-cognitive-server folders` | Folders on the server that connected computers may use for projects |
 | `sudo local-cognitive-server api-token` | The key of the server's own HTTP API on `127.0.0.1:3000` (new at every start) |
+| `sudo local-cognitive-server api` | The [OpenAI-compatible API](/guides/openai-api/) to the server's models: on or off, its address and keys (`api on [port] [--lan]`, `api off`, `api key <name>`, `api revoke <id>`) |
 
 The server's HTTP API listens only on the server itself (`127.0.0.1`, port 3000 unless `--http-port` sets another) and answers only requests with its key, except `/health`. A script running on the server sends it as a header, and a request other than GET also sends `X-Local-Cognitive: 1`:
 

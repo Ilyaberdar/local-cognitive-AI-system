@@ -1,3 +1,4 @@
+import net from "node:net";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -20,7 +21,10 @@ const posix = process.platform !== "win32";
 test("arguments are validated per command", () => {
   assert.equal(parseServerArgs(["start", "--data-dir", "/srv/lc", "--inference", "cpu", "--http-port", "0"]).inference, "cpu");
   assert.equal(parseServerArgs(["status"], { LOCAL_COGNITIVE_DATA_DIR: "/srv/lc" }).dataDir, "/srv/lc");
-  for (const argv of [["start"], ["start", "--data-dir", "/x", "--inference", "gpu"], ["frob"], ["start", "--data-dir", "/x", "--bogus"], ["start", "--data-dir", "/x", "--http-port", "70000"]]) {
+  assert.deepEqual(parseServerArgs(["api", "on", "4242", "--lan", "--data-dir", "/x"]).api, { action: "on", port: 4242, lan: true });
+  assert.deepEqual(parseServerArgs(["api", "key", "news", "bot", "--data-dir", "/x"]).api, { action: "key", name: "news bot" });
+  for (const argv of [["start"], ["start", "--data-dir", "/x", "--inference", "gpu"], ["frob"], ["start", "--data-dir", "/x", "--bogus"], ["start", "--data-dir", "/x", "--http-port", "70000"],
+    ["api", "on", "80", "--data-dir", "/x"], ["api", "frob", "--data-dir", "/x"], ["api", "revoke", "not-an-id", "--data-dir", "/x"], ["status", "--lan", "--data-dir", "/x"]]) {
     assert.throws(() => parseServerArgs(argv, {}), (error: { exitCode?: number }) => error.exitCode === 64, argv.join(" "));
   }
 });
@@ -210,6 +214,24 @@ test("init → start → status → MCP bridge → drain, with a second start re
   assert.equal(denied.status, 0, denied.stderr);
   assert.equal(await cloud(), false);
   assert.equal(run("cloud-models", "allow", "Nobody", "--data-dir", root).status, 1);
+
+  // api: the owner turns the OpenAI-compatible API on, makes a key for a program, and revokes it.
+  const apiPort = await new Promise<number>(resolve => { const probe = net.createServer().listen(0, "127.0.0.1", () => { const { port } = probe.address() as net.AddressInfo; probe.close(() => resolve(port)); }); });
+  const on = run("api", "on", String(apiPort), "--data-dir", root);
+  assert.equal(on.status, 0, on.stderr);
+  assert.match(on.stdout, new RegExp(`The API is on at http://127\\.0\\.0\\.1:${apiPort}/v1 \\(this server only`));
+  const made = run("api", "key", "news", "bot", "--data-dir", root, "--json");
+  assert.equal(made.status, 0, made.stderr);
+  const { key, id } = JSON.parse(made.stdout).key as { key: string; id: string };
+  const models = () => fetch(`http://127.0.0.1:${apiPort}/v1/models`, { headers: { Authorization: `Bearer ${key}` } });
+  assert.equal((await models()).status, 200);
+  const shown = run("api", "--data-dir", root);
+  assert.match(shown.stdout, /news bot {2}…/);
+  assert.equal(shown.stdout.includes(key), false, "a key is shown only when it is made");
+  assert.equal(run("api", "revoke", id, "--data-dir", root).status, 0);
+  assert.equal((await models()).status, 401);
+  assert.equal(run("api", "revoke", id, "--data-dir", root).status, 1);
+  assert.match(run("api", "off", "--data-dir", root).stdout, /^The API is off\./);
 
   // Someone other than the server's user is refused by the system: the CLI says to use sudo.
   const runtimeDir = path.join(root, "app", "runtime");

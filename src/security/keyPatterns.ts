@@ -26,7 +26,9 @@ export const KEY_PATTERNS: ReadonlyArray<{ name: string; source: string }> = [
   { name: "AWS access key", source: String.raw`(?:AKIA|ASIA)[0-9A-Z]{16}` },
   { name: "Sentry auth token", source: String.raw`sntry[su]_[A-Za-z0-9_=+/-]{20,}` },
   { name: "Notion token", source: String.raw`(?:ntn|secret)_[A-Za-z0-9]{40,}` },
-  { name: "Telegram bot token", source: String.raw`\d{6,12}:[A-Za-z0-9_-]{30,}` }
+  { name: "Telegram bot token", source: String.raw`\d{6,12}:[A-Za-z0-9_-]{30,}` },
+  // Local Cognitive's own OpenAI-compatible API keys (src/api/inference).
+  { name: "Local Cognitive API key", source: String.raw`lcsk_[A-Za-z0-9_-]{30,}` }
 ];
 
 // Each shape is a fixed prefix and one run of a character class, so a scan is linear in the text.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { InferenceApiStatus } from "../api/inference/InferenceApiServer";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -219,6 +220,26 @@ const cloudModels = async (args: ServerArgs) => {
   print(args, result.projects.length ? [...result.projects.map(project => `${project.allowed ? "allowed   " : "local only"}  ${printable(project.name)}  ${project.id}  ${printable(project.rootPath)}${project.archived ? "  (archived)" : ""}`),
     "", "Change one: sudo local-cognitive-server cloud-models allow|deny <project> (its id, name or folder)"].join("\n")
     : "No projects on this server yet. A computer makes one in Synthesis (+ Project), in a shared folder.", result);
+  return ExitCode.ok;
+};
+
+/** The OpenAI-compatible API to this server's models: whether it is on, where, and its keys. */
+const inferenceApi = async (args: ServerArgs) => {
+  const result = await remoteRequest(args, { op: "api", ...args.api! }) as unknown as {
+    status: InferenceApiStatus; key?: { key: string; id: string; name: string }; revoked?: string };
+  const { status } = result;
+  const lines: string[] = [];
+  if (result.key) lines.push(`The key for ${printable(result.key.name)}, shown only now (keep it where the program reads it):`, "", `  ${result.key.key}`, "", `To revoke it: sudo local-cognitive-server api revoke ${result.key.id}`, "");
+  if (result.revoked) lines.push(`Key ${result.revoked} revoked: requests with it are refused from now on.`, "");
+  lines.push(!status.enabled ? "The API is off. Turn it on: sudo local-cognitive-server api on"
+    : !status.listening ? `The API is on but not listening: ${status.error ?? "it could not start"}`
+      : `The API is on at ${status.url}${status.lan ? `, and at this server's network addresses on port ${status.port} (plain HTTP: use it on a network you trust)` : " (this server only; --lan lets other devices on the network reach it)"}.`);
+  lines.push("", status.keys.length ? "Keys:" : "No keys yet. Make one for each program: sudo local-cognitive-server api key <name>");
+  for (const key of status.keys) {
+    lines.push(`  ${key.id}  ${printable(key.name)}  …${key.hint}  made ${key.createdAt.slice(0, 10)}, ${key.lastUsedAt ? `last used ${key.lastUsedAt.slice(0, 16).replace("T", " ")} UTC` : "never used"}`);
+  }
+  if (status.enabled && status.listening && status.keys.length && !result.key) lines.push("", `Try it: curl ${status.url}/models -H "Authorization: Bearer <key>"`);
+  print(args, lines.join("\n"), result);
   return ExitCode.ok;
 };
 
@@ -472,6 +493,7 @@ export const main = async (argv: string[]): Promise<number> => {
       case "error-reports": return errorReports(args);
       case "cloud-models": return await cloudModels(args);
       case "web-targets": return await webTargets(args);
+      case "api": return await inferenceApi(args);
       case "deps": return await deps(args);
       case "backup": case "backups": case "restore": return await backupCommand(args);
       case "update": case "rollback": case "adopt": return await updateCommand(args);

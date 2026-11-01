@@ -11,6 +11,8 @@ import { SettingsValidationError } from "./app/settingsValidation";
 import { AttachmentError } from "./utils/attachments";
 import { SessionIndexStore } from "./session/SessionIndexStore";
 import { ScheduleRunner } from "./schedules/ScheduleRunner";
+import { InferenceApiServer } from "./api/inference/InferenceApiServer";
+import { InferenceApiStore } from "./api/inference/InferenceApiStore";
 import { TelegramBotTransport } from "./transports/telegram/TelegramBotTransport";
 import { Logger } from "./utils/Logger";
 import { formatStartupSummary } from "./utils/startupSummary";
@@ -62,6 +64,8 @@ export interface BackendStatus {
 export interface BackendHandle {
   runtimeManager: RuntimeManager;
   server?: Server;
+  /** The OpenAI-compatible API: its settings, keys and listener. */
+  inferenceApi: InferenceApiServer;
   status(): BackendStatus;
   activeWork(): ActiveWork;
   /** Stops the scheduler and Telegram and rejects new HTTP work; accepted work continues. */
@@ -150,12 +154,16 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
 
   let server: Server | undefined;
   let scheduler: ScheduleRunner | undefined;
+  // The OpenAI-compatible API, on its own port when its owner turns it on (Settings → API, or `api on` on a server).
+  const inferenceApi = new InferenceApiServer({ store: new InferenceApiStore(path.join(config.appDataDir, "inference-api.json")),
+    runtimeManager, logger, isDraining: () => draining });
   let telegram: TelegramBotTransport | undefined;
   let disposing: Promise<void> | undefined;
   let draining = false;
   const dispose = (): Promise<void> => disposing ??= (async () => {
     scheduler?.stop();
     telegram?.stop();
+    await inferenceApi.close();
     // Stop listening before the runtime goes away, then drop remaining connections.
     const closed = server ? new Promise<void>((resolve) => server!.close(() => resolve())) : Promise.resolve();
     await host?.runService.dispose();
@@ -185,6 +193,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     app.use(createLocalApiAuth({ token: apiToken }));
     app.use(express.json({ limit: "8mb" }));
     app.use(createDrainGate(() => draining));
+    app.use("/inference-api", inferenceApi.managementRouter());
     app.use("/", createApiRouter(runtimeManager, sessionIndexStore, host ? {
       forgetSession: sessionId => host!.runService.forgetSession(sessionId), forgotSession: (sessionId, deleted) => host!.runService.forgotSession(sessionId, deleted),
       answering: sessionId => Boolean(host!.runService.activeRun(sessionId)),
@@ -226,6 +235,8 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
     });
     if (options.apiTokenFile) { writeApiTokenFile(options.apiTokenFile, apiToken); apiTokenWritten = true; }
   }
+
+  await inferenceApi.apply();
 
   // Schedules run with or without the HTTP API.
   scheduler = new ScheduleRunner(
@@ -285,7 +296,7 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
   const stopAcceptingWork = () => { draining = true; scheduler?.stop(); telegram?.stop(); host?.runService.stopAccepting();
     try { runtimeManager.getRuntime().synthesis.stopAccepting(); } catch { /* Runtime not built. */ } };
   const interruptActiveWork = () => processRunRegistry.cancelAll() + (host?.runService.interruptAll() ?? 0);
-  return { runtimeManager, server, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}), ...(usageOutbox ? { usageOutbox } : {}), diagnosticLog };
+  return { runtimeManager, server, inferenceApi, status, activeWork, stopAcceptingWork, interruptActiveWork, dispose, ...(host ? { host } : {}), ...(usage ? { usage } : {}), ...(usageOutbox ? { usageOutbox } : {}), diagnosticLog };
   } catch (error) { failed(error); await dispose(); throw error; }
 };
 

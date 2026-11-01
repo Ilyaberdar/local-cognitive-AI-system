@@ -2,6 +2,7 @@ import { icon, bindGlassLighting } from './ui-primitives.js';
 import { createAccountState, entityPatch, localProfileView, mcpServerCount } from './settings-data.js';
 import { mountIntegrationPage } from './plugins-ui.js';
 import { mountUsagePage } from './usage-ui.js';
+import { mountInferenceApiPage } from './inference-api-ui.js';
 import { mountUpdatesPanel } from './updates-ui.js';
 import { mountGpuRuntimePanel } from './gpu-runtime-ui.js';
 import { mountReportBugPage } from './report-bug.js';
@@ -18,7 +19,7 @@ const signInNames = { apple: 'Apple', google: 'Google', email: 'Email and passwo
 const groups = [
   ['Personal', [['general', 'General', 'settings'], ['notifications', 'Notifications', 'info'], ['profile', 'Profile', 'profile'], ['appearance', 'Appearance', 'sun'], ['voice', 'Voice', 'microphone'], ['shortcuts', 'Keyboard Shortcuts', 'keyboard'], ['usage', 'Usage', 'clock'], ['account', 'Account', 'profile']]],
   ['AI System', [['providers', 'Models & Providers', 'models'], ['runtime', 'Local Runtime', 'models'], ['agents', 'Agents', 'workflow'], ['memory', 'Memory', 'folder']]],
-  ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connected accounts', 'externalLink']]],
+  ['Integrations', [['plugins', 'Plugins', 'plugins'], ['mcp', 'MCP Servers', 'code'], ['connections', 'Connected accounts', 'externalLink'], ['api', 'API', 'code']]],
   ['System', [['data', 'Data & Privacy', 'shield'], ['about', 'About', 'info'], ['report-bug', 'Report a bug', 'bug']]]
 ];
 // With a server selected, these pages show and change that server's settings (R5-3); plugins and
@@ -86,7 +87,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   // Keyboard Shortcuts: the action whose new keys are being recorded, and a question or refusal to show.
   let shortcutRecording, shortcutNotice;
   const drafts = new Map(), statuses = new Map(), results = new Map();
-  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeReport, disposeUpdates, disposeGpu, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
+  let suppressMenuFocus = false, disposeVoice, disposeIntegrations, disposeUsage, disposeApi, disposeReport, disposeUpdates, disposeGpu, accountPending, accountNotice, diagnosticsConsent, diagnosticsSaved = false;
   const context = () => getContext() || {};
   const providerCatalog = id => (context().providers || []).find(provider => provider.id === id)?.catalog;
   /** A provider the user added (an OpenAI-compatible service that is not one every installation has). */
@@ -803,6 +804,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'profile') return profileEditor();
     if (name === 'account') return `<div data-account-page>${accountPanel()}</div>`;
     if (name === 'usage') return '<div data-usage-page></div>';
+    if (name === 'api') return '<div data-inference-api-page></div>';
     if (name === 'report-bug') return '<div data-report-bug-page></div>';
     if (name === 'notifications') return note('Status stays in the app', 'Task progress, errors and approval requests appear in the existing chat and workflow views. A new version of the app is announced once with a system notification; your system settings decide whether it is shown.');
     if (name === 'connections') return '<div data-integrations-page></div>';
@@ -888,6 +890,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     disposeVoice?.(); disposeVoice = undefined;
     disposeIntegrations?.(); disposeIntegrations = undefined;
     disposeUsage?.(); disposeUsage = undefined;
+    disposeApi?.(); disposeApi = undefined;
     disposeUpdates?.(); disposeUpdates = undefined;
     disposeGpu?.(); disposeGpu = undefined;
     disposeReport?.(); disposeReport = undefined;
@@ -920,6 +923,7 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
     if (name === 'profile') bindProfileForm();
     if (name === 'account') bindAccountPage();
     if (name === 'usage') disposeUsage = mountUsagePage(root.querySelector('[data-usage-page]'));
+    if (name === 'api' && request) disposeApi = mountInferenceApiPage(root.querySelector('[data-inference-api-page]'), { request });
     if (name === 'about') disposeUpdates = mountUpdatesPanel(root.querySelector('[data-updates-panel]'));
     if (name === 'runtime' && request) disposeGpu = mountGpuRuntimePanel(root.querySelector('[data-gpu-runtime-panel]'), { request, getRuntime: () => context().localModels?.runtime });
     if (name === 'report-bug') disposeReport = mountReportBugPage(root.querySelector('[data-report-bug-page]'), { mode: context().server ? 'remote' : 'local' });

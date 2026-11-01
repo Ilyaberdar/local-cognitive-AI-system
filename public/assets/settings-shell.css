@@ -603,3 +603,22 @@ html[data-theme="light"] .account-provider-button { background: #000; color: #ff
 p.settings-provider-state { margin: -4px 0 18px; font-size: calc(12px * var(--font-scale, 1)); color: var(--muted); }
 p.settings-provider-state.is-error { color: var(--danger); }
 .settings-provider-summary { margin: 4px 0 6px; }
+
+/* Settings → API (inference-api-ui.js). */
+.inference-api h3 { margin: 22px 0 6px; font-size: calc(13px * var(--font-scale, 1)); font-weight: 600; color: var(--text); }
+.inference-api code { font-family: var(--font-mono); font-size: 0.95em; }
+.inference-api .settings-control.inference-api-port { display: flex; flex-wrap: nowrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.inference-api .settings-control.inference-api-port input { flex: 0 0 96px; width: 96px; min-width: 0; }
+.inference-api-new { display: flex; gap: 8px; margin: 8px 0 10px; }
+.inference-api .inference-api-new input { flex: 1 1 auto; min-width: 0; min-height: 36px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--control-bg); color: var(--text); font: inherit; }
+.inference-api .inference-api-new input:focus-visible { outline: none; border-color: var(--line-strong); }
+.inference-api-made { margin: 0 0 12px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--control-bg); }
+.inference-api-made p { margin: 0 0 8px; color: var(--muted); font-size: calc(12px * var(--font-scale, 1)); }
+.inference-api-key { display: flex; gap: 8px; align-items: center; }
+.inference-api-key code { flex: 1 1 auto; min-width: 0; padding: 6px 8px; border-radius: 6px; background: var(--bg-soft, transparent); color: var(--text); overflow-wrap: anywhere; user-select: all; }
+.inference-api-keys { display: grid; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
+.inference-api-keys li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.inference-api-keys li span:first-child { display: grid; gap: 2px; min-width: 0; }
+.inference-api-keys small { color: var(--muted); font-size: calc(11px * var(--font-scale, 1)); }
+.inference-api-confirm { display: flex; gap: 6px; }
+.inference-api-error { color: var(--danger); }

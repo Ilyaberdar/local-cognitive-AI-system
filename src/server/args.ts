@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "trust-device" | "untrust-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "trust-device" | "untrust-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "api" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -30,6 +30,9 @@ export interface ServerArgs {
   cloudModels?: { action: "list" } | { action: "allow" | "deny"; project: string };
   /** web-targets: list projects, allow a project the given web origins (replacing its list), or clear them. */
   webTargets?: { action: "list" } | { action: "allow"; project: string; targets: string[] } | { action: "deny"; project: string };
+  /** api: the OpenAI-compatible API to this server's models: show it, turn it on (a port; lan: other devices on the network
+   * too) or off, make a key (shown once) or revoke one. */
+  api?: { action: "show" } | { action: "on"; port?: number; lan: boolean } | { action: "off" } | { action: "key"; name: string } | { action: "revoke"; id: string };
   /** deps: install a project's dependencies once (npm ci), for agents' npm test; `scripts` runs install scripts too. */
   deps?: { project: string; scripts: boolean };
   /** backup: a name part for the backup; restore: the backup's name (from `backups`). */
@@ -43,7 +46,7 @@ export interface ServerArgs {
   ascii?: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "api", "backup", "backups", "restore", "update", "rollback", "adopt"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -72,6 +75,13 @@ Commands:
   web-targets            Web origins a Synthesis project's agents may reach, for authorized testing; allow <project> <url...>|deny <project>
   cloud-models           Synthesis projects, and whether each may send its contract and files to cloud models
                          (allow <project> or deny <project>: its id, name or folder)
+  api                    The OpenAI-compatible API to this server's models (/v1/chat/completions): on or off,
+                         its address and keys
+  api on [port] [--lan]  Turn it on (port 4141 unless given); --lan: other devices on the network may reach it
+                         too, over plain HTTP
+  api off                Turn it off
+  api key <name>         Make a key for a program (shown once)
+  api revoke <id>        Revoke a key
   deps <project>         Install a project's dependencies once (npm ci), so agents can run npm test in it
                          (install scripts are not run unless --scripts)
   backup                 Back up the server's state (not its models), with the server stopped (--label)
@@ -124,7 +134,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
       quiet: { type: "boolean" }, "allow-root": { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean" },
       ttl: { type: "string" }, yes: { type: "boolean" }, label: { type: "string" }, "allow-create": { type: "boolean" },
       check: { type: "boolean" }, wait: { type: "boolean" }, "manifest-url": { type: "string" }, prefix: { type: "string" }, unit: { type: "string" },
-      user: { type: "string" }, "from-app": { type: "string" }, "from-node": { type: "string" }, "no-color": { type: "boolean" }, ascii: { type: "boolean" }, scripts: { type: "boolean" }
+      user: { type: "string" }, "from-app": { type: "string" }, "from-node": { type: "string" }, "no-color": { type: "boolean" }, ascii: { type: "boolean" }, scripts: { type: "boolean" }, lan: { type: "boolean" }
     } });
   } catch (error) { throw new CliError(error instanceof Error ? error.message : String(error), ExitCode.usage); }
   const { values, positionals } = parsed;
@@ -132,7 +142,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   if (!commands.includes(command)) throw new CliError(`Unknown command: ${command}`, ExitCode.usage);
   // A project's name may hold spaces: cloud-models takes the rest of the line as it.
   const withDevice = command === "revoke-device" || command === "trust-device" || command === "untrust-device";
-  const extra = withDevice || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" ? Infinity : 1;
+  const extra = withDevice || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" || command === "api" ? Infinity : 1;
   if (positionals.length > extra) throw new CliError(`Unexpected argument: ${positionals[extra]}`, ExitCode.usage);
   const deviceId = withDevice ? positionals[1] : undefined;
   if (withDevice && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError(`${command} needs a device id (see \`devices\`).`, ExitCode.usage);
@@ -165,6 +175,21 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     else if (action === "deny" && project) webTargets = { action, project };
     else throw new CliError("Use: web-targets, web-targets allow <project> <url> [<url>...], or web-targets deny <project> (the project by its id, name or folder).", ExitCode.usage);
   }
+  let api: ServerArgs["api"];
+  if (command === "api") {
+    const [action = "show", ...rest] = positionals.slice(1);
+    const usage = "Use: api, api on [port] [--lan], api off, api key <name>, or api revoke <id>.";
+    if (action === "show" && !rest.length) api = { action };
+    else if (action === "on" && rest.length <= 1) {
+      const port = rest[0] === undefined ? undefined : Number(rest[0]);
+      if (port !== undefined && (!Number.isInteger(port) || port < 1024 || port > 65535)) throw new CliError("The port must be a whole number from 1024 to 65535.", ExitCode.usage);
+      api = { action, ...(port !== undefined ? { port } : {}), lan: Boolean(values.lan) };
+    } else if (action === "off" && !rest.length) api = { action };
+    else if (action === "key" && rest.join(" ").trim()) api = { action, name: rest.join(" ").trim() };
+    else if (action === "revoke" && rest.length === 1 && /^[0-9a-f-]{36}$/i.test(rest[0]!)) api = { action, id: rest[0]! };
+    else throw new CliError(usage, ExitCode.usage);
+  }
+  if (values.lan && command !== "api") throw new CliError("--lan is for api on.", ExitCode.usage);
   let deps: ServerArgs["deps"];
   if (command === "deps") {
     const project = positionals.slice(1).join(" ").trim();
@@ -180,14 +205,14 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   const inference = values.inference;
   if (inference !== undefined && !["auto", "cuda", "cpu"].includes(inference)) throw new CliError("--inference must be auto, cuda or cpu.", ExitCode.usage);
   const dataDir = values["data-dir"] ?? env.LOCAL_COGNITIVE_DATA_DIR;
-  if (["init", "start", "status", "drain", "api-token", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
+  if (["init", "start", "status", "drain", "api-token", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "api", "backup", "backups", "restore", "update", "rollback", "adopt"].includes(command) && !dataDir) throw new CliError("--data-dir (or LOCAL_COGNITIVE_DATA_DIR) is required.", ExitCode.usage);
   return {
     command, dataDir, inference: inference as InferencePreference | undefined,
     httpPort: integer(values["http-port"], "http-port", 0, 65535), http: values["no-http"] ? false : undefined,
     init: Boolean(values.init), envFile: values["env-file"], llamaRuntimeDir: values["llama-runtime-dir"],
     drainTimeoutSec: integer(values["drain-timeout"] ?? values.timeout, values.timeout !== undefined ? "timeout" : "drain-timeout", 0, 86_400),
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
-    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}), ...(cloudModels ? { cloudModels } : {}), ...(webTargets ? { webTargets } : {}), ...(deps ? { deps } : {}),
+    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}), ...(cloudModels ? { cloudModels } : {}), ...(webTargets ? { webTargets } : {}), ...(deps ? { deps } : {}), ...(api ? { api } : {}),
     ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {}),
     ...(values["no-color"] ? { noColor: true } : {}), ...(values.ascii ? { ascii: true } : {}),
     ...(["update", "rollback", "adopt"].includes(command) ? { update: { check: Boolean(values.check), wait: Boolean(values.wait),
