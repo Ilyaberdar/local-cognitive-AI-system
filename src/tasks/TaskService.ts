@@ -81,6 +81,14 @@ export class TaskService {
     });
   }
 
+  /** Whether the task is being run here, or its last run is queued, running or waiting for an approval. */
+  async hasActiveRun(taskId: string): Promise<boolean> {
+    if (TaskService.active.has(taskId)) return true;
+    const task = await this.taskStore.get(taskId);
+    const run = task?.lastRunId ? await this.runStore.getRun(task.lastRunId) : null;
+    return Boolean(run && ["queued", "running", "waiting"].includes(run.status));
+  }
+
   runTask(taskId: string): Promise<{ task: Task; runId: string }> {
     const existing = TaskService.active.get(taskId);
     if (existing) return existing;

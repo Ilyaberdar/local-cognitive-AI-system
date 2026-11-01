@@ -31,7 +31,8 @@ export const createCreateScheduleController =
       !time ||
       !timezone ||
       (req.body?.frequency !== undefined && typeof req.body.frequency !== "string") ||
-      (req.body?.weekday !== undefined && typeof req.body.weekday !== "number")
+      (req.body?.weekday !== undefined && typeof req.body.weekday !== "number") ||
+      !intervalTypesValid(req.body)
     ) {
       res.status(400).json({ error: "Fields 'title', 'time', and 'timezone' must be non-empty strings." });
       return;
@@ -50,6 +51,7 @@ export const createCreateScheduleController =
         weekday: typeof req.body?.weekday === "number"
           ? req.body.weekday as ScheduleWeekday
           : undefined,
+        ...intervalFields(req.body),
         time,
         timezone,
         enabled: typeof req.body?.enabled === "boolean" ? req.body.enabled : undefined,
@@ -75,6 +77,7 @@ export const createUpdateScheduleController =
       (body.workflowId !== undefined && typeof body.workflowId !== "string") ||
       (body.frequency !== undefined && typeof body.frequency !== "string") ||
       (body.weekday !== undefined && typeof body.weekday !== "number") ||
+      !intervalTypesValid(body) ||
       (body.time !== undefined && typeof body.time !== "string") ||
       (body.timezone !== undefined && typeof body.timezone !== "string") ||
       (body.sessionId !== undefined && typeof body.sessionId !== "string") ||
@@ -96,6 +99,7 @@ export const createUpdateScheduleController =
           ...(body.priority !== undefined ? { priority: normalizePriority(body.priority) } : {}),
           ...(typeof body.frequency === "string" ? { frequency: body.frequency as ScheduleFrequency } : {}),
           ...(typeof body.weekday === "number" ? { weekday: body.weekday as ScheduleWeekday } : {}),
+          ...intervalFields(body),
           ...(typeof body.time === "string" ? { time: body.time } : {}),
           ...(typeof body.timezone === "string" ? { timezone: body.timezone } : {}),
           ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}),
@@ -117,6 +121,34 @@ export const createUpdateScheduleController =
     }
   };
 
+/** The next runs of a schedule with these fields, without saving it: the editor shows them as you type. */
+export const createPreviewScheduleController =
+  (runtimeManager: RuntimeManager) =>
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const body = isRecord(req.body) ? req.body : {};
+    const time = readString(body.time);
+    const timezone = readString(body.timezone);
+
+    if (!time || !timezone || (body.frequency !== undefined && typeof body.frequency !== "string") ||
+      (body.weekday !== undefined && typeof body.weekday !== "number") || !intervalTypesValid(body)) {
+      res.status(400).json({ error: "Fields 'time' and 'timezone' must be non-empty strings." });
+      return;
+    }
+
+    try {
+      const nextRuns = runtimeManager.getRuntime().scheduleService.preview({
+        frequency: typeof body.frequency === "string" ? body.frequency as ScheduleFrequency : undefined,
+        weekday: typeof body.weekday === "number" ? body.weekday as ScheduleWeekday : undefined,
+        ...intervalFields(body),
+        time,
+        timezone
+      });
+      res.status(200).json({ nextRuns });
+    } catch (error) {
+      handleScheduleError(error, next, res);
+    }
+  };
+
 export const createDeleteScheduleController =
   (runtimeManager: RuntimeManager) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -133,6 +165,19 @@ export const createDeleteScheduleController =
       next(error);
     }
   };
+
+/** intervalMinutes a number; windowEnd a string or null; weekdays an array of numbers or null. */
+const intervalTypesValid = (body: Record<string, unknown> | undefined): boolean =>
+  (body?.intervalMinutes === undefined || typeof body.intervalMinutes === "number") &&
+  (body?.windowEnd === undefined || body.windowEnd === null || typeof body.windowEnd === "string") &&
+  (body?.weekdays === undefined || body.weekdays === null ||
+    (Array.isArray(body.weekdays) && body.weekdays.every((day) => typeof day === "number")));
+
+const intervalFields = (body: Record<string, unknown> | undefined) => ({
+  ...(typeof body?.intervalMinutes === "number" ? { intervalMinutes: body.intervalMinutes } : {}),
+  ...(body?.windowEnd !== undefined ? { windowEnd: body.windowEnd as string | null } : {}),
+  ...(body?.weekdays !== undefined ? { weekdays: body.weekdays as ScheduleWeekday[] | null } : {})
+});
 
 const normalizePriority = (value: unknown): TaskPriority =>
   typeof value === "string" && taskPriorities.has(value as TaskPriority)

@@ -62,6 +62,7 @@ import {
 import {
   createCreateScheduleController,
   createDeleteScheduleController,
+  createPreviewScheduleController,
   createListSchedulesController,
   createUpdateScheduleController
 } from "./scheduleControllers";
@@ -163,6 +164,7 @@ export const createApiRouter = (
 
   router.get("/schedules", createListSchedulesController(runtimeManager));
   router.post("/schedules", createCreateScheduleController(runtimeManager));
+  router.post("/schedules/preview", createPreviewScheduleController(runtimeManager));
   router.patch("/schedules/:scheduleId", createUpdateScheduleController(runtimeManager));
   router.delete("/schedules/:scheduleId", createDeleteScheduleController(runtimeManager));
 

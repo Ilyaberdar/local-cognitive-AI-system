@@ -98,6 +98,7 @@ export const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   "tasks.runNext": { kind: "command", timeoutMs: 30_000 },
   "schedules.create": { kind: "command", timeoutMs: 30_000 },
   "schedules.update": { kind: "request", timeoutMs: 30_000 },
+  "schedules.preview": { kind: "request", timeoutMs: 10_000 },
   "schedules.delete": { kind: "request", timeoutMs: 15_000 },
   "workflows.validate": { kind: "request", timeoutMs: 15_000 },
   "workflows.save": { kind: "command", timeoutMs: 30_000 },

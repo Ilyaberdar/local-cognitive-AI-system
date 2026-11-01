@@ -71,6 +71,81 @@ export const nextWeeklyOccurrence = (
   );
 };
 
+/** When an interval schedule runs: every `intervalMinutes` from `time`, up to `windowEnd` (or all day)
+ * on `weekdays` (or every day). */
+export interface IntervalRule {
+  time: string;
+  intervalMinutes: number;
+  windowEnd?: string;
+  weekdays?: readonly number[];
+}
+
+export const MIN_INTERVAL_MINUTES = 5;
+export const MAX_INTERVAL_MINUTES = 1440;
+
+/**
+ * Returns the next run of an interval schedule after `after`. Each allowed day starts at `time` and
+ * repeats every interval while it is within the hours (a window that crosses midnight belongs to the
+ * day it starts); a local time a daylight-saving change skips is left out, as for daily schedules.
+ */
+export const nextIntervalOccurrence = (after: Date, rule: IntervalRule, timezone: string): Date => {
+  const zone = normalizeTimeZone(timezone);
+  const { start, span, step } = intervalShape(rule);
+  const local = getLocalParts(after, zone);
+  const nowMinutes = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) / 60_000;
+
+  for (let dayOffset = -1; dayOffset <= 8; dayOffset += 1) {
+    const day = new Date(Date.UTC(local.year, local.month - 1, local.day + dayOffset));
+    if (rule.weekdays && !rule.weekdays.includes(day.getUTCDay())) continue;
+    const dayStart = day.getTime() / 60_000 + start;
+    const elapsed = nowMinutes - dayStart;
+    if (elapsed > span) continue;
+    for (let k = Math.max(0, Math.floor(elapsed / step) - 1); k * step <= span; k += 1) {
+      const at = new Date((dayStart + k * step) * 60_000);
+      const candidate = zonedDateTimeToUtc({
+        year: at.getUTCFullYear(), month: at.getUTCMonth() + 1, day: at.getUTCDate(),
+        hour: at.getUTCHours(), minute: at.getUTCMinutes(), second: 0
+      }, zone);
+      if (candidate && candidate.getTime() > after.getTime()) return candidate;
+    }
+  }
+
+  throw new ScheduleTimeError("Could not calculate the next scheduled run.");
+};
+
+/** Whether `at` falls within an interval schedule's hours on one of its days. */
+export const isWithinIntervalHours = (at: Date, rule: IntervalRule, timezone: string): boolean => {
+  const zone = normalizeTimeZone(timezone);
+  const { start, span } = intervalShape(rule);
+  const local = getLocalParts(at, zone);
+  const nowMinutes = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute) / 60_000;
+
+  return [-1, 0].some((dayOffset) => {
+    const day = new Date(Date.UTC(local.year, local.month - 1, local.day + dayOffset));
+    if (rule.weekdays && !rule.weekdays.includes(day.getUTCDay())) return false;
+    const elapsed = nowMinutes - (day.getTime() / 60_000 + start);
+    return elapsed >= 0 && elapsed <= span;
+  });
+};
+
+/** The day's first run in minutes after midnight, how long after it runs may start, and the step. */
+const intervalShape = (rule: IntervalRule): { start: number; span: number; step: number } => {
+  const step = rule.intervalMinutes;
+  if (!Number.isInteger(step) || step < MIN_INTERVAL_MINUTES || step > MAX_INTERVAL_MINUTES) {
+    throw new ScheduleTimeError(`Field 'intervalMinutes' must be a whole number from ${MIN_INTERVAL_MINUTES} to ${MAX_INTERVAL_MINUTES}.`);
+  }
+  const start = minutesOfDay(normalizeDailyTime(rule.time));
+  if (rule.windowEnd === undefined) return { start, span: 1439, step };
+  const end = minutesOfDay(normalizeDailyTime(rule.windowEnd));
+  if (end === start) throw new ScheduleTimeError("Field 'windowEnd' must differ from 'time'.");
+  return { start, span: (end - start + 1440) % 1440, step };
+};
+
+const minutesOfDay = (time: string): number => {
+  const [hour, minute] = time.split(":").map(Number);
+  return hour * 60 + minute;
+};
+
 const nextOccurrence = (
   after: Date,
   time: string,

@@ -309,6 +309,11 @@ const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  previewSchedule: (payload) =>
+    request("/schedules/preview", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   updateSchedule: (scheduleId, payload) =>
     request(`/schedules/${scheduleId}`, {
       method: "PATCH",
@@ -1001,7 +1006,8 @@ function render(options = {}) {
 // Preserve presentation state when runtime polling replaces the template.
 function capturePresentationState() {
   const forms = [...document.querySelectorAll("#task-form, #schedule-form, .workspace-edit-form")].map((form) => ({
-    id: form.id, values: [...new FormData(form).entries()]
+    id: form.id, values: [...new FormData(form).entries()],
+    checks: [...form.querySelectorAll("input[type='checkbox']")].map((input) => [input.name, input.value, input.checked])
   }));
   const disclosures = [...document.querySelectorAll("[data-ui-disclosure]")].map((element) => ({
     key: element.dataset.uiDisclosure, open: element.open
@@ -1017,11 +1023,15 @@ function restorePresentationState(snapshot) {
     document.querySelector(".shell")?.classList.toggle("mobile-sessions-open", snapshot.mobileConversationsOpen);
     document.querySelector("[data-action='toggle-mobile-sessions']")?.setAttribute("aria-expanded", String(snapshot.mobileConversationsOpen));
   }
-  snapshot.forms.forEach(({ id, values }) => {
+  snapshot.forms.forEach(({ id, values, checks }) => {
     const form = document.getElementById(id);
     values.forEach(([name, value]) => {
       const field = form?.elements.namedItem(name);
-      if (field && typeof value === "string") field.value = value;
+      if (field && field.type !== "checkbox" && typeof value === "string") field.value = value;
+    });
+    (checks ?? []).forEach(([name, value, checked]) => {
+      const input = [...(form?.querySelectorAll("input[type='checkbox']") ?? [])].find((item) => item.name === name && item.value === value);
+      if (input) input.checked = checked;
     });
     form?.querySelector("#schedule-frequency")?.dispatchEvent(new Event("change"));
     form?.querySelector("[data-workspace-project]")?.dispatchEvent(new Event("change"));
@@ -1971,7 +1981,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
           <div class="card-header">
             <div>
               <h2>Scheduled Task</h2>
-              <p class="subtle">${server ? `Creates a fresh task daily or weekly while ${host} is running.` : "Creates a fresh task daily or weekly while this app is running."}</p>
+              <p class="subtle">${server ? `Creates a fresh task daily, weekly or every few minutes while ${host} is running.` : "Creates a fresh task daily, weekly or every few minutes while this app is running."}</p>
             </div>
           </div>
           <form id="schedule-form" class="form-grid">
@@ -1984,7 +1994,21 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
               <select id="schedule-frequency" name="frequency">
                 <option value="daily" selected>Every day</option>
                 <option value="weekly">Every week</option>
+                ${!server || server.supports("schedules.preview") ? '<option value="interval">At intervals</option>' : ""}
               </select>
+            </div>
+            <div class="field field--full" data-schedule-interval-field hidden>
+              <label for="schedule-interval-value">Every</label>
+              <div class="schedule-interval">
+                <input id="schedule-interval-value" name="intervalValue" type="number" min="1" max="1440" step="1" value="30" inputmode="numeric" />
+                <select id="schedule-interval-unit" name="intervalUnit" aria-label="Unit">
+                  <option value="minutes" selected>minutes</option>
+                  <option value="hours">hours</option>
+                </select>
+              </div>
+            </div>
+            <div class="field field--full" data-schedule-interval-field hidden>
+              <label class="schedule-check"><input id="schedule-window" name="window" type="checkbox" value="on" /> Only between certain hours</label>
             </div>
             <div class="field" data-schedule-weekday-field hidden>
               <label for="schedule-weekday">Every week on</label>
@@ -1998,10 +2022,18 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
                 <option value="0">Sunday</option>
               </select>
             </div>
-            <div class="field">
+            <div class="field" data-schedule-time-field>
               <label for="schedule-time" data-schedule-time-label>Every day at</label>
               <input id="schedule-time" name="time" type="time" value="09:00" required />
             </div>
+            <div class="field" data-schedule-window-field hidden>
+              <label for="schedule-window-end">Until</label>
+              <input id="schedule-window-end" name="windowEnd" type="time" value="22:00" />
+            </div>
+            <fieldset class="field field--full schedule-days" data-schedule-interval-field hidden>
+              <legend>On days</legend>
+              <div class="schedule-days__list">${[1, 2, 3, 4, 5, 6, 0].map((day) => `<label class="schedule-day"><input type="checkbox" name="weekdays" value="${day}" checked />${SCHEDULE_WEEKDAYS[day].slice(0, 3)}</label>`).join("")}</div>
+            </fieldset>
             <div class="field field--full">
               <label for="schedule-timezone">Timezone</label>
               <input id="schedule-timezone" name="timezone" type="text" value="${escapeAttr(DEFAULT_SCHEDULE_TIMEZONE)}" placeholder="Europe/Kyiv" required />
@@ -2030,7 +2062,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
               <textarea id="schedule-description" name="description" rows="4" placeholder="Describe the analysis, sources, expected result, and constraints." required></textarea>
             </div>
             <div class="footer-row field--full">
-              <span class="subtle">${server ? `Missed time triggers one catch-up run when ${host} starts again.` : "Missed time triggers one catch-up run when the app starts again."}</span>
+              <span class="subtle schedule-footnote"><span data-schedule-note data-where="${server ? host : "the app"}">${server ? `Missed time triggers one catch-up run when ${host} starts again.` : "Missed time triggers one catch-up run when the app starts again."}</span><span class="schedule-preview" data-schedule-preview aria-live="polite"></span></span>
               <button id="schedule-submit" class="primary-button" type="submit" ${state.loading || offline ? "disabled" : ""}>Create Daily Schedule</button>
             </div>
           </form>
@@ -2307,6 +2339,7 @@ function renderScheduleCard(schedule) {
         <span>${schedule.lastRunAt ? `Last: ${formatDate(schedule.lastRunAt)}` : "Not run yet"}</span>
       </div>
       <details class="task-card-details" data-ui-disclosure="schedule-${escapeAttr(schedule.id)}"><summary>Workspace</summary>${renderWorkspaceEditor("schedule", schedule)}</details>
+      ${schedule.skippedRuns ? `<p class="schedule-skipped">Left out ${schedule.skippedRuns === 1 ? "once" : `${schedule.skippedRuns} times in a row`} (last ${formatDate(schedule.lastSkippedAt)}): the previous run was still going.</p>` : ""}
       ${schedule.lastError ? `<p class="schedule-error">Last error: ${escapeHtml(schedule.lastError)}</p>` : ""}
       <div class="task-actions task-actions--card">
         <button class="ghost-button" type="button" data-action="toggle-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading || offline ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Resume"}</button>
@@ -2317,12 +2350,54 @@ function renderScheduleCard(schedule) {
 }
 
 function formatScheduleCadence(schedule) {
+  if (schedule.frequency === "interval") {
+    const minutes = Number(schedule.intervalMinutes) || 0;
+    const every = minutes % 60 ? (minutes > 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`) : `${minutes / 60} h`;
+    const days = Array.isArray(schedule.weekdays) && schedule.weekdays.length < 7 ? formatScheduleDays(schedule.weekdays) : "";
+    return ["every " + every, schedule.windowEnd ? `${schedule.time}–${schedule.windowEnd}` : "", days, schedule.timezone].filter(Boolean).join(" · ");
+  }
+  if (!["daily", "weekly"].includes(schedule.frequency)) return `${schedule.frequency} · ${schedule.timezone}`;
   if (schedule.frequency === "weekly") {
     const weekday = SCHEDULE_WEEKDAYS[Number(schedule.weekday)] || "day not set";
     return `weekly · ${weekday} · ${schedule.time} · ${schedule.timezone}`;
   }
 
   return `daily · ${schedule.time} · ${schedule.timezone}`;
+}
+
+/** Mon–Fri, Sat–Sun, or the days by name, Monday first. */
+function formatScheduleDays(days) {
+  const key = [...days].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).join(",");
+  if (key === "1,2,3,4,5") return "Mon–Fri";
+  if (key === "6,0") return "Sat–Sun";
+  return key.split(",").map((day) => SCHEDULE_WEEKDAYS[Number(day)]?.slice(0, 3)).join(", ");
+}
+
+/** A run's time in the preview: its time today, otherwise its day and time. */
+function formatScheduleRun(iso) {
+  const at = new Date(iso);
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return at.toDateString() === new Date().toDateString() ? time : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+/** The cadence the schedule form describes, as the API takes it, or the reason it cannot be sent. */
+function readScheduleCadence(form) {
+  const frequency = ["weekly", "interval"].includes(String(form.get("frequency"))) ? String(form.get("frequency")) : "daily";
+  const timezone = String(form.get("timezone") || "").trim();
+  if (frequency !== "interval") {
+    const weekday = Number(form.get("weekday"));
+    return { frequency, ...(frequency === "weekly" ? { weekday } : {}), time: String(form.get("time") || "").trim(), timezone };
+  }
+  const minutes = Math.round(Number(form.get("intervalValue")) * (form.get("intervalUnit") === "hours" ? 60 : 1));
+  if (!Number.isFinite(minutes) || minutes < 5) return { error: "Every 5 minutes at the least." };
+  if (minutes > 1440) return { error: "Every 24 hours at the most." };
+  const windowed = form.get("window") === "on";
+  const time = windowed ? String(form.get("time") || "").trim() : "00:00";
+  const windowEnd = windowed ? String(form.get("windowEnd") || "").trim() : "";
+  if (windowed && windowEnd === time) return { error: "Until must differ from the start." };
+  const weekdays = form.getAll("weekdays").map(Number);
+  if (!weekdays.length) return { error: "Choose at least one day." };
+  return { frequency, intervalMinutes: minutes, time, ...(windowEnd ? { windowEnd } : {}), ...(weekdays.length < 7 ? { weekdays } : {}), timezone };
 }
 
 function getTaskBoardStatus(task) {
@@ -4138,8 +4213,13 @@ function bindEvents() {
   const scheduleWeekday = document.querySelector("#schedule-weekday");
   const scheduleTimeLabel = document.querySelector("[data-schedule-time-label]");
   const scheduleSubmit = document.querySelector("#schedule-submit");
+  const scheduleWindow = document.querySelector("#schedule-window");
+  const scheduleNote = document.querySelector("[data-schedule-note]");
+  const schedulePreview = document.querySelector("[data-schedule-preview]");
   const syncScheduleFrequency = () => {
     const isWeekly = scheduleFrequency?.value === "weekly";
+    const isInterval = scheduleFrequency?.value === "interval";
+    const windowed = isInterval && Boolean(scheduleWindow?.checked);
 
     if (scheduleWeekdayField) {
       scheduleWeekdayField.hidden = !isWeekly;
@@ -4147,15 +4227,54 @@ function bindEvents() {
     if (scheduleWeekday) {
       scheduleWeekday.required = isWeekly;
     }
+    document.querySelectorAll("[data-schedule-interval-field]").forEach((field) => { field.hidden = !isInterval; });
+    const timeField = document.querySelector("[data-schedule-time-field]");
+    if (timeField) timeField.hidden = isInterval && !windowed;
+    const windowField = document.querySelector("[data-schedule-window-field]");
+    if (windowField) windowField.hidden = !windowed;
     if (scheduleTimeLabel) {
-      scheduleTimeLabel.textContent = isWeekly ? "Every week at" : "Every day at";
+      scheduleTimeLabel.textContent = isInterval ? "From" : isWeekly ? "Every week at" : "Every day at";
     }
     if (scheduleSubmit) {
-      scheduleSubmit.textContent = isWeekly ? "Create Weekly Schedule" : "Create Daily Schedule";
+      scheduleSubmit.textContent = isInterval ? "Create Repeating Schedule" : isWeekly ? "Create Weekly Schedule" : "Create Daily Schedule";
+    }
+    if (scheduleNote) {
+      const where = scheduleNote.dataset.where;
+      scheduleNote.textContent = isInterval
+        ? "A run is left out while the previous one is still going. After sleep or a restart, one catch-up run, within the hours."
+        : `Missed time triggers one catch-up run when ${where} starts again.`;
     }
   };
 
+  // The next runs, as the computer that runs the schedule works them out (an older server cannot say).
+  let previewTimer, previewTurn = 0;
+  const previewSchedule = () => {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+      const turn = ++previewTurn;
+      const server = state.orchestration;
+      if (!schedulePreview || !scheduleForm || (server && !server.supports("schedules.preview"))) return;
+      const cadence = readScheduleCadence(new FormData(scheduleForm));
+      const show = (text, problem = false) => {
+        if (turn !== previewTurn) return;
+        schedulePreview.textContent = text;
+        schedulePreview.classList.toggle("schedule-preview--problem", problem);
+      };
+      if (cadence.error) return show(cadence.error, true);
+      if (!cadence.time || !cadence.timezone) return show("");
+      try {
+        const { nextRuns } = await (server?.api ?? api).previewSchedule(cadence);
+        show(`Next: ${nextRuns.slice(0, 3).map(formatScheduleRun).join(", ")}`);
+      } catch (error) {
+        show(error?.message || "", true);
+      }
+    }, 250);
+  };
+
   scheduleFrequency?.addEventListener("change", syncScheduleFrequency);
+  scheduleWindow?.addEventListener("change", syncScheduleFrequency);
+  scheduleForm?.addEventListener("input", previewSchedule);
+  scheduleForm?.addEventListener("change", previewSchedule);
   syncScheduleFrequency();
 
   scheduleForm?.addEventListener("submit", async (event) => {
@@ -4165,11 +4284,13 @@ function bindEvents() {
     const description = String(form.get("description") || "").trim();
     const workflowId = String(form.get("workflowId") || "").trim();
     const priority = String(form.get("priority") || "normal");
-    const frequency = String(form.get("frequency") || "daily") === "weekly" ? "weekly" : "daily";
-    const weekday = Number(form.get("weekday"));
-    const time = String(form.get("time") || "").trim();
-    const timezone = String(form.get("timezone") || "").trim();
+    const cadence = readScheduleCadence(form);
+    const { frequency, weekday, time, timezone } = cadence;
 
+    if (cadence.error) {
+      pushToast(cadence.error, "warning");
+      return;
+    }
     if (!title || !description || !workflowId || !time || !timezone || (frequency === "weekly" && !Number.isInteger(weekday))) {
       return;
     }
@@ -4181,15 +4302,12 @@ function bindEvents() {
         description,
         workflowId,
         priority,
-        frequency,
-        ...(frequency === "weekly" ? { weekday } : {}),
-        time,
-        timezone,
+        ...cadence,
         projectId: String(form.get("projectId") || "") || null,
         accessMode: String(form.get("accessMode") || "default")
       });
       await reload();
-      pushToast(frequency === "weekly" ? "Weekly schedule created." : "Daily schedule created.", "info");
+      pushToast(frequency === "interval" ? "Repeating schedule created." : frequency === "weekly" ? "Weekly schedule created." : "Daily schedule created.", "info");
     });
   });
 

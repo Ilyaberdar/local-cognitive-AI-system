@@ -17,6 +17,12 @@
 
 - **The cursor no longer flickers over buttons on an external monitor.** On a display under 2x (a monitor at 1x on a Mac), buttons and cards lifted a pixel or two when hovered, which moved their edge off a resting cursor: the cursor jumped between the arrow and the hand along the edges and as it moved. There they now keep their place and show the hover by their colour; a Retina display keeps the lift.
 
+### Workflow
+
+- **Schedules can run at intervals**: every few minutes or hours (5 minutes to 24 hours), all day or only between certain hours (08:00 to 22:00, or 22:00 to 02:00 across midnight), on the days you choose. Until now a schedule ran once a day or once a week, so nothing could check a feed or a mailbox through the day. The form shows the next three runs as you fill it in and says what is wrong before you create it (an interval under 5 minutes, no day chosen), and the card reads, for example, "every 30 min · 08:00–22:00 · Mon–Fri".
+- **An interval schedule never overlaps itself.** While its previous run is still going, or waits for your approval, the next time is left out and the card says so ("Left out 3 times in a row: the previous run was still going"); a run longer than the interval is followed by the next time after it, not by another run at once. After sleep or a restart it runs once if it is within its hours, and otherwise waits for its next time.
+- A schedule this version cannot read (one written by a newer version) says so on its card and no longer stops the other schedules.
+
 ### Desktop
 
 - **A tour at the first launch.** A new user saw the chat and nothing about the rest of the window: where models come from, what Workflow, Synthesis and Remote are, or where Settings is. The first launch now shows a short tour that highlights one place at a time, Models ("Start with a model": download one to run on this computer, or add a cloud provider's key in Settings → Models & Providers), the chat box and Session Setup, projects and chats, Workflow, Synthesis, Remote and the profile menu, each with a sentence or two, in the app's own glass style in every theme. It never changes the screen you are on; a place that is not on screen (a narrow window, a collapsed sidebar) is left out, and the highlight follows its place when the window is resized. **Next**, **Back** and the arrow keys move through it, **Skip tour** or **Esc** closes it; the keyboard stays in it while it is open, a screen reader reads each step, and with Animations off or reduced motion asked by the system nothing moves.

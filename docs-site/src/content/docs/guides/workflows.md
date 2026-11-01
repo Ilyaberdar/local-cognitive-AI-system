@@ -17,7 +17,13 @@ A task without a project gets its own folder, kept across runs.
 
 ## Schedules
 
-**Schedules** create a task every day or every week at a local time in a time zone you choose (for example `Europe/Kyiv`). Each occurrence is its own task with its own trace. If the app was off at the scheduled time, it runs once after it starts. Schedules run while the app (or the server) is running.
+**Schedules** create a task every day or every week at a local time in a time zone you choose (for example `Europe/Kyiv`), or **at intervals**: every few minutes or hours (from 5 minutes to 24 hours), all day or only between certain hours, on the days you choose. Each occurrence is its own task with its own trace, and the form shows the next runs as you fill it in.
+
+- If the app was off at the scheduled time, a daily or weekly schedule runs once after it starts. An interval schedule runs once only if it is then within its hours, and otherwise waits for its next time.
+- An interval schedule never runs twice at once: while its previous run is still going (or waits for your approval), the next time is left out, and its card says how many times in a row. A run longer than the interval is followed by the next time after it, not by another run at once.
+- Hours that cross midnight (22:00 to 02:00) belong to the day they start. On the night clocks change, a time that does not exist is left out, and the hour that repeats runs once.
+
+Schedules run while the app (or the server) is running.
 
 ## Workflow editor
 

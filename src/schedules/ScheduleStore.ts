@@ -118,8 +118,64 @@ export class ScheduleStore {
           metadata: { ...schedule.metadata, scheduleId: schedule.id, scheduleOccurrenceAt: occurrenceAt }
         },
         nextRunAt,
+        skippedRuns: undefined,
+        lastSkippedAt: undefined,
         updatedAt: new Date().toISOString()
       });
+      await this.write(record);
+      return schedule;
+    });
+  }
+
+  /**
+   * Moves a due schedule past `occurrenceAt` without running it: an interval schedule's time missed
+   * outside its hours, or (`overlapping`) one left out because its previous run is still going,
+   * which is counted. Only while that time is still the one due and nothing has claimed it.
+   */
+  async skipOccurrence(
+    scheduleId: string,
+    occurrenceAt: string,
+    nextRunAt: string,
+    options: { overlapping?: boolean } = {}
+  ): Promise<Schedule | null> {
+    return this.serialize(async () => {
+      const record = await this.read();
+      const schedule = record.schedules.find((item) => item.id === scheduleId);
+
+      if (!schedule || schedule.activeOccurrenceAt || schedule.nextRunAt !== occurrenceAt) {
+        return null;
+      }
+
+      Object.assign(schedule, {
+        nextRunAt,
+        ...(options.overlapping ? { skippedRuns: (schedule.skippedRuns ?? 0) + 1, lastSkippedAt: occurrenceAt } : {}),
+        updatedAt: new Date().toISOString()
+      });
+      await this.write(record);
+      return schedule;
+    });
+  }
+
+  /**
+   * After a run, moves the schedule's next time past `finishedAt` when that time already went by
+   * during the run and `next` gives one (an interval schedule); otherwise leaves it.
+   */
+  async advancePast(
+    scheduleId: string,
+    finishedAt: string,
+    next: (schedule: Schedule) => string | undefined
+  ): Promise<Schedule | null> {
+    return this.serialize(async () => {
+      const record = await this.read();
+      const schedule = record.schedules.find((item) => item.id === scheduleId);
+
+      if (!schedule || schedule.activeOccurrenceAt || Date.parse(schedule.nextRunAt) > Date.parse(finishedAt)) {
+        return null;
+      }
+
+      const nextRunAt = next(schedule);
+      if (!nextRunAt) return null;
+      Object.assign(schedule, { nextRunAt, updatedAt: new Date().toISOString() });
       await this.write(record);
       return schedule;
     });

@@ -51,6 +51,11 @@ export class ScheduleRunner {
             taskId: result.taskId,
             error: result.error
           });
+        } else if (result.skipped === "overlapping_run") {
+          this.logger.info("Scheduled run left out: the previous run is still going", {
+            scheduleId: result.scheduleId,
+            taskId: result.taskId
+          });
         } else if (result.taskId) {
           this.logger.info("Scheduled task run completed", {
             scheduleId: result.scheduleId,

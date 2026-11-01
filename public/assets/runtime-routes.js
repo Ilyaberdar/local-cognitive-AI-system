@@ -131,6 +131,7 @@ export const ORCHESTRATION_ROUTES = [
   { method: "PATCH", pattern: /^\/tasks\/([^/]+)$/, op: "tasks.update", payload: (match, _query, body) => ({ taskId: segment(match[1]), patch: present(body) }) },
   { method: "DELETE", pattern: /^\/tasks\/([^/]+)$/, op: "tasks.delete", payload: match => ({ taskId: segment(match[1]) }) },
   { method: "POST", pattern: /^\/schedules$/, op: "schedules.create", send: true, payload: (_match, _query, body) => present(body) },
+  { method: "POST", pattern: /^\/schedules\/preview$/, op: "schedules.preview", payload: (_match, _query, body) => present(body) },
   { method: "PATCH", pattern: /^\/schedules\/([^/]+)$/, op: "schedules.update", payload: (match, _query, body) => ({ scheduleId: segment(match[1]), patch: present(body) }) },
   { method: "DELETE", pattern: /^\/schedules\/([^/]+)$/, op: "schedules.delete", payload: match => ({ scheduleId: segment(match[1]) }) },
   { method: "POST", pattern: /^\/workflows\/[^/]+\/validate$/, op: "workflows.validate", payload: (_match, _query, body) => ({ workflow: body }) },

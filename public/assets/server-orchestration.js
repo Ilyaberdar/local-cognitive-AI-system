@@ -49,6 +49,7 @@ function createSource({ target, runtime, onChange, onStatus }) {
     runTask: taskId => request(path("/tasks", taskId, "/run"), { method: "POST" }),
     runNextTask: () => request("/tasks/run-next", { method: "POST" }),
     createSchedule: payload => request("/schedules", { method: "POST", body: body(payload) }),
+    previewSchedule: payload => request("/schedules/preview", { method: "POST", body: body(payload) }),
     updateSchedule: (scheduleId, payload) => request(path("/schedules", scheduleId), { method: "PATCH", body: body(payload) }),
     deleteSchedule: scheduleId => request(path("/schedules", scheduleId), { method: "DELETE" }),
     getWorkflowRun: runId => request(path("/workflow-runs", runId)),
@@ -112,6 +113,8 @@ function createSource({ target, runtime, onChange, onStatus }) {
     lists, api, request, refresh, saveWorkflow, editorOptions,
     EventSourceClass: createRunEventsSource({ runtime, hostId, isCurrent, onStatus }),
     hostName: name, online,
+    /** Whether the server offers an operation (an older one lacks the newer ones). */
+    supports: op => target.supports(op),
     loaded: () => loaded,
     error: () => loadError,
     /** An older server does not offer this screen's operations (known once it is online). */

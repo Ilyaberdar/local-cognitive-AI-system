@@ -105,20 +105,20 @@ test("new project chats use explicit project identity and retain other chats' dr
 
 test("task and schedule creation submit workspace choices without the selected chat", async () => {
   const callbacks: Record<string, (event: unknown) => Promise<void>> = {};
-  const makeForm = (id: string) => ({ addEventListener: (_: string, handler: (event: unknown) => Promise<void>) => { callbacks[id] = handler; }, reset() {} });
+  const makeForm = (id: string) => ({ addEventListener: (type: string, handler: (event: unknown) => Promise<void>) => { if (type === "submit") callbacks[id] = handler; }, reset() {} });
   const forms: Record<string, unknown> = { "#task-form": makeForm("task"), "#schedule-form": makeForm("schedule") };
   const values = new Map<string, string>(Object.entries({ title: "Task", description: "Work here", workflowId: "wf", projectId: "project-b", accessMode: "ask", priority: "normal", time: "09:00", timezone: "Europe/Kyiv", frequency: "daily" }));
   const sent: any[] = [];
   const state: any = { activeSessionId: "unrelated-chat", loading: false, attachmentImports: {}, taskDraftAttachments: [] };
   const context: any = { state,
-    document: { querySelector: (selector: string) => forms[selector] ?? null },
+    document: { querySelector: (selector: string) => forms[selector] ?? null, querySelectorAll: () => [] },
     FormData: class { get(name: string) { return values.get(name); } },
     api: { createTask: async (payload: unknown) => sent.push(payload), createSchedule: async (payload: unknown) => sent.push(payload) },
     runAction: (action: () => unknown) => action(), refreshBootstrap: async () => {}, pushToast() {}
   };
   const start = appSource.indexOf('  document.querySelector("#task-form")?.addEventListener("submit"');
   const end = appSource.indexOf('  document.querySelector("[data-action=\'refresh-orchestration\']")', start);
-  vm.runInNewContext(appSource.slice(start, end), context);
+  vm.runInNewContext(appFunction("function readScheduleCadence", "function getTaskBoardStatus") + appSource.slice(start, end), context);
   await callbacks.task({ preventDefault() {}, currentTarget: forms["#task-form"] });
   await callbacks.schedule({ preventDefault() {}, currentTarget: forms["#schedule-form"] });
   for (const payload of sent) {
@@ -129,6 +129,47 @@ test("task and schedule creation submit workspace choices without the selected c
   values.set("projectId", "");
   await callbacks.task({ preventDefault() {} });
   assert.equal(sent[2].projectId, null);
+});
+
+test("a repeating schedule sends its interval, hours and days; one under 5 minutes is not sent", async () => {
+  let submit!: (event: unknown) => Promise<void>;
+  const form = { addEventListener: (type: string, handler: (event: unknown) => Promise<void>) => { if (type === "submit") submit = handler; }, reset() {} };
+  const values = new Map<string, string>(Object.entries({ title: "News", description: "Check the feeds", workflowId: "wf", priority: "normal",
+    frequency: "interval", intervalValue: "2", intervalUnit: "hours", window: "on", time: "08:00", windowEnd: "22:00", timezone: "Europe/Kyiv" }));
+  let days = ["1", "2", "3", "4", "5"];
+  const sent: any[] = [], toasts: string[] = [];
+  const context: any = { state: { loading: false, attachmentImports: {}, taskDraftAttachments: [] },
+    document: { querySelector: (selector: string) => selector === "#schedule-form" ? form : null, querySelectorAll: () => [] },
+    FormData: class { get(name: string) { return values.get(name); } getAll(name: string) { return name === "weekdays" ? days : []; } },
+    api: { createSchedule: async (payload: unknown) => sent.push(payload) },
+    runAction: (action: () => unknown) => action(), refreshBootstrap: async () => {}, pushToast: (text: string) => toasts.push(text)
+  };
+  const start = appSource.indexOf('  document.querySelector("#task-form")?.addEventListener("submit"');
+  const end = appSource.indexOf('  document.querySelector("[data-action=\'refresh-orchestration\']")', start);
+  vm.runInNewContext(appFunction("function readScheduleCadence", "function getTaskBoardStatus") + appSource.slice(start, end), context);
+
+  await submit({ preventDefault() {}, currentTarget: form });
+  assert.deepEqual(
+    { frequency: sent[0].frequency, intervalMinutes: sent[0].intervalMinutes, time: sent[0].time, windowEnd: sent[0].windowEnd, weekdays: sent[0].weekdays, timezone: sent[0].timezone },
+    { frequency: "interval", intervalMinutes: 120, time: "08:00", windowEnd: "22:00", weekdays: [1, 2, 3, 4, 5], timezone: "Europe/Kyiv" });
+  assert.equal(Object.hasOwn(sent[0], "weekday"), false);
+
+  // All day, every day: from midnight, without the hours or the days.
+  values.delete("window");
+  days = ["1", "2", "3", "4", "5", "6", "0"];
+  values.set("intervalValue", "45"); values.set("intervalUnit", "minutes");
+  await submit({ preventDefault() {}, currentTarget: form });
+  assert.equal(sent[1].intervalMinutes, 45);
+  assert.equal(sent[1].time, "00:00");
+  assert.equal(Object.hasOwn(sent[1], "windowEnd") || Object.hasOwn(sent[1], "weekdays"), false);
+
+  values.set("intervalValue", "3");
+  await submit({ preventDefault() {}, currentTarget: form });
+  days = [];
+  values.set("intervalValue", "30");
+  await submit({ preventDefault() {}, currentTarget: form });
+  assert.equal(sent.length, 2);
+  assert.deepEqual(toasts.slice(-2), ["Every 5 minutes at the least.", "Choose at least one day."]);
 });
 
 test("Agent steps uses the workflow-scoped endpoint and renders the stored turn transcript as text", async () => {

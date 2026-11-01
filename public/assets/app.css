@@ -2514,8 +2514,111 @@ a {
   min-width: 0;
 }
 
-[data-schedule-weekday-field][hidden] {
+[data-schedule-weekday-field][hidden],
+[data-schedule-interval-field][hidden],
+[data-schedule-time-field][hidden],
+[data-schedule-window-field][hidden] {
   display: none;
+}
+
+.schedule-interval {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.field .schedule-interval input {
+  flex: 0 0 76px;
+  width: 76px;
+  min-width: 0;
+}
+
+.field .schedule-interval select {
+  flex: 0 1 160px;
+  width: auto;
+  min-width: 0;
+}
+
+.schedule-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.schedule-check input[type="checkbox"],
+.schedule-day input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.schedule-days {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.schedule-days legend {
+  padding: 0;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale, 1));
+}
+
+.schedule-days__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.schedule-days .schedule-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale, 1));
+  cursor: pointer;
+}
+
+.schedule-days .schedule-day:has(input:checked) {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.schedule-footnote {
+  display: grid;
+  gap: 4px;
+}
+
+.schedule-preview:empty {
+  display: none;
+}
+
+.schedule-preview {
+  color: var(--text);
+}
+
+.schedule-preview--problem {
+  color: var(--danger);
+}
+
+.schedule-card .schedule-skipped {
+  color: var(--warning, var(--muted));
 }
 
 .schedule-card {

@@ -4,7 +4,11 @@ import { ScheduleStore } from "./ScheduleStore";
 import { WorkspaceResolver } from "../workspace/WorkspaceResolver";
 import { withFileLock } from "../utils/fileStore";
 import {
+  isWithinIntervalHours,
+  MAX_INTERVAL_MINUTES,
+  MIN_INTERVAL_MINUTES,
   nextDailyOccurrence,
+  nextIntervalOccurrence,
   nextWeeklyOccurrence,
   normalizeDailyTime,
   normalizeTimeZone,
@@ -15,6 +19,7 @@ import {
   Schedule,
   ScheduleDispatchResult,
   ScheduleFrequency,
+  ScheduleRule,
   ScheduleWeekday,
   UpdateScheduleInput
 } from "./types";
@@ -22,10 +27,13 @@ import {
 type ScheduledTaskService = Pick<
   TaskService,
   "create" | "findByScheduleOccurrence" | "runTask"
->;
+> & Partial<Pick<TaskService, "hasActiveRun">>;
+
+/** A run that starts later than this after its time was missed (sleep, a closed app, a long run). */
+const LATE_MS = 90_000;
 
 const taskPriorities = new Set<TaskPriority>(["low", "normal", "high"]);
-const scheduleFrequencies = new Set<ScheduleFrequency>(["daily", "weekly"]);
+const scheduleFrequencies = new Set<ScheduleFrequency>(["daily", "weekly", "interval"]);
 const runnableRecoveredTaskStatuses = new Set<Task["status"]>([
   "todo",
   "queued",
@@ -40,7 +48,8 @@ export class ScheduleService {
   constructor(
     private readonly scheduleStore: ScheduleStore,
     private readonly taskService: ScheduledTaskService,
-    private readonly workspaceResolver?: Pick<WorkspaceResolver, "forTask">
+    private readonly workspaceResolver?: Pick<WorkspaceResolver, "forTask">,
+    private readonly clock: () => Date = () => new Date()
   ) {}
 
   async list(): Promise<Schedule[]> {
@@ -58,6 +67,7 @@ export class ScheduleService {
     const timezone = normalizeTimezone(input.timezone);
     const frequency = normalizeFrequency(input.frequency);
     const weekday = frequency === "weekly" ? normalizeWeekday(input.weekday) : undefined;
+    const interval = normalizeInterval(frequency, input, time);
     const projectId = normalizeProjectId(input.projectId);
     if (projectId) await this.workspaceResolver?.forTask({ id: "schedule-validation", projectId });
 
@@ -72,11 +82,27 @@ export class ScheduleService {
       metadata: input.metadata,
       frequency,
       weekday,
+      ...interval,
       time,
       timezone,
       enabled: input.enabled ?? true,
-      nextRunAt: nextScheduledOccurrence(now, frequency, weekday, time, timezone).toISOString()
+      nextRunAt: nextScheduledOccurrence(now, { frequency, weekday, ...interval, time, timezone }).toISOString()
     });
+  }
+
+  /** The next runs a schedule with these fields would make, without saving it. */
+  preview(input: Pick<CreateScheduleInput, "frequency" | "weekday" | "intervalMinutes" | "windowEnd" | "weekdays" | "time" | "timezone">, now = new Date(), count = 5): string[] {
+    const time = normalizeTime(input.time);
+    const timezone = normalizeTimezone(input.timezone);
+    const frequency = normalizeFrequency(input.frequency);
+    const weekday = frequency === "weekly" ? normalizeWeekday(input.weekday) : undefined;
+    const rule: ScheduleRule = { frequency, weekday, ...normalizeInterval(frequency, input, time), time, timezone };
+    const runs: string[] = [];
+    for (let after = now; runs.length < Math.min(Math.max(count, 1), 20);) {
+      after = nextScheduledOccurrence(after, rule);
+      runs.push(after.toISOString());
+    }
+    return runs;
   }
 
   async update(
@@ -98,12 +124,20 @@ export class ScheduleService {
     const weekday = frequency === "weekly"
       ? normalizeWeekday(input.weekday === undefined ? current.weekday : input.weekday)
       : undefined;
+    const interval = normalizeInterval(frequency, {
+      intervalMinutes: input.intervalMinutes ?? current.intervalMinutes,
+      windowEnd: input.windowEnd === undefined ? current.windowEnd : input.windowEnd,
+      weekdays: input.weekdays === undefined ? current.weekdays : input.weekdays
+    }, time);
     const enabled = input.enabled === undefined ? current.enabled : input.enabled;
     const resetNextRun =
       time !== current.time ||
       timezone !== current.timezone ||
       frequency !== current.frequency ||
       weekday !== current.weekday ||
+      interval.intervalMinutes !== current.intervalMinutes ||
+      interval.windowEnd !== current.windowEnd ||
+      String(interval.weekdays ?? "") !== String(current.weekdays ?? "") ||
       (enabled && !current.enabled);
 
     return this.scheduleStore.update(scheduleId, {
@@ -117,11 +151,15 @@ export class ScheduleService {
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
       frequency,
       weekday,
+      ...interval,
       ...(input.time === undefined ? {} : { time }),
       ...(input.timezone === undefined ? {} : { timezone }),
       ...(input.enabled === undefined ? {} : { enabled }),
       ...(resetNextRun
-        ? { nextRunAt: nextScheduledOccurrence(now, frequency, weekday, time, timezone).toISOString(), lastError: undefined }
+        ? {
+          nextRunAt: nextScheduledOccurrence(now, { frequency, weekday, ...interval, time, timezone }).toISOString(),
+          lastError: undefined, skippedRuns: undefined, lastSkippedAt: undefined
+        }
         : {})
     });
   }
@@ -133,6 +171,8 @@ export class ScheduleService {
   /**
    * Dispatches each due schedule once. If the app was offline, it performs one
    * catch-up run and then moves the schedule to the next future occurrence.
+   * An interval schedule makes that catch-up run only within its hours, and is
+   * left out while its previous run is still going.
    */
   async runDue(now = new Date()): Promise<ScheduleDispatchResult[]> {
     const schedules = await this.scheduleStore.list();
@@ -149,22 +189,36 @@ export class ScheduleService {
         continue;
       }
 
-      const claimed = await this.scheduleStore.claimDispatch(
-        schedule.id,
-        schedule.nextRunAt,
-        nextScheduledOccurrence(
-          now,
-          schedule.frequency,
-          schedule.weekday,
-          schedule.time,
-          schedule.timezone
-        ).toISOString()
-      );
+      // One schedule that cannot be read (a file from a newer version, say) never stops the others.
+      try {
+        const nextRunAt = nextScheduledOccurrence(now, schedule).toISOString();
 
-      if (claimed) {
-        dispatches.push(claimed);
-      } else {
-        results.push({ scheduleId: schedule.id, skipped: "updated" });
+        if (schedule.frequency === "interval") {
+          const late = now.getTime() - Date.parse(schedule.nextRunAt) > LATE_MS;
+          if (late && !isWithinIntervalHours(now, intervalRule(schedule), schedule.timezone)) {
+            await this.scheduleStore.skipOccurrence(schedule.id, schedule.nextRunAt, nextRunAt);
+            continue;
+          }
+          if (schedule.lastTaskId && await this.taskService.hasActiveRun?.(schedule.lastTaskId)) {
+            const skipped = await this.scheduleStore.skipOccurrence(schedule.id, schedule.nextRunAt, nextRunAt, { overlapping: true });
+            results.push({ scheduleId: schedule.id, ...(skipped ? { taskId: schedule.lastTaskId, skipped: "overlapping_run" as const } : { skipped: "updated" as const }) });
+            continue;
+          }
+        }
+
+        const claimed = await this.scheduleStore.claimDispatch(schedule.id, schedule.nextRunAt, nextRunAt);
+
+        if (claimed) {
+          dispatches.push(claimed);
+        } else {
+          results.push({ scheduleId: schedule.id, skipped: "updated" });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "unknown_error";
+        if (schedule.lastError !== message) {
+          await this.scheduleStore.update(schedule.id, { lastError: message });
+          results.push({ scheduleId: schedule.id, error: message });
+        }
       }
     }
 
@@ -295,6 +349,11 @@ export class ScheduleService {
       lastTaskId: taskId,
       lastError
     });
+    // An interval schedule's times that passed while its own run went on are left out, so a run
+    // longer than the interval is not followed by another at once.
+    const finishedAt = new Date(Math.max(this.clock().getTime(), now.getTime()));
+    await this.scheduleStore.advancePast(schedule.id, finishedAt.toISOString(), (current) =>
+      current.frequency === "interval" ? nextScheduledOccurrence(finishedAt, current).toISOString() : undefined);
   }
 
   private toTaskInput(schedule: Schedule, occurrenceAt: string): CreateTaskInput {
@@ -364,10 +423,38 @@ const normalizeFrequency = (value: ScheduleFrequency | undefined): ScheduleFrequ
   }
 
   if (!scheduleFrequencies.has(value)) {
-    throw new ScheduleValidationError("Field 'frequency' must be daily or weekly.");
+    throw new ScheduleValidationError("Field 'frequency' must be daily, weekly or interval.");
   }
 
   return value;
+};
+
+/** An interval schedule's own fields, checked; nothing for daily and weekly ones, which drop them. */
+const normalizeInterval = (
+  frequency: ScheduleFrequency,
+  input: { intervalMinutes?: unknown; windowEnd?: unknown; weekdays?: unknown },
+  time: string
+): Pick<Schedule, "intervalMinutes" | "windowEnd" | "weekdays"> => {
+  if (frequency !== "interval") return { intervalMinutes: undefined, windowEnd: undefined, weekdays: undefined };
+  const minutes = input.intervalMinutes;
+  if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < MIN_INTERVAL_MINUTES || minutes > MAX_INTERVAL_MINUTES) {
+    throw new ScheduleValidationError(`Field 'intervalMinutes' must be a whole number from ${MIN_INTERVAL_MINUTES} to ${MAX_INTERVAL_MINUTES}.`);
+  }
+  let windowEnd: string | undefined;
+  if (input.windowEnd !== undefined && input.windowEnd !== null) {
+    if (typeof input.windowEnd !== "string") throw new ScheduleValidationError("Field 'windowEnd' must use 24-hour HH:mm format.");
+    windowEnd = normalizeTime(input.windowEnd);
+    if (windowEnd === time) throw new ScheduleValidationError("Field 'windowEnd' must differ from 'time'.");
+  }
+  let weekdays: ScheduleWeekday[] | undefined;
+  if (input.weekdays !== undefined && input.weekdays !== null) {
+    if (!Array.isArray(input.weekdays) || input.weekdays.length === 0) {
+      throw new ScheduleValidationError("Field 'weekdays' must list at least one day, 0 (Sunday) to 6 (Saturday).");
+    }
+    const days = [...new Set(input.weekdays.map(normalizeWeekday))].sort((a, b) => a - b);
+    weekdays = days.length === 7 ? undefined : days;
+  }
+  return { intervalMinutes: minutes, windowEnd, weekdays };
 };
 
 const normalizeWeekday = (value: unknown): ScheduleWeekday => {
@@ -405,15 +492,21 @@ const isDue = (schedule: Schedule, now: Date): boolean => {
   return Number.isFinite(scheduledAt) && scheduledAt <= now.getTime();
 };
 
-const nextScheduledOccurrence = (
-  after: Date,
-  frequency: ScheduleFrequency,
-  weekday: ScheduleWeekday | undefined,
-  time: string,
-  timezone: string
-): Date => frequency === "weekly"
-  ? nextWeeklyOccurrence(after, normalizeWeekday(weekday), time, timezone)
-  : nextDailyOccurrence(after, time, timezone);
+const intervalRule = (rule: ScheduleRule) => ({
+  time: rule.time,
+  intervalMinutes: rule.intervalMinutes ?? 0,
+  windowEnd: rule.windowEnd,
+  weekdays: rule.weekdays
+});
+
+const nextScheduledOccurrence = (after: Date, rule: ScheduleRule): Date => {
+  switch (rule.frequency) {
+    case "weekly": return nextWeeklyOccurrence(after, normalizeWeekday(rule.weekday), rule.time, rule.timezone);
+    case "interval": return nextIntervalOccurrence(after, intervalRule(rule), rule.timezone);
+    case "daily": return nextDailyOccurrence(after, rule.time, rule.timezone);
+    default: throw new ScheduleValidationError(`This schedule repeats "${String(rule.frequency)}", which this version does not know. Update the app to run it.`);
+  }
+};
 
 const taskOutcomeError = (status: Task["status"], runId: string | undefined): string | undefined => {
   if (status === "done") {

@@ -115,6 +115,24 @@ test("the snapshot lists the host's work without host internals and is a few byt
   assert.equal(changed.tasks[0].priority, "high");
 });
 
+test("a device makes a schedule that repeats every few minutes within hours, and previews its next runs", async t => {
+  const f = await setup(t);
+  await f.call("workflows.save", { commandId: "cmd-save-i", workflow: reviewWorkflow(), expectedUpdatedAt: null });
+  const cadence = { frequency: "interval", intervalMinutes: 30, time: "08:00", windowEnd: "22:00", weekdays: [5, 1, 2, 3, 4], timezone: "UTC" };
+  const preview = await f.call("schedules.preview", cadence);
+  assert.equal(preview.nextRuns.length, 5);
+  for (const at of preview.nextRuns.map((iso: string) => new Date(iso))) {
+    assert.ok([0, 30].includes(at.getUTCMinutes()) && at.getUTCHours() >= 8 && at.getUTCHours() <= 22 && at.getUTCDay() >= 1 && at.getUTCDay() <= 5, at.toISOString());
+  }
+  const schedule = await f.call("schedules.create", { commandId: "cmd-schedule-i", title: "News", workflowId: "review-flow", ...cadence });
+  assert.deepEqual([schedule.frequency, schedule.intervalMinutes, schedule.windowEnd, schedule.weekdays], ["interval", 30, "22:00", [1, 2, 3, 4, 5]]);
+  const snapshot = await f.call("orchestration.snapshot", {});
+  assert.equal(snapshot.schedules[0].intervalMinutes, 30);
+  await assert.rejects(f.call("schedules.create", { commandId: "cmd-schedule-j", title: "x", workflowId: "review-flow", ...cadence, intervalMinutes: 4 }), code("invalid_request"));
+  await assert.rejects(f.call("schedules.preview", { frequency: "interval", time: "08:00", timezone: "UTC" }), code("invalid_request"));
+  assert.equal((await f.call("orchestration.snapshot", {})).schedules.length, 1);
+});
+
 test("a resent command acts once; the same command id for another request is refused", async t => {
   const f = await setup(t);
   await f.call("workflows.save", { commandId: "cmd-save-1", workflow: reviewWorkflow(), expectedUpdatedAt: null });

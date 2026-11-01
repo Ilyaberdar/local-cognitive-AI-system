@@ -32,9 +32,13 @@ const taskFields = {
 };
 const scheduleFields = {
   title: z.string().trim().min(1).max(500), description: z.string().max(100_000), workflowId: id, priority,
-  frequency: z.enum(["daily", "weekly"]), weekday: z.number().int().min(0).max(6).transform(day => day as ScheduleWeekday), time: z.string().min(1).max(10), timezone: z.string().min(1).max(100),
+  frequency: z.enum(["daily", "weekly", "interval"]), weekday: z.number().int().min(0).max(6).transform(day => day as ScheduleWeekday), time: z.string().min(1).max(10), timezone: z.string().min(1).max(100),
+  intervalMinutes: z.number().int().min(5).max(1440), windowEnd: z.string().min(1).max(10).nullable(),
+  weekdays: z.array(z.number().int().min(0).max(6).transform(day => day as ScheduleWeekday)).min(1).max(7).nullable(),
   enabled: z.boolean(), accessMode: access, projectId: id.nullable()
 };
+const cadence = { frequency: scheduleFields.frequency.optional(), weekday: scheduleFields.weekday.optional(), intervalMinutes: scheduleFields.intervalMinutes.optional(),
+  windowEnd: scheduleFields.windowEnd.optional(), weekdays: scheduleFields.weekdays.optional(), time: scheduleFields.time, timezone: scheduleFields.timezone };
 const workflow = z.record(z.string(), z.unknown()).refine(value => Buffer.byteLength(JSON.stringify(value)) <= MAX_WORKFLOW_BYTES, "The workflow is too large.");
 const schemas = {
   snapshot: z.object({ revision: z.string().max(100).optional() }).strict().optional(),
@@ -46,8 +50,9 @@ const schemas = {
   taskRun: z.object({ commandId, taskId: id }).strict(),
   runNext: z.object({ commandId }).strict(),
   scheduleCreate: z.object({ commandId, ...scheduleFields, description: scheduleFields.description.optional(), workflowId: id.optional(),
-    priority: priority.optional(), frequency: scheduleFields.frequency.optional(), weekday: scheduleFields.weekday.optional(),
+    priority: priority.optional(), ...cadence,
     enabled: z.boolean().optional(), accessMode: access.optional(), projectId: id.nullable().optional() }).strict(),
+  schedulePreview: z.object(cadence).strict(),
   scheduleUpdate: z.object({ scheduleId: id, patch: z.object(scheduleFields).partial().strict() }).strict(),
   schedule: z.object({ scheduleId: id }).strict(),
   validate: z.object({ workflow }).strict(),
@@ -321,6 +326,11 @@ export const createOrchestrationOperations = (deps: OrchestrationOperationDepend
       const schedule = await runtime().scheduleService.update(scheduleId, pausing ? patch : { ...patch, metadata: { ...current.metadata, ...DEVICE_ORIGIN } });
       if (!schedule) throw notFound("schedule");
       return safeSchedule(schedule);
+    }),
+    /** The next runs of a schedule with these fields, without saving it (the editor's preview). */
+    "schedules.preview": payload => known(async () => {
+      const input = parse(schemas.schedulePreview, payload);
+      return { nextRuns: runtime().scheduleService.preview(input) };
     }),
     "schedules.delete": payload => known(async () => {
       const { scheduleId } = parse(schemas.schedule, payload);
