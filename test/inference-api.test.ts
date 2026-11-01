@@ -149,6 +149,70 @@ test("a streamed completion sends deltas without the reasoning, holds back a pos
   assert.deepEqual(once.slice(0, -1).map(line => JSON.parse(line).choices[0].delta.content ?? null).filter(Boolean), ["All at once"]);
 });
 
+test("a local model thinks within a budget: Balanced as in the app's chats, at most half of max_tokens, or the level asked for", async t => {
+  const f = await api(t);
+  const messages = [{ role: "user", content: "Hi" }];
+  const last = () => f.calls.at(-1)!.request;
+  await f.post({ model: "qwen3-8b", messages });
+  assert.equal(last().localReasoningBudget, 512);
+  assert.match(last().localReasoningBudgetMessage!, /give my answer/);
+  assert.equal(last().reasoningEffort, undefined, "the provider's own level stays unless the request names one");
+  await f.post({ model: "qwen3-8b", messages, max_tokens: 64 });
+  assert.equal(last().localReasoningBudget, 32, "the answer keeps the other half");
+  await f.post({ model: "qwen3-8b", messages, reasoning_effort: "high" });
+  assert.equal(last().localReasoningBudget, 1024);
+  assert.equal(last().reasoningEffort, "high");
+  await f.post({ model: "qwen3-8b", messages, reasoning_effort: "minimal" });
+  assert.equal(last().localReasoningBudget, 128);
+  assert.equal(last().reasoningEffort, "low");
+  await f.post({ model: "qwen3-8b", messages, reasoning_effort: "none" });
+  assert.equal(last().localReasoningBudget, 0, "no thinking at all");
+  assert.equal(last().localReasoningBudgetMessage, undefined);
+  assert.equal(last().reasoningEffort, undefined);
+  await f.post({ model: "qwen3-8b", messages, max_tokens: 1 });
+  assert.equal(last().localReasoningBudget, 0);
+  const wrong = await f.post({ model: "qwen3-8b", messages, reasoning_effort: "extreme" });
+  assert.equal(wrong.status, 400);
+  assert.match(JSON.parse(wrong.body).error.message, /reasoning_effort/);
+});
+
+test("the token limit is an answer with finish_reason length, in each provider's words: never a failure, never \"stop\"", async t => {
+  const limits: Array<[string, Partial<LLMResponse>]> = [
+    ["OpenAI-compatible", { error: "Model response stopped: length. No action was executed.", raw: { choices: [{ finish_reason: "length" }] } }],
+    ["a bounded local answer", { raw: { choices: [{ finish_reason: "length" }] } }],
+    ["the Responses API", { error: "Model response stopped.", raw: { incomplete_details: { reason: "max_output_tokens" } } }],
+    ["Anthropic", { error: "Anthropic response stopped: max_tokens.", raw: { stop_reason: "max_tokens" } }],
+    ["Gemini", { error: "Gemini response stopped: MAX_TOKENS.", raw: { candidates: [{ finishReason: "MAX_TOKENS" }] } }],
+    ["Ollama", { error: "Model response stopped at the token limit. No action was executed.", raw: { done_reason: "length" } }]
+  ];
+  for (const [name, extra] of limits) {
+    const f = await api(t, () => answer("Once upon a", extra));
+    const reply = await f.post({ model: "qwen3-8b", max_tokens: 4, messages: [{ role: "user", content: "A story" }] });
+    assert.equal(reply.status, 200, name);
+    const choice = JSON.parse(reply.body).choices[0];
+    assert.deepEqual([choice.message.content, choice.finish_reason], ["Once upon a", "length"], name);
+  }
+
+  // All of it went on thinking: an empty answer, as OpenAI's reasoning models give.
+  const thought = await api(t, () => answer("", { error: "The model returned no final answer: it stopped without writing any text.", raw: { choices: [{ finish_reason: "length" }] } }));
+  const empty = await thought.post({ model: "qwen3-8b", max_tokens: 4, messages: [{ role: "user", content: "A story" }] });
+  assert.equal(empty.status, 200);
+  assert.deepEqual([JSON.parse(empty.body).choices[0].message.content, JSON.parse(empty.body).choices[0].finish_reason], ["", "length"]);
+
+  // Streamed; a stop sequence met before the limit is still "stop"; cut JSON is the client's to read.
+  const cut = { raw: { choices: [{ finish_reason: "length" }] } };
+  const streamed = await api(t, (request) => { request.onTextDelta?.("Once upon a"); return answer("Once upon a", cut); });
+  const chunks = events((await streamed.post({ model: "qwen3-8b", stream: true, messages: [{ role: "user", content: "A story" }] })).body).slice(0, -1).map(line => JSON.parse(line));
+  assert.equal(chunks.find((chunk: any) => chunk.choices[0]?.finish_reason)?.choices[0].finish_reason, "length");
+  assert.equal(chunks.flatMap((chunk: any) => chunk.choices.map((choice: any) => choice.delta.content ?? "")).join(""), "Once upon a");
+  const stopped = await api(t, () => answer("Once upon a", cut));
+  assert.equal(JSON.parse((await stopped.post({ model: "qwen3-8b", stop: "upon", messages: [{ role: "user", content: "A story" }] })).body).choices[0].finish_reason, "stop");
+  const json = await api(t, () => answer('{"topic": "ra', cut));
+  const partial = await json.post({ model: "qwen3-8b", response_format: { type: "json_object" }, messages: [{ role: "user", content: "JSON" }] });
+  assert.equal(partial.status, 200);
+  assert.equal(JSON.parse(partial.body).choices[0].finish_reason, "length");
+});
+
 test("JSON output: a provider without structured outputs gets JSON mode and the schema; an answer that is not JSON is refused", async t => {
   let reply = "```json\n{\"title\": \"News\"}\n```";
   const f = await api(t, () => answer(reply));

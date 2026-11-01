@@ -56,6 +56,8 @@ print(reply.choices[0].message.content)
 - **Messages:** `system` (or `developer`), `user` and `assistant`. The last one is the user's. A conversation is sent to the model turn by turn in one prompt.
 - **Images:** in user messages, as `data:` URLs (PNG, JPEG, WebP or GIF), five at most. Links are not fetched. The model must accept images.
 - **Sampling:** `temperature`, `top_p`, `max_tokens` (or `max_completion_tokens`), `seed`, and `stop` (up to four sequences, left out of the answer).
+- **Thinking:** `reasoning_effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. A local model that thinks before it answers gets that level's budget, as in chats: 128 to 4,096 tokens, 512 when the request names no level, and never more than half of `max_tokens`. `none` turns thinking off, which is the fastest answer. A cloud provider gets the level as it is, and keeps its own default with `none`.
+- **Token limit:** an answer that reaches `max_tokens` comes with what was written so far and `finish_reason: "length"`. Thinking counts toward the limit, so on a model that thinks a limit under about 64 tokens can leave an empty answer; ask for more, or send `reasoning_effort: "none"`.
 - **JSON:** `response_format` `json_object` or `json_schema`. Where the provider cannot enforce a schema, the schema goes into the instructions, and an answer that is not JSON is refused with `422 invalid_json_output`.
 - **Streaming:** `stream: true` sends server-sent events as OpenAI does, ending with `data: [DONE]`. `stream_options.include_usage` adds the token counts. Local models stream as they write; a cloud model's answer comes in one piece. A model's reasoning is never sent.
 

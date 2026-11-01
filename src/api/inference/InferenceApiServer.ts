@@ -8,7 +8,7 @@ import { withUsageScope } from "../../usage/UsageScope";
 import type { Logger } from "../../utils/Logger";
 import { localApiOriginGuard } from "../integrationControllers";
 import { InferenceApiError, InferenceApiStore, type InferenceApiConfig, type InferenceKeyInfo } from "./InferenceApiStore";
-import { applyStop, openAiError, parseChatCompletion, translateChatCompletion, withoutThinking, type TranslatedRequest } from "./openaiCompat";
+import { applyStop, openAiError, parseChatCompletion, reachedTokenLimit, thinkingBudget, translateChatCompletion, withoutThinking, type TranslatedRequest } from "./openaiCompat";
 
 /** Requests one key may have running at once; more wait for an answer of 429. */
 const PER_KEY_LIMIT = 4;
@@ -245,10 +245,10 @@ export class InferenceApiServer {
     if (signal.aborted) return;
     const failure = this.failure(response, request);
     if (failure) { res.status(failure.status).json(openAiError(failure.message, failure.code, failure.type)); return; }
-    const { text } = applyStop(answerText(response.text, request), request.stop);
+    const { text, stopped } = applyStop(answerText(response.text, request), request.stop);
     res.json({
       id: `chatcmpl-${randomUUID()}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model,
-      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop", logprobs: null }],
+      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: !stopped && reachedTokenLimit(response) ? "length" : "stop", logprobs: null }],
       usage: usageOf(response)
     });
   }
@@ -280,7 +280,7 @@ export class InferenceApiServer {
       if (failure) { send(openAiError(failure.message, failure.code, failure.type)); return; }
       // The finished answer is the reference: what was not streamed (a cloud model, JSON) comes now.
       if (!stopped) { raw = answerText(response.text, request); emit(true); }
-      chunk({}, "stop");
+      chunk({}, !stopped && reachedTokenLimit(response) ? "length" : "stop");
       if (request.includeUsage) send({ id, object: "chat.completion.chunk", created, model, choices: [], usage: usageOf(response) });
     } catch (error) {
       if (!signal.aborted) send(openAiError(maskKeyShapes(error instanceof Error ? error.message : String(error)), "internal_error", "server_error"));
@@ -293,8 +293,12 @@ export class InferenceApiServer {
   private async generate(request: TranslatedRequest, target: Target, key: InferenceKeyInfo, signal: AbortSignal, onTextDelta?: (delta: string) => void): Promise<LLMResponse> {
     const runtime = this.deps.runtimeManager.getRuntime();
     const { responseFormat, systemPrompt } = this.format(request, target.providerId);
+    const thinking = thinkingBudget(request);
     const llmRequest: LLMRequest = {
       usagePurpose: "api",
+      localReasoningBudget: thinking,
+      ...(thinking ? { localReasoningBudgetMessage: THINKING_ENDS } : {}),
+      ...(request.reasoning && request.reasoning !== "none" ? { reasoningEffort: request.reasoning } : {}),
       prompt: request.prompt,
       ...(systemPrompt ? { systemPrompt } : {}),
       model: target.model,
@@ -327,6 +331,7 @@ export class InferenceApiServer {
 
   /** Why a model call gave no answer to return, as an HTTP status and an OpenAI error code. */
   private failure(response: LLMResponse, request: TranslatedRequest): { status: number; code: string; message: string; type?: string } | undefined {
+    if (reachedTokenLimit(response)) return undefined;
     const message = response.error ? maskKeyShapes(response.error) : undefined;
     if (message) {
       if (/refused the (?:API key|request) \(HTTP \d{3}/.test(message)) return { status: 502, code: "upstream_key_refused", message, type: "upstream_error" };
@@ -341,6 +346,9 @@ export class InferenceApiServer {
     return undefined;
   }
 }
+
+/** What a local model reads when its thinking budget runs out, so that it answers instead of being cut off in mid-thought. */
+const THINKING_ENDS = "\n\nTime is up. I will now give my answer.\n";
 
 const usageOf = (response: LLMResponse) => {
   const prompt = response.usage?.inputTokens ?? 0, completion = response.usage?.outputTokens ?? 0;

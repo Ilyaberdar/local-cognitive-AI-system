@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { LLMImage, LLMResponseFormat } from "../../types";
+import { localThinkingBudgetForEffort } from "../../llm/ReasoningEffort";
+import type { LLMImage, LLMResponse, LLMResponseFormat, ReasoningEffort } from "../../types";
 import { InferenceApiError } from "./InferenceApiStore";
 
 /** What an OpenAI chat completion request may carry here; anything else it sends is ignored. */
@@ -22,6 +23,7 @@ export const chatCompletionRequest = z.object({
   stop,
   n: z.number().int().nullable().optional(),
   seed: z.number().int().nullable().optional(),
+  reasoning_effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).nullable().optional(),
   response_format: z.object({ type: z.string(), json_schema: z.object({ name: z.string().optional(), schema: z.record(z.string(), z.unknown()).optional() }).passthrough().optional() }).passthrough().nullable().optional(),
   tools: z.array(z.unknown()).nullable().optional()
 }).passthrough();
@@ -38,6 +40,7 @@ export interface TranslatedRequest {
   maxTokens?: number;
   stop: string[];
   seed?: number;
+  reasoning?: ReasoningEffort | "none";
   responseFormat?: LLMResponseFormat;
   stream: boolean;
   includeUsage: boolean;
@@ -107,6 +110,7 @@ export const translateChatCompletion = (request: ChatCompletionRequest): Transla
     ...(maxTokens ? { maxTokens } : {}),
     stop: stopList,
     ...(request.seed != null ? { seed: request.seed } : {}),
+    ...(request.reasoning_effort ? { reasoning: request.reasoning_effort === "minimal" ? "low" as const : request.reasoning_effort } : {}),
     ...(responseFormat(request.response_format) ? { responseFormat: responseFormat(request.response_format) } : {}),
     stream: request.stream === true,
     includeUsage: request.stream_options?.include_usage === true
@@ -123,6 +127,23 @@ const responseFormat = (format: ChatCompletionRequest["response_format"]): LLMRe
     return { type: "json_schema", name, schema, strict: true };
   }
   throw new InferenceApiError(`response_format of type "${format.type}" is not supported.`, "unsupported_parameter");
+};
+
+/**
+ * The tokens a local model may think before it answers: as in the app's chats, the budget of the level
+ * asked for (Balanced otherwise), and at most half of max_tokens, so that thinking cannot take the whole answer.
+ */
+export const thinkingBudget = (request: TranslatedRequest): number => {
+  if (request.reasoning === "none") return 0;
+  const budget = localThinkingBudgetForEffort(request.reasoning);
+  return request.maxTokens ? Math.min(budget, Math.floor(request.maxTokens / 2)) : budget;
+};
+
+/** The model stopped at its token limit, in each provider's words. To an OpenAI client that is an answer, finish_reason "length", and not a failure. */
+export const reachedTokenLimit = (response: LLMResponse): boolean => {
+  const raw = response.raw as { choices?: Array<{ finish_reason?: unknown }>; incomplete_details?: { reason?: unknown }; stop_reason?: unknown; done_reason?: unknown; candidates?: Array<{ finishReason?: unknown }> } | undefined;
+  return raw?.choices?.[0]?.finish_reason === "length" || raw?.incomplete_details?.reason === "max_output_tokens" || raw?.stop_reason === "max_tokens"
+    || raw?.done_reason === "length" || raw?.candidates?.[0]?.finishReason === "MAX_TOKENS";
 };
 
 /** Cuts the text at the first stop sequence: the sequence itself is left out, as OpenAI does. */
