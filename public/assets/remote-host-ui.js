@@ -94,7 +94,7 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
   function connectDevice() {
     if (status.state !== "online") return "";
     if (shown?.consumed) return `<div class="account-card remote-key-card"><div><h2>${escape(shown.deviceName || "A device")} is connected</h2><p>It can use this computer now, and reconnects by itself later.</p></div><div class="account-actions"><button type="button" class="ghost-button" data-host-action="done">Done</button></div></div>`;
-    if (!shown) return `<div class="account-card remote-key-card"><div><h2>Connect a device</h2><p>Show a one-time key: scan it with the Local Cognitive app on your iPhone, or paste it on another computer in Remote → Connect a computer. A key works once and expires after 10 minutes.</p></div>
+    if (!shown) return `<div class="account-card remote-key-card"><div><h2>Connect a device</h2><p>Show a one-time key, then paste it on the other computer in Remote → Connect a computer. A key works once and expires after 10 minutes.</p></div>
       <div class="account-actions"><button type="button" class="primary-button" data-host-action="show-key"${pending ? " disabled" : ""}>${pending === "show-key" ? "Making a key…" : "Show connection key"}</button></div></div>`;
     const code = shown.qrSvg ? `<div class="remote-key-qr">${shown.qrSvg}</div>` : "";
     return `<div class="account-card remote-key-card"><div><h2>Connection key</h2><p>${shown.qrSvg ? "On your iPhone: scan this code in the Local Cognitive app (Computers → +). On another computer: Remote, then paste the key into Connect a computer." : "On the other device: Remote, then paste this key into Connect a computer."} Valid for <span data-host-key-left>${timeLeft()}</span>.</p></div>

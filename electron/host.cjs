@@ -217,7 +217,7 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
       const window = getWindow();
       const { response } = await dialog.showMessageBox(window && !window.isDestroyed() ? window : undefined, { type: "warning", buttons: ["Trust", "Cancel"], defaultId: 1, cancelId: 1,
         message: `Trust ${name}?`,
-        detail: `${name} could then approve commands, changes to files anywhere on this computer and tools of its applications (MCP), one action at a time; an iPhone asks for Face ID first. It still cannot give a chat full access. Trust only a device you alone use.` });
+        detail: `${name} could then approve commands, changes to files anywhere on this computer and tools of its applications (MCP), one action at a time${showQr ? "; an iPhone asks for Face ID first" : ""}. It still cannot give a chat full access. Trust only a device you alone use.` });
       if (response !== 0) return { trusted: false };
     }
     store.setTrusted(deviceId, trusted, "host", new Date());

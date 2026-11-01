@@ -65,7 +65,7 @@ Commands:
   devices                List computers that can connect to this server
   revoke-device <id>     Remove a computer's access
   trust-device <id> --yes  Let a device approve commands, files anywhere and apps' tools (MCP), one
-                         action at a time (an iPhone asks for Face ID first)
+                         action at a time
   untrust-device <id>    It approves only what any device may again
   reset-owner --yes      Unlink the server from its account and remove every computer
   folders                List the folders connected computers may browse and use
