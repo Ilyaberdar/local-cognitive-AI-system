@@ -68,7 +68,8 @@ export function validateSettingsPatch(patch: AppSettingsPatch): void {
     const ui = object(patch.ui, "ui");
     check(ui, "ui", {
     theme: ["dark", "light", "system", "midnight"], animations: "boolean", fontScale: [85, 150], codeFontSize: [10, 20], language: ["auto", "ru", "en"],
-    outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"], sendKey: ["enter", "mod-enter"]
+    outputStyle: ["compact", "balanced", "detailed", "exhaustive"], mode: ["auto", "general", "code", "hypothesis"], sendKey: ["enter", "mod-enter"],
+    tourSeen: [0, 1000]
     });
     for (const key of ["accentColor", "backgroundColor", "foregroundColor"] as const) {
       const value = ui[key];

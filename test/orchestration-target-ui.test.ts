@@ -32,7 +32,7 @@ export function localOrchestration() {
   const bootstrap = () => copy({
     providers: [{ id: "ollama", name: "Ollama", capabilities: { local: true } }], tools: [], plugins: [], pluginStatuses: [],
     tasks: db.tasks, schedules: db.schedules, workflows: [WORKFLOW], workflowRuns: db.runs, projects: [],
-    appSettings: { ui: { theme: "dark", animations: false }, llm: { defaultProvider: "ollama" }, providers: { ollama: { model: "llama3.2", enabled: true } } },
+    appSettings: { ui: { theme: "dark", animations: false, tourSeen: 1 }, llm: { defaultProvider: "ollama" }, providers: { ollama: { model: "llama3.2", enabled: true } } },
     sessions: [{ id: SESSION_ID, title: "First chat", updatedAt: T0 }],
     availableModels: [], loadedModels: [{ providerId: "ollama", id: "llama3.2" }], allManagedModels: [], localModels: { runtime: { status: "stopped" } }, systemMetrics: {}
   });

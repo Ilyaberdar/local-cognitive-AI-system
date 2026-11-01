@@ -29,7 +29,7 @@ const merge = (target: any, patch: any): any => {
 /** This computer's settings behind a fake local API. */
 export function localSettings() {
   const settings: any = {
-    ui: { theme: "dark", animations: false, language: "auto", outputStyle: "balanced", mode: "auto" },
+    ui: { theme: "dark", animations: false, language: "auto", outputStyle: "balanced", mode: "auto", tourSeen: 1 },
     llm: { defaultProvider: "ollama" },
     providers: {
       ollama: { enabled: true, baseUrl: "http://127.0.0.1:11434", model: "llama3.2", timeoutMs: 60000 },

@@ -165,5 +165,11 @@ contextBridge.exposeInMainWorld("desktopRemote", {
 // Fixed application actions: the renderer cannot supply a path or command.
 contextBridge.exposeInMainWorld("desktopApp", {
   openDataFolder: () => ipcRenderer.invoke("app:open-data-folder"),
-  getInfo: () => ipcRenderer.invoke("app:info")
+  getInfo: () => ipcRenderer.invoke("app:info"),
+  // Help → Take the Tour in the app menu.
+  onTour: callback => {
+    const listener = () => callback();
+    ipcRenderer.on("app:tour", listener);
+    return () => ipcRenderer.removeListener("app:tour", listener);
+  }
 });

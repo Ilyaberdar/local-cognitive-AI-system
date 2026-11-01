@@ -17,6 +17,11 @@
 
 - **The cursor no longer flickers over buttons on an external monitor.** On a display under 2x (a monitor at 1x on a Mac), buttons and cards lifted a pixel or two when hovered, which moved their edge off a resting cursor: the cursor jumped between the arrow and the hand along the edges and as it moved. There they now keep their place and show the hover by their colour; a Retina display keeps the lift.
 
+### Desktop
+
+- **A tour at the first launch.** A new user saw the chat and nothing about the rest of the window: where models come from, what Workflow, Synthesis and Remote are, or where Settings is. The first launch now shows a short tour that highlights one place at a time, Models ("Start with a model": download one to run on this computer, or add a cloud provider's key in Settings → Models & Providers), the chat box and Session Setup, projects and chats, Workflow, Synthesis, Remote and the profile menu, each with a sentence or two, in the app's own glass style in every theme. It never changes the screen you are on; a place that is not on screen (a narrow window, a collapsed sidebar) is left out, and the highlight follows its place when the window is resized. **Next**, **Back** and the arrow keys move through it, **Skip tour** or **Esc** closes it; the keyboard stays in it while it is open, a screen reader reads each step, and with Animations off or reduced motion asked by the system nothing moves.
+- **Offered once to those who used the app before**, in a small card beside the profile menu (Take the tour or No thanks), and there whenever you want it: the profile menu has **Take the tour**, and the menu bar **Help → Take the Tour**. That the tour was seen is kept in this profile's settings (`ui.tourSeen` in `app/settings.json`), on this device only. On Windows with an NVIDIA GPU, the offer of the CUDA runtime waits for the tour to close instead of covering it.
+
 ## 0.1.12 — 2026-10-31
 
 Your Mac or PC can host your own devices, as a server does: another computer (and, next, the phone app) uses its chats, models, tasks and workflows through Local Cognitive Cloud, while a paired device cannot run commands or reach your files there on its own. A file the model writes shows as its code, Sign in with Apple is ready for when its service is set up, and DeepSeek has room to think before it writes a Synthesis file.

@@ -1,0 +1,75 @@
+/* The first-run tour (tour.js): a highlight over one place of the window with a bubble beside it, in
+   a modal dialog above everything; and the card that offers the tour once, beside the profile menu.
+   Both are glass popovers like the profile menu, in the theme's own colors. */
+.app-tour {
+  --tour-scrim: rgba(6, 8, 12, .56);
+  position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none;
+  margin: 0; padding: 0; border: 0; overflow: hidden; background: transparent; color: var(--text);
+  font-family: var(--font-ui);
+}
+html[data-theme="light"] .app-tour { --tour-scrim: rgba(28, 40, 58, .36); }
+html[data-theme="midnight"] .app-tour { --tour-scrim: rgba(2, 6, 14, .6); }
+.app-tour::backdrop { background: transparent; }
+.app-tour:not([open]) { display: none; }
+
+/* The highlight: a ring around the place, the rest of the window dimmed by its shadow. */
+.app-tour__spot {
+  position: fixed; left: 50%; top: 50%; width: 0; height: 0; border-radius: 12px; pointer-events: none;
+  box-shadow: 0 0 0 1.5px var(--accent-border), 0 0 0 6px var(--focus-ring), 0 0 0 200vmax var(--tour-scrim);
+  transition: left 340ms var(--motion), top 340ms var(--motion), width 340ms var(--motion), height 340ms var(--motion), border-radius 340ms var(--motion), box-shadow 240ms ease;
+}
+.app-tour__spot.is-empty { box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent, 0 0 0 200vmax var(--tour-scrim); }
+
+.app-tour__bubble, .app-tour-offer {
+  position: fixed; left: 0; top: 0; box-sizing: border-box; width: min(340px, calc(100vw - 24px));
+  display: grid; gap: 8px; padding: 16px 16px 14px;
+  border: 1px solid var(--line-strong); border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-panel) 97%, transparent); color: var(--text);
+  box-shadow: var(--popover-shadow);
+  backdrop-filter: blur(32px) saturate(1.08); -webkit-backdrop-filter: blur(32px) saturate(1.08);
+  animation: app-tour-in 240ms var(--motion);
+}
+.app-tour__bubble::before, .app-tour-offer::before { opacity: .35; }
+.app-tour__bubble.is-placed { transition: left 340ms var(--motion), top 340ms var(--motion); }
+.app-tour-offer { z-index: 90; width: min(300px, calc(100vw - 24px)); }
+.app-tour[data-step="welcome"] .app-tour__bubble { width: min(400px, calc(100vw - 24px)); gap: 10px; padding: 22px 22px 18px; }
+.app-tour[data-step="welcome"] .app-tour__mark { width: 40px; height: 40px; border-radius: 12px; }
+.app-tour[data-step="welcome"] .app-tour__mark .ui-icon { width: 22px; height: 22px; }
+.app-tour[data-step="welcome"] .app-tour__title { font-size: calc(20px * var(--font-scale, 1)); letter-spacing: -.02em; }
+.app-tour[data-step="welcome"] .app-tour__text { font-size: calc(13.5px * var(--font-scale, 1)); }
+
+/* The point toward the place: a rotated square with the bubble's border on its two outer sides. */
+.app-tour__arrow {
+  position: absolute; width: 12px; height: 12px; box-sizing: border-box; pointer-events: none;
+  background: color-mix(in srgb, var(--bg-panel) 97%, transparent); border: 1px solid var(--line-strong); transform: rotate(45deg);
+}
+[data-side="none"] > .app-tour__arrow { display: none; }
+[data-side="right"] > .app-tour__arrow { left: -6.5px; top: calc(var(--tour-arrow, 24px) - 6px); border-top-color: transparent; border-right-color: transparent; }
+[data-side="left"] > .app-tour__arrow { right: -6.5px; top: calc(var(--tour-arrow, 24px) - 6px); border-bottom-color: transparent; border-left-color: transparent; }
+[data-side="bottom"] > .app-tour__arrow { top: -6.5px; left: calc(var(--tour-arrow, 24px) - 6px); border-right-color: transparent; border-bottom-color: transparent; }
+[data-side="top"] > .app-tour__arrow { bottom: -6.5px; left: calc(var(--tour-arrow, 24px) - 6px); border-top-color: transparent; border-left-color: transparent; }
+
+.app-tour__head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.app-tour__mark {
+  display: grid; place-items: center; flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px;
+  color: var(--accent-text); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: inset 0 1px 0 var(--highlight);
+}
+.app-tour__mark .ui-icon { width: 17px; height: 17px; }
+.app-tour__count { margin-left: auto; color: var(--faint); font-size: calc(11.5px * var(--font-scale, 1)); font-variant-numeric: tabular-nums; }
+.app-tour__title { margin: 2px 0 0; font-size: calc(15px * var(--font-scale, 1)); font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
+.app-tour-offer .app-tour__title { margin: 0; font-size: calc(13.5px * var(--font-scale, 1)); }
+.app-tour__text { margin: 0; color: var(--muted); font-size: calc(13px * var(--font-scale, 1)); line-height: 1.5; text-wrap: pretty; }
+.app-tour__actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.app-tour__nav { display: flex; gap: 6px; margin-left: auto; }
+.app-tour__actions .ghost-button, .app-tour__actions .primary-button { min-height: 30px; padding: 5px 12px; border-radius: 10px; }
+.app-tour__skip { margin-left: -8px; border-color: transparent; }
+
+@keyframes app-tour-in { from { opacity: 0; transform: translateY(4px) scale(.985); } }
+html[data-motion="off"] :is(.app-tour__spot, .app-tour__bubble, .app-tour-offer) { transition: none !important; animation: none !important; }
+
+/* A click on a draggable strip never reaches the page: while the tour is open, the strips take clicks. */
+html:is([data-desktop="darwin"], [data-desktop="win32"]):has(.app-tour[open]) :is(.app-topbar, .sidebar-brand) { -webkit-app-region: no-drag; }
+@media (prefers-reduced-transparency: reduce) {
+  .app-tour__bubble, .app-tour-offer { background: var(--bg-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}

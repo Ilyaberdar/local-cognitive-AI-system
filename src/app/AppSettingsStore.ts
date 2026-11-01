@@ -525,6 +525,7 @@ export class AppSettingsStore {
     if (!["enter", "mod-enter"].includes(preferences.sendKey)) preferences.sendKey = defaultUiPreferences.sendKey;
     const shortcuts = readShortcuts(preferences.shortcuts);
     if (shortcuts) preferences.shortcuts = shortcuts; else delete preferences.shortcuts;
+    if (!Number.isInteger(preferences.tourSeen) || preferences.tourSeen! < 0) delete preferences.tourSeen;
     return preferences;
   }
 

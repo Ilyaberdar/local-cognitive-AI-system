@@ -156,6 +156,13 @@ const focusWindow = () => {
   if (process.platform === "darwin") app.focus({ steal: true });
 };
 
+// Help → Take the Tour: the window shows the first-run tour again (once the app's page is in it).
+const openTour = () => {
+  if (!mainWindow || mainWindow.isDestroyed() || !applicationShown) return;
+  focusWindow();
+  mainWindow.webContents.send("app:tour");
+};
+
 // The update button and the update notification open Settings → About (a closed window on macOS opens there).
 const openUpdatesPage = () => {
   if (shutdownPromise) return;
@@ -352,7 +359,7 @@ if (hasInstanceLock) app.whenReady().then(async () => {
       prepareForExit: shutdown, record: (event, fields) => backendHandle?.diagnosticLog.record(event, fields),
       openUpdates: openUpdatesPage, Notification, powerMonitor, dataDir: app.getPath("userData") });
     Menu.setApplicationMenu(Menu.buildFromTemplate(require("./app-menu.cjs").menuTemplate({
-      isPackaged: app.isPackaged, platform: process.platform, openReport: () => void bugReport.openReport() })));
+      isPackaged: app.isPackaged, platform: process.platform, openReport: () => void bugReport.openReport(), openTour })));
     // A window's or helper process's crash, as codes in the technical log (never a dump of its memory here).
     const crashed = (process, details) => { if (details.reason !== "clean-exit") backendHandle.diagnosticLog.record("app.crash", { process, reason: details.reason, exitCode: details.exitCode }); };
     app.on("render-process-gone", (_event, _contents, details) => crashed("renderer", details));

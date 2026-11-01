@@ -8,6 +8,7 @@ import { icon, glassFilters, bindGlassLighting } from "./ui-primitives.js";
 import { createQuickReport } from "./quick-report.js";
 import { createUpdatePill } from "./updates-ui.js";
 import { createCudaOffer } from "./gpu-runtime-ui.js";
+import { createTour, createTourStore, tourAtLaunch } from "./tour.js";
 import { createModelManager } from "./model-manager.js";
 import { createRemoteUi } from "./remote-ui.js";
 import { createRemoteHostUi } from "./remote-host-ui.js";
@@ -555,6 +556,7 @@ const settingsShell = createSettingsShell({ app, data: settingsData, voiceInput,
     useThisComputer: () => switchChatTarget("local", { route: "settings" }) }),
   renderModelControl: renderProviderSettingsModelControl, applyPreferences: applyUiPreferences,
   captureScroll: captureScrollState, restoreScroll: restoreScrollState,
+  onTour: () => showTour(),
   onReturn: () => {
     if (appRenderDeferred && !workflowEditorHandle) render();
     appRenderDeferred = false;
@@ -583,6 +585,24 @@ const updatePill = createUpdatePill({ onOpen: () => { location.hash = "#/setting
 // Windows with an NVIDIA GPU: the CUDA runtime is offered once, after the app has looked for the GPU.
 if (window.desktopUpdates) createCudaOffer({ request });
 
+// The first-run tour (tour.js): at the first launch of a profile, offered once to one that has not
+// seen it, and again from the profile menu or Help → Take the Tour. Seen is kept in this profile's settings.
+const tourStore = createTourStore({ storage: localStorage, save: patch => settingsData.save(patch) });
+const tour = createTour({
+  blocked: () => settingsShell.isOpen() || Boolean(document.querySelector("dialog[open]")),
+  fallbackFocus: () => document.querySelector("#chat-form textarea") || document.getElementById("local-profile-button"),
+  onClose: () => void tourStore.mark(),
+  onOffer: () => void tourStore.mark()
+});
+window.desktopApp?.onTour?.(() => showTour());
+
+/** The tour, from the start; from Settings it returns to the screen first. */
+function showTour() {
+  if (tour.isOpen()) return;
+  if (settingsShell.isOpen()) window.location.hash = `#/${state.route}`;
+  tour.launch("tour");
+}
+
 init().catch((error) => {
   pushToast(error instanceof Error ? error.message : "Failed to initialize UI", "danger");
   render();
@@ -609,6 +629,7 @@ async function init() {
   await ensureSession();
   modelManager.start();
   const preferences = state.bootstrap.appSettings.ui;
+  const atLaunch = tourAtLaunch({ ui: preferences, seen: tourStore.seen(preferences) });
   if (preferences) applyUiPreferences(preferences);
   else {
     try { await settingsData.save({ ui: { theme: state.ui.theme, animations: localStorage.getItem("lcai.animations") !== "false" } }); }
@@ -618,6 +639,7 @@ async function init() {
   settingsShell.route(window.location.hash);
   syncSystemMetricsPolling();
   followExternalRuns();
+  if (atLaunch) tour.launch(atLaunch, { delay: atLaunch === "tour" ? 800 : 2500 });
 }
 
 /** Turns on this computer that this window did not start (an API client, another window, a

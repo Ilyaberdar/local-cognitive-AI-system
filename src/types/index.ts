@@ -230,6 +230,8 @@ export interface UiPreferences {
   sendKey: "enter" | "mod-enter";
   /** Keyboard shortcuts the person changed, by action ("Mod+KeyN"; null: none). A save replaces the whole map. */
   shortcuts?: Record<string, string | null>;
+  /** The version of the first-run tour this device has shown (finished, skipped or offered); a later one is offered again. */
+  tourSeen?: number;
 }
 
 export interface LocalProfilePreferences {

@@ -3,6 +3,10 @@ title: First steps
 description: Download a model, start a chat, and decide what else to connect.
 ---
 
+## A short tour
+
+At the first launch the app shows a short tour: it highlights the places of the window one at a time, Models, the chat box, projects and chats, Workflow, Synthesis, Remote and the profile menu, each with a sentence or two about it. **Next** and **Back** (or the arrow keys) move through it, **Skip tour** or **Esc** closes it. Take it again at any time from the profile menu at the bottom left (**Take the tour**), or **Help → Take the Tour** in the menu bar.
+
 ## 1. Download a model
 
 Open **Models → Catalog**. **Recommended** lists a few small models to start with; **Hugging Face** searches every public GGUF model.

@@ -22,7 +22,8 @@ export const sessionSettings = () => ({ mode: "general", language: "auto", outpu
 const bootstrap = () => ({
   providers: [{ id: "ollama", name: "Ollama", capabilities: { local: true } }, { id: "openai", name: "OpenAI", capabilities: { local: false } }],
   tools: [], plugins: [], pluginStatuses: [], tasks: [], schedules: [], workflows: [], workflowRuns: [], projects: [],
-  appSettings: { ui: { theme: "dark", animations: false }, llm: { defaultProvider: "ollama" }, providers: { ollama: { model: "llama3.2", enabled: true } } },
+  // The person has seen the first-run tour: it is not offered while a test runs.
+  appSettings: { ui: { theme: "dark", animations: false, tourSeen: 1 }, llm: { defaultProvider: "ollama" }, providers: { ollama: { model: "llama3.2", enabled: true } } },
   sessions: [{ id: SESSION_ID, title: "First chat", updatedAt: "2026-10-01T10:00:00.000Z" }],
   availableModels: [], loadedModels: [{ providerId: "ollama", id: "llama3.2" }], allManagedModels: [], localModels: { runtime: { status: "stopped" } }, systemMetrics: {}
 });
@@ -56,6 +57,8 @@ export interface BootOptions {
   host?: any;
   /** The desktop app's dictation bridge (window.desktopVoice). */
   voice?: any;
+  /** The desktop app's fixed actions (window.desktopApp). */
+  desktopApp?: any;
   /** Answers a request before the defaults; return undefined to fall through. */
   route?: (method: string, url: string, body?: string) => unknown;
   bootstrap?: () => object;
@@ -122,6 +125,7 @@ export async function bootApp(options: BootOptions = {}): Promise<Harness> {
   if (options.updates) window.desktopUpdates = options.updates;
   if (options.host) window.desktopRemoteHost = options.host;
   if (options.voice) window.desktopVoice = options.voice;
+  if (options.desktopApp) window.desktopApp = options.desktopApp;
   window.eval(bundled());
   await flush(30);
   return {

@@ -117,8 +117,8 @@ export function mountGpuRuntimePanel(container, { request, getRuntime }) {
  * by the app (Settings keeps the button); "Install" shows the license, then the download in place.
  * Looks a few times after startup, while the app is still looking for the GPU.
  */
-export function createCudaOffer({ request, doc = document, delays = [3000, 10000, 30000] }) {
-  let shown = false;
+export function createCudaOffer({ request, doc = document, delays = [3000, 10000, 30000], retryDelay = 2000 }) {
+  let shown = false, waiting;
   const timers = delays.map(delay => setTimeout(() => void check(), delay));
   async function check() {
     if (shown) return;
@@ -126,6 +126,8 @@ export function createCudaOffer({ request, doc = document, delays = [3000, 10000
     try { runtime = (await request('/local/runtime'))?.runtime; } catch { return; }
     const acceleration = runtime?.acceleration;
     if (!acceleration?.cuda?.offer || shown) return;
+    // Another dialog holds the window (the first-run tour, say): the offer comes once it is closed.
+    if (doc.querySelector('dialog[open]')) { clearTimeout(waiting); waiting = setTimeout(() => void check(), retryDelay); return; }
     shown = true;
     timers.forEach(clearTimeout);
     open(runtime);
@@ -168,5 +170,5 @@ export function createCudaOffer({ request, doc = document, delays = [3000, 10000
     });
     dialog.showModal();
   }
-  return { dispose: () => timers.forEach(clearTimeout), check };
+  return { dispose: () => { timers.forEach(clearTimeout); clearTimeout(waiting); }, check };
 }

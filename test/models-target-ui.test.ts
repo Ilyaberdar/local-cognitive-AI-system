@@ -35,7 +35,7 @@ export function localModels() {
   const bootstrap = () => ({
     providers: [{ id: "ollama", name: "Ollama", capabilities: { local: true } }, { id: "llamacpp", name: "Local models", capabilities: { local: true } }],
     tools: [], plugins: [], pluginStatuses: [], tasks: [], schedules: [], workflows: [], workflowRuns: [], projects: [],
-    appSettings: { ui: { theme: "dark", animations: false }, llm: { defaultProvider: "ollama" }, providers: { ollama: { model: "llama3.2", enabled: true } }, localModels: { contextSize: 4096, gpuLayers: "auto" } },
+    appSettings: { ui: { theme: "dark", animations: false, tourSeen: 1 }, llm: { defaultProvider: "ollama" }, providers: { ollama: { model: "llama3.2", enabled: true } }, localModels: { contextSize: 4096, gpuLayers: "auto" } },
     sessions: [{ id: SESSION_ID, title: "First chat", updatedAt: "2026-10-01T10:00:00.000Z" }],
     availableModels: [], loadedModels: [], allManagedModels: [libraryModel], localModels: snapshot(), systemMetrics: {}
   });

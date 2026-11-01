@@ -18,6 +18,7 @@ const paths = {
   shield: '<path d="m12 3 8 4v5c0 5-4 8-8 10-4-2-8-5-8-10V7l8-4Z"/><path d="m9 10 3 2-3 2m5 1h2"/>',
   shieldAlert: '<path d="m12 3 8 4v5c0 5-4 8-8 10-4-2-8-5-8-10V7l8-4Z"/><path d="M12 8v5m0 4h.01"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  tour: '<circle cx="12" cy="12" r="9"/><path d="m15.6 8.4-2.1 5.1-5.1 2.1 2.1-5.1 5.1-2.1Z"/>',
 
   chat: '<path d="M4 10.5 12 4l8 6.5M6.5 9v10h4v-5h3v5h4V9"/>',
   orchestration: '<rect x="4" y="5" width="16" height="14" rx="3"/><path d="M9.3 5v14m5.4-14v14M6.7 9h0m5.3 3h0m5.3-3h0"/>',

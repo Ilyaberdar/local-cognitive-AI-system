@@ -121,6 +121,22 @@ test("the first-launch offer: once, with the license; Not now is remembered by t
   second.dom.window.close();
 });
 
+test("the first-launch offer waits while another dialog, such as the tour, is open", async () => {
+  const { dom, ui } = load();
+  const other = dom.window.document.createElement("dialog");
+  other.className = "app-tour";
+  dom.window.document.body.append(other);
+  other.showModal();
+  const offer = ui.createCudaOffer({ doc: dom.window.document, delays: [0], retryDelay: 5, request: async () => ({ runtime: { acceleration: acceleration({}) } }) });
+  await delay(30);
+  assert.equal(dom.window.document.querySelector("dialog.cuda-offer"), null, "not over the tour");
+  other.close();
+  await delay(30);
+  assert.ok(dom.window.document.querySelector("dialog.cuda-offer")?.hasAttribute("open"), "shown once the tour is closed");
+  offer.dispose();
+  dom.window.close();
+});
+
 test("Settings → Local Runtime shows GPU acceleration on this computer", async () => {
   const runtime = { status: "stopped", backend: "Vulkan", acceleration: acceleration({ state: "installed", offer: false }) };
   const app = await bootApp({ bootstrap: () => ({ ...defaultBootstrap(), localModels: { runtime } }),

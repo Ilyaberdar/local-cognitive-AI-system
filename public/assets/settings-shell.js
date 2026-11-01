@@ -74,7 +74,7 @@ const generationFields = [
   ['maxTokens', 'Max response tokens', '1–32,768', '1', '32768', '1']
 ];
 
-export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, captureScroll, restoreScroll, voiceInput, account = createAccountState(window.desktopAccount), request }) {
+export function createSettingsShell({ app, getContext, data, applyPreferences, renderModelControl, onReturn, onTour, captureScroll, restoreScroll, voiceInput, account = createAccountState(window.desktopAccount), request }) {
   const root = document.createElement('section');
   root.id = 'settings-root'; root.hidden = true;
   document.body.append(root);
@@ -1362,10 +1362,11 @@ export function createSettingsShell({ app, getContext, data, applyPreferences, r
   function openMenu() {
     if (menu.matches(':popover-open')) { closeMenu(); return; }
     const user = localProfileView(clientSettings());
-    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>${escape(accountSubtitle(account.get()))}</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info'], ['report-bug', 'Report a bug', 'bug']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
+    menu.innerHTML = `<div class="profile-menu-header">${avatar(user)}<span>${escape(user.name)}<small>${escape(accountSubtitle(account.get()))}</small></span></div>${[['profile', 'Profile', 'profile'], ['usage', 'Usage', 'clock'], ['general', 'Settings', 'settings'], ['data-folder', 'Open data folder', 'folder'], ['about', 'About', 'info'], ...(onTour ? [['tour', 'Take the tour', 'tour']] : []), ['report-bug', 'Report a bug', 'bug']].map(([route, label, symbol]) => `<button type="button" role="menuitem" data-profile-route="${route}" ${route === 'data-folder' && !window.desktopApp ? 'disabled title="Available in the desktop app"' : ''}>${icon(symbol)}<span>${label}</span></button>`).join('')}`;
     menu.querySelectorAll('[data-profile-route]').forEach(button => button.addEventListener('click', () => {
       closeMenu(false);
       if (button.dataset.profileRoute === 'data-folder') { void openDataFolder(); document.getElementById('local-profile-button')?.focus(); }
+      else if (button.dataset.profileRoute === 'tour') onTour();
       // The window the user was in, before the report page covers it (sent only if they tick it).
       else if (button.dataset.profileRoute === 'report-bug' && window.desktopBugReport) {
         void window.desktopBugReport.capture().catch(() => {}).finally(() => { location.hash = '#/settings/report-bug'; });
