@@ -2008,7 +2008,7 @@ function renderTasksOrchestrationTab(workflows, tasks, workflowRuns, schedules) 
               </div>
             </div>
             <div class="field field--full" data-schedule-interval-field hidden>
-              <label class="schedule-check"><input id="schedule-window" name="window" type="checkbox" value="on" /> Only between certain hours</label>
+              <label class="schedule-check"><input id="schedule-window" name="window" type="checkbox" role="switch" value="on" /> Only between certain hours</label>
             </div>
             <div class="field" data-schedule-weekday-field hidden>
               <label for="schedule-weekday">Every week on</label>

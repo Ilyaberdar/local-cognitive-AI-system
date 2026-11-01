@@ -2546,20 +2546,57 @@ a {
   cursor: pointer;
 }
 
-.schedule-check input[type="checkbox"],
-.schedule-day input[type="checkbox"] {
+/* The app's switch, as in Settings. */
+.schedule-check input[type="checkbox"] {
+  appearance: none;
   flex: none;
-  width: 14px;
-  height: 14px;
+  position: relative;
+  width: 40px;
+  min-width: 40px;
+  height: 24px;
+  min-height: 24px;
+  margin: 0;
+  padding: 3px;
+  border: 0;
+  border-radius: 20px;
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.schedule-check input[type="checkbox"]::after {
+  content: "";
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px #0003;
+  transition: transform 160ms ease;
+}
+
+.schedule-check input[type="checkbox"]:checked {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.schedule-check input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+}
+
+/* A day is a chip that is on or off: the checkbox stays for the keyboard and screen readers, unseen. */
+.schedule-day input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   min-width: 0;
   min-height: 0;
   margin: 0;
   padding: 0;
   border: 0;
-  background: none;
-  box-shadow: none;
-  accent-color: var(--accent);
-  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .schedule-days {
@@ -2583,21 +2620,35 @@ a {
 }
 
 .schedule-days .schedule-day {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  min-width: 48px;
   min-height: 28px;
-  padding: 4px 10px;
+  padding: 4px 12px;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
   font-size: calc(12px * var(--font-scale, 1));
   cursor: pointer;
+  user-select: none;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.schedule-days .schedule-day:hover {
+  border-color: var(--line-strong);
 }
 
 .schedule-days .schedule-day:has(input:checked) {
-  color: var(--text);
-  border-color: var(--line-strong);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 550;
+}
+
+.schedule-days .schedule-day:has(input:focus-visible) {
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .schedule-footnote {
