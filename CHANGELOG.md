@@ -27,7 +27,7 @@
 ### Workflow
 
 - **Schedules can run at intervals**: every few minutes or hours (5 minutes to 24 hours), all day or only between certain hours (08:00 to 22:00, or 22:00 to 02:00 across midnight), on the days you choose. Until now a schedule ran once a day or once a week, so nothing could check a feed or a mailbox through the day. The form shows the next three runs as you fill it in and says what is wrong before you create it (an interval under 5 minutes, no day chosen), and the card reads, for example, "every 30 min · 08:00–22:00 · Mon–Fri".
-- **An interval schedule never overlaps itself.** While its previous run is still going, or waits for your approval, the next time is left out and the card says so ("Left out 3 times in a row: the previous run was still going"); a run longer than the interval is followed by the next time after it, not by another run at once. After sleep or a restart it runs once if it is within its hours, and otherwise waits for its next time.
+- **An interval schedule never overlaps itself.** While its previous run is still going, or waits for your approval, the next time is left out and the card says so ("Left out 3 times in a row: the previous run had not finished"); a run longer than the interval is followed by the next time after it, not by another run at once. After sleep or a restart it runs once if it is within its hours, and otherwise waits for its next time.
 - A schedule this version cannot read (one written by a newer version) says so on its card and no longer stops the other schedules.
 
 ### Desktop

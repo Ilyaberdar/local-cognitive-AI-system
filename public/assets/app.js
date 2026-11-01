@@ -2339,7 +2339,7 @@ function renderScheduleCard(schedule) {
         <span>${schedule.lastRunAt ? `Last: ${formatDate(schedule.lastRunAt)}` : "Not run yet"}</span>
       </div>
       <details class="task-card-details" data-ui-disclosure="schedule-${escapeAttr(schedule.id)}"><summary>Workspace</summary>${renderWorkspaceEditor("schedule", schedule)}</details>
-      ${schedule.skippedRuns ? `<p class="schedule-skipped">Left out ${schedule.skippedRuns === 1 ? "once" : `${schedule.skippedRuns} times in a row`} (last ${formatDate(schedule.lastSkippedAt)}): the previous run was still going.</p>` : ""}
+      ${schedule.skippedRuns ? `<p class="schedule-skipped">Left out ${schedule.skippedRuns === 1 ? "once" : `${schedule.skippedRuns} times in a row`} (last ${formatDate(schedule.lastSkippedAt)}): the previous run had not finished.</p>` : ""}
       ${schedule.lastError ? `<p class="schedule-error">Last error: ${escapeHtml(schedule.lastError)}</p>` : ""}
       <div class="task-actions task-actions--card">
         <button class="ghost-button" type="button" data-action="toggle-schedule" data-schedule-id="${escapeAttr(schedule.id)}" ${state.loading || offline ? "disabled" : ""}>${schedule.enabled ? "Pause" : "Resume"}</button>

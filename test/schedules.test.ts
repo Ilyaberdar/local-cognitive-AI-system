@@ -328,6 +328,19 @@ test("a failed workflow status is recorded as a failed scheduled run", async () 
   assert.equal(updated?.lastError, error);
 });
 
+test("a run that waits for approval is not a failed run", async () => {
+  const { service, taskService } = await createService();
+  const schedule = await service.create(dailyInput, new Date("2026-08-10T05:30:00.000Z"));
+  taskService.runStatus = "waiting";
+
+  const results = await service.runDue(new Date("2026-08-10T06:00:01.000Z"));
+  const updated = await service.get(schedule.id);
+
+  assert.deepEqual(results, [{ scheduleId: schedule.id, taskId: "task-1", runId: "run-task-1" }]);
+  assert.equal(updated?.lastError, undefined);
+  assert.equal(updated?.lastTaskId, "task-1");
+});
+
 test("a malformed schedule store is preserved instead of being overwritten", async () => {
   const root = await makeTmpDir();
   const schedulesDir = path.join(root, "schedules");

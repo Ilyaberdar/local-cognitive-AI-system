@@ -509,7 +509,8 @@ const nextScheduledOccurrence = (after: Date, rule: ScheduleRule): Date => {
 };
 
 const taskOutcomeError = (status: Task["status"], runId: string | undefined): string | undefined => {
-  if (status === "done") {
+  // A run that waits for the owner's approval has not gone wrong: its task says what it waits for.
+  if (status === "done" || status === "waiting") {
     return undefined;
   }
 
