@@ -26,6 +26,7 @@ import type { ModelQueue } from "../local/types";
 import { quantQuality } from "../local/quantization";
 import { applyEditBlocks, implicatedFiles, RevisePromptInput, revisePrompt } from "./revisePrompt";
 import { checkTypes, hasTypeScript } from "./checks/typecheck";
+import { ARTIFACT_TYPES, missingTests, profileDiagnostics, sourceDiagnostics, suiteFiles } from "./check";
 
 interface Services {
   projects: ProjectStore;
@@ -50,11 +51,7 @@ const EVALUATOR_VERSION = `${evaluatorVersion}+${contractChecksVersion}`;
 const SYNTHESIS_CONTEXT = 16_384;
 /** A local model's quantization quality; a cloud model has none, and counts as sound. */
 const modelQuality = (model: ManagedModel) => model.providerId === "llamacpp" ? quantQuality(model.quantization, model.variantId ?? model.id) : quantQuality("");
-/** Source in the languages the contract checks know, plus the web files of the calculator. */
-const ARTIFACT_TYPES = /\.(?:js|mjs|cjs|ts|mts|cts|py|c|cc|cpp|cxx|h|hh|hpp|hxx|inl|json|html|css|txt|md)$/;
-const MAX_SUITE_FILES = 24, MAX_SUITE_BYTES = 512 * 1024;
-/** The most interpreter steps a flow may declare with `limit steps`. */
-const MAX_STEPS = 1_000_000;
+const MAX_SUITE_BYTES = 512 * 1024;
 /** The most agent tasks one run may start, and agents at once in one parallel_map. */
 const MAX_AGENT_TASKS = 1000, MAX_CONCURRENCY = 64;
 /** A run's budget of agent HTTP requests, across all its agents and maps. */
@@ -70,9 +67,6 @@ const counts = (agents: AgentSummary[]): AgentCounts => {
   for (const agent of agents) total[agent.status]++;
   return total;
 };
-/** The contract's test files: its tests section and every file a Tests gate runs. */
-const suiteFiles = (spec: SpecProgram): string[] => [...new Set([...(spec.tests ?? []),
-  ...spec.gates.flatMap(gate => gate.check?.kind === "tests" ? gate.check.files : [])])];
 /** What the model reads next: each failing gate's own items (exact, with file:line), else its message. */
 function violations(evidence: Evidence, generationErrors: string[]): string[] {
   const items = evidence.gates.filter(gate => gate.status !== "Pass" && !gate.skipped)
@@ -115,35 +109,6 @@ const LANGUAGE_HINTS: Array<[RegExp, string]> = [
   [/\.(?:h|hh|hpp|hxx|inl)$/, "This task is ONLY a C++ header with #pragma once: declarations and small inline functions."],
   [/\.json$/, "This task is ONLY a JSON document."]
 ];
-/** What this runtime (V1, local files) can run, as diagnostics: Run refuses the errors, and a
- * module shows them as soon as it is opened. */
-function profileDiagnostics(compiled: ReturnType<typeof compileProgram>, specPath: string, flowPath: string) {
-  const found: Array<{severity: "error" | "warning"; code: string; message: string; file: string; line: number; column: number}> = [];
-  const add = (severity: "error" | "warning", code: string, message: string, file: string) => found.push({severity, code, message, file, line: 1, column: 1});
-  if (!compiled.spec || !compiled.flow) return found;
-  if (compiled.flow.limits.iterations < 1 || compiled.flow.limits.iterations > 32 || compiled.flow.limits.timeMs > 7200000) {
-    add("error", "FLOW_LIMIT_RANGE", "V1 supports at most 32 iterations and 120 minutes per run.", flowPath);
-  }
-  if ((compiled.flow.limits.steps ?? 0) > MAX_STEPS) add("error", "FLOW_LIMIT_RANGE", `A run takes at most ${MAX_STEPS.toLocaleString("en")} steps.`, flowPath);
-  if ((!compiled.spec.artifacts.length && !compiled.spec.areas?.length) || compiled.spec.artifacts.length > 12 || (compiled.spec.areas?.length ?? 0) > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare 1 to 12 artifact files, or a files area, and at most 12 areas.", specPath);
-  if ((compiled.spec.frozen ?? []).length > 12) add("error", "SPEC_ARTIFACT_LIMIT", "Declare at most 12 frozen files.", specPath);
-  for (const file of [...compiled.spec.artifacts, ...compiled.spec.frozen ?? []]) {
-    try { relativePath(file); }
-    catch { add("error", "SPEC_ARTIFACT_PATH", `${file}: use a project-relative path without spaces, hidden folders or "..".`, specPath); continue; }
-    if (!ARTIFACT_TYPES.test(file)) add("error", "SPEC_ARTIFACT_TYPE", `${file}: local-files-v1 supports source files (JavaScript, TypeScript, Python, C and C++), json, html, css, txt and md.`, specPath);
-  }
-  const suite = suiteFiles(compiled.spec);
-  if (suite.length > MAX_SUITE_FILES) add("error", "SPEC_TEST_LIMIT", `Declare at most ${MAX_SUITE_FILES} test files.`, specPath);
-  for (const file of suite) {
-    try { relativePath(file); } catch { add("error", "SPEC_TEST_PATH", `${file}: use a path relative to the contract's folder, without spaces, hidden folders or "..".`, specPath); }
-  }
-  for (const gate of compiled.spec.gates) {
-    if (!gate.check && (compiled.spec.evaluator !== "calculator-v1" || !supportedEvaluators.has(gate.evaluatorId))) {
-      add("warning", "SPEC_EVALUATOR_UNREGISTERED", `No trusted evaluator is registered for ${gate.evaluatorId}: the gate ${gate.id} will be Unknown and cannot pass.`, specPath);
-    }
-  }
-  return found;
-}
 const activeStatus = (status: RunStatus) => status === "running" || status === "queued";
 const stamp = () => new Date().toISOString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -295,11 +260,7 @@ export class SynthesisService {
     };
     const specSource = await read(specPath), flowSource = await read(flowPath);
     if (unread.length) return {id, name, specPath, flowPath, specSource, flowSource, valid: false, diagnostics: unread};
-    const compiled = compileProgram(specSource, flowSource, {specPath, flowPath});
-    const diagnostics = [...compiled.diagnostics.map(item => ({severity: item.severity, code: item.code, message: item.message, file: item.path, line: item.span.start.line, column: item.span.start.column})),
-      // What Run would refuse is shown before it: the module is not "valid" only to fail at Run.
-      ...(compiled.diagnostics.some(item => item.severity === "error") ? [] : profileDiagnostics(compiled, specPath, flowPath))];
-    if (compiled.spec?.module !== name) diagnostics.push({severity: "error", code: "MODULE_NAME", message: "Filename and module declaration must match.", file: specPath, line: 1, column: 1});
+    const {compiled, diagnostics} = sourceDiagnostics({name, specPath, flowPath, specSource, flowSource});
     // What Run would refuse about the providers the flow names: unknown, without a key, or cloud without consent.
     if (compiled.flow && !diagnostics.some(item => item.severity === "error")) {
       const seen = new Set<string>();
@@ -338,12 +299,9 @@ export class SynthesisService {
         }
       }
     }
-    const folder = path.posix.dirname(specPath);
-    for (const file of compiled.spec ? suiteFiles(compiled.spec) : []) {
-      const relative = folder === "." ? file : `${folder}/${file}`;
-      try { await fs.access(await containedPath(project.rootPath, relative)); }
-      catch { diagnostics.push({severity: "error", code: "SPEC_TEST_MISSING", message: `Test file ${file} was not found next to the contract (${relative}).`, file: specPath, line: 1, column: 1}); }
-    }
+    diagnostics.push(...await missingTests(compiled.spec, specPath, async relative => {
+      try { await fs.access(await containedPath(project.rootPath, relative)); return true; } catch { return false; }
+    }));
     return {id, name: compiled.spec?.module ?? name, specPath, flowPath, specSource, flowSource, valid: !diagnostics.some(item => item.severity === "error"), diagnostics};
   }
   async createModule(projectId: string, name = "Calculator", options: {template?: ModuleTemplate; directory?: string} = {}): Promise<SynthesisModule> {

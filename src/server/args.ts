@@ -2,7 +2,7 @@ import { parseArgs } from "util";
 import { CliError, ExitCode } from "./exitCodes";
 
 export type InferencePreference = "auto" | "cuda" | "cpu";
-export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "trust-device" | "untrust-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "api" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt";
+export type ServerCommand = "init" | "start" | "status" | "drain" | "api-token" | "help" | "version" | "console" | "pair" | "connect-key" | "devices" | "revoke-device" | "trust-device" | "untrust-device" | "reset-owner" | "folders" | "error-reports" | "cloud-models" | "web-targets" | "deps" | "api" | "backup" | "backups" | "restore" | "update" | "rollback" | "adopt" | "synthesis";
 export interface ServerArgs {
   command: ServerCommand;
   dataDir?: string;
@@ -35,6 +35,8 @@ export interface ServerArgs {
   api?: { action: "show" } | { action: "on"; port?: number; lan: boolean } | { action: "off" } | { action: "key"; name: string } | { action: "revoke"; id: string };
   /** deps: install a project's dependencies once (npm ci), for agents' npm test; `scripts` runs install scripts too. */
   deps?: { project: string; scripts: boolean };
+  /** synthesis check: a module's .lcspec, or a folder of modules, checked offline. */
+  synthesis?: { action: "check"; path: string };
   /** backup: a name part for the backup; restore: the backup's name (from `backups`). */
   label?: string;
   backupName?: string;
@@ -46,7 +48,7 @@ export interface ServerArgs {
   ascii?: boolean;
 }
 
-const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "api", "backup", "backups", "restore", "update", "rollback", "adopt"];
+const commands: ServerCommand[] = ["init", "start", "status", "drain", "api-token", "help", "version", "console", "pair", "connect-key", "devices", "revoke-device", "trust-device", "untrust-device", "reset-owner", "folders", "error-reports", "cloud-models", "web-targets", "deps", "api", "backup", "backups", "restore", "update", "rollback", "adopt", "synthesis"];
 
 export const usage = `Usage: local-cognitive-server <command> [options]
 
@@ -84,6 +86,8 @@ Commands:
   api revoke <id>        Revoke a key
   deps <project>         Install a project's dependencies once (npm ci), so agents can run npm test in it
                          (install scripts are not run unless --scripts)
+  synthesis check [path]  Check Synthesis modules offline: a .lcspec, or every module under a folder (the
+                         current one by default); no server or data directory needed (--json)
   backup                 Back up the server's state (not its models), with the server stopped (--label)
   backups                List the backups
   restore <name>         Put a backup's state back, with the server stopped (the current state is kept aside)
@@ -142,7 +146,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
   if (!commands.includes(command)) throw new CliError(`Unknown command: ${command}`, ExitCode.usage);
   // A project's name may hold spaces: cloud-models takes the rest of the line as it.
   const withDevice = command === "revoke-device" || command === "trust-device" || command === "untrust-device";
-  const extra = withDevice || command === "error-reports" || command === "restore" ? 2 : command === "folders" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" || command === "api" ? Infinity : 1;
+  const extra = withDevice || command === "error-reports" || command === "restore" ? 2 : command === "folders" || command === "synthesis" ? 3 : command === "cloud-models" || command === "web-targets" || command === "deps" || command === "api" ? Infinity : 1;
   if (positionals.length > extra) throw new CliError(`Unexpected argument: ${positionals[extra]}`, ExitCode.usage);
   const deviceId = withDevice ? positionals[1] : undefined;
   if (withDevice && !/^[0-9a-f-]{36}$/i.test(deviceId ?? "")) throw new CliError(`${command} needs a device id (see \`devices\`).`, ExitCode.usage);
@@ -196,6 +200,12 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     if (!project) throw new CliError("Use: deps <project> (its id, name or folder) [--scripts].", ExitCode.usage);
     deps = { project, scripts: Boolean(values.scripts) };
   }
+  let synthesis: ServerArgs["synthesis"];
+  if (command === "synthesis") {
+    const [action, target = "."] = positionals.slice(1);
+    if (action !== "check") throw new CliError("Use: synthesis check [<module.lcspec | folder>] [--json].", ExitCode.usage);
+    synthesis = { action, path: target };
+  }
   let errorReports: ServerArgs["errorReports"];
   if (command === "error-reports") {
     const choice = positionals[1] ?? "show";
@@ -212,7 +222,7 @@ export const parseServerArgs = (argv: string[], env: NodeJS.ProcessEnv = process
     init: Boolean(values.init), envFile: values["env-file"], llamaRuntimeDir: values["llama-runtime-dir"],
     drainTimeoutSec: integer(values["drain-timeout"] ?? values.timeout, values.timeout !== undefined ? "timeout" : "drain-timeout", 0, 86_400),
     vaultKeyFile: values["vault-key-file"], allowRoot: Boolean(values["allow-root"]), json: Boolean(values.json), quiet: Boolean(values.quiet),
-    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}), ...(cloudModels ? { cloudModels } : {}), ...(webTargets ? { webTargets } : {}), ...(deps ? { deps } : {}), ...(api ? { api } : {}),
+    wait: !values["no-wait"], ttlMinutes: integer(values.ttl, "ttl", 1, 60), ...(deviceId ? { deviceId } : {}), yes: Boolean(values.yes), ...(folders ? { folders } : {}), ...(errorReports ? { errorReports } : {}), ...(cloudModels ? { cloudModels } : {}), ...(webTargets ? { webTargets } : {}), ...(deps ? { deps } : {}), ...(api ? { api } : {}), ...(synthesis ? { synthesis } : {}),
     ...(command === "backup" && values.label ? { label: values.label } : {}), ...(backupName ? { backupName } : {}),
     ...(values["no-color"] ? { noColor: true } : {}), ...(values.ascii ? { ascii: true } : {}),
     ...(["update", "rollback", "adopt"].includes(command) ? { update: { check: Boolean(values.check), wait: Boolean(values.wait),

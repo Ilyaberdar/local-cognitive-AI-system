@@ -10,6 +10,7 @@
 #   sudo local-cognitive-server devices       computers that can connect; revoke-device <id>
 #   sudo local-cognitive-server cloud-models  Synthesis projects that may use cloud models; allow|deny <project>
 #   sudo local-cognitive-server deps <project> install a project's npm dependencies once (npm ci), for agents' npm test
+#   local-cognitive-server synthesis check [path]  check Synthesis modules offline (no sudo)
 #   sudo local-cognitive-server api-token     the key of the loopback HTTP API (Authorization: Bearer <key>)
 #   sudo local-cognitive-server update        install the newest release (backed up, rolled back if it fails)
 #   sudo local-cognitive-server logs | restart | stop | start
@@ -176,6 +177,9 @@ case "$command" in
       minor=$(sed -n 's/^Device Minor:[[:space:]]*//p' "$info")
       if [ -n "$minor" ] && [ "$minor" != 0 ]; then /usr/bin/nvidia-modprobe -c="$minor" || true; fi
     done ;;
+  synthesis)
+    # Checks files the caller names, as the caller, where the caller is: no root, no server's user.
+    exec "$NODE" "$CLI" "$@" ;;
   update | rollback | adopt)
     need_root "$@"
     extra=()

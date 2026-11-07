@@ -495,6 +495,12 @@ export const main = async (argv: string[]): Promise<number> => {
       case "web-targets": return await webTargets(args);
       case "api": return await inferenceApi(args);
       case "deps": return await deps(args);
+      case "synthesis": {
+        const { checkModules, formatChecks } = await import("../synthesis/checkFolder");
+        const checks = await checkModules(args.synthesis!.path).catch(error => { throw new CliError(error instanceof Error ? error.message : String(error), ExitCode.failure); });
+        process.stdout.write(args.json ? `${JSON.stringify(checks)}\n` : `${printableMessage(formatChecks(checks))}\n`);
+        return checks.every(check => check.valid) ? ExitCode.ok : ExitCode.failure;
+      }
       case "backup": case "backups": case "restore": return await backupCommand(args);
       case "update": case "rollback": case "adopt": return await updateCommand(args);
       case "revoke-device": {

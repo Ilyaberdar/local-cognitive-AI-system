@@ -1,9 +1,10 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 import type { QuickJSContext, QuickJSHandle, QuickJSWASMModule } from "quickjs-emscripten";
+import { supportedEvaluators } from "./evaluatorIds";
 
 // 1.2: every declared file must be present (an implicit hard "artifacts" gate).
 export const evaluatorVersion = "calculator-v1.2";
-export const supportedEvaluators = new Set(["calculator-arithmetic-v1", "calculator-ui-v1"]);
+export { supportedEvaluators };
 export interface CalculatorEvaluation { status: "Pass" | "Fail" | "Unknown"; message: string }
 
 const MAX_FILE_BYTES = 128 * 1024;

@@ -1,6 +1,50 @@
 export type ModuleTemplate = "empty" | "calculator" | "rate-limiter" | "repository-review";
 export interface ModuleFiles { spec: string; flow: string; tests?: Record<string, string> }
 
+/** Who runs a module's flow: an installed model (by exact id, or chosen by `prefer` and `maxSize`) or
+ * a cloud provider's model, which needs the cloud policy and the project's consent. */
+export type FlowModel = {kind: "local"; id?: string; prefer?: string; maxSize?: string} | {kind: "cloud"; provider: string; id: string};
+export interface FlowOptions { output: string; model: FlowModel; group?: string; iterations?: number; minutes?: number }
+
+const quoted = (value: string) => JSON.stringify(value);
+/** The repair loop most modules need, derived from the contract: each file the model writes is revised
+ * in the order the contract declares them (dependencies first), the candidate is evaluated keeping the
+ * best one, and a Pass is accepted. Frozen files and areas are never revised here. */
+export function flowTemplate(name: string, files: string[], {output, model, group = "contract-v1", iterations = 6, minutes = 20}: FlowOptions): string {
+  const load = model.kind === "cloud"
+    ? `    developer = await model(${quoted(model.id)}, provider = ${quoted(model.provider)});`
+    : `    available = await models.list(provider = "llamacpp");
+    selected = models.select(available${model.id ? `, id = ${quoted(model.id)}` : ""}${model.maxSize ? `, max_size = ${model.maxSize}` : ""}${model.prefer ? `, prefer = ${quoted(model.prefer)}` : ""});
+    developer = await models.load(selected);`;
+  return `implement ${name} using ${quoted(group)} {
+    limit iterations ${iterations}, time ${minutes}m, cost 0usd;
+    policy = "${model.kind === "cloud" ? "cloud-files-v1" : "local-files-v1"}";
+
+${load}
+
+    spec = freeze(${name}.spec);
+    candidate = checkout(${quoted(output)});
+    feedback = none;
+
+    while (!accepted(candidate, spec)) {
+${files.map(file => `        candidate = await developer.revise(candidate, spec, feedback, file = ${quoted(file)}, format = "source");`).join("\n")}
+        evidence = await evaluate(candidate, spec, keep = "best");
+        verdict = verify(spec, evidence);
+        checkpoint(candidate, evidence, verdict);
+
+        if (verdict.status == Pass) {
+            return accept(candidate, evidence);
+        }
+        if (verdict.status == Unknown) {
+            return needs_review(evidence);
+        }
+        feedback = verdict.violations;
+    }
+    return unresolved();
+}
+`;
+}
+
 /** A module on rails: a TypeScript contract checked by its shape, its dependencies, a forbidden
  * clock and the engineer's own tests, which the model reads but never writes. */
 export function rateLimiterTemplate(name = "RateLimiter"): ModuleFiles {
@@ -27,35 +71,8 @@ export function rateLimiterTemplate(name = "RateLimiter"): ModuleFiles {
     }
 }
 `,
-    flow: `implement ${name} using "contract-v1" {
-    limit iterations 6, time 20m, cost 0usd;
-    policy = "local-files-v1";
-
-    available = await models.list(provider = "llamacpp");
-    selected = models.select(available, max_size = 6GiB, prefer = "coder");
-    developer = await models.load(selected);
-
-    spec = freeze(${name}.spec);
-    candidate = checkout("${name === "RateLimiter" ? "rate-limiter" : `generated/${name}`}");
-    feedback = none;
-
-    while (!accepted(candidate, spec)) {
-        candidate = await developer.revise(candidate, spec, feedback, file = "src/rateLimiter.ts", format = "source");
-        evidence = await evaluate(candidate, spec, keep = "best");
-        verdict = verify(spec, evidence);
-        checkpoint(candidate, evidence, verdict);
-
-        if (verdict.status == Pass) {
-            return accept(candidate, evidence);
-        }
-        if (verdict.status == Unknown) {
-            return needs_review(evidence);
-        }
-        feedback = verdict.violations;
-    }
-    return unresolved();
-}
-`,
+    flow: flowTemplate(name, ["src/rateLimiter.ts"], {output: name === "RateLimiter" ? "rate-limiter" : `generated/${name}`,
+      model: {kind: "local", maxSize: "6GiB", prefer: "coder"}}),
     tests: { "tests/rateLimiter.test.ts": `import assert from "node:assert/strict";
 import test from "node:test";
 import { RateLimiter } from "../src/rateLimiter.ts";

@@ -5,14 +5,12 @@ import { createHash } from "node:crypto";
 import { isMissingFile } from "../utils/fileStore";
 import { SynthesisError } from "./types";
 import { assertNotProtected } from "../security/protectedPaths";
+import { isProjectRelative } from "./pathRules";
 
 export const MAX_SOURCE_BYTES = 128 * 1024;
 export const MAX_ARTIFACT_BYTES = 128 * 1024;
 export function relativePath(value: unknown): string {
-  if (typeof value !== "string" || !value || value.length > 240 || value.includes("\\") ||
-      value.split("/").some(part => !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(part) || part === "node_modules")) {
-    throw new SynthesisError("Expected a relative path without hidden folders, traversal or reserved directories.");
-  }
+  if (!isProjectRelative(value)) throw new SynthesisError("Expected a relative path without hidden folders, traversal or reserved directories.");
   return value;
 }
 /** Reject symlinks at every component, including final files and missing-path ancestors. */
