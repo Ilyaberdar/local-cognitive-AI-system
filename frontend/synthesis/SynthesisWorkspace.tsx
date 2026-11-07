@@ -371,10 +371,12 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   };
 
   const closeNewModule = () => { setCreatingModule(false); newModuleTrigger.current?.focus(); };
-  const draftSaved = (created: SynthesisModule) => { draftDone(draftId); moduleCreated(created); };
-  const moduleCreated = (created: SynthesisModule) => {
+  const draftSaved = (created: SynthesisModule) => { draftDone(draftId); moduleCreated(created, true); };
+  const moduleCreated = (created: SynthesisModule, drafted = false) => {
     setModules(current => [...current.filter(item => item.id !== created.id), created]); restoreModule(created.id); setTab("contract");
-    setRevision(current => current + 1); setNotice(`${created.name} created at ${created.specPath}. ${remote ? `Edit its contract and flow on ${remote.hostName}, then Refresh.` : "Define its contract and flow here or in your editor."}`);
+    setRevision(current => current + 1);
+    setNotice(drafted ? `${created.name} saved at ${created.specPath} with its tests. Run it when you are ready, or edit it here or in your editor first.`
+      : `${created.name} created at ${created.specPath}. ${remote ? `Edit its contract and flow on ${remote.hostName}, then Refresh.` : "Define its contract and flow here or in your editor."}`);
     closeNewModule();
   };
   const startRun = () => void perform("run", async () => {

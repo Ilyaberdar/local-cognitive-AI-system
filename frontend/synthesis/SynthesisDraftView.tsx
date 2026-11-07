@@ -14,8 +14,9 @@ export function draftStatus(draft: SynthesisDraft): string {
   if (draft.status === "drafting") {
     if (draft.phase === "loading") return `Loading ${model}…`;
     if (draft.phase === "checking") return `Checking answer ${draft.attempt}…`;
-    if (draft.phase === "thinking") return `${model} is thinking before it writes · answer ${Math.max(1, draft.attempt)} of ${draft.maxAttempts}`;
-    return `${model} is writing the contract and tests · answer ${Math.max(1, draft.attempt)} of ${draft.maxAttempts}${draft.tokens ? ` · ${draft.tokens.toLocaleString()} tokens` : ""}`;
+    const progress = ` · answer ${Math.max(1, draft.attempt)} of ${draft.maxAttempts}${draft.tokens ? ` · ${draft.tokens.toLocaleString()} tokens` : ""}`;
+    if (draft.phase === "thinking") return `${model} is thinking before it writes${progress}`;
+    return `${model} is writing the contract and tests${progress}`;
   }
   if (draft.status === "failed") return draft.error ?? `${model} wrote no contract.`;
   const errors = draft.diagnostics.filter(item => item.severity !== "warning").length;

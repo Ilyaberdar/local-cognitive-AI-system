@@ -189,13 +189,15 @@ export class SynthesisDrafts {
   }
 
   private async check(record: SynthesisDraft): Promise<SynthesisDiagnostic[]> {
-    const checked = await checkDraft({name: record.name, specPath: record.specPath, flowPath: record.flowPath, spec: record.spec ?? "", flow: record.flow, tests: record.tests});
+    const checked = await checkDraft({name: record.name, specPath: record.specPath, flowPath: record.flowPath, spec: record.spec ?? "", flow: record.flow, tests: record.tests, output: record.output});
     record.diagnostics = checked.diagnostics; record.clauses = checked.clauses; record.valid = checked.valid && Boolean(record.flow);
     return checked.diagnostics;
   }
 
   private async write(record: SynthesisDraft, model: ManagedModel, signal: AbortSignal): Promise<void> {
     const local = model.providerId === "llamacpp";
+    // A slow local model (on battery, a large one) may need long for 9k tokens: the token limit bounds it.
+    const minutes = local ? 30 : 10;
     const update = async (changes: Partial<SynthesisDraft>) => { Object.assign(record, changes, {updatedAt: stamp()}); if (!signal.aborted) await this.persist(record); };
     try {
       if (local) {
@@ -218,10 +220,10 @@ export class SynthesisDrafts {
           Object.assign(record, changes);
           if (Date.now() - savedAt > 1000) { savedAt = Date.now(); record.updatedAt = stamp(); void this.persist(record).catch(() => undefined); }
         };
+        const started = Date.now();
         const response = await this.host.services.llm.generateText({usagePurpose: "synthesis-draft", model: model.id, signal, systemPrompt: base.system, prompt,
           maxTokens: Math.min(MAX_ANSWER_TOKENS + (local ? THINKING : 0), room), temperature: 0.2,
-          // A slow local model (on battery, a large one) may need long for 9k tokens: the token limit bounds it.
-          timeoutMs: (local ? 30 : 10) * 60_000, holder: `Synthesis · draft of ${record.name}`,
+          timeoutMs: minutes * 60_000, holder: `Synthesis · draft of ${record.name}`,
           ...(local ? {localReasoningBudget: THINKING, localReasoningBudgetMessage: BUDGET_MESSAGE} : {}),
           // Progress (which also streams a local answer, so its tokens are counted as they come).
           onProgress: event => { if (event.phase === "thinking" && record.phase !== "thinking") note({phase: "thinking"}); else if ((event.phase === "generating" || event.phase === "responding") && record.phase !== "writing") note({phase: "writing"}); },
@@ -229,6 +231,8 @@ export class SynthesisDrafts {
         signal.throwIfAborted();
         record.usage.calls++; record.usage.inputTokens += response.usage?.inputTokens ?? 0; record.usage.outputTokens += response.usage?.outputTokens ?? 0;
         const answer = response.text.trim();
+        // The request's own time limit ends it as an abort ("The operation was aborted") the user did not ask for.
+        if (!answer && Date.now() - started >= minutes * 60_000 - 1000) throw new SynthesisError(`${model.displayName} did not finish answer ${attempt} in ${minutes} minutes and was stopped. Try again, or choose a smaller or a cloud model.`);
         if (!answer) throw new SynthesisError(response.error ?? `${model.displayName} returned no answer.`);
         const cutOff = (response.raw as {choices?: Array<{finish_reason?: string}>} | undefined)?.choices?.[0]?.finish_reason === "length";
         const parsed = parseDraft(answer, record.name);
@@ -242,8 +246,8 @@ export class SynthesisDrafts {
           record.spec = parsed.spec; record.tests = parsed.tests;
           record.flow = draftFlow(record.name, parsed.spec, record.output, flowModel(record.model));
           await update({phase: "checking"});
-          // Errors and clauses nothing checks go back to the model; other warnings are the user's to judge.
-          problems = (await this.check(record)).filter(item => item.severity === "error" || item.code === "SPEC_CLAUSE_UNTESTED");
+          // Errors, clauses nothing checks and a nested output go back to the model; other warnings are the user's to judge.
+          problems = (await this.check(record)).filter(item => item.severity === "error" || item.code === "SPEC_CLAUSE_UNTESTED" || item.code === "DRAFT_OUTPUT_REPEATED");
         }
         if (!problems.length) break;
         prompt = repairPrompt(base.prompt, answer, problems);

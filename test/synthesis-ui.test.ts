@@ -1161,7 +1161,7 @@ test("a module described to a model: the draft is written, read in place of a mo
     await until(() => Boolean(put) && [...doc.querySelectorAll("button")].some((item: any) => item.textContent === "Check" && item.disabled), "the edit is checked");
     assert.match(put.spec, /the sum/);
     ui.click("Save module");
-    await until(() => ui.text().includes("Adder created at Synthesis/Adder/Adder.lcspec"), "saved as a module");
+    await until(() => ui.text().includes("Adder saved at Synthesis/Adder/Adder.lcspec with its tests. Run it when you are ready"), "saved as a module");
     assert.equal(doc.querySelector(".synthesis-badge.status-draft"), null);
     assert.equal(ui.text().includes("Draft · not saved"), false);
   } finally { ui.close(); }

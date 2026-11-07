@@ -46,7 +46,7 @@ ${Object.entries(sample.tests).map(([file, text]) => block(file, fence, text)).j
 - Write the contract and every test file it names, each as a heading with its path and one fenced block, in this order: \`### ${input.name}.lcspec\`, then \`### tests/...\` for each test file. Nothing else: no flow (the app writes it), no implementation, no explanations.
 - The contract declares \`module ${input.name} version "1"\`, \`target { language = ${input.language}; }\` and \`evaluate "contract-v1"\`.
 - The description is one line of numbered clauses, [C1] [C2] …: the exact public interface (files, names, signatures, types), every behavior, every failure case and the error it raises, and what the code may not use. Each clause is observable and checkable.
-- Declare only files the model writes (\`file\`), at most 12, dependencies first, with paths relative to the output folder. No \`frozen\` files and no \`files\` areas.
+- Declare only files the model writes (\`file\`), at most 12, dependencies first, with paths relative to the output folder: never repeat the output folder in them. No \`frozen\` files and no \`files\` areas.
 - Gates: \`Exports\` for the public names, \`Imports\` for allowed dependencies, \`Forbid\` where the description bans something (clocks, randomness, I/O, network), and \`Tests\` for behavior. Mark a gate that checks a clause with a comment, such as \`// [C7]\`. Never \`hidden = true\`: sealed tests are the engineer's own.
 - Tests use ${TEST_RUNNERS[input.language]}. Name every test after the clauses it checks, such as "[C3] refuses a fractional request" (in Python a docstring, in C++ a comment above LC_TEST), so that every clause is checked by a test or a marked gate. Test the edges a careless implementation gets wrong: empty input, zero, fractions, limits, the exact error type. Tests are deterministic: no network, no real time, no randomness.`;
   const prompt = `Module name: ${input.name}
@@ -101,7 +101,7 @@ export function draftFlow(name: string, spec: string, output: string, model: Flo
 
 /** A draft checked as `synthesis check` checks a module, plus what a draft may not be: sealed tests and
  * frozen files (the engineer's own), or test files no gate runs. Paths are where Save will write them. */
-export async function checkDraft(input: {name: string; specPath: string; flowPath: string; spec: string; flow?: string; tests: Record<string, string>}) {
+export async function checkDraft(input: {name: string; specPath: string; flowPath: string; spec: string; flow?: string; tests: Record<string, string>; output?: string}) {
   const {name, specPath, flowPath} = input;
   const flowSource = input.flow ?? `implement ${name} using "contract-v1" { limit iterations 1, time 1m; policy = "local-files-v1"; return unresolved(); }`;
   const {compiled, diagnostics} = sourceDiagnostics({name, specPath, flowPath, specSource: input.spec, flowSource});
@@ -113,6 +113,12 @@ export async function checkDraft(input: {name: string; specPath: string; flowPat
     if (spec.frozen.length) add("DRAFT_FROZEN", "A draft declares no frozen files: those are the engineer's, written before a run. Declare only the files the model writes.");
     if (spec.areas.length) add("DRAFT_AREA", "A draft declares no files areas: declare each file the model writes.");
     for (const gate of spec.gates) if (gate.check?.kind === "tests" && gate.check.hidden) add("DRAFT_HIDDEN", `The gate ${gate.id} seals its tests (hidden = true): sealed tests are the engineer's own. Make it a visible Tests gate.`);
+    // A small model repeats the output folder in the files' paths, which nests the module in itself.
+    const output = input.output?.replace(/\/+$/, "");
+    for (const file of output ? spec.artifacts.filter(item => item.startsWith(`${output}/`)) : []) {
+      const inside = file.slice(output!.length + 1);
+      add("DRAFT_OUTPUT_REPEATED", `${file} repeats the output folder: it would be written to ${output}/${file}. Declare it as "${inside}" (paths in artifacts are relative to the output folder), and import it from tests as ../${inside}.`, "warning");
+    }
     const suite = suiteFiles(spec);
     for (const file of Object.keys(input.tests)) if (!suite.includes(file)) add("DRAFT_TEST_UNUSED", `${file} is written, but no gate runs it and the tests section does not name it.`, "warning");
   }

@@ -100,6 +100,13 @@ test("a draft may not seal tests or declare the engineer's files, and names a te
     [["error", "DRAFT_FROZEN"], ["error", "DRAFT_HIDDEN"], ["warning", "DRAFT_TEST_UNUSED"]]);
   assert.equal(checked.valid, false);
   assert.deepEqual(checked.clauses, ["C1", "C2", "C3"]);
+
+  // Paths in artifacts are inside the output folder: one that repeats it would nest the module in itself.
+  const nested = await checkDraft({name: "Adder", specPath: "Synthesis/Adder/Adder.lcspec", flowPath: "Synthesis/Adder/Adder.lcflow", output: "lib/adder/",
+    spec: spec().replace(`file "src/add.ts";`, `file "lib/adder/add.ts";`), tests: {"tests/add.test.ts": testFile()}});
+  const repeated = nested.diagnostics.find(item => item.code === "DRAFT_OUTPUT_REPEATED");
+  assert.equal(repeated?.severity, "warning");
+  assert.match(repeated!.message, /would be written to lib\/adder\/lib\/adder\/add\.ts\. Declare it as "add\.ts"/);
 });
 
 test("a draft is checked and sent back with its problems until it holds, then runs on the model that wrote it", async (t) => {
@@ -211,4 +218,14 @@ test("discarding a draft stops its model, and a draft the app stopped writing sa
   assert.equal(after.phase, undefined);
   assert.match(after.error!, /The app stopped while this draft was written/);
   await service.dispose();
+});
+
+test("a draft whose model ran out of time says so in plain words", async (t) => {
+  const now = Date.now();
+  // The request's time limit ends a slow local answer with no text, as the provider reports an abort.
+  const f = await draftFixture(t, [async () => { t.mock.method(Date, "now", () => now + 30 * 60_000); return ""; }]);
+  const draft = await f.settle((await f.service.drafts.create(f.project.id, input())).id);
+  assert.equal(draft.status, "failed");
+  assert.equal(f.requests[0]!.timeoutMs, 30 * 60_000);
+  assert.match(draft.error!, /did not finish answer 1 in 30 minutes and was stopped/);
 });
