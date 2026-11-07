@@ -267,6 +267,22 @@ test("workflow agent trace includes a waiting adviser before the main agent star
   assert.equal((await read("other", baseId)).status, 404);
 });
 
+test("a trusted device's turn in a project set up on the host reads its folder and asks before a write, whatever the chat's own access", async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.aRoot, "marker.txt"), "PROJECT-A");
+  let step = 0;
+  f.setScript(request => {
+    assert.match(request.systemPrompt!, /Access: ask/);
+    if (++step === 1) return action("file.read", { path: "marker.txt" });
+    assert.match(request.prompt, /PROJECT-A/, "a read in the project is not asked");
+    return action("file.write", { path: "from-device.txt", content: "Not approved", expectedVersion: "missing" });
+  });
+  const result = await f.engine.process({ input: "Read marker.txt and write from-device.txt", actor: f.actor(f.a1.id), metadata: { deviceRun: true, deviceAskOnly: true } });
+  assert.equal(result.tools[1].metadata?.permissionRequired, true, "the write waits for an approval");
+  await assert.rejects(fs.stat(path.join(f.aRoot, "from-device.txt")), { code: "ENOENT" });
+  assert.equal((await f.settings.get(f.a1.id)).defaultAccessMode, "default", "the host's own turns keep the access it chose");
+});
+
 test("a paired device's turn never runs in a chat the host gave full access", async t => {
   const f = await fixture(t);
   await f.settings.update(f.ordinary.id, { defaultAccessMode: "full" });

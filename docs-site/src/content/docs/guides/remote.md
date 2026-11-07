@@ -52,6 +52,8 @@ Some things can only be set up on the server itself, because they reach its whol
 
 From a computer you can delete, cancel or pause such work, but not start, continue or edit it.
 
+**A trusted device uses the chats of projects set up on the server.** Mark a device trusted on the server (`sudo local-cognitive-server trust-device <id> --yes`; on a Mac or PC hosting, Remote → This computer → Devices → **Trusted**) and it sees those projects' chats, starts new ones and writes in them as on the server: its turns read the project's folder without asking and ask before every change and command, and an iPhone asks for Face ID before each approval. A chat set up with full access stays the server's, and the projects' tasks and Synthesis stay there too. Untrusting the device hides those chats at once and stops a turn it started there within a few seconds.
+
 Cloud models for a Synthesis project on the server are allowed on the server, with `sudo local-cognitive-server cloud-models allow <project>` (see [Server commands](/server/commands/#synthesis)). A computer shows the choice at the bottom of its Synthesis screen, **Cloud models: on** or **off**, but can't change it. The cloud providers are the server's own: added from a computer in Settings, or set in its environment file. Agents, their terminal and contract tests run on the server, in its bubblewrap sandbox, and work only in the project's folder there.
 
 ## When the app is closed

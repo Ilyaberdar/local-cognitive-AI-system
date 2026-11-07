@@ -129,7 +129,7 @@ test("a device is trusted with its own switch; the app asks before it is, the pa
   const page = load(bridge);
   page.view().innerHTML = page.ui.inner();
   await flush();
-  assert.match(page.text(), /A trusted one also approves commands, files anywhere and its applications' tools, one action at a time/);
+  assert.match(page.text(), /A trusted one also uses the chats of your projects here, asking before every change, and approves commands, files anywhere and its applications' tools, one action at a time/);
   const trust = page.view().querySelector(`[data-device-trust="${PHONE}"]`);
   assert.equal(trust.checked, false);
   trust.checked = true;

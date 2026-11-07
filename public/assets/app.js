@@ -1405,6 +1405,8 @@ function renderChatActivityBar(settings) {
 function renderServerAccessControl(settings) {
   const setup = chatTarget.setup(state.activeSessionId);
   if (setup.hostOnly) return `<span class="icon-button access-trigger access-full" role="img" aria-label="${escapeAttr(`Full access · set on ${chatTarget.hostName()}`)}" title="${escapeAttr(setup.hostOnly)}">${icon("shieldAlert")}</span>`;
+  // A project set up on the server: turns from here ask before every change, whatever the chat has there.
+  if (setup.hostProject) return `<span class="icon-button access-trigger" role="img" aria-label="${escapeAttr(`Ask for approval · set on ${chatTarget.hostName()}`)}" title="${escapeAttr(`A project set up on ${chatTarget.hostName()}: from here its chats ask before every change.`)}">${icon("hand")}</span>`;
   if (!setup.agents) return "";
   return renderAccessControl(settings, { modes: ACCESS_MODES.filter((item) => setup.modes.includes(item.id)), footer: `Applies to this chat and its agents on ${chatTarget.hostName()}.` });
 }

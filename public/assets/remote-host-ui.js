@@ -109,7 +109,7 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
   };
   function deviceList() {
     if (!status.devices.length) return "";
-    return `<section class="remote-section"><div class="remote-section-head"><div><h2>Devices</h2><p class="subtle remote-section-note">A device approves file changes inside its chat's own folder. A trusted one also approves commands, files anywhere and its applications' tools, one action at a time.</p></div></div><ul class="remote-devices remote-host-devices">${status.devices.map(device => `<li>
+    return `<section class="remote-section"><div class="remote-section-head"><div><h2>Devices</h2><p class="subtle remote-section-note">A device approves file changes inside its chat's own folder. A trusted one also uses the chats of your projects here, asking before every change, and approves commands, files anywhere and its applications' tools, one action at a time.</p></div></div><ul class="remote-devices remote-host-devices">${status.devices.map(device => `<li>
       <span><span class="status-dot ${device.connected ? "is-online" : ""}"></span>${escape(device.name)}</span>
       <span class="subtle">${device.connected ? "Connected now" : device.lastConnectedAt ? `Last seen ${day(device.lastConnectedAt)}` : `Paired ${day(device.grantedAt)}`}${device.trusted ? " · Trusted" : ""}</span>
       <label class="settings-control remote-device-trust"><input type="checkbox" role="switch" data-device-trust="${escape(device.deviceId)}" ${device.trusted ? "checked" : ""}${pending ? " disabled" : ""} /><span>Trusted</span></label>
@@ -130,7 +130,7 @@ export function createRemoteHostUi({ bridge = window.desktopRemoteHost, account,
     if (!bridge) return '<div class="account-card"><div><h2>Available in the desktop app</h2><p>Open the Local Cognitive desktop app to let your devices connect to this computer.</p></div></div>';
     if (!status) return loadError ? `<p class="remote-error" role="alert">${escape(loadError)}</p>` : '<p class="settings-description" role="status">Loading…</p>';
     return `${statusCard()}${notice ? `<p class="remote-error" role="alert">${escape(notice)}</p>` : ""}${switches()}${connectDevice()}${deviceList()}${folderList()}
-      <p class="settings-footnote">Traffic between your devices and this computer is end-to-end encrypted; Local Cognitive Cloud only routes it. Devices see this computer's chats (not those of its projects) and models; their own chats never use its MCP tools, and only a trusted device approves one of its tools in a workflow.</p>`;
+      <p class="settings-footnote">Traffic between your devices and this computer is end-to-end encrypted; Local Cognitive Cloud only routes it. Devices see this computer's chats and models, and a trusted device the chats of its projects too; their own chats never use its MCP tools, and only a trusted device approves one of its tools in a workflow.</p>`;
   }
 
   function repaint() {

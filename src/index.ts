@@ -305,8 +305,10 @@ export const startBackend = async (config: AppConfig = defaultConfig, integratio
  * engine would offer every enabled plugin, and `@plugin` in the message would choose one). On a
  * desktop (`outputOnly`), the turn's files are a folder of the chat's own in the app's data, never
  * the output folder or the folders the person at that computer allowed for their own chats. */
-export const deviceRunMetadata = (run: { runId: string; attachments?: ChatAttachment[] }, outputOnly = false) => ({
+export const deviceRunMetadata = (run: { runId: string; attachments?: ChatAttachment[]; hostProject?: true }, outputOnly = false) => ({
   chatRunId: run.runId, deviceRun: true, pluginIds: [] as string[], ...(outputOnly ? { deviceOutputOnly: true } : {}),
+  // A trusted device's turn in a project set up on the host asks before every change it makes there.
+  ...(run.hostProject ? { deviceAskOnly: true } : {}),
   ...(run.attachments?.length ? { attachments: run.attachments } : {})
 });
 

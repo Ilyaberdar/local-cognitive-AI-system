@@ -274,6 +274,48 @@ test("project chats: seen and used from a device only in a project it may use; a
   assert.deepEqual(started, ["in-site"]);
 });
 
+test("a device the host trusts uses the chats of a project set up there, asking before every change; untrusted, they are not there", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "chat-trusted-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new SessionSettingsStore({ baseDir: root }, { providerId: "openai" }, {});
+  const sessions: Record<string, { id: string; title: string; updatedAt: string; projectId?: string }> = {
+    "in-host": { id: "in-host", title: "Host chat", updatedAt: "t", projectId: "host" }, "full-host": { id: "full-host", title: "Full", updatedAt: "t", projectId: "host" } };
+  await store.update("full-host", { defaultAccessMode: "full" });
+  const trusted = new Set<string>(), admitted: unknown[] = [];
+  const isTrusted = (caller?: { deviceId: string }) => Boolean(caller && trusted.has(caller.deviceId));
+  const ops = createChatOperations({
+    runtimeManager: { getRuntime: () => ({ sessionSettingsStore: store, sessionIndexStore: { get: async (id: string) => sessions[id] }, projectStore: { get: async () => null }, providerDescriptors: [] }),
+      getSettings: async () => ({ ui: {}, filesystem: {} }) } as unknown as RuntimeManager,
+    sessionIndexStore: { get: async (id: string) => sessions[id], list: async () => Object.values(sessions),
+      create: async (title: string, _channel: string, projectId?: string) => (sessions.created = { id: "created", title, updatedAt: "t", ...(projectId ? { projectId } : {}) }) } as unknown as SessionIndexStore,
+    runService: { start: async (_scope: string, _request: unknown, admit?: () => Promise<unknown>) => { admitted.push(await admit?.()); return { status: "accepted" }; },
+      activeRun: () => undefined, unfinishedTurns: () => [] } as unknown as RunService,
+    journal: { head: () => ({ epoch: "e", head: 0 }) } as unknown as EventJournal, scopeOf: () => "device",
+    projects: { visible: async (_projectId: string, caller?: { deviceId: string }) => isTrusted(caller),
+      usable: async (_projectId: string, caller?: { deviceId: string }) => isTrusted(caller) ? { project: {} as never, hostProject: true as const }
+        : { project: {} as never, reason: "This project's folder was chosen on the server, so its chats can only be used there." } }
+  });
+  const call = <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
+  assert.deepEqual(await call("sessions.list"), [], "not before it is trusted");
+  await assert.rejects(call("chat.runs.start", { commandId: "command-0", sessionId: "in-host", input: "hi" }), code("session_unknown"));
+  trusted.add("mac");
+  assert.deepEqual((await call("sessions.list")).map((item: any) => item.id), ["in-host", "full-host"]);
+  assert.ok(await call("sessions.settings.get", { sessionId: "in-host" }));
+  assert.equal((await call("sessions.create", { title: "New chat", projectId: "host" })).projectId, "host");
+  const setup = await call("sessions.setup.get", { sessionId: "in-host" });
+  assert.deepEqual([setup.access.modes, setup.access.hostProject, setup.access.hostOnly], [["ask"], true, undefined]);
+  await call("chat.runs.start", { commandId: "command-1", sessionId: "in-host", input: "hi" });
+  assert.deepEqual(admitted, [{ attachments: [], hostProject: true }], "the turn is marked: it asks before every change");
+  // The host's own turns keep the access it chose there.
+  await assert.rejects(call("sessions.settings.update", { sessionId: "in-host", patch: { defaultAccessMode: "ask" } }), code("unsupported"));
+  assert.equal((await call("sessions.settings.update", { sessionId: "in-host", patch: { language: "en" } })).language, "en");
+  // A chat the host gave full access stays the host's, trusted or not.
+  assert.match((await call("sessions.setup.get", { sessionId: "full-host" })).access.hostOnly, /full access/);
+  await assert.rejects(call("chat.runs.start", { commandId: "command-2", sessionId: "full-host", input: "hi" }), code("unsupported"));
+  trusted.delete("mac");
+  await assert.rejects(call("sessions.settings.get", { sessionId: "in-host" }), code("session_unknown"), "hidden again at once");
+});
+
 test("a project chat's folder is <workspace> in what a device receives", async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "chat-workspace-")));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

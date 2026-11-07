@@ -9,11 +9,11 @@ const copyJson = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const settle = async () => { await flush(30); await new Promise(resolve => setTimeout(resolve, 40)); await flush(10); };
 
 /** A paired server behind the desktop bridge, with one chat; `agents`: a server that offers agent setup (R5-4). */
-function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = false, files = false, projects = false } = {}) {
+function fakeServer({ agents = false, hostOnly = "", hostProject = false, manage = false, uploads = false, files = false, projects = false } = {}) {
   let status: Record<string, unknown> = { state: "online", hostId: HOST, hostName: "fedora", serverVersion: "0.1.0",
     capabilities: ["chat.runs.start", "events.poll", ...(agents ? ["sessions.setup.get"] : []), ...(manage ? ["sessions.rename", "sessions.delete"] : []), ...(uploads ? ["uploads.begin"] : []), ...(files ? ["files.read", "files.stat"] : []), ...(projects ? ["projects.list", "fs.roots"] : [])] };
   const projectList: any[] = projects ? [{ id: "p1", name: "Site", folder: { rootId: "projects", rootLabel: "Projects", path: ["site"] }, archived: false },
-    { id: "p2", name: '<img src=x id=pwn>', hostOnly: true, archived: false }] : [];
+    { id: "p2", name: '<img src=x id=pwn>', hostOnly: true, archived: false }, { id: "p3", name: "Engine", hostOnly: true, trustedChats: true, archived: false }] : [];
   const sent: unknown[][] = [];
   const REPORT = "# Report\nShip on Friday.\n";
   const received: Record<string, { meta: any; chunks: string[] }> = {};
@@ -39,7 +39,7 @@ function fakeServer({ agents = false, hostOnly = "", manage = false, uploads = f
     "sessions.create": payload => { const chat = { id: "srv-2", title: "New chat", ...(payload?.projectId ? { projectId: payload.projectId } : {}) }; chats.push(chat); return chat; },
     "sessions.messages.list": () => ({ messages: server.messages, cursor: { streamId: "session:srv-1", epoch: "e1", after: server.head } }),
     "sessions.settings.get": () => server.settings,
-    "sessions.setup.get": () => ({ settings: server.settings, access: { modes: ["ask", "default"], ...(hostOnly ? { hostOnly } : {}) }, limits: { subagents: 4, advisors: 5 } }),
+    "sessions.setup.get": () => ({ settings: server.settings, access: { modes: hostProject ? ["ask"] : ["ask", "default"], ...(hostOnly ? { hostOnly } : {}), ...(hostProject ? { hostProject } : {}) }, limits: { subagents: 4, advisors: 5 } }),
     "sessions.settings.update": payload => (server.settings = { ...server.settings, ...payload.patch, debate: { ...server.settings.debate, ...payload.patch.debate } }),
     "models.available": () => ({ providers: [{ id: "llamacpp", name: "Local models" }, { id: "openai", name: "OpenAI" }], availableModels: [{ providerId: "openai", id: "gpt-4.1" }], loadedModels: [],
       allManagedModels: [{ providerId: "llamacpp", id: "qwen", libraryId: "qwen", displayName: "Qwen", filesAvailable: true, compatibility: { canLoad: true }, loaded: true }],
@@ -272,6 +272,17 @@ test("a server too old for agent setup says so and sends no agents", async t => 
   assert.deepEqual(settingsUpdates(app), [{ mode: "hypothesis" }]);
 });
 
+test("a chat of a project set up on the server, used from here as a trusted computer, says its turns ask, with no choice", async t => {
+  const paired = fakeServer({ agents: true, hostProject: true });
+  const app = await bootApp({ remote: { bridge: paired.bridge } });
+  t.after(() => app.close());
+  await choose(app, HOST);
+  const control = app.document.querySelector(".access-trigger");
+  assert.equal(control.getAttribute("aria-label"), "Ask for approval · set on fedora", "not the chat's own mode on the server");
+  assert.equal(app.document.querySelector("#chat-access-menu"), null, "no access choices");
+  assert.equal(app.document.querySelector("#chat-form button[type='submit']").disabled, false, "it is used from here");
+});
+
 test("a chat with full access on the server shows why and cannot be used or changed here", async t => {
   const paired = fakeServer({ agents: true, hostOnly: "This chat has full access on the server, so it can only be used or changed there." });
   const app = await bootApp({ remote: { bridge: paired.bridge } });
@@ -422,6 +433,8 @@ test("a server's projects group its chats; a chat and a project are made there, 
   assert.match(sidebar().textContent, /Projects on fedora[\s\S]*Site[\s\S]*Project chat/);
   assert.equal(app.document.querySelector("#pwn"), null, "a project's name is text");
   assert.equal(app.document.querySelectorAll(".sidebar-projects [data-action='new-session'][data-project-id='p2']").length, 0, "no new chat in a project set up on the server");
+  assert.equal(app.document.querySelectorAll(".sidebar-projects [data-action='new-session'][data-project-id='p3']").length, 2, "unless the server trusts this computer: New chat, here and in the empty project");
+  assert.equal(app.document.querySelectorAll(".sidebar-projects .project-group.is-host-only").length, 1);
   assert.equal(app.document.querySelector(".sidebar-projects .project-title[title]").getAttribute("title"), "fedora › Projects › site");
   assert.doesNotMatch(app.document.querySelector(".sidebar-chats").textContent, /\bProject chat/, "a project's chats are under the project");
   assert.match(app.document.querySelector(".sidebar-chats").textContent, /Archived project chat/, "a chat whose project is not listed stays reachable");

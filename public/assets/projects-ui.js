@@ -48,8 +48,13 @@ export function createProjectsUi(options) {
   </div>`;
   };
 
+  /** Whether this device uses a server's project's chats: one made from a device in a shared folder,
+   * or one set up on the server when the server trusts this device (it then changes it too). */
+  const usesChats = project => !project.hostOnly || project.trustedChats === true;
+
   // A server's chats, grouped by its projects where it offers them; deleting where it offers it; a
-  // spinner where it is answering. A project set up on the server shows by name, with no new chat.
+  // spinner where it is answering. A project set up on the server shows by name, with no new chat,
+  // unless the server trusts this device.
   function remoteSidebar(remote) {
     const state = options.getState();
     const host = escape(remote.hostName);
@@ -69,13 +74,13 @@ export function createProjectsUi(options) {
       const sessions = byProject.get(project.id) ?? [];
       const isOpen = !collapsed.has(project.id);
       const where = project.folder ? [remote.hostName, project.folder.rootLabel, ...project.folder.path].join(" › ") : `Set up on ${remote.hostName}`;
-      return `<div class="project-group ${project.hostOnly ? "is-host-only" : ""}">
+      return `<div class="project-group ${usesChats(project) ? "" : "is-host-only"}">
         <div class="project-row">
           <button class="project-folder" type="button" data-action="toggle-project" data-project-id="${escape(project.id)}" data-project-color="${folderColor(project)}" aria-label="${isOpen ? "Collapse" : "Expand"} ${escape(project.name)}" aria-expanded="${isOpen}">${icon("folder")}</button>
           <span class="project-title" title="${escape(where)}">${escape(project.name)}</span>
-          <div class="project-actions">${project.hostOnly ? "" : `<button class="icon-button" type="button" data-action="new-session" data-project-id="${escape(project.id)}" aria-label="New chat in ${escape(project.name)}" title="New chat">${icon("plus")}</button>`}<button class="icon-button" type="button" data-action="server-project-settings" data-project-id="${escape(project.id)}" aria-label="Settings of ${escape(project.name)}" title="Project settings">${icon("settings")}</button></div>
+          <div class="project-actions">${!usesChats(project) ? "" : `<button class="icon-button" type="button" data-action="new-session" data-project-id="${escape(project.id)}" aria-label="New chat in ${escape(project.name)}" title="New chat">${icon("plus")}</button>`}<button class="icon-button" type="button" data-action="server-project-settings" data-project-id="${escape(project.id)}" aria-label="Settings of ${escape(project.name)}" title="Project settings">${icon("settings")}</button></div>
         </div>
-        ${isOpen ? `<div class="project-chats">${sessions.map(row).join("")}${!sessions.length && !project.hostOnly ? `<button class="project-empty" type="button" data-action="new-session" data-project-id="${escape(project.id)}">New chat in this project</button>` : ""}</div>` : ""}
+        ${isOpen ? `<div class="project-chats">${sessions.map(row).join("")}${!sessions.length && usesChats(project) ? `<button class="project-empty" type="button" data-action="new-session" data-project-id="${escape(project.id)}">New chat in this project</button>` : ""}</div>` : ""}
       </div>`;
     };
     const projects = remote.projects ? `<section class="sidebar-section sidebar-projects" aria-label="Projects on ${host}">
@@ -92,17 +97,18 @@ export function createProjectsUi(options) {
   }
 
   /** A server's project: made in a folder chosen among its shared folders; renamed, recoloured or
-   * archived later. A project set up on the server can only be archived from here. */
+   * archived later. A project set up on the server can only be archived from here, unless the server
+   * trusts this computer. */
   function serverProjectDialog(project) {
     const server = options.serverProjects, remote = options.remoteSessions?.();
     if (!server || !remote) return;
     const host = remote.hostName;
     let folder = null;
-    const fixed = Boolean(project?.hostOnly);
+    const fixed = Boolean(project?.hostOnly) && !usesChats(project);
     const dialog = dialogShell(project ? "Project settings" : `New project on ${host}`, `<form class="project-form">
       <label class="field">Name<input name="name" value="${escape(project?.name)}" placeholder="My project" maxlength="120" required ${fixed ? "disabled" : "autofocus"} /></label>
       <div class="field">Folder<div class="project-directory-input"><output data-server-folder>${escape(project ? (project.folder ? [host, project.folder.rootLabel, ...project.folder.path].join(" › ") : `Set up on ${host}`) : `Choose a folder on ${host}`)}</output>${project ? "" : '<button class="ghost-button" type="button" data-server-folder-browse>Browse</button>'}</div></div>
-      <p class="subtle">${escape(fixed ? `This project's folder was chosen on ${host}, so it is changed there.` : `Chats in this project work in this folder on ${host}.`)}</p>
+      <p class="subtle">${escape(fixed ? `This project's folder was chosen on ${host}, so it is changed there.` : project?.hostOnly ? `This project's folder was chosen on ${host}. This computer is trusted there, so it uses its chats; they ask before every change.` : `Chats in this project work in this folder on ${host}.`)}</p>
       <fieldset class="project-color-picker" ${fixed ? "disabled" : ""}><legend>Folder color</legend><div class="project-color-options">${folderColors.map(([value, label]) => `<label class="project-color-option" title="${label}"><input type="radio" name="color" value="${value}" aria-label="${label}" ${folderColor(project) === value ? "checked" : ""} /><span data-project-color="${value}"></span></label>`).join("")}</div></fieldset>
       <p class="project-form-error" role="alert" hidden></p>
       <div class="project-dialog-footer">${project ? '<button class="ghost-button" type="button" data-project-archive>Archive project</button>' : "<span></span>"}${fixed ? "" : `<button class="primary-button" type="submit">${project ? "Save changes" : "Create project"}</button>`}</div>
@@ -143,7 +149,7 @@ export function createProjectsUi(options) {
   function serverArchivedDialog() {
     const server = options.serverProjects, projects = (options.remoteSessions?.()?.projects ?? []).filter(project => project.archived);
     if (!server) return;
-    const dialog = dialogShell("Archived projects", `<div class="archived-project-list">${projects.map(project => `<div><span>${escape(project.name)}</span>${project.hostOnly ? "" : `<button class="ghost-button" data-restore-project="${escape(project.id)}">Restore</button>`}</div>`).join("")}</div><p class="project-form-error" role="alert" hidden></p>`);
+    const dialog = dialogShell("Archived projects", `<div class="archived-project-list">${projects.map(project => `<div><span>${escape(project.name)}</span>${!usesChats(project) ? "" : `<button class="ghost-button" data-restore-project="${escape(project.id)}">Restore</button>`}</div>`).join("")}</div><p class="project-form-error" role="alert" hidden></p>`);
     dialog.querySelectorAll("[data-restore-project]").forEach(button => button.addEventListener("click", async () => {
       button.disabled = true;
       try { await server.update(button.dataset.restoreProject, { archived: false }); await options.refresh(); setSectionExpanded("projects", true); options.render(); dialog.close(); }

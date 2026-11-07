@@ -27,9 +27,12 @@ function setup(t: TestContext) {
   folders.ensureManaged();
   fs.mkdirSync(path.join(data, "projects", "site"));
   const runtimeManager = { getRuntime: () => ({ projectStore: store }) } as unknown as RuntimeManager;
-  const ops = createProjectOperations({ runtimeManager, folders, ledger: new CommandLedger(host), scopeOf: () => "remote:account:mac", isDraining: () => false });
+  // The devices the host trusts, as its window or CLI marks them.
+  const trusted = new Set<string>();
+  const deviceTrust = (caller: { deviceId: string }) => trusted.has(caller.deviceId);
+  const ops = createProjectOperations({ runtimeManager, folders, ledger: new CommandLedger(host), scopeOf: () => "remote:account:mac", isDraining: () => false, deviceTrust });
   const call = <T = any>(op: string, payload?: unknown) => Promise.resolve(ops[op]!(payload, context)) as Promise<T>;
-  return { base, data, shared, elsewhere, store, folders, call, access: createProjectAccess({ runtimeManager, folders }) };
+  return { base, data, shared, elsewhere, store, folders, call, trusted, access: createProjectAccess({ runtimeManager, folders, deviceTrust }) };
 }
 
 test("project operations are in the catalog; creating one is a command", () => {
@@ -76,6 +79,11 @@ test("a project in an admin's folder is usable until the folder is no longer sha
   await f.call("projects.update", { projectId: project.id, archived: false });
   removeAdminFolder(f.data, work.id);
   assert.equal((await f.access.usable(project.id)).reason, PROJECT_ON_HOST(), "unshared at once");
+  // Made from a device, it is not the host's: a trusted device loses it too, and its turns stop.
+  f.trusted.add("mac");
+  assert.equal((await f.access.usable(project.id, context)).reason, PROJECT_ON_HOST());
+  assert.equal(await f.access.visible(project.id, context), false);
+  assert.equal((await f.call("projects.list"))[0].trustedChats, undefined);
   await assert.rejects(f.access.usable("missing"), code("project_unknown"));
 });
 
@@ -87,6 +95,33 @@ test("a project the host set up stays the host's even inside a shared folder", a
   assert.equal((await f.access.usable(hostMade.id)).reason, PROJECT_ON_HOST());
   assert.equal(await f.access.visible(hostMade.id), false, "its chats are not a device's to see");
   await assert.rejects(f.call("projects.update", { projectId: hostMade.id, archived: false }), code("unsupported"));
+});
+
+test("a device the host trusts sees a project set up there and uses its chats, without its folder; trust taken back hides it again", async t => {
+  const f = setup(t);
+  const own = await f.store.create({ name: "Host project", rootPath: f.elsewhere });
+  assert.equal((await f.call("projects.list"))[0].trustedChats, undefined, "not before it is trusted");
+  assert.equal(await f.access.visible(own.id, context), false);
+  f.trusted.add("mac");
+  const [listed] = await f.call("projects.list");
+  assert.deepEqual([listed.hostOnly, listed.trustedChats, listed.folder], [true, true, undefined]);
+  assert.equal(JSON.stringify(listed).includes(f.base), false, "still no folder of the host");
+  assert.equal(await f.access.visible(own.id, context), true);
+  assert.deepEqual(await f.access.usable(own.id, context), { project: await f.store.get(own.id), hostProject: true });
+  // Synthesis and tasks ask without a caller: those stay the host's.
+  assert.equal(await f.access.visible(own.id), false);
+  assert.equal((await f.access.usable(own.id)).reason, PROJECT_ON_HOST());
+  // A trusted device changes it as the host would, restoring it included.
+  assert.equal((await f.call("projects.update", { projectId: own.id, name: "Renamed", color: "red" })).name, "Renamed");
+  await f.call("projects.update", { projectId: own.id, archived: true });
+  assert.match(String((await f.access.usable(own.id, context)).reason), /archived/, "an archived project's chats are read, not used");
+  assert.equal(await f.access.visible(own.id, context), true);
+  assert.equal((await f.call("projects.update", { projectId: own.id, archived: false })).archived, false);
+  f.trusted.delete("mac");
+  assert.equal(await f.access.visible(own.id, context), false, "hidden at once");
+  assert.equal((await f.access.usable(own.id, context)).reason, PROJECT_ON_HOST());
+  await assert.rejects(f.call("projects.update", { projectId: own.id, name: "Mine" }), code("unsupported"));
+  assert.equal((await f.call("projects.list"))[0].trustedChats, undefined);
 });
 
 test("a project is not made where the folder resolves elsewhere than checked", async t => {

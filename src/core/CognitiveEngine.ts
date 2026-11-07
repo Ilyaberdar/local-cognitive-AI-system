@@ -84,6 +84,8 @@ export class CognitiveEngine {
     // A paired device's turn never runs with full access, even when the host gives it after the
     // turn was accepted: such a chat is used only on the host.
     if(request.metadata?.deviceRun===true&&sessionSettings.defaultAccessMode==="full")throw new Error(`This chat has full access on ${place()}, so it can only be used there.`);
+    // A trusted device's turn in a project set up on the host reads its folder and asks before every change.
+    if(request.metadata?.deviceRun===true&&request.metadata?.deviceAskOnly===true){sessionSettings.defaultAccessMode="ask";sessionSettings.codeAgents=sessionSettings.codeAgents?.map(agent=>({...agent,accessMode:"ask"}));}
     const activeTarget = resolveProviderTarget(request, sessionSettings.defaultTarget ?? { providerId: this.defaultProviderId });
     const providerId = activeTarget.providerId;
     const explicitContext = request.execution?.contextMode === "explicit";

@@ -243,7 +243,7 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
         agents ? call("sessions.setup.get", { sessionId }, host) : call("sessions.settings.get", { sessionId }, host).then(value => ({ settings: value }))]);
       const sessionSettings = setup.settings;
       settings.set(key, sessionSettings);
-      setups.set(key, { agents, hostOnly: setup.access?.hostOnly, modes: setup.access?.modes ?? [], limits: setup.limits });
+      setups.set(key, { agents, hostOnly: setup.access?.hostOnly, hostProject: setup.access?.hostProject === true, modes: setup.access?.modes ?? [], limits: setup.limits });
       const run = snapshot.activeRun;
       const runMessages = run ? snapshot.messages.filter(message => message.runId === run.runId) : [];
       const view = { lastSeq: snapshot.cursor.after, run: run ? { runId: run.runId, input: runMessages.find(message => message.role === "user")?.content ?? "",
@@ -254,7 +254,8 @@ export function createChatTarget({ bridge = window.desktopRemote, account, onCha
       return { messages: run ? snapshot.messages.filter(message => message.runId !== run.runId) : snapshot.messages, settings: sessionSettings, view, cursor: snapshot.cursor };
     },
     view: key => views.get(key),
-    /** What a server chat's setup offers: agents (`agents`), and why it is the server's alone (`hostOnly`). */
+    /** What a server chat's setup offers: agents (`agents`), why it is the server's alone (`hostOnly`), and
+     * whether it is a chat of a project set up there, whose turns from here always ask (`hostProject`). */
     setup: key => setups.get(key) ?? { agents: false, modes: [] },
     async updateSettings(key, patch) {
       const current = settings.get(key);

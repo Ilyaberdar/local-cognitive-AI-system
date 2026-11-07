@@ -29,7 +29,8 @@ export interface RunServiceDependencies {
   host: HostDatabase;
   journal: EventJournal;
   /** Runs one chat turn with the shared engine; resolves with the engine's error text, if any. */
-  execute(run: { runId: string; sessionId: string; input: string; attachments?: ChatAttachment[] }, hooks: ExecuteHooks): Promise<{ error?: string }>;
+  /** `hostProject`: a device's turn in a project set up on the host, which asks before every change. */
+  execute(run: { runId: string; sessionId: string; input: string; attachments?: ChatAttachment[]; hostProject?: true }, hooks: ExecuteHooks): Promise<{ error?: string }>;
   /** The completed turn as history shows it (from memory), for `message.completed`. */
   completedTurn?(sessionId: string, runId: string): Promise<ChatMessage[] | undefined>;
   sessionExists(sessionId: string): Promise<boolean>;
@@ -47,6 +48,8 @@ export interface RunServiceDependencies {
 
 interface ActiveRun {
   runId: string; sessionId: string; assistantMessageId: string; controller: AbortController; attachments?: ChatAttachment[]; scrub?: Scrubber;
+  /** Who started the turn (`start`'s scope), and whether it is a device's turn in a project set up on the host. */
+  scope: string; hostProject?: true;
   /** Why the turn was stopped by its guard (the chat can no longer be used from a device). */
   stopReason?: string; guardedAt?: number;
   text: string; pendingText?: { offset: number; text: string; replace?: boolean }; progress?: Omit<ProcessProgressEvent, "answer">; progressDirty: boolean;
@@ -59,8 +62,10 @@ export const streamOf = (sessionId: string) => `session:${sessionId}`;
  * any client connection, journaled as they progress, and never re-executed after a crash. */
 export class RunService {
   private readonly active = new Map<string, ActiveRun>();
-  /** Why a device's chat may no longer be used, if so: checked while a turn runs, which stops then. */
-  private guard?: (sessionId: string) => Promise<string | undefined>;
+  /** Why a device's chat may no longer be used by whoever started the turn, if so: checked while a
+   * turn runs (as it progresses, before each approval, and every 2 s), which stops then. */
+  private guard?: (sessionId: string, scope: string) => Promise<string | undefined>;
+  private guardTimer?: NodeJS.Timeout;
   /** Chats being deleted: no new turn starts in them. */
   private readonly deleting = new Set<string>();
   private accepting = true;
@@ -69,12 +74,19 @@ export class RunService {
   constructor(private readonly deps: RunServiceDependencies) {}
 
   private now(): Date { return this.deps.now?.() ?? new Date(); }
-  /** Set by the server: a project archived or no longer shared stops its chats' turns (R5-4g). */
-  setGuard(guard: (sessionId: string) => Promise<string | undefined>): void { this.guard = guard; }
+  /** Set by the server: a project archived or no longer shared, or trust taken back from the device
+   * that started a turn in a project set up on the host, stops its chats' turns (R5-4g). Checked on a
+   * timer too, so a turn waiting for an approval or silent for a while stops as well. */
+  setGuard(guard: (sessionId: string, scope: string) => Promise<string | undefined>): void {
+    this.guard = guard;
+    clearInterval(this.guardTimer);
+    this.guardTimer = setInterval(() => { for (const run of this.active.values()) void this.checkGuard(run, true); }, 2_000);
+    this.guardTimer.unref();
+  }
   private checkGuard(run: ActiveRun, force = false): Promise<void> {
     if (!this.guard || run.stopReason || (!force && run.guardedAt && Date.now() - run.guardedAt < 2_000)) return Promise.resolve();
     run.guardedAt = Date.now();
-    return this.guard(run.sessionId).then(reason => {
+    return this.guard(run.sessionId, run.scope).then(reason => {
       if (reason && !run.stopReason) { run.stopReason = reason; run.controller.abort("host_only"); }
     }, () => undefined);
   }
@@ -86,7 +98,7 @@ export class RunService {
   /** `admit` refuses a new turn (it throws) after a resent command has had its first answer, and
    * hands over the turn's attachments (their ids are part of the command). */
   async start(scope: string, request: { commandId: string; sessionId: string; input: string; attachmentIds?: string[] },
-    admit?: () => Promise<{ attachments?: ChatAttachment[] } | void>): Promise<CommandAck> {
+    admit?: () => Promise<{ attachments?: ChatAttachment[]; hostProject?: true } | void>): Promise<CommandAck> {
     const input = request.input.trim();
     if (!input) throw new RunServiceError("The message is empty.", "invalid_input");
     if (input.length > MAX_INPUT_CHARS) throw new RunServiceError("The message is too long.", "invalid_input");
@@ -97,7 +109,7 @@ export class RunService {
     if (replay) return replay;
     if (!this.accepting) throw new RunServiceError(`${Place()} is shutting down. Try again when it is back.`, "host_draining");
     if (!await this.deps.sessionExists(request.sessionId)) throw new RunServiceError(`The chat does not exist on ${place()}.`, "session_unknown");
-    let admitted: { attachments?: ChatAttachment[] } | void;
+    let admitted: { attachments?: ChatAttachment[]; hostProject?: true } | void;
     try { admitted = await admit?.(); }
     catch (error) {
       // A resend racing its first attempt: the first one took the attachments and was recorded.
@@ -144,7 +156,7 @@ export class RunService {
     this.deps.journal.publish(appended);
     if (ack.status === "accepted" && !ack.replayed) {
       this.active.set(ack.runId!, { runId: ack.runId!, sessionId: request.sessionId, assistantMessageId: ack.assistantMessageId!, controller: new AbortController(),
-        ...(attachments.length ? { attachments } : {}), text: "", progressDirty: false });
+        scope, ...(admitted?.hostProject ? { hostProject: true as const } : {}), ...(attachments.length ? { attachments } : {}), text: "", progressDirty: false });
       setImmediate(() => this.execute(ack.runId!, input).catch(error =>
         this.deps.logger?.error("Chat run could not be recorded", { runId: ack.runId, error: error instanceof Error ? error.message : String(error) })));
     }
@@ -269,6 +281,7 @@ export class RunService {
    * not record their end are interrupted by `recover()` on the next start. */
   async dispose(timeoutMs = 2_000): Promise<void> {
     this.stopAccepting();
+    clearInterval(this.guardTimer);
     this.interruptAll();
     for (const deadline = Date.now() + timeoutMs; this.active.size && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 20));
     this.disposed = true;
@@ -297,8 +310,10 @@ export class RunService {
       this.deps.journal.publish(started);
       // Without its scrubber a turn does not run: nothing unscrubbed is written for a device.
       run.scrub = await this.deps.scrubber?.(sessionId);
+      // Access may have ended while the turn was queued.
+      await this.checkGuard(run, true);
       run.controller.signal.throwIfAborted();
-      const result = await this.deps.execute({ runId, sessionId, input, ...(run.attachments ? { attachments: run.attachments } : {}) }, {
+      const result = await this.deps.execute({ runId, sessionId, input, ...(run.attachments ? { attachments: run.attachments } : {}), ...(run.hostProject ? { hostProject: true as const } : {}) }, {
         signal: run.controller.signal,
         onProgress: event => this.onProgress(run, event),
         requestApproval: operation => this.requestApproval(run, operation)
@@ -376,7 +391,8 @@ export class RunService {
     run.controller.signal.throwIfAborted();
     if (run.approval) return Promise.reject(new RunServiceError("Another approval is pending.", "approval_pending"));
     const view: PendingApprovalView = { ...(run.scrub ? run.scrub(operation) : operation), approvalId: randomUUID(), digest: sha256(canonical(operation)), requestedAt: this.now().toISOString(),
-      ...(this.deps.needsTrust?.(operation) ? { needsTrustedDevice: true } : {}) };
+      // In a project set up on the host, only a trusted device answers: every approval says so.
+      ...(run.hostProject || this.deps.needsTrust?.(operation) ? { needsTrustedDevice: true } : {}) };
     this.flush(run);
     this.transition(run, "waiting_approval", { type: "approval.requested", payload: { runId: run.runId, ...view } });
     return new Promise<boolean>((resolve, reject) => {

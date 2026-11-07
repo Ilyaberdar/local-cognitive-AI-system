@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { RemoteClient } from "../src/remote/client/RemoteClient";
@@ -36,7 +37,9 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   const owner = await cloud.account("owner"), other = await cloud.account("other");
   const account = new FakeAccount(owner), ipc = fakeIpc(), blocker = fakeBlocker(), sent: Array<[string, any]> = [];
   const window = { isDestroyed: () => false, webContents: { send: (channel: string, value: unknown) => sent.push([channel, value]) } };
-  const host = registerHost({ app: { isPackaged: false }, ipcMain: ipc, vault: memoryVault(), accountService: account, backend, dataRoot: root, assertSender: () => undefined,
+  // The system's Trust question, answered Trust.
+  const dialog = { showMessageBox: async () => ({ response: 0 }) };
+  const host = registerHost({ app: { isPackaged: false }, ipcMain: ipc, dialog, vault: memoryVault(), accountService: account, backend, dataRoot: root, assertSender: () => undefined,
     getWindow: () => window, powerSaveBlocker: blocker, cloudUrl: cloud.origin, hostName: "MacBook" });
   t.after(() => host.dispose());
   const call = async (name: string, ...args: unknown[]) => {
@@ -81,6 +84,26 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   await assert.rejects(phone.request("chat.runs.get", { runId: "4f1c1b0e-8d5a-4b8e-9c55-0a6b2f1e9d11" }), /The run does not exist on MacBook\./, "a desktop names itself, not the server");
   assert.deepEqual(host.status().devices.map((entry: any) => [entry.name, entry.connected]), [["iPhone", true]]);
   assert.equal((await call("invitation", invitationId)).consumed, true);
+
+  // A project set up here: its chats reach the phone once it is trusted here, ask before every change there,
+  // and go again when trust is taken back. Its folder is never named.
+  const runtime = backend.runtimeManager.getRuntime(), siteFolder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "site-made-here-")));
+  t.after(() => fs.rmSync(siteFolder, { recursive: true, force: true }));
+  const project = await runtime.projectStore.create({ name: "Site", rootPath: siteFolder });
+  const projectChat = await runtime.sessionIndexStore.create("Plan", "http", project.id);
+  const seen = async () => {
+    const listed = (await phone.request("projects.list") as Array<{ id: string; hostOnly?: boolean; trustedChats?: boolean }>).find(entry => entry.id === project.id);
+    return [listed?.hostOnly, listed?.trustedChats, (await phone.request("sessions.list") as Array<{ id: string }>).some(entry => entry.id === projectChat.id)];
+  };
+  const phoneId = host.status().devices[0].deviceId;
+  assert.deepEqual(await seen(), [true, undefined, false]);
+  await assert.rejects(phone.request("sessions.setup.get", { sessionId: projectChat.id }), /does not exist/);
+  assert.deepEqual(await call("trust-device", phoneId, true), { trusted: true });
+  assert.deepEqual(await seen(), [true, true, true]);
+  assert.deepEqual(((await phone.request("sessions.setup.get", { sessionId: projectChat.id })) as any).access, { modes: ["ask"], hostProject: true });
+  assert.equal(JSON.stringify(await phone.request("projects.list")).includes(siteFolder), false, "no folder of this computer");
+  assert.deepEqual(await call("trust-device", phoneId, false), { trusted: false });
+  assert.deepEqual(await seen(), [true, undefined, false]);
 
   // Signing out pauses hosting; signing in again resumes it, and the phone comes back by itself.
   account.set(undefined);
@@ -278,7 +301,7 @@ test("a device is trusted after the system's dialog says so, not by the window a
   answer = 0;
   assert.deepEqual((await ipc.invoke("trust-device", PHONE, true)).value, { trusted: true });
   assert.equal(trusted(), true);
-  assert.match(asked[1]!, /^Trust Ilya's iPhone\? .*approve commands, changes to files anywhere on this computer and tools of its applications \(MCP\).*cannot give a chat full access/);
+  assert.match(asked[1]!, /^Trust Ilya's iPhone\? .*use the chats of your projects here.*approve commands, changes to files anywhere on this computer and tools of its applications \(MCP\).*cannot give a chat full access/);
   assert.equal(store.isTrusted(PHONE, "owner"), true, "what the approvals read");
   await ipc.invoke("trust-device", PHONE, true);
   assert.equal(asked.length, 2, "already trusted: not asked again");

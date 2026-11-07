@@ -261,6 +261,8 @@ test("a device's turn is marked as one, carries its attachments and uses no plug
   assert.deepEqual(parsePluginSelection(metadata.pluginIds), [], "an empty selection, not automatic discovery");
   const file = { id: "a", name: "a.txt", mimeType: "text/plain", sizeBytes: 1, kind: "text" as const, textContent: "a" };
   assert.deepEqual(deviceRunMetadata({ runId: "r2", attachments: [file] }).attachments, [file]);
+  assert.equal(deviceRunMetadata({ runId: "r3", hostProject: true }).deviceAskOnly, true, "in a project set up on the host it asks before every change");
+  assert.equal("deviceAskOnly" in metadata, false);
 });
 
 test("a resend that loses the race for its attachments gets the first attempt's answer", async t => {
@@ -286,4 +288,25 @@ test("a turn stops when its chat can no longer be used from a device (a project 
   await assert.rejects(hooks.requestApproval({ tool: "file", operation: "write", summary: "Write", details: "Write a file" }));
   await until(() => f.service.get(ack.runId!)?.status === "failed");
   assert.equal(f.service.get(ack.runId!)!.error, "The project is archived. Restore it to use its chats.");
+});
+
+test("a trusted device's turn in a project set up on the host asks, needs a trusted device for every approval, and stops once trust ends, even while it waits", async t => {
+  const f = setup(t);
+  const scopes: string[] = [];
+  let reason: string | undefined;
+  f.service.setGuard(async (_sessionId, scope) => { scopes.push(scope); return reason; });
+  const ack = await f.service.start("remote:a:d1", { commandId: "c1", sessionId: "s1", input: "work" }, async () => ({ attachments: [], hostProject: true as const }));
+  await until(() => f.script.calls.length === 1);
+  assert.equal((f.script.calls[0] as { hostProject?: true }).hostProject, true, "the engine is told: it asks before every change");
+  assert.ok(scopes.includes("remote:a:d1"), "checked before it runs, for the device that started it");
+  const decision = f.script.calls[0]!.hooks.requestApproval({ tool: "file", operation: "write", summary: "Write", details: "Write notes.md" });
+  await until(() => f.service.get(ack.runId!)?.status === "waiting_approval");
+  assert.equal(f.service.activeRun("s1")!.pendingApproval!.needsTrustedDevice, true, "even a write in the project's folder");
+  reason = "This project's folder was chosen on the server, so its chats can only be used there.";
+  // Nothing progresses while it waits: the guard's timer (unref'd, as the host's other work keeps it running) stops it.
+  const alive = setInterval(() => undefined, 100);
+  t.after(() => clearInterval(alive));
+  await assert.rejects(decision);
+  for (let index = 0; index < 100 && f.service.get(ack.runId!)?.status !== "failed"; index++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(f.service.get(ack.runId!)!.error, reason);
 });

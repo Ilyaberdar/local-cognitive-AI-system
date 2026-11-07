@@ -66,8 +66,8 @@ Commands:
   connect-key            The same as pair, without waiting
   devices                List computers that can connect to this server
   revoke-device <id>     Remove a computer's access
-  trust-device <id> --yes  Let a device approve commands, files anywhere and apps' tools (MCP), one
-                         action at a time
+  trust-device <id> --yes  Let a device use the chats of the server's own projects and approve
+                         commands, files anywhere and apps' tools (MCP), one action at a time
   untrust-device <id>    It approves only what any device may again
   reset-owner --yes      Unlink the server from its account and remove every computer
   folders                List the folders connected computers may browse and use

@@ -15,7 +15,7 @@ import { pathScrubber, type Scrubber } from "./orchestrationDto";
 import { publicError } from "./publicError";
 import { MAX_INPUT_CHARS, RunServiceError, streamOf, type RunService } from "./RunService";
 import { CHUNK_CHARS, MAX_CONTENT_CHARS, type UploadStore } from "./uploadStore";
-import type { ProjectAccess } from "./projectOperations";
+import type { ProjectAccess, ProjectCaller } from "./projectOperations";
 import { protectedPathReason } from "../security/protectedPaths";
 import { place, Place } from "./hostPlace";
 
@@ -134,11 +134,12 @@ export const chatHostOnly = (settings: Pick<SessionSettings, "defaultAccessMode"
   settings.defaultAccessMode === "full" || settings.codeAgents?.some(agent => agent.accessMode === "full") ? CHAT_ON_HOST() : undefined;
 
 /** A chat a device may read: an ordinary chat, or one in a project whose folder is shared (a
- * project set up on the server keeps its chats there, as if they did not exist). Whether it may
- * also use it is `requireUsable` (full access; an archived or no longer shared project). */
-export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string, projects?: ProjectAccess) => {
+ * project set up on the server keeps its chats there, as if they did not exist, except for a device
+ * the server trusts). Whether it may also use it is `requireUsable` (full access; an archived or no
+ * longer shared project; trust taken back). */
+export const requireRemoteSession = async (store: SessionIndexStore, sessionId: string, projects?: ProjectAccess, caller?: ProjectCaller) => {
   const session = await store.get(sessionId);
-  if (!session || (session.projectId && !(projects && await projects.visible(session.projectId)))) {
+  if (!session || (session.projectId && !(projects && await projects.visible(session.projectId, caller)))) {
     throw new RemoteOperationError(`The chat does not exist on ${place()}.`, "session_unknown");
   }
   return session;
@@ -146,21 +147,25 @@ export const requireRemoteSession = async (store: SessionIndexStore, sessionId: 
 
 export const createChatOperations = (deps: ChatOperationDependencies): Record<string, RemoteOperation> => {
   const runtime = () => deps.runtimeManager.getRuntime();
-  const requireSession = (sessionId: string) => requireRemoteSession(deps.sessionIndexStore, sessionId, deps.projects);
+  const requireSession = (sessionId: string, caller: ProjectCaller) => requireRemoteSession(deps.sessionIndexStore, sessionId, deps.projects, caller);
   const scrubber = createChatScrubber(deps);
-  /** Why a device may not use or change a chat, if it may not: the host gave it full access, or
-   * it belongs to a project set up on the server (or archived). Checked at every use. */
-  const hostOnlyReason = async (sessionId: string): Promise<string | undefined> => {
+  /** Whether a device may use a chat, and how: the reason it may not (the host gave it full access,
+   * it belongs to a project set up on the server that the device is not trusted for, or one archived),
+   * or whether it is a chat of a project set up on the host, which a trusted device uses there.
+   * Checked at every use. */
+  const chatUse = async (sessionId: string, caller: ProjectCaller): Promise<{ reason?: string; hostProject?: true }> => {
     const reason = chatHostOnly(await runtime().sessionSettingsStore.get(sessionId));
-    if (reason) return reason;
+    if (reason) return { reason };
     const projectId = (await deps.sessionIndexStore.get(sessionId))?.projectId;
-    if (!projectId) return undefined;
-    if (!deps.projects) return `Project chats on ${place()} are used there.`;
-    return (await deps.projects.usable(projectId)).reason;
+    if (!projectId) return {};
+    if (!deps.projects) return { reason: `Project chats on ${place()} are used there.` };
+    const { reason: refused, hostProject } = await deps.projects.usable(projectId, caller);
+    return refused ? { reason: refused } : hostProject ? { hostProject } : {};
   };
-  const requireUsable = async (sessionId: string) => {
-    const reason = await hostOnlyReason(sessionId);
-    if (reason) throw new RemoteOperationError(reason, "unsupported");
+  const requireUsable = async (sessionId: string, caller: ProjectCaller) => {
+    const use = await chatUse(sessionId, caller);
+    if (use.reason) throw new RemoteOperationError(use.reason, "unsupported");
+    return use;
   };
   /** Every model an agent names must be one of the host's providers ("local" only judges); ids and
    * names must be usable and unique. Agents saved as they are on the host are taken as they are. */
@@ -235,11 +240,11 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
   };
   const fileOperations: Record<string, RemoteOperation> = {
     /** Size, time and hash of a chat's file, so a saved copy can be checked. */
-    "files.stat": async payload => {
+    "files.stat": async (payload, context) => {
       const { sessionId, path: ref } = parse(schemas.file, payload);
-      await requireSession(sessionId);
+      await requireSession(sessionId, context);
       // A chat with full access may have touched any file of the host: its files stay there.
-      await requireUsable(sessionId);
+      await requireUsable(sessionId, context);
       const { handle, stat, path: shown, name } = await openChatFile(sessionId, ref);
       try {
         if (stat.size > COPY_LIMIT) throw new RemoteOperationError("The file is larger than 100 MB.", "too_large");
@@ -255,10 +260,10 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       } finally { await handle.close(); }
     },
     /** A chat's file as text for Review (5 MB, no binary), or a part of it for a saved copy. */
-    "files.read": async payload => {
+    "files.read": async (payload, context) => {
       const { sessionId, path: ref, as, offset = 0, length = FILE_CHUNK_BYTES } = parse(schemas.fileRead, payload);
-      await requireSession(sessionId);
-      await requireUsable(sessionId);
+      await requireSession(sessionId, context);
+      await requireUsable(sessionId, context);
       const { handle, stat, path: shown, name } = await openChatFile(sessionId, ref);
       try {
         if (as === "text") {
@@ -282,8 +287,8 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
   const uploadOperations = (uploads: UploadStore): Record<string, RemoteOperation> => ({
     "uploads.begin": async (payload, context) => {
       const { uploadId, sessionId, ...meta } = parse(schemas.uploadBegin, payload);
-      await requireSession(sessionId);
-      await requireUsable(sessionId);
+      await requireSession(sessionId, context);
+      await requireUsable(sessionId, context);
       return uploads.begin(deps.scopeOf(context), uploadId, sessionId, meta);
     },
     "uploads.chunk": async (payload, context) => {
@@ -298,13 +303,13 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
     // A title is the start of a message, which may name a folder of the host.
     // Chats of projects a device may see are listed where the server offers projects (R5-4g). A
     // title is the start of a message, which may name a folder of the host (or of its project).
-    "sessions.list": async () => {
+    "sessions.list": async (_payload, context) => {
       const sessions = await deps.sessionIndexStore.list();
       const visible = new Map<string, boolean>(), scrubs = new Map<string, Scrubber>();
       const listed = [];
       for (const session of sessions) {
         const key = session.projectId ?? "";
-        if (key && !visible.has(key)) visible.set(key, Boolean(deps.projects && await deps.projects.visible(key)));
+        if (key && !visible.has(key)) visible.set(key, Boolean(deps.projects && await deps.projects.visible(key, context)));
         if (key && !visible.get(key)) continue;
         if (!scrubs.has(key)) scrubs.set(key, await scrubber(key ? session.id : undefined));
         listed.push(scrubs.get(key)!({ id: session.id, title: session.title, updatedAt: session.updatedAt, ...(session.projectId ? { projectId: session.projectId } : {}),
@@ -313,11 +318,11 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       return listed;
     },
 
-    "sessions.create": async payload => {
+    "sessions.create": async (payload, context) => {
       const { title, projectId } = parse(schemas.sessionsCreate, payload) ?? {};
       if (projectId) {
         if (!deps.projects) throw new RemoteOperationError(`Project chats on ${place()} are used there.`, "unsupported");
-        const { reason } = await deps.projects.usable(projectId);
+        const { reason } = await deps.projects.usable(projectId, context);
         if (reason) throw new RemoteOperationError(reason, "unsupported");
       }
       const session = await deps.sessionIndexStore.create(title, "http", projectId);
@@ -328,9 +333,9 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
     /** A snapshot plus the cursor to follow it: the async history read happens first, so events
      * after the cursor are exactly what the snapshot does not contain. */
-    "sessions.messages.list": async payload => {
+    "sessions.messages.list": async (payload, context) => {
       const { sessionId } = parse(schemas.session, payload);
-      await requireSession(sessionId);
+      await requireSession(sessionId, context);
       const { messages } = await loadSessionMessages(deps.runtimeManager, sessionId);
       const unfinished = deps.runService.unfinishedTurns(sessionId);
       const activeRun = deps.runService.activeRun(sessionId);
@@ -341,10 +346,10 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       return { messages: merged, ...(activeRun ? { activeRun: scrub(activeRun) } : {}), cursor: { streamId, epoch, after: head } };
     },
 
-    "sessions.rename": async payload => {
+    "sessions.rename": async (payload, context) => {
       const { sessionId, title } = parse(schemas.rename, payload);
-      await requireSession(sessionId);
-      await requireUsable(sessionId);
+      await requireSession(sessionId, context);
+      await requireUsable(sessionId, context);
       const session = await deps.sessionIndexStore.rename(sessionId, title);
       if (!session) throw new RemoteOperationError(`The chat does not exist on ${place()}.`, "session_unknown");
       return { id: session.id, title: session.title, updatedAt: session.updatedAt };
@@ -352,9 +357,9 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
     /** Deletes a chat with its settings, memory, turns and events; allowed for a chat that is the
      * host's alone too (a device may always delete), refused while it answers. */
-    "sessions.delete": payload => known(async () => {
+    "sessions.delete": (payload, context) => known(async () => {
       const { sessionId } = parse(schemas.session, payload);
-      await requireSession(sessionId);
+      await requireSession(sessionId, context);
       // Turns are refused from here on; the index goes last, so a failed step can be retried.
       deps.runService.forgetSession(sessionId);
       let deleted = false;
@@ -369,32 +374,38 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       return { deleted: true };
     }),
 
-    "sessions.settings.get": async payload => {
+    "sessions.settings.get": async (payload, context) => {
       const { sessionId } = parse(schemas.session, payload);
-      await requireSession(sessionId);
+      await requireSession(sessionId, context);
       return runtime().sessionSettingsStore.get(sessionId);
     },
 
     /** The chat's setup as a device may change it (R5-4): its settings, the access modes a device
-     * may choose, why the chat is the host's alone (if it is), and the agent limits. */
-    "sessions.setup.get": async payload => {
+     * may choose, why the chat is the host's alone (if it is), and the agent limits. In a project set
+     * up on the host, a trusted device's turns ask before every change: Ask is its only mode there. */
+    "sessions.setup.get": async (payload, context) => {
       const { sessionId } = parse(schemas.session, payload);
-      await requireSession(sessionId);
+      await requireSession(sessionId, context);
       const settings = await runtime().sessionSettingsStore.get(sessionId);
-      const hostOnly = await hostOnlyReason(sessionId);
-      return { settings, access: { modes: ["ask", "default"], ...(hostOnly ? { hostOnly } : {}) }, limits: { subagents: MAX_SUBAGENTS, advisors: MAX_ADVISORS } };
+      const { reason: hostOnly, hostProject } = await chatUse(sessionId, context);
+      return { settings, access: { modes: hostProject ? ["ask"] : ["ask", "default"], ...(hostOnly ? { hostOnly } : {}), ...(hostProject ? { hostProject } : {}) },
+        limits: { subagents: MAX_SUBAGENTS, advisors: MAX_ADVISORS } };
     },
 
-    "sessions.settings.update": async payload => {
+    "sessions.settings.update": async (payload, context) => {
       const raw = (payload as { patch?: Record<string, unknown> } | undefined)?.patch;
       if (raw && typeof raw === "object" && (raw.defaultAccessMode === "full" || (Array.isArray(raw.codeAgents) && raw.codeAgents.some(agent => agent?.accessMode === "full")))) {
         throw new RemoteOperationError(FULL_FROM_DEVICE(), "unsupported");
       }
       const { sessionId, patch } = parse(schemas.settingsUpdate, payload);
-      await requireSession(sessionId);
+      await requireSession(sessionId, context);
       const current = await runtime().sessionSettingsStore.get(sessionId);
-      const reason = await hostOnlyReason(sessionId);
+      const { reason, hostProject } = await chatUse(sessionId, context);
       if (reason) throw new RemoteOperationError(reason, "unsupported");
+      // The host's own turns in its project keep the access it chose; a device's ask there anyway.
+      if (hostProject && patch.defaultAccessMode && patch.defaultAccessMode !== current.defaultAccessMode) {
+        throw new RemoteOperationError(`This chat's access is set on ${place()}: from a device its turns ask before every change.`, "unsupported");
+      }
       checkAgents(patch, current);
       // The chat type is mode plus debate, as the local chat screen saves it.
       const debate = patch.mode || patch.debate ? { debate: { ...patch.debate, ...(patch.mode ? { enabled: patch.mode === "hypothesis" } : {}) } } : {};
@@ -422,13 +433,13 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
 
     "chat.runs.start": (payload, context) => known(async () => {
       const request = parse(schemas.start, payload);
-      await requireSession(request.sessionId);
+      await requireSession(request.sessionId, context);
       const owner = deps.scopeOf(context), ids = request.attachmentIds ?? [];
       if (ids.length && !deps.uploads) throw new RemoteOperationError(`${Place()} takes text messages only.`, "unsupported");
       // Checked after a resent command got its first answer, and again by the engine when it runs.
       const ack = await deps.runService.start(owner, request, async () => {
-        await requireUsable(request.sessionId);
-        return { attachments: ids.length ? deps.uploads!.attachments(owner, request.sessionId, ids) : [] };
+        const { hostProject } = await requireUsable(request.sessionId, context);
+        return { attachments: ids.length ? deps.uploads!.attachments(owner, request.sessionId, ids) : [], ...(hostProject ? { hostProject } : {}) };
       });
       if (ack.status === "accepted" && !ack.replayed && ids.length) deps.uploads!.remove(ids);
       return ack;
@@ -450,7 +461,7 @@ export const createChatOperations = (deps: ChatOperationDependencies): Record<st
       // Declining is always allowed; approving only in a chat a device may use, and what the host lets it
       // (anything, for a device trusted there; a chat with full access stays the host's all the same).
       const run = approved ? deps.runService.get(runId) : undefined;
-      if (run) await requireUsable(run.sessionId);
+      if (run) await requireUsable(run.sessionId, context);
       const pending = approved ? deps.runService.pendingApproval(runId) : undefined;
       // From here to the decision nothing waits: trust removed a moment ago is already seen.
       const trusted = deps.deviceTrust?.(context) === true;

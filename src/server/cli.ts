@@ -511,8 +511,8 @@ export const main = async (argv: string[]): Promise<number> => {
       case "trust-device": case "untrust-device": {
         const result = await remoteRequest(args, { op: args.command, deviceId: args.deviceId }) as { trusted: boolean; changed: boolean };
         print(args, !result.changed ? "No active access for this device." : result.trusted
-          ? "Trusted. It may approve commands, files anywhere and apps' tools on this server, one action at a time."
-          : "No longer trusted. It approves only what any device may.", result);
+          ? "Trusted. It may use the chats of this server's projects and approve commands, files anywhere and apps' tools on this server, one action at a time."
+          : "No longer trusted. It approves only what any device may, and the chats of this server's projects are hidden from it again.", result);
         return result.changed ? ExitCode.ok : ExitCode.failure;
       }
       case "reset-owner":

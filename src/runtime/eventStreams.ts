@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RemoteOperationError, type RemoteOperation } from "../remote/host/RemoteHost";
+import { RemoteOperationError, type OperationContext, type RemoteOperation } from "../remote/host/RemoteHost";
 import type { EventJournal, JournalEvent } from "./EventJournal";
 
 const MAX_POLL_MS = 20_000;
@@ -22,7 +22,7 @@ export interface StreamSource {
 /** `events.poll` (spec §7.2): a long poll over the streams a device follows, chat journals and
  * the sources' streams alike. Answers at once when any stream has news, otherwise after the next
  * event, `waitMs` or the device's disconnect. A stale cursor gets `resync`. */
-export const createEventStreamOperations = (deps: { journal: EventJournal; requireSession(sessionId: string): Promise<unknown>; sources?: StreamSource[];
+export const createEventStreamOperations = (deps: { journal: EventJournal; requireSession(sessionId: string, caller: OperationContext): Promise<unknown>; sources?: StreamSource[];
   /** Chat events are written scrubbed (RunService); events from before that are scrubbed as they
    * are read, and a streamed part that would change sends the device to reload instead. */
   scrubSession?(sessionId: string): Promise<<T>(value: T) => T> }): Record<string, RemoteOperation> => ({
@@ -36,7 +36,7 @@ export const createEventStreamOperations = (deps: { journal: EventJournal; requi
       if (!source) throw new RemoteOperationError("The request is not valid.", "invalid_request");
       return { source, id: stream.streamId.slice(source.prefix.length) };
     });
-    for (const kind of kinds) if ("session" in kind) await deps.requireSession(kind.session!);
+    for (const kind of kinds) if ("session" in kind) await deps.requireSession(kind.session!, context);
     // Subscribed before the first read, so an event between the read and the wait is not missed.
     const woken = new AbortController();
     const wake = () => woken.abort();

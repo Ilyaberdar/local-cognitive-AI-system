@@ -42,20 +42,28 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   const trust = new RemoteHostStore(host.database);
   const deviceTrust = (context: { accountId: string; deviceId: string }) => trust.isTrusted(context.deviceId, context.accountId);
   const scopeOf = (context: { accountId: string; deviceId: string }) => `remote:${context.accountId}:${context.deviceId}`;
+  // The device behind a scope (ids are UUIDs, so the colons are the separators); none for another scope.
+  const callerOf = (scope: string) => {
+    const [kind, accountId, deviceId] = scope.split(":");
+    return kind === "remote" && accountId && deviceId ? { accountId, deviceId } : undefined;
+  };
   const owner = () => new RemoteHostStore(host.database).owner();
   // Run outputs and events a device receives name no folder of this host.
   const orchestration = { runtimeManager: backend.runtimeManager, journalEpoch: () => host.journal.epoch, hostDirectories: [input.dataRoot] };
   // The folders devices may browse and use: the host's own "Projects" and those its owner shared.
   const folders = new HostFolders(input.dataRoot);
   folders.ensureManaged();
-  // A project a device may use lies in one of those folders, checked at every use.
-  const projects = createProjectAccess({ runtimeManager: backend.runtimeManager, folders });
-  // A device's turn in a project chat stops once the project is archived or its folder unshared.
-  host.runService.setGuard(async sessionId => {
+  // A project a device may use lies in one of those folders, or is any project for a device the host
+  // trusts (its chats only), checked at every use.
+  const projects = createProjectAccess({ runtimeManager: backend.runtimeManager, folders, deviceTrust });
+  // A device's turn in a project chat stops once the project is archived or its folder unshared, or,
+  // in a project set up here, once the device that started it is no longer trusted.
+  host.runService.setGuard(async (sessionId, scope) => {
     const projectId = (await sessionIndexStore.get(sessionId))?.projectId;
     if (!projectId) return undefined;
-    if (!await projects.visible(projectId)) return PROJECT_ON_HOST();
-    return (await projects.usable(projectId)).reason;
+    const caller = callerOf(scope);
+    if (!await projects.visible(projectId, caller)) return PROJECT_ON_HOST();
+    return (await projects.usable(projectId, caller)).reason;
   });
   // Attachments devices send for their next turn; expired ones are dropped even when none arrive.
   const uploads = new UploadStore();
@@ -64,9 +72,14 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
   const operations: Record<string, RemoteOperation> = {
     ...createChatOperations({ runtimeManager: backend.runtimeManager, sessionIndexStore, hostDirectories: orchestration.hostDirectories, uploads, projects,
       runService: host.runService, journal: host.journal, scopeOf, deviceTrust, ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
-      ...(input.deviceFilesOnly ? { deviceFileRoots: async (sessionId: string) => [backend.runtimeManager.getRuntime().workspaceResolver.deviceChatFolder(sessionId),
-        ...folders.roots().map(root => root.path)] } : {}) }),
-    ...createEventStreamOperations({ journal: host.journal, requireSession: sessionId => requireRemoteSession(sessionIndexStore, sessionId, projects),
+      // A project's folder too: a chat of a project set up here reaches a device only if it is trusted.
+      ...(input.deviceFilesOnly ? { deviceFileRoots: async (sessionId: string) => {
+        const runtime = backend.runtimeManager.getRuntime();
+        const projectId = (await sessionIndexStore.get(sessionId))?.projectId;
+        const project = projectId ? await runtime.projectStore.get(projectId) : undefined;
+        return [runtime.workspaceResolver.deviceChatFolder(sessionId), ...folders.roots().map(root => root.path), ...(project ? [project.rootPath] : [])];
+      } } : {}) }),
+    ...createEventStreamOperations({ journal: host.journal, requireSession: (sessionId, caller) => requireRemoteSession(sessionIndexStore, sessionId, projects, caller),
       sources: [createWorkflowRunStreams(orchestration)], scrubSession: createChatScrubber(orchestration) }),
     ...createModelOperations({ runtimeManager: backend.runtimeManager }),
     ...createUsageOperations({ ledger: backend.usage, outbox: backend.usageOutbox, owner }),
@@ -77,7 +90,7 @@ export const createHostOperations = (input: { backend: BackendHandle; dataRoot: 
     ...createSettingsOperations({ runtimeManager: backend.runtimeManager, isDraining }),
     ...createFolderOperations({ folders }),
     ...createSynthesisOperations({ runtimeManager: backend.runtimeManager, ledger: host.ledger, projects, hostDirectories: orchestration.hostDirectories, scopeOf, isDraining }),
-    ...createProjectOperations({ runtimeManager: backend.runtimeManager, folders, ledger: host.ledger, scopeOf, isDraining })
+    ...createProjectOperations({ runtimeManager: backend.runtimeManager, folders, ledger: host.ledger, scopeOf, isDraining, deviceTrust })
   };
   return { operations, folders, stop: () => clearInterval(sweep) };
 };
