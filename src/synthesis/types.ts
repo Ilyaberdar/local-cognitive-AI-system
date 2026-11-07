@@ -73,3 +73,22 @@ export interface RunRecord extends SynthesisRun {
 export class SynthesisError extends Error {
   constructor(message: string, public readonly statusCode = 400) { super(message); }
 }
+
+/** A module a model drafts from the user's description: its contract and tests (the model's) and its
+ * flow (derived from the contract), kept in the app's data until the user saves it into the project. */
+export interface SynthesisDraft {
+  id: string; projectId: string; name: string; directory: string; output: string;
+  language: "TypeScript" | "JavaScript" | "Python" | "Cpp"; description: string;
+  /** The model that writes the draft; the flow runs on it too unless the user edits the flow. */
+  model: {providerId: string; id: string; displayName: string};
+  status: "drafting" | "ready" | "failed" | "cancelled";
+  /** While drafting: loading the model, writing an answer, checking it. */
+  phase?: "loading" | "writing" | "checking";
+  attempt: number; maxAttempts: number; tokens?: number;
+  /** Where Save writes the module, relative to the project. */
+  specPath: string; flowPath: string;
+  spec?: string; flow?: string; flowEdited?: boolean; tests: Record<string, string>;
+  diagnostics: SynthesisDiagnostic[]; clauses: string[]; valid: boolean; error?: string;
+  usage: {inputTokens: number; outputTokens: number; calls: number};
+  createdAt: string; updatedAt: string;
+}

@@ -38,6 +38,15 @@ export function createSynthesisRouter(service: () => SynthesisService): Router {
     if (req.query.moduleId !== undefined && typeof req.query.moduleId !== "string") throw new SynthesisError("moduleId must be a string.");
     res.json(await service().clear(param(req, "projectId"), req.query.moduleId as string | undefined));
   }));
+  // Drafts a model writes from a description (this computer only: no Remote operation reaches them).
+  const body = (req: Request) => (req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>;
+  router.get("/projects/:projectId/draft-models", route(async (req, res) => res.json(await service().drafts.models(param(req, "projectId")))));
+  router.get("/projects/:projectId/drafts", route(async (req, res) => res.json({drafts: await service().drafts.list(param(req, "projectId"))})));
+  router.post("/projects/:projectId/drafts", route(async (req, res) => res.status(201).json(await service().drafts.create(param(req, "projectId"), body(req)))));
+  router.get("/drafts/:id", route(async (req, res) => res.json(await service().drafts.get(param(req, "id")))));
+  router.put("/drafts/:id", route(async (req, res) => res.json(await service().drafts.update(param(req, "id"), body(req)))));
+  router.post("/drafts/:id/save", route(async (req, res) => res.status(201).json(await service().drafts.save(param(req, "id")))));
+  router.delete("/drafts/:id", route(async (req, res) => { await service().drafts.discard(param(req, "id")); res.json({ok: true}); }));
   router.get("/runs/:id", route(async (req, res) => res.json(await service().get(param(req, "id")))));
   router.delete("/runs/:id", route(async (req, res) => { await service().remove(param(req, "id")); res.json({ok: true}); }));
   router.get("/runs/:id/sources", route(async (req, res) => res.json(await service().sources(param(req, "id")))));

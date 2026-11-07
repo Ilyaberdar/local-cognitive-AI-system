@@ -27,6 +27,7 @@ import { quantQuality } from "../local/quantization";
 import { applyEditBlocks, implicatedFiles, RevisePromptInput, revisePrompt } from "./revisePrompt";
 import { checkTypes, hasTypeScript } from "./checks/typecheck";
 import { ARTIFACT_TYPES, missingTests, profileDiagnostics, sourceDiagnostics, suiteFiles } from "./check";
+import { SynthesisDrafts } from "./drafts";
 
 interface Services {
   projects: ProjectStore;
@@ -176,10 +177,23 @@ export class SynthesisService {
   private readonly applying = new Map<string, number>();
   private readonly removing = new Set<string>();
   private readonly removed = new Set<string>();
-  constructor(appDataDir: string, private readonly services: Services) { this.directory = path.join(appDataDir, "synthesis", "runs"); }
+  /** Modules a model drafts from a description, kept apart from the project until the user saves one. */
+  readonly drafts: SynthesisDrafts;
+  constructor(appDataDir: string, private readonly services: Services) {
+    this.directory = path.join(appDataDir, "synthesis", "runs");
+    this.drafts = new SynthesisDrafts(path.join(appDataDir, "synthesis", "drafts"), {
+      project: id => this.project(id), services,
+      cloudRefusal: (providerId, project) => {
+        const descriptor = services.providers?.().find(item => item.id === providerId);
+        return descriptor?.capabilities?.local !== true && project.cloudModels !== true ? this.consentRefusal(descriptor?.name ?? providerId, project) : undefined;
+      },
+      writeModule: (projectId, name, directory, files) => this.writeModule(projectId, name, directory, files)
+    });
+  }
 
   async init(): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true });
+    await this.drafts.init();
     for (const id of await this.ids()) {
       const record = await this.read(id);
       if (activeStatus(record.status)) {
@@ -191,6 +205,7 @@ export class SynthesisService {
   }
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.drafts.dispose();
     for (const item of this.active.values()) { item.interruption = true; item.controller.abort(new Error("Runtime reloaded or stopped.")); }
     await Promise.allSettled([...this.pendingStarts]);
     await Promise.allSettled([...this.active.values()].map(item => item.done));
@@ -305,14 +320,19 @@ export class SynthesisService {
     return {id, name: compiled.spec?.module ?? name, specPath, flowPath, specSource, flowSource, valid: !diagnostics.some(item => item.severity === "error"), diagnostics};
   }
   async createModule(projectId: string, name = "Calculator", options: {template?: ModuleTemplate; directory?: string} = {}): Promise<SynthesisModule> {
-    const project = await this.project(projectId); moduleName(name);
-    const directory = moduleDirectory(options.directory);
-    const relative = directory ? `${directory}/${name}` : name;
-    const sources = moduleSources(sourceId(`${relative}/${name}`));
-    const folder = await containedPath(project.rootPath, relative);
+    moduleName(name);
     if (options.template !== undefined && !["calculator", "empty", "rate-limiter", "repository-review"].includes(options.template)) throw new SynthesisError("Choose an empty module, the calculator, the rate limiter or the repository review template.");
     const template: ModuleFiles = options.template === "empty" ? emptyModuleTemplate(name) : options.template === "rate-limiter" ? rateLimiterTemplate(name)
       : options.template === "repository-review" ? repositoryReviewTemplate(name) : calculatorTemplate(name);
+    return this.writeModule(projectId, name, moduleDirectory(options.directory), template);
+  }
+  /** A new module's files in `<directory>/<name>/`, its tests next to the contract: never over a module
+   * that exists, even an incomplete one. */
+  private async writeModule(projectId: string, name: string, directory: string, template: ModuleFiles): Promise<SynthesisModule> {
+    const project = await this.project(projectId); moduleName(name);
+    const relative = directory ? `${directory}/${name}` : name;
+    const sources = moduleSources(sourceId(`${relative}/${name}`));
+    const folder = await containedPath(project.rootPath, relative);
     // Check both final paths before any mutation (including path length limits).
     const specFile = await containedPath(project.rootPath, sources.specPath);
     const flowFile = await containedPath(project.rootPath, sources.flowPath);
