@@ -18,6 +18,7 @@
     "dev:ui": "concurrently -k \"node scripts/build-markdown.mjs --watch\" \"vite build --watch\"",
     "build": "npm run build:server && npm run build:ui",
     "build:server": "tsc -p tsconfig.json",
+    "build:skill": "node scripts/build-synthesis-skill.mjs",
     "build:ui": "node scripts/build-markdown.mjs && vite build",
     "start": "node dist/src/index.js",
     "mcp:stdio": "node dist/src/mcp.js",

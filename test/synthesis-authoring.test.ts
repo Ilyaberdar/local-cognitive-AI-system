@@ -8,6 +8,8 @@ import { checkModules, formatChecks, runCheckCommand } from "../src/synthesis/ch
 import { compileProgram } from "../src/synthesis/language";
 import { flowTemplate, rateLimiterTemplate } from "../src/synthesis/templates";
 import { parseServerArgs } from "../src/server/args";
+import { DIAGNOSTIC_FIXES, EXAMPLES, LANGUAGE_REFERENCE } from "../src/synthesis/knowledge/pack.generated";
+import { execFileSync } from "node:child_process";
 import { CliError } from "../src/server/exitCodes";
 
 const bucketSpec = (description = "[C1] take() returns true while tokens last. [C2] Throws RangeError on capacity 0.", gates = `hard behavior = Tests("tests/bucket.test.ts");`) => `module Bucket version "1" {
@@ -44,6 +46,9 @@ test("the rate limiter's flow is the derived one, as it was written by hand", ()
   assert.match(flow, /selected = models\.select\(available, max_size = 6GiB, prefer = "coder"\);/);
   assert.match(rateLimiterTemplate("Limiter").flow, /checkout\("generated\/Limiter"\)/);
   assert.deepEqual(compileProgram(rateLimiterTemplate().spec, flow).diagnostics, []);
+  // Every numbered clause of the template is checked by a test or a marked gate.
+  const {spec, tests} = rateLimiterTemplate();
+  assert.deepEqual(clauseCoverage(compileProgram(spec, flow).spec, "RateLimiter.lcspec", tests!, spec), []);
 });
 
 test("source checks name a module whose contract declares another name, and the runtime's limits", () => {
@@ -64,6 +69,10 @@ test("numbered clauses: each needs a test that names it, and a test names only c
   // A description that numbers nothing asks nothing of the tests.
   const plain = compileProgram(bucketSpec("A token bucket."), flowTemplate("Bucket", ["src/bucket.ts"], {output: "o", model: local})).spec;
   assert.deepEqual(clauseCoverage(plain, "Bucket.lcspec", {"tests/bucket.test.ts": `test("[C1] takes", () => {});`}), []);
+  // A gate marked with the clause checks it.
+  const marked = bucketSpec(undefined, `hard behavior = Tests("tests/bucket.test.ts");   // [C2]`);
+  const markedSpec = compileProgram(marked, flowTemplate("Bucket", ["src/bucket.ts"], {output: "o", model: local})).spec;
+  assert.deepEqual(clauseCoverage(markedSpec, "Bucket.lcspec", {"tests/bucket.test.ts": `test("[C1] takes", () => {});`}, marked), []);
 });
 
 test("synthesis check reads modules from disk: missing files, missing tests, clauses, and a clean one", async () => {
@@ -114,4 +123,43 @@ test("the server CLI takes synthesis check without a data directory", () => {
   assert.deepEqual(parseServerArgs(["synthesis", "check", "--json"], {}).synthesis, {action: "check", path: "."});
   assert.throws(() => parseServerArgs(["synthesis"], {}), CliError);
   assert.throws(() => parseServerArgs(["synthesis", "check", "a", "b"], {}), /Unexpected argument: b/);
+});
+
+const repo = path.resolve(__dirname, "../..");
+
+test("the skill and the prompt pack are built from their sources", () => {
+  // Fails with the files to rebuild (npm run build:skill) when a source changed without them.
+  execFileSync(process.execPath, [path.join(repo, "scripts/build-synthesis-skill.mjs"), "--check"], {stdio: "pipe"});
+});
+
+test("every diagnostic code the engine emits has a fix in the skill's table", async () => {
+  const codes = new Set<string>();
+  const walk = async (folder: string) => {
+    for (const entry of await fs.readdir(folder, {withFileTypes: true})) {
+      const full = path.join(folder, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.endsWith(".ts")) for (const match of (await fs.readFile(full, "utf8")).matchAll(/"((?:LEX|PARSE|SPEC|FLOW|SYNTHESIS|MODULE|SOURCE)_[A-Z_]+)"/g)) codes.add(match[1]!);
+    }
+  };
+  await walk(path.join(repo, "src/synthesis"));
+  assert.ok(codes.size > 70);
+  assert.deepEqual([...codes].filter(code => !DIAGNOSTIC_FIXES[code]).sort(), []);
+});
+
+test("the pack's examples are complete modules with every clause checked, one per language", () => {
+  assert.deepEqual(EXAMPLES.map(example => example.language), ["TypeScript", "Python", "Cpp"]);
+  for (const example of EXAMPLES) {
+    const {compiled, diagnostics} = sourceDiagnostics({name: example.name, specPath: `${example.name}.lcspec`, flowPath: `${example.name}.lcflow`, specSource: example.spec, flowSource: example.flow});
+    assert.deepEqual(diagnostics, [], example.name);
+    assert.ok(Object.keys(example.tests).length, example.name);
+    assert.deepEqual(clauseCoverage(compiled.spec, `${example.name}.lcspec`, example.tests, example.spec), [], example.name);
+    for (const file of compiled.spec!.frozen) assert.ok(example.frozen[file], `${example.name}: ${file}`);
+  }
+});
+
+test("the reference's contract and flow compile as written", () => {
+  const block = (lang: string) => [...LANGUAGE_REFERENCE.matchAll(new RegExp("```" + lang + "\\n([\\s\\S]*?)```", "g"))].map(match => match[1]!);
+  const [spec] = block("lcspec"), [flow] = block("lcflow");
+  assert.ok(spec && flow);
+  assert.deepEqual(compileProgram(spec, flow).diagnostics, []);
 });

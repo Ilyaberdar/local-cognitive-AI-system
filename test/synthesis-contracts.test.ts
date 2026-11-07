@@ -96,20 +96,22 @@ test("a contract on rails: the engineer's tests fail the first candidate, the ex
     ["shape", "Pass"], ["dependencies", "Pass"], ["clock", "Pass"], ["types", "Pass"], ["behavior", "Pass"], ["artifacts", "Pass"]
   ]);
   const behavior = run.evidence!.gates.find(gate => gate.id === "behavior")!;
-  assert.equal(behavior.cases?.length, 6);
+  assert.equal(behavior.cases?.length, 8);
   assert.ok(behavior.cases?.every(item => item.status === "pass"));
 
   // The model reads the engineer's tests from the start, and the next prompt carries the exact failure.
-  assert.ok(f.prompts[0].includes(`test("refills with the time that passed"`), "visible tests are in the prompt");
+  assert.ok(f.prompts[0].includes(`test("[C4] refills with the time that passed"`), "visible tests are in the prompt");
   assert.ok(f.prompts[0].includes("# Result of the last check\nnone yet: this is the first attempt."), "no feedback before the first evaluation");
   const feedback = f.prompts[1].slice(f.prompts[1].indexOf("# Result of the last check"), f.prompts[1].indexOf("# src/rateLimiter.ts now"));
-  assert.match(feedback, /\n5 of 6 tests passed; 4 of 5 required checks passed\.\n/, "how far the last candidate got");
-  assert.match(feedback, /In src\/rateLimiter\.ts, or in tests that use it:\n1\. behavior: refills with the time that passed/);
+  assert.match(feedback, /\n6 of 8 tests passed; 4 of 5 required checks passed\.\n/, "how far the last candidate got");
+  assert.match(feedback, /In src\/rateLimiter\.ts, or in tests that use it:\n1\. behavior: \[C4\] refills with the time that passed/);
+  // A limiter that never refills also breaks the fractional clause.
+  assert.match(feedback, /\n2\. behavior: \[C5\] accepts fractional settings/);
   assert.match(feedback, /expected 2, actual 0/);
   assert.match(feedback, /tests\/rateLimiter\.test\.ts:\d+/);
   // The assertion that failed, as it reads, and the test around it.
   assert.match(feedback, /\n {3}tests\/rateLimiter\.test\.ts:\d+ is: assert\.equal\(limiter\.available\(\), 2\);\n/);
-  assert.match(feedback, /\n {3}The test:\n {5}test\("refills with the time that passed", \(\) => \{\n/);
+  assert.match(feedback, /\n {3}The test:\n {5}test\("\[C4\] refills with the time that passed", \(\) => \{\n/);
   // The module's other files are code, never JSON strings; the file itself is shown as it failed.
   assert.ok(!f.prompts[1].includes("Peer file context"));
   assert.match(f.prompts[1], /# src\/rateLimiter\.ts now \(the version checked above: change what makes it fail, keep what works\)\n```ts\nexport class RateLimiter/);

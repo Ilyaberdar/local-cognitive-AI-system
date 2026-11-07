@@ -1,0 +1,22 @@
+module RateLimiter version "1" {
+    target { language = TypeScript; }
+
+    // Each clause is numbered; a test (or the gate that checks it) names it, so a clause no check covers shows up.
+    description = "A token-bucket rate limiter. [C1] src/rateLimiter.ts exports class RateLimiter with constructor(options: { capacity: number; refillPerSecond: number; now: () => number }), where now() returns milliseconds. [C2] A new limiter starts full: available() returns capacity. [C3] tryAcquire(tokens = 1): boolean takes the tokens and returns true when enough are available; otherwise it returns false and takes nothing. [C4] Tokens refill continuously with the time that passed, at refillPerSecond, up to capacity: available() never returns more than capacity. [C5] capacity and refillPerSecond may be any positive finite number, fractions included; any other value throws RangeError. [C6] tokens must be a positive integer, else tryAcquire throws RangeError. [C7] Time comes only from options.now(): no timers, no Date.";
+
+    artifacts {
+        file "src/rateLimiter.ts";
+    }
+
+    tests {
+        // The engineer's tests, next to this contract: the model reads them, never writes them.
+        file "tests/rateLimiter.test.ts";
+    }
+
+    evaluate "contract-v1" {
+        hard shape = Exports("src/rateLimiter.ts", ["RateLimiter"]);           // [C1]
+        hard dependencies = Imports("src/**", deny = ["**"]);
+        hard clock = Forbid("src/**", "Date\\.now|new Date|setTimeout|setInterval|performance\\.now", message = "take the time only from options.now()");   // [C7]
+        hard behavior = Tests("tests/rateLimiter.test.ts", timeout = 30s);
+    }
+}

@@ -1,0 +1,15 @@
+module Slug version "1" {
+    target { language = Python; }
+
+    description = "A URL slug maker. [C1] src/slug.py defines slugify(text: str, max_length: int = 60) -> str. [C2] The result holds only lowercase ASCII letters, digits and single hyphens, with no hyphen at either end. [C3] Accented Latin letters become their base letter (é is e, Ü is u); any other character that is not an ASCII letter or digit separates words. [C4] Words are joined by one hyphen: 'Hello,  World!' is 'hello-world'. [C5] A slug longer than max_length is cut to at most max_length characters at a word boundary, dropping the partial word and the hyphen before it; a first word longer than max_length is cut at max_length. [C6] Text with no ASCII letter or digit gives the empty string. [C7] text that is not a str raises TypeError; max_length that is not an int of at least 1 (a bool is not one) raises ValueError. [C8] The standard library only: unicodedata and re.";
+
+    artifacts {
+        file "src/slug.py";
+    }
+
+    evaluate "contract-v1" {
+        hard shape = Exports("src/slug.py", ["slugify"]);                       // [C1]
+        hard dependencies = Imports("src/**", allow = ["unicodedata", "re"]);   // [C8]
+        hard behavior = Tests("tests/test_slug.py", timeout = 30s);
+    }
+}

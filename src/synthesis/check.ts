@@ -76,17 +76,22 @@ const CLAUSE = /\[C(\d{1,3})\]/g;
 const clausesIn = (text: string) => new Set([...text.matchAll(CLAUSE)].map(match => `C${Number(match[1])}`));
 /** The clauses a description numbers as [C1], [C2]…, in order. */
 export const contractClauses = (description: string): string[] => [...clausesIn(description)];
-/** When the description numbers its clauses ([C1], [C2]…), each should have a test that names it, as
- * in test("[C3] refuses a fractional request"): a clause no test checks is one a run can accept code
- * that ignores. Warnings only: a run still decides by the gates. `tests`: each test file's text. */
-export function clauseCoverage(spec: SpecProgram | undefined, specPath: string, tests: Record<string, string>): SourceDiagnostic[] {
+/** When the description numbers its clauses ([C1], [C2]…), each should have a check that names it: a
+ * test, as in test("[C3] refuses a fractional request"), or a gate marked with a comment `// [C7]` in
+ * the contract. A clause nothing checks is one a run can accept code that ignores. Warnings only: a
+ * run still decides by the gates. `tests`: each test file's text; `specSource`: the contract's text. */
+export function clauseCoverage(spec: SpecProgram | undefined, specPath: string, tests: Record<string, string>, specSource = ""): SourceDiagnostic[] {
   const clauses = spec ? contractClauses(spec.description) : [];
   if (!clauses.length) return [];
   const found: SourceDiagnostic[] = [];
   const named = new Map<string, string[]>();
   for (const [file, text] of Object.entries(tests)) for (const clause of clausesIn(text)) named.set(clause, [...named.get(clause) ?? [], file]);
+  // A clause the contract names more often than its description does is marked on a gate.
+  const count = (text: string, clause: string) => [...text.matchAll(CLAUSE)].filter(match => `C${Number(match[1])}` === clause).length;
   for (const clause of clauses) {
-    if (!named.has(clause)) found.push({severity: "warning", code: "SPEC_CLAUSE_UNTESTED", message: `No test names clause [${clause}]: name a test after it, such as "[${clause}] …", so a candidate that ignores it fails.`, file: specPath, line: 1, column: 1});
+    if (!named.has(clause) && count(specSource, clause) <= count(spec!.description, clause)) {
+      found.push({severity: "warning", code: "SPEC_CLAUSE_UNTESTED", message: `Nothing checks clause [${clause}]: name a test after it, such as "[${clause}] …", or mark the gate that checks it with // [${clause}].`, file: specPath, line: 1, column: 1});
+    }
   }
   for (const [clause, files] of named) {
     if (!clauses.includes(clause)) found.push({severity: "warning", code: "SPEC_CLAUSE_UNKNOWN", message: `${files.join(", ")} name${files.length === 1 ? "s" : ""} [${clause}], which the description does not number.`, file: specPath, line: 1, column: 1});

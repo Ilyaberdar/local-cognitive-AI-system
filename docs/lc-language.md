@@ -16,6 +16,7 @@ The generated source code is a candidate implementation. An agent's statement th
 ## Contents
 
 - [Quick start: a complete calculator program](#quick-start-a-complete-calculator-program)
+- [Writing a module with a coding agent, and checking it offline](#writing-a-module-with-a-coding-agent-and-checking-it-offline)
 - [Basic syntax](#basic-syntax)
 - [LC Spec reference](#lc-spec-reference)
 - [Contracts on rails: tests and architecture gates](#contracts-on-rails-tests-and-architecture-gates)
@@ -135,6 +136,34 @@ implement Calculator using "calculator-v1" {
 `max_size` limits the GGUF file size, not parameter count, RAM, or VRAM. `prefer` is a preference, not a requirement: the runtime can choose another eligible installed model. See [model discovery and selection](#model-discovery-and-selection) for strict selection.
 
 The existing [Calculator7B example](../examples/synthesis-calculator/Synthesis/Calculator7B/Calculator7B.lcflow) uses the same focused tasks. Its recorded 7B run passed; the recorded 0.6B and 1.5B runs did not. A syntactically valid flow does not guarantee model success. See the [experiment report](../examples/synthesis-calculator/verification.md).
+
+## Writing a module with a coding agent, and checking it offline
+
+[`skills/lc-synthesis`](../skills/lc-synthesis/SKILL.md) is a skill for coding agents that read the Agent Skills format
+(Claude Code and others): copy the folder into the agent's skills folder (for Claude Code, `~/.claude/skills/` or the
+project's `.claude/skills/`) and ask it for a module. It holds a condensed language reference, every diagnostic code
+with its fix, complete examples in TypeScript, Python and C++, and `scripts/check.mjs`, the offline check below in one
+file that needs only Node.js 18 or newer.
+
+The check reads a module from disk and reports what the module screen would: the compiler's diagnostics, the runtime's
+limits, the module's name, missing test files and untested clauses. It does not know this computer's providers,
+consent or sandbox.
+
+```text
+node skills/lc-synthesis/scripts/check.mjs Synthesis/RateLimiter        # a module's folder, a .lcspec or a project
+local-cognitive-server synthesis check Synthesis/RateLimiter --json    # the same on a server (no sudo)
+```
+
+Each problem is a line `path:line:column severity CODE message`, then one line a module (`RateLimiter: ok`). It exits
+0 when no module has an error, 1 when one has.
+
+**Numbered clauses.** Write the description as clauses, `[C1] ... [C2] ...`, and name each in the test that checks it
+(`test("[C3] refuses a fractional request", ...)`; in Python a docstring, in C++ a comment above `LC_TEST`), or mark the
+gate that checks it with a comment, `hard clock = Forbid(...);   // [C7]`. The check then warns about a clause nothing
+checks (`SPEC_CLAUSE_UNTESTED`) and a test that names a clause the description does not number
+(`SPEC_CLAUSE_UNKNOWN`). A clause no test checks is one a run can accept code that ignores: in a study of small local
+models, most accepted candidates passed every visible test and still broke a clause the tests did not cover. The
+rate limiter template is written this way.
 
 ## Basic syntax
 
@@ -854,6 +883,7 @@ Changes saved in another editor are read on Refresh; Save in Synthesis checks th
 | `SPEC_UNSUPPORTED_SECTION` / `SPEC_UNSUPPORTED_TARGET` | The requested domain semantics need a trusted adapter; adding prose or a new section name does not implement it. Express architecture with `Exports`, `Imports`, `Forbid` and the engineer's `Tests`. |
 | `SPEC_TEST_MISSING` | Put the test file next to the `.lcspec`, at the path the contract names. |
 | `SPEC_PATH_CONFLICT` | A path appears twice across artifacts, frozen files and test files; they share one folder when tests run. |
+| `SPEC_CLAUSE_UNTESTED` / `SPEC_CLAUSE_UNKNOWN` | Name each numbered clause in a test or on the gate that checks it, and only clauses the description numbers. Every code's fix is in [the skill's table](../skills/lc-synthesis/references/diagnostics.md). |
 | A `Tests` gate is Unknown | The message names what is missing: a sandbox (on Linux install bubblewrap, and on a Local Cognitive server run `sudo local-cognitive-server sandbox`, 0.1.3 or later), Node.js 22.18+ for TypeScript, Python 3 (on Windows only under Program Files), or a C++ compiler (C++ is Unknown on Windows). |
 | No installed model matches | Import an eligible GGUF or change selection. `prefer` does not download a model. |
 | Unknown evaluator result | The group/ID is not registered. Use a supported evaluator or implement a trusted adapter in the application. |

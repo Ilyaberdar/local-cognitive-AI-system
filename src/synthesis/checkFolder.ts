@@ -56,7 +56,7 @@ export async function checkModule(specFile: string, base = process.cwd()): Promi
     try { const text = await fs.readFile(path.join(path.dirname(specFile), file), "utf8"); total += Buffer.byteLength(text); tests[file] = text; } catch { /* Reported as SPEC_TEST_MISSING. */ }
   }
   if (total > MAX_SUITE_BYTES) diagnostics.push({severity: "error", code: "SPEC_TEST_LIMIT", message: "The contract's test files may hold at most 512 KiB together.", file: specPath, line: 1, column: 1});
-  diagnostics.push(...clauseCoverage(compiled.spec, specPath, tests));
+  diagnostics.push(...clauseCoverage(compiled.spec, specPath, tests, specSource));
   return {module: compiled.spec?.module ?? name, specPath, flowPath, valid: !diagnostics.some(item => item.severity === "error"), diagnostics};
 }
 
