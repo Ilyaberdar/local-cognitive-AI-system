@@ -1,16 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.1.13 — 2026-11-07
+
+Your models answer any OpenAI client through an API of their own, schedules run at intervals through the day, a device you trust approves commands and files from anywhere, and a short tour at the first launch shows where everything is. A computer or server that hosts keeps which devices it trusts in a form 0.1.12 cannot read: a server's update keeps a copy for `local-cognitive-server rollback`.
 
 ### Remote
 
 - **A device you trust approves commands and files from anywhere.** Remote → This computer → Devices has a Trusted switch for each device, asked again in the app's own dialog: a trusted device may then approve a command, a file outside its chat's folder and an application's tool (MCP) in a workflow, one action at a time. An untrusted device approves what it did before and says where to trust it; a trusted one still cannot give a chat full access or use one that has it. Trust ends when the device is removed or pairs again with a new key. On a server: `local-cognitive-server trust-device <id> --yes` and `untrust-device <id>`, and `devices` shows which are trusted. The switch for every device at once (0.1.12) is gone: the devices paired while it was on are trusted.
 - A server's control socket no longer unlinks the server for a request it does not know.
 
-- **A Mac or PC that hosts appears in Your computers on your other devices right away**, before any of them connects to it, as long as it is signed in to the same account; until now it was listed only after the first device paired with its key. Devices still connect to it with a key from it (or, in the phone app to come, its QR code). A computer removed from the account that still hosts for it is listed again; Remote offers removing only a computer that is offline.
+- **A Mac or PC that hosts appears in Your computers on your other devices right away**, before any of them connects to it, as long as it is signed in to the same account; until now it was listed only after the first device paired with its key. Devices still connect to it with a key from it. A computer removed from the account that still hosts for it is listed again; Remote offers removing only a computer that is offline.
 
 - **A computer that is away no longer shakes the window.** While another computer was down, every attempt to reach it again drew the window anew: the Remote card grew and shrank with the reason, the switch at the top and screens such as Synthesis were drawn again, every few seconds. Now only what changes is drawn: the card says Reconnecting until the computer is back, with Try now to ask at once, and attempts slow down to one every two minutes the longer it is away. A key for another computer can be used meanwhile.
 - When Your computers is empty, it says that each way of signing in (Google, Apple or email) is its own account.
+- The switch at the top says **Chats and models on this computer** (it said this Mac, on Windows too) and **Manage computers**.
 
 ### Window
 
@@ -29,6 +32,7 @@
 - **Schedules can run at intervals**: every few minutes or hours (5 minutes to 24 hours), all day or only between certain hours (08:00 to 22:00, or 22:00 to 02:00 across midnight), on the days you choose. Until now a schedule ran once a day or once a week, so nothing could check a feed or a mailbox through the day. The form shows the next three runs as you fill it in and says what is wrong before you create it (an interval under 5 minutes, no day chosen), and the card reads, for example, "every 30 min · 08:00–22:00 · Mon–Fri".
 - **An interval schedule never overlaps itself.** While its previous run is still going, or waits for your approval, the next time is left out and the card says so ("Left out 3 times in a row: the previous run had not finished"); a run longer than the interval is followed by the next time after it, not by another run at once. After sleep or a restart it runs once if it is within its hours, and otherwise waits for its next time.
 - A schedule this version cannot read (one written by a newer version) says so on its card and no longer stops the other schedules.
+- A scheduled run that waits for your approval is no longer shown as an error. Its card read in red "Last error: Workflow run … ended with task status waiting", on daily and weekly schedules too.
 
 ### Desktop
 
