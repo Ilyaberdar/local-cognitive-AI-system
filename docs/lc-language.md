@@ -165,6 +165,15 @@ checks (`SPEC_CLAUSE_UNTESTED`) and a test that names a clause the description d
 models, most accepted candidates passed every visible test and still broke a clause the tests did not cover. The
 rate limiter template is written this way.
 
+**Describing a module to a model in the app.** Synthesis → New module → Describe it to a model: say what the module
+must do, its language, the folder for its code and the model that writes the draft. The model writes the contract in
+numbered clauses and a test for each, taught with the same reference and examples as the skill; the app derives the
+flow and checks the draft, sending problems back to the model up to four times. The draft opens where a module would,
+marked Draft, and nothing is written to the project until you press Save module. Draft with the strongest model you
+have: a cloud model when the project allows cloud models, otherwise the largest installed one. Small models write
+contracts that pass the check but get expected values wrong (a 9B model wrote that 3,910 seconds is `1h30m10s`): read
+every expected value against its clause before saving, since a wrong one is a test no correct code passes.
+
 ## Basic syntax
 
 ### Names, strings, comments, and punctuation

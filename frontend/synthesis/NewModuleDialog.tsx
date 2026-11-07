@@ -8,6 +8,22 @@ export interface NewModuleInput { name: string; template: "empty" | "calculator"
 const LANGUAGES = [["TypeScript", "TypeScript"], ["JavaScript", "JavaScript"], ["Python", "Python"], ["Cpp", "C++"]] as const;
 /** A model in the list: its provider and id, split at the first bar (provider ids have none). */
 const modelKey = (providerId: string, id: string) => `${providerId}|${id}`;
+const FLOW_NOTE = "The module's flow runs on the same model; change it in the flow if you like.";
+
+/** What to know about the chosen drafting model: where a cloud one sends the description, and what is stronger than
+ * a local one, since small models write tests with wrong expected values more often. */
+function modelHint(models: DraftModels, chosen: { providerId: string; id: string } | undefined, isRecommended: boolean): string {
+  const provider = chosen && chosen.providerId !== "llamacpp" ? models.cloud.find(item => item.providerId === chosen.providerId) : undefined;
+  if (provider) return `Your description goes to ${provider.providerName}. ${FLOW_NOTE}`;
+  const offered = models.cloud.find(item => item.models.length);
+  if (offered && !models.cloudAllowed) return `Small models get expected values in tests wrong more often: read each one. For more reliable tests, turn Cloud models on for this project and draft with ${offered.providerName}. ${FLOW_NOTE}`;
+  if (!isRecommended && models.recommended) {
+    const best = models.recommended.providerId === "llamacpp" ? models.local.find(item => item.id === models.recommended!.id)?.displayName
+      : `${models.recommended.id} (${models.cloud.find(item => item.providerId === models.recommended!.providerId)?.providerName ?? models.recommended.providerId})`;
+    return `${best ?? models.recommended.id} is recommended: a larger model gets expected values in tests wrong less often. ${FLOW_NOTE}`;
+  }
+  return `The largest model here. Small models get expected values in tests wrong more often: read each one before saving. ${FLOW_NOTE}`;
+}
 const splitKey = (key: string) => ({ providerId: key.slice(0, key.indexOf("|")), id: key.slice(key.indexOf("|") + 1) });
 
 export function NewModuleDialog({ project, modules, onCreated, onDrafted, canDescribe = false, onClose, request = synthesisRequest }: {
@@ -43,7 +59,8 @@ export function NewModuleDialog({ project, modules, onCreated, onDrafted, canDes
   const describing = mode === "describe";
   const cleanDescription = description.trim();
   const chosen = model ? splitKey(model) : undefined;
-  const cloudProvider = chosen && chosen.providerId !== "llamacpp" ? models?.cloud.find(item => item.providerId === chosen.providerId) : undefined;
+  const recommended = models?.recommended ? modelKey(models.recommended.providerId, models.recommended.id) : "";
+  const tag = (key: string) => key === recommended ? " · recommended" : "";
   const outputError = output.trim() && (output.trim().split("/").some(part => !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(part)) || output.trim().toLowerCase().split("/").includes("synthesis"))
     ? "Use a project-relative folder outside Synthesis, without spaces, hidden names or .. segments." : "";
   const parent = directory.trim() === "." ? "" : directory.trim();
@@ -73,7 +90,8 @@ export function NewModuleDialog({ project, modules, onCreated, onDrafted, canDes
     return () => controller.abort();
   }, [browsing, location, project.id]);
 
-  // The models are read when drafting is chosen: the larger installed one first, else a cloud one the project allows.
+  // The models are read when drafting is chosen, with the recommended one (a cloud provider's default where the
+  // project allows cloud models, else the largest installed model) chosen.
   useEffect(() => {
     if (!describing || models) return;
     const controller = new AbortController();
@@ -82,7 +100,7 @@ export function NewModuleDialog({ project, modules, onCreated, onDrafted, canDes
       .then(result => {
         if (controller.signal.aborted) return;
         setModels(result);
-        const first = result.local[0] ? modelKey("llamacpp", result.local[0].id)
+        const first = result.recommended ? modelKey(result.recommended.providerId, result.recommended.id) : result.local[0] ? modelKey("llamacpp", result.local[0].id)
           : result.cloudAllowed ? result.cloud.flatMap(provider => provider.models.map(id => modelKey(provider.providerId, id)))[0] : undefined;
         setModel(current => current || first || "");
       })
@@ -159,13 +177,13 @@ export function NewModuleDialog({ project, modules, onCreated, onDrafted, canDes
           <label className="synthesis-create-field" htmlFor="synthesis-module-model">Model that writes the draft
             <select id="synthesis-module-model" value={model} disabled={busy || !models} onChange={event => setModel(event.target.value)}>
               {!models ? <option value="">Reading the models…</option> : null}
-              {models?.local.length ? <optgroup label="On this computer">{models.local.map(item => <option key={item.id} value={modelKey("llamacpp", item.id)}>{item.displayName}{item.sizeBytes ? ` · ${(item.sizeBytes / 1e9).toFixed(1)} GB` : ""}</option>)}</optgroup> : null}
+              {models?.local.length ? <optgroup label="On this computer">{models.local.map(item => <option key={item.id} value={modelKey("llamacpp", item.id)}>{item.displayName}{item.sizeBytes ? ` · ${(item.sizeBytes / 1e9).toFixed(1)} GB` : ""}{tag(modelKey("llamacpp", item.id))}</option>)}</optgroup> : null}
               {models?.cloud.filter(provider => provider.models.length).map(provider => <optgroup key={provider.providerId} label={models.cloudAllowed ? provider.providerName : `${provider.providerName} · Cloud models are off for this project`}>
-                {provider.models.map(id => <option key={id} value={modelKey(provider.providerId, id)} disabled={!models.cloudAllowed}>{id}</option>)}</optgroup>)}
+                {provider.models.map(id => <option key={id} value={modelKey(provider.providerId, id)} disabled={!models.cloudAllowed}>{id}{tag(modelKey(provider.providerId, id))}</option>)}</optgroup>)}
             </select>
           </label>
           <p className={modelsError ? "synthesis-form-error" : "synthesis-form-hint"}>{modelsError || (!models ? "" : !models.local.length && !models.cloud.some(provider => provider.models.length) ? "No model to write with: install one in Models, or set a provider up in Settings."
-            : cloudProvider ? `Your description goes to ${cloudProvider.providerName}. The module's flow runs on the same model; change it in the flow if you like.` : "A larger model writes better contracts. The module's flow runs on the same model; change it in the flow if you like.")}</p>
+            : modelHint(models, chosen, recommended === model))}</p>
         </> : <>
         <label className="synthesis-create-field" htmlFor="synthesis-module-template">Template
           <select id="synthesis-module-template" value={template} disabled={busy} onChange={event => setTemplate(event.target.value as NewModuleInput["template"])}>

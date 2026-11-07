@@ -40,6 +40,9 @@ const MAX_ANSWER_TOKENS = 8000;
  * budget a small model thinks until the token limit and writes nothing. */
 const THINKING = 1024;
 const BUDGET_MESSAGE = "\n\nTime is up. I will now write the contract and the tests.\n";
+/** A cloud model whose thinking counts toward its token limit (DeepSeek's does, its floor 16,000) and that thought
+ * past it without an answer is asked once more with this much room. */
+const CLOUD_RETRY_TOKENS = 32_000;
 const stamp = () => new Date().toISOString();
 const draftId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new SynthesisError("Invalid draft identifier.", 404); return id; };
 const text = (value: unknown, field: string, max = MAX_SOURCE_BYTES) => {
@@ -63,7 +66,8 @@ export class SynthesisDrafts {
   }
 
   /** The models a draft may be written with here: installed local models, larger and sounder first, and
-   * the cloud providers set up here with the models they list, when the project allows cloud models. */
+   * the cloud providers set up here with the models they list (each with the one it uses by default), when the
+   * project allows cloud models; and the one to recommend. */
   async models(projectId: string) {
     const project = await this.host.project(projectId);
     const local = (await this.host.services.models.listAllModels("llamacpp"))
@@ -74,9 +78,18 @@ export class SynthesisDrafts {
     for (const provider of this.host.services.providers?.() ?? []) {
       if (!provider.configured || provider.capabilities?.local === true) continue;
       const listed = await this.host.services.catalog?.listAll(provider.id).catch(() => []) ?? [];
-      cloud.push({providerId: provider.id, providerName: provider.name, models: listed.filter(item => item.providerId === provider.id).map(item => item.id).slice(0, 200)});
+      const models = listed.filter(item => item.providerId === provider.id).map(item => item.id).slice(0, 200);
+      const defaultModel = models.includes(provider.defaultModel) ? provider.defaultModel : models[0];
+      cloud.push({providerId: provider.id, providerName: provider.name, models, ...(defaultModel ? {defaultModel} : {})});
     }
-    return {local, cloud, cloudAllowed: project.cloudModels === true};
+    const cloudAllowed = project.cloudModels === true;
+    // Small models write contracts that pass the check with wrong expected values in their tests, so the
+    // strongest model offered is recommended: a cloud provider's own default where the project allows cloud
+    // models, else the largest installed model.
+    const offered = cloud.find(item => item.defaultModel);
+    const recommended = cloudAllowed && offered ? {providerId: offered.providerId, id: offered.defaultModel!}
+      : local[0] ? {providerId: "llamacpp", id: local[0].id} : undefined;
+    return {local, cloud, cloudAllowed, ...(recommended ? {recommended} : {})};
   }
 
   async create(projectId: string, input: Record<string, unknown>): Promise<SynthesisDraft> {
@@ -206,6 +219,7 @@ export class SynthesisDrafts {
       }
       const base = draftPrompt({name: record.name, language: record.language, output: record.output, description: record.description});
       let prompt = base.prompt;
+      let cloudTokens = MAX_ANSWER_TOKENS;
       for (let attempt = 1; attempt <= record.maxAttempts; attempt++) {
         signal.throwIfAborted();
         // Consent may be withdrawn while a draft is written: checked again before each request.
@@ -222,7 +236,7 @@ export class SynthesisDrafts {
         };
         const started = Date.now();
         const response = await this.host.services.llm.generateText({usagePurpose: "synthesis-draft", model: model.id, signal, systemPrompt: base.system, prompt,
-          maxTokens: Math.min(MAX_ANSWER_TOKENS + (local ? THINKING : 0), room), temperature: 0.2,
+          maxTokens: local ? Math.min(MAX_ANSWER_TOKENS + THINKING, room) : cloudTokens, temperature: 0.2,
           timeoutMs: minutes * 60_000, holder: `Synthesis · draft of ${record.name}`,
           ...(local ? {localReasoningBudget: THINKING, localReasoningBudgetMessage: BUDGET_MESSAGE} : {}),
           // Progress (which also streams a local answer, so its tokens are counted as they come).
@@ -233,8 +247,10 @@ export class SynthesisDrafts {
         const answer = response.text.trim();
         // The request's own time limit ends it as an abort ("The operation was aborted") the user did not ask for.
         if (!answer && Date.now() - started >= minutes * 60_000 - 1000) throw new SynthesisError(`${model.displayName} did not finish answer ${attempt} in ${minutes} minutes and was stopped. Try again, or choose a smaller or a cloud model.`);
-        if (!answer) throw new SynthesisError(response.error ?? `${model.displayName} returned no answer.`);
         const cutOff = (response.raw as {choices?: Array<{finish_reason?: string}>} | undefined)?.choices?.[0]?.finish_reason === "length";
+        if (!answer && cutOff && !local && cloudTokens < CLOUD_RETRY_TOKENS) { cloudTokens = CLOUD_RETRY_TOKENS; continue; }
+        if (!answer && cutOff) throw new SynthesisError(`${model.displayName} reached its token limit before it wrote an answer${local ? "" : " (its thinking counts toward the limit)"}. Try again, or choose another model.`);
+        if (!answer) throw new SynthesisError(response.error ?? `${model.displayName} returned no answer.`);
         const parsed = parseDraft(answer, record.name);
         let problems: SynthesisDiagnostic[];
         if (!parsed.spec || cutOff) {

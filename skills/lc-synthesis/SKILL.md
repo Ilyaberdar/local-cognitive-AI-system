@@ -29,17 +29,20 @@ the tests you write here decide what "accepted" means. Read `references/language
    `// [C3]` above `LC_TEST(...)` in C++. Test the edges a careless implementation gets wrong (empty input, zero,
    fractions, limits, the exact error type), deterministically: no network, no real time, no randomness. Import the
    module by its path relative to the test file. Write only visible tests unless the user asks for a sealed holdout;
-   a holdout (`hidden = true`) is the engineer's own, written apart from these.
+   a holdout (`hidden = true`) is the engineer's own, written apart from these. Work out every expected value from
+   the clauses, step by step: a wrong one is a test no correct code passes, and a run can never be accepted.
 5. **Write the flow** from the standard skeleton in `references/language.md`: one `revise` line per file in the
    contract's order, `evaluate(..., keep = "best")`, accept on Pass. Use `policy = "local-files-v1"` with
    `models.select(...)` for installed models, or `policy = "cloud-files-v1"` with `model("id", provider = "name")` for a
    provider the user has set up (the project must allow cloud models). Start with `limit iterations 6, time 20m` for
    one file and more for several.
-6. **Check it:** `node scripts/check.mjs Synthesis/Name` (this skill's folder; Node.js 18+), or
+6. **Try the tests** when you can run code: write a throwaway reference implementation outside the project, run the
+   tests against it, and delete it. A test it fails is wrong, or its clause is ambiguous: fix the test, or ask the user.
+7. **Check it:** `node scripts/check.mjs Synthesis/Name` (this skill's folder; Node.js 18+), or
    `local-cognitive-server synthesis check Synthesis/Name` on a Local Cognitive server. Each problem is one line,
    `path:line:column severity CODE message`. Fix every error by its code (`references/diagnostics.md`) and re-run until
    the module reads `ok`; treat `SPEC_CLAUSE_UNTESTED` as a missing test, not as noise.
-7. **Hand it over.** Tell the user what each clause and test covers, which clauses only a reviewer can judge, and that
+8. **Hand it over.** Tell the user what each clause and test covers, which clauses only a reviewer can judge, and that
    they should read the contract and tests before running: those are theirs now, and a run accepts exactly what they
    check. In the app: Synthesis → select the project → Refresh → the module → Run synthesis.
 

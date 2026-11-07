@@ -1114,7 +1114,7 @@ test("a module described to a model: the draft is written, read in place of a mo
     if (path.endsWith("/runs")) return [];
     if (path.endsWith("/projects/p1/drafts") && options.method === "POST") { posted = JSON.parse(String(options.body)); return {...draftBase, status: "drafting", phase: "writing", attempt: 1, tokens: 120}; }
     if (path.endsWith("/projects/p1/drafts")) return {drafts: []};
-    if (path.endsWith("/draft-models")) return {local: [{providerId: "llamacpp", id: "qwen-27b", displayName: "Qwen 27B", sizeBytes: 16e9}], cloud: [{providerId: "deepseek", providerName: "DeepSeek", models: ["deepseek-flash"]}], cloudAllowed: false};
+    if (path.endsWith("/draft-models")) return {local: [{providerId: "llamacpp", id: "qwen-27b", displayName: "Qwen 27B", sizeBytes: 16e9}], cloud: [{providerId: "deepseek", providerName: "DeepSeek", models: ["deepseek-flash"], defaultModel: "deepseek-flash"}], cloudAllowed: false, recommended: {providerId: "llamacpp", id: "qwen-27b"}};
     if (path.endsWith(`/drafts/${draftBase.id}`) && options.method === "PUT") { put = JSON.parse(String(options.body)); return {...ready, spec: put.spec, attempt: 2}; }
     if (path.endsWith(`/drafts/${draftBase.id}`)) { polls++; return ready; }
     if (path.endsWith(`/drafts/${draftBase.id}/save`)) { saved = true; return created; }
@@ -1133,6 +1133,8 @@ test("a module described to a model: the draft is written, read in place of a mo
     const cloud = [...doc.querySelectorAll("#synthesis-module-model option")].find((item: any) => item.value === "deepseek|deepseek-flash") as any;
     assert.equal(cloud.disabled, true, "a cloud model waits for the project's consent");
     assert.match(doc.querySelector("#synthesis-module-model optgroup[label*='DeepSeek']").getAttribute("label"), /Cloud models are off for this project/);
+    assert.equal(doc.querySelector("#synthesis-module-model option[value='llamacpp|qwen-27b']").textContent, "Qwen 27B · 16.0 GB · recommended");
+    assert.match(ui.text(), /Small models get expected values in tests wrong more often: read each one\. For more reliable tests, turn Cloud models on for this project and draft with DeepSeek\./);
     input(ui, "synthesis-module-name", "Adder");
     textarea(ui, "synthesis-module-description", "Adds two numbers and refuses anything that is not a number.");
     const language = doc.getElementById("synthesis-module-language");

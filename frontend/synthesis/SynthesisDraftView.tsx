@@ -21,7 +21,7 @@ export function draftStatus(draft: SynthesisDraft): string {
   if (draft.status === "failed") return draft.error ?? `${model} wrote no contract.`;
   const errors = draft.diagnostics.filter(item => item.severity !== "warning").length;
   if (errors) return `${model} left ${plural(errors, "problem")} after ${plural(draft.attempt, "answer")}. Fix them here, or save and fix them later.`;
-  return `Written by ${model} in ${plural(draft.attempt, "answer")}. Read the contract and tests: once saved they are yours, and a run accepts exactly what they check.`;
+  return `Written by ${model} in ${plural(draft.attempt, "answer")}. Read the contract, and check each expected value in the tests against its clause: a wrong one is a test no correct code passes. Once saved they are yours, and a run accepts exactly what they check.`;
 }
 
 /** A module a model drafted, before it is in the project: its contract, flow and tests to read and edit,

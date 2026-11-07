@@ -32,9 +32,10 @@ ${contract}
 ${Object.entries(tests).map(([file, text]) => `\n### ${file}\n\`\`\`ts\n${text}\`\`\`\n`).join("")}${extra}`;
 const good = answer(spec(), {"tests/add.test.ts": testFile()});
 
-const deepseek: ProviderDescriptor = {id: "deepseek", name: "DeepSeek", configured: true, capabilities: {local: false}} as ProviderDescriptor;
+const deepseek: ProviderDescriptor = {id: "deepseek", name: "DeepSeek", configured: true, defaultModel: "deepseek-flash", capabilities: {local: false}} as ProviderDescriptor;
 
-async function draftFixture(t: TestContext, answers: Array<string | ((request: LLMRequest) => Promise<string>)>) {
+type Answer = string | {text: string; raw?: unknown};
+async function draftFixture(t: TestContext, answers: Array<Answer | ((request: LLMRequest) => Promise<Answer>)>) {
   const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "lcai-draft-test-")));
   const root = path.join(temp, "project"), data = path.join(temp, "app");
   await fs.mkdir(root); await fs.mkdir(data);
@@ -56,8 +57,9 @@ async function draftFixture(t: TestContext, answers: Array<string | ((request: L
         const next = answers[Math.min(requests.length, answers.length) - 1]!;
         // As a local stream reports itself: thinking, then the answer.
         request.onProgress?.({phase: "thinking", model: request.model ?? ""}); request.onProgress?.({phase: "responding", model: request.model ?? ""});
-        const text = typeof next === "string" ? next : await next(request);
-        return {provider: provider ?? "llamacpp", model: request.model ?? "", text, usage: {inputTokens: 1000, outputTokens: 300}};
+        const value = typeof next === "function" ? await next(request) : next;
+        const {text, raw} = typeof value === "string" ? {text: value, raw: undefined} : value;
+        return {provider: provider ?? "llamacpp", model: request.model ?? "", text, raw, usage: {inputTokens: 1000, outputTokens: 300}};
       }
     }
   });
@@ -173,13 +175,15 @@ test("a cloud model drafts only in a project that allows cloud models, and is of
   const f = await draftFixture(t, [good]);
   const models = await f.service.drafts.models(f.project.id);
   assert.deepEqual(models.local.map(model => model.id), ["qwen3.8-27b-q4", "qwen2.5-coder-7b"], "larger first");
-  assert.deepEqual(models.cloud, [{providerId: "deepseek", providerName: "DeepSeek", models: ["deepseek-flash"]}]);
+  assert.deepEqual(models.cloud, [{providerId: "deepseek", providerName: "DeepSeek", models: ["deepseek-flash"], defaultModel: "deepseek-flash"}]);
   assert.equal(models.cloudAllowed, false);
+  assert.deepEqual(models.recommended, {providerId: "llamacpp", id: "qwen3.8-27b-q4"}, "the largest installed model while cloud models are off");
   const cloud = {providerId: "deepseek", id: "deepseek-flash"};
   await assert.rejects(f.service.drafts.create(f.project.id, input({model: cloud})), (error: SynthesisError) => error.statusCode === 403 && /does not allow cloud models/.test(error.message));
   assert.equal(f.requests.length, 0);
 
   await f.projects.update(f.project.id, {cloudModels: true});
+  assert.deepEqual((await f.service.drafts.models(f.project.id)).recommended, {providerId: "deepseek", id: "deepseek-flash"}, "the provider's own model where the project allows cloud models");
   const draft = await f.settle((await f.service.drafts.create(f.project.id, input({model: cloud}))).id);
   assert.equal(draft.valid, true, JSON.stringify(draft.diagnostics));
   assert.deepEqual(f.loaded, [], "a cloud model is not loaded");
@@ -228,4 +232,22 @@ test("a draft whose model ran out of time says so in plain words", async (t) => 
   assert.equal(draft.status, "failed");
   assert.equal(f.requests[0]!.timeoutMs, 30 * 60_000);
   assert.match(draft.error!, /did not finish answer 1 in 30 minutes and was stopped/);
+});
+
+test("a cloud model that thinks past its token limit without an answer is asked once more with more room", async (t) => {
+  // DeepSeek counts its thinking toward max_tokens: a first answer can be all thinking.
+  const thought = {text: "", raw: {choices: [{finish_reason: "length", message: {content: ""}}]}};
+  const f = await draftFixture(t, [thought, good]);
+  await f.projects.update(f.project.id, {cloudModels: true});
+  const draft = await f.settle((await f.service.drafts.create(f.project.id, input({model: {providerId: "deepseek", id: "deepseek-flash"}}))).id);
+  assert.equal(draft.valid, true, JSON.stringify(draft.diagnostics));
+  assert.deepEqual(f.requests.map(request => request.maxTokens), [8000, 32_000]);
+  assert.equal(draft.attempt, 2);
+
+  const g = await draftFixture(t, [thought]);
+  await g.projects.update(g.project.id, {cloudModels: true});
+  const failed = await g.settle((await g.service.drafts.create(g.project.id, input({model: {providerId: "deepseek", id: "deepseek-flash"}}))).id);
+  assert.equal(g.requests.length, 2, "once, not every answer");
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error!, /deepseek-flash reached its token limit before it wrote an answer \(its thinking counts toward the limit\)/);
 });

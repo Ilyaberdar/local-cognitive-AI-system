@@ -68,9 +68,11 @@ export interface SynthesisDraft {
   diagnostics: Diagnostic[]; clauses: string[]; valid: boolean; error?: string;
   usage: { inputTokens: number; outputTokens: number; calls: number }; createdAt: string; updatedAt: string;
 }
-/** The models a draft may be written with: installed ones, and cloud ones where the project allows them. */
+/** The models a draft may be written with: installed ones, and cloud ones where the project allows them; and the
+ * strongest of those offered, to recommend. */
 export interface DraftModels {
   local: { providerId: string; id: string; displayName: string; sizeBytes?: number }[];
-  cloud: { providerId: string; providerName: string; models: string[] }[];
+  cloud: { providerId: string; providerName: string; models: string[]; defaultModel?: string }[];
   cloudAllowed: boolean;
+  recommended?: { providerId: string; id: string };
 }
