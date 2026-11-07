@@ -140,8 +140,9 @@ The existing [Calculator7B example](../examples/synthesis-calculator/Synthesis/C
 ## Writing a module with a coding agent, and checking it offline
 
 [`skills/lc-synthesis`](../skills/lc-synthesis/SKILL.md) is a skill for coding agents that read the Agent Skills format
-(Claude Code and others): copy the folder into the agent's skills folder (for Claude Code, `~/.claude/skills/` or the
-project's `.claude/skills/`) and ask it for a module. It holds a condensed language reference, every diagnostic code
+(Claude Code and others): download [`lc-synthesis-skill.zip`](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/lc-synthesis-skill.zip)
+from the latest release (or copy the folder from this repository) into the agent's skills folder (for Claude Code,
+`~/.claude/skills/` or the project's `.claude/skills/`) and ask it for a module. It holds a condensed language reference, every diagnostic code
 with its fix, complete examples in TypeScript, Python and C++, and `scripts/check.mjs`, the offline check below in one
 file that needs only Node.js 18 or newer.
 

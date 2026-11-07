@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.14 — 2026-11-07
+
+Describe a Synthesis module in your own words and a model drafts its contract and tests for you to read, fix and save; a coding agent can write modules with the new `lc-synthesis` skill, and `synthesis check` checks them without running anything. A computer now shows its connection key as a QR code for the iPhone app.
+
+### Synthesis
+
+- **New module → Describe it to a model.** Say what the module must do, its language (TypeScript, JavaScript, Python or C++), the folder for its code and the model that writes it: an installed model, or a cloud provider you set up when the project allows cloud models (the description then goes to that provider). The model writes the contract as numbered clauses, [C1], [C2]…, and a test for each; the app derives the flow from the contract's files and checks the draft as a module is checked, sending what it finds back to the model up to four times. The draft opens where a module would, marked Draft: Contract, Flow and each test file are editors, Check checks your edits, and nothing is written to the project until you press **Save module** (Discard asks first; a draft being written can be stopped). Drafts not saved are listed in Modules.
+- **Draft with the strongest model you have.** New module chooses it and marks it recommended: a cloud provider's default model where the project allows cloud models, otherwise the largest installed one. A model's tests can be wrong: a 9B model got two expected values of twelve wrong in a live try, which no correct code passes. A ready draft asks you to check each expected value against its clause, and once saved the tests are yours: a run accepts exactly what they check.
+- A local model thinks at most 1,024 tokens before it writes and has 30 minutes, a cloud one 10; the line above the draft shows what it is doing, with its tokens. A model that runs out of time or tokens says so and what to try, and a cloud model that spends its whole limit thinking (DeepSeek counts thinking in it) is asked once more with a larger one. A contract that repeats the module's output folder in its files' paths is warned about with the path to use.
+- **Check a module without running it.** `local-cognitive-server synthesis check [<module.lcspec | folder>] [--json]` reports what the module screen would (the compiler, the runtime's limits, missing test files), one line a problem, and exits 0 when no module has an error; it needs no running server and no sudo.
+- **Numbered clauses.** A description written as [C1], [C2]… gets a warning for a clause no test names (`SPEC_CLAUSE_UNTESTED`) and for a test that names a clause the description does not have (`SPEC_CLAUSE_UNKNOWN`); a gate marked `// [C7]` counts as checking it. The rate limiter template is written this way and now tests fractional settings and RangeError for every invalid one.
+- **A skill for coding agents: `lc-synthesis`.** Claude Code and other agents that read the Agent Skills format can write a module with you: pin the interface down, write the contract in clauses with a test for each, try the tests on a throwaway implementation, and check the module with the skill's own `scripts/check.mjs` (Node.js 18 or newer, no app needed). It holds a condensed language reference, every diagnostic code with its fix and complete examples in TypeScript, Python and C++. Download `lc-synthesis-skill.zip` from this release and unpack it into `~/.claude/skills/` (or a project's `.claude/skills/`).
+
+### Remote
+
+- **Show QR to connect.** Remote → This computer shows a one-time QR code to scan with the Local Cognitive app on an iPhone (Computers → +; the iPhone app is in testing), with the key under it to paste on another computer; `local-cognitive-server pair` draws the code in the terminal. The code is made from the key alone, on the computer.
+
 ## 0.1.13 — 2026-11-07
 
 Your models answer any OpenAI client through an API of their own, schedules run at intervals through the day, a device you trust approves commands and files from anywhere, and a short tour at the first launch shows where everything is. A computer or server that hosts keeps which devices it trusts in a form 0.1.12 cannot read: a server's update keeps a copy for `local-cognitive-server rollback`.
