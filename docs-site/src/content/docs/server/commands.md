@@ -55,6 +55,7 @@ The key changes at every start and is kept in `app/runtime/api-token` in the dat
 
 | Command | What it does |
 | --- | --- |
+| `local-cognitive-server synthesis check [<folder or .lcspec>] [--json]` | Check Synthesis modules on disk without running them: one line a problem and one a module, exit 0 when none has an error. No sudo, and the server need not run |
 | `sudo local-cognitive-server cloud-models` | The server's projects, and whether each may use cloud models in Synthesis |
 | `sudo local-cognitive-server cloud-models allow <project>` | Let the project's flows send its contract and files to the cloud providers they name; hidden tests stay on the server |
 | `sudo local-cognitive-server cloud-models deny <project>` | Back to the server's local models; a run in progress stops at its next cloud request |

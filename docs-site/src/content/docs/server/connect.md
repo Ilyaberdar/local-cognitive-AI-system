@@ -17,6 +17,8 @@ It prints a key that starts with `LCR1-` and waits until a computer uses it. The
 - carries the server's identity, so the app can check it is talking to this server and nothing in between;
 - needs no sign-in on the server.
 
+On a terminal it also draws the key as a QR code, for the Local Cognitive iPhone app (Computers → +; the app is in testing).
+
 The installer prints the first key itself.
 
 ## 2. Paste it in the app

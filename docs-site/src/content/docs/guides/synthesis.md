@@ -109,11 +109,31 @@ Before a run gives agents a terminal, the sandbox shows that it isolates. A proc
 
 ## Start a module
 
-Choose **New module**:
+Choose **New module**, then start from a template or from your own words.
+
+**Describe it to a model.** Say what the module must do, its language (TypeScript, JavaScript, Python or C++), the folder for its code and the model that writes the draft. The strongest one you have is chosen and marked *recommended*: a cloud provider's default model when the project allows cloud models (your description then goes to that provider), otherwise the largest installed model. The model writes the contract as numbered clauses, `[C1]`, `[C2]`…, and a test for each; the app derives the flow and checks the draft, sending what it finds back to the model up to four times.
+
+The draft opens where a module would, marked **Draft**. Contract, Flow and each test file are editors, and **Check** checks your edits. Nothing is written to the project until you choose **Save module**; **Discard draft** asks first. Read the tests before you save: check each expected value against its clause, because a wrong one is a test no correct code passes, and once saved the tests decide what a run accepts.
+
+*Checked live: DeepSeek drafted a duration parser in under a minute, nine tests whose every expected value was right, and a run on its contract was accepted in its first iteration. A 9B local model drafted the same module in 3.5 minutes with two wrong expected values of twelve.*
+
+Or start from a template:
 
 - **Rate limiter (TypeScript, with tests):** one model writes a module against your tests and architecture gates.
 - **Repository review (parallel agents):** four agents on one local model with four slots review `src/`, each leaving a note, and a lead writes `REPORT.md`, accepted when every file and line it cites exists. The flow says how to switch to a cloud provider for more agents.
 
 For C++, the [ability system example](https://github.com/Ilyaberdar/local-cognitive-AI-system/tree/main/examples/synthesis-ability-system) builds an engine-agnostic core in the spirit of Unreal's Gameplay Ability System against a frozen header.
+
+## Write a module with a coding agent
+
+The `lc-synthesis` skill teaches Claude Code, and other agents that read the Agent Skills format, to write a module with you: pin down its interface and failure cases, write the contract in numbered clauses with a test for each, try the tests on a throwaway implementation, and check the module. Download [`lc-synthesis-skill.zip`](https://github.com/Ilyaberdar/local-cognitive-AI-system/releases/latest/download/lc-synthesis-skill.zip), unpack it into `~/.claude/skills/` (or a project's `.claude/skills/`), and ask the agent for a module.
+
+The skill checks a module with its own script, which needs only Node.js 18 or newer; on a server, `local-cognitive-server synthesis check` does the same:
+
+```bash
+node ~/.claude/skills/lc-synthesis/scripts/check.mjs Synthesis/RateLimiter
+```
+
+Each problem is one line, `path:line:column severity CODE message`, and the module ends with `ok` when nothing is wrong. A clause that no test names is a warning (`SPEC_CLAUSE_UNTESTED`): code that ignores it can still be accepted.
 
 The [Synthesis language](/guides/synthesis-language/) page is the full reference: syntax, runtime functions, model roles, agents, complete examples and the current limits.
