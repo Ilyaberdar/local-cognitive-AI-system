@@ -22,7 +22,7 @@ import type { WebTargetsProject, WebTargetsResult } from "./webTargets";
 import { spawn } from "child_process";
 import { childProcessEnv } from "../config/secrets";
 import { apiTokenFilePath, readApiTokenFile } from "../api/localApiAuth";
-import { connectionKeyQr, PHONE_APP_SHIPPED, qrTerminal } from "../remote/qr/connectionKeyQr";
+import { connectionKeyQr, qrTerminal } from "../remote/qr/connectionKeyQr";
 
 // Only modules that do not read the application configuration are imported above: the
 // configuration is evaluated when its module loads, after `start` has set the environment.
@@ -175,7 +175,7 @@ const pair = async (args: ServerArgs, wait: boolean) => {
   // The key is a secret: only this command's output shows it, never the service log.
   if (args.quiet) { process.stdout.write(`${result.key}\n`); return ExitCode.ok; }
   // On a terminal, the same key as a code the phone app scans.
-  const code = PHONE_APP_SHIPPED && process.stdout.isTTY && !args.json ? ["", qrTerminal(connectionKeyQr(result.key)), "", "On your phone: scan the code with the Local Cognitive app."] : [];
+  const code = process.stdout.isTTY && !args.json ? ["", qrTerminal(connectionKeyQr(result.key)), "", "On your phone: scan the code with the Local Cognitive app."] : [];
   print(args, [
     `Connection key (one use, valid until ${until}; restarting the server cancels it):`, "", `    ${result.key}`, ...code, "",
     "On your computer: Local Cognitive → Remote → Connect, then paste the key.",

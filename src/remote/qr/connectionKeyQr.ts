@@ -1,10 +1,5 @@
 import { qrcodegen } from "./qrcodegen";
 
-/** Whether the phone app that scans these codes is out: the window and `pair` show the code beside
- * the key. Off until the iPhone app is in TestFlight or the App Store (a development build turns it on
- * for the app's testing; a release ships with it off until then). */
-export const PHONE_APP_SHIPPED = false;
-
 /** A connection key as a QR code, for a phone to scan: the key itself (A–Z, 2–7 and "-" fit QR's
  * alphanumeric mode), error correction M or better. 177 characters make version 7, 45×45 modules. */
 export const connectionKeyQr = (key: string): qrcodegen.QrCode =>

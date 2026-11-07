@@ -7,7 +7,7 @@ const { RemoteHostStore } = require("../dist/src/remote/host/RemoteHostStore.js"
 const { deviceApprovalRefusal } = require("../dist/src/remote/host/deviceApprovals.js");
 const { setHostPlace } = require("../dist/src/runtime/hostPlace.js");
 const { addAdminFolder, listAdminFolders, MANAGED_ROOT_ID, removeAdminFolder, setAdminFolderOptions } = require("../dist/src/runtime/hostFolders.js");
-const { connectionKeyQr, PHONE_APP_SHIPPED, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
+const { connectionKeyQr, qrSvg } = require("../dist/src/remote/qr/connectionKeyQr.js");
 const { publicError } = require("../dist/src/runtime/publicError.js");
 const { appVersion } = require("../dist/src/utils/appVersion.js");
 const { Logger } = require("../dist/src/utils/Logger.js");
@@ -23,7 +23,7 @@ const busyStates = ["starting", "registering", "connecting"];
 // app runs and hosting is on. It belongs to the account signed in here: another account's key is
 // refused, and signing out pauses it. The host key and grants live in the app's vault and host.db;
 // the renderer gets statuses, the connection key it shows, and device names, never a path or token.
-function registerHost({ app, ipcMain, dialog, shell, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker, showQr = PHONE_APP_SHIPPED,
+function registerHost({ app, ipcMain, dialog, shell, vault, accountService, backend, dataRoot, assertSender, getWindow, powerSaveBlocker,
   powerMonitor, Tray, Menu, nativeImage, Notification, openWindow = () => undefined, platform = process.platform,
   cloudUrl = resolveAccountConfig({ env: process.env, packaged: app.isPackaged }).cloudUrl, logger = new Logger(),
   hostName = os.hostname().replace(/\.local$/, "").slice(0, 120) || "Computer" }) {
@@ -190,7 +190,7 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
     if (!agent) throw failure("Turn on remote connections first.", "off");
     const { key, invitationId, expiresAt } = agent.connectKey(KEY_TTL_MS);
     // For the phone app to scan; drawn here from the key alone.
-    return { key, invitationId, expiresAt, ...(showQr ? { qrSvg: qrSvg(connectionKeyQr(key)) } : {}) };
+    return { key, invitationId, expiresAt, qrSvg: qrSvg(connectionKeyQr(key)) };
   });
   handle("invitation", raw => {
     const invitationId = id(raw);
@@ -217,7 +217,7 @@ function registerHost({ app, ipcMain, dialog, shell, vault, accountService, back
       const window = getWindow();
       const { response } = await dialog.showMessageBox(window && !window.isDestroyed() ? window : undefined, { type: "warning", buttons: ["Trust", "Cancel"], defaultId: 1, cancelId: 1,
         message: `Trust ${name}?`,
-        detail: `${name} could then approve commands, changes to files anywhere on this computer and tools of its applications (MCP), one action at a time${showQr ? "; an iPhone asks for Face ID first" : ""}. It still cannot give a chat full access. Trust only a device you alone use.` });
+        detail: `${name} could then approve commands, changes to files anywhere on this computer and tools of its applications (MCP), one action at a time; an iPhone asks for Face ID first. It still cannot give a chat full access. Trust only a device you alone use.` });
       if (response !== 0) return { trusted: false };
     }
     store.setTrusted(deviceId, trusted, "host", new Date());

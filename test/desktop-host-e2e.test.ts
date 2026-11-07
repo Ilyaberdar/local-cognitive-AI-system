@@ -67,7 +67,8 @@ test("this computer hosts paired devices for the account signed in on it", { ski
   assert.deepEqual(await device(other, "Other").hosts(), [], "never under another account");
 
   // A key in another account's hands pairs nothing; the same key still pairs the owner's phone.
-  const { key, invitationId } = await call("connect-key");
+  const { key, invitationId, qrSvg } = await call("connect-key");
+  assert.match(qrSvg, /^<svg [^>]*aria-label="Connection key as a QR code"/, "the key comes with its QR code for the phone app");
   const stranger = device(other, "Stranger");
   assert.equal((await stranger.pair(key)).error?.code, "host_owned_by_other");
   assert.equal((await call("invitation", invitationId)).consumed, false);
