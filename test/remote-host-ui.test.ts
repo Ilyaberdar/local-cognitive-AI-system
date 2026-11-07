@@ -74,7 +74,7 @@ test("a one-time key is shown with its time left, copied, and gives way to the d
   assert.equal(page.view().querySelector("textarea.remote-key").value, "LCR1-KEY");
   assert.equal(page.view().querySelector("textarea.remote-key").readOnly, true);
   assert.match(page.text(), /Valid for (10:00|9:5\d)/);
-  assert.equal(page.view().querySelector(".remote-key-qr"), null, "no code until the phone app ships");
+  assert.equal(page.view().querySelector(".remote-key-qr"), null, "a host without a code shows the key alone");
   page.view().querySelector('[data-host-action="copy-key"]').click();
   await flush();
   assert.deepEqual(page.copied, ["LCR1-KEY"]);
@@ -96,6 +96,8 @@ test("a key with a code shows the code; a key that expires is withdrawn", async 
   page.view().querySelector('[data-host-action="show-key"]').click();
   await flush();
   assert.ok(page.view().querySelector(".remote-key-qr svg"));
+  assert.match(page.text(), /Scan to connect[\s\S]*Computers → \+, then point the camera at the code/);
+  assert.equal(page.view().querySelector("textarea.remote-key").value, "LCR1-KEY", "the key is still there for another computer");
   await new Promise(resolve => setTimeout(resolve, 1100));
   page.tick(); await flush();
   assert.equal(page.view().querySelector("textarea.remote-key"), null);

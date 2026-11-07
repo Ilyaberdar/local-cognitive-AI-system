@@ -162,7 +162,7 @@ test("a computer that hosts shows what its models run on, and the form says wher
   page.paint();
   page.signIn({});
   await flush();
-  assert.match(page.root.textContent, /Remote → This computer → Show connection key; on a server, run sudo local-cognitive-server pair/);
+  assert.match(page.root.textContent, /Remote → This computer → Show QR to connect and copy the key under the code; on a server, run sudo local-cognitive-server pair/);
   emit({ state: "online", hostId: HOST, hostName: "MacBook", serverVersion: "0.1.12" });
   await flush(); await flush();
   assert.match(page.root.textContent, /Connected to MacBook\s*Local Cognitive 0\.1\.12 there\./);
