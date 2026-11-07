@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.15 — 2026-11-08
+
+A device you trust uses the chats of the projects set up on your computer or server, and New module keeps its buttons in view.
+
+### Remote
+
+- **A trusted device uses the chats of your projects.** Until now a phone or another computer saw only the projects made from a device in a shared folder; a project set up on the computer itself kept its chats there, out of sight. A device marked Trusted (Remote → This computer → Devices, or `local-cognitive-server trust-device <id> --yes` on a server) now sees those projects' chats, starts new ones and writes in them as on the computer: its turns read the project's folder without asking and ask before every change and command, whatever the chat's own access, and an iPhone asks for Face ID before each approval. It can also rename, recolour, archive and restore such a project. A chat set up with full access stays the computer's, and so do the projects' tasks, workflows and Synthesis; the project's folder is never named to the device. Untrusting a device hides those chats at once and stops a turn it started there within a few seconds. A project made from a device whose folder is no longer shared stays closed to every device, trusted or not.
+- The Trust question, `trust-device` on a server and Remote → This computer say what trust now covers.
+
+### Synthesis
+
+- **New module keeps its buttons in view.** With Describe it to a model the form is taller than the dialog, and the whole dialog scrolled: its scroll bar ran over the rounded corner, and the header and the buttons scrolled away with the fields. Now only the fields scroll, under a thin scroll bar.
+
 ## 0.1.14 — 2026-11-07
 
 Describe a Synthesis module in your own words and a model drafts its contract and tests for you to read, fix and save; a coding agent can write modules with the new `lc-synthesis` skill, and `synthesis check` checks them without running anything. A computer now shows its connection key as a QR code for the iPhone app.
