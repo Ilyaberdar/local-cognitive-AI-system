@@ -5,7 +5,7 @@ export interface SynthesisTransport {
   /** A server: its files are not opened in an editor here, and the project files a run cites are not read from here. */
   remote?: { hostName: string };
 }
-export interface Diagnostic { message: string; line?: number; column?: number; file?: string; severity?: string }
+export interface Diagnostic { message: string; line?: number; column?: number; file?: string; severity?: string; code?: string }
 export interface SynthesisModule {
   id: string; name: string; specPath?: string; flowPath?: string; valid: boolean; diagnostics: Diagnostic[];
   specSource?: string; flowSource?: string;
@@ -56,4 +56,21 @@ export interface SynthesisWorkspaceProps {
   transport?: SynthesisTransport;
   /** Keeps this machine's view preferences apart from another's. */
   storageKey?: string;
+}
+/** A module a model drafts from a description: kept in the app's data until it is saved into the project. */
+export interface SynthesisDraft {
+  id: string; projectId: string; name: string; directory: string; output: string;
+  language: "TypeScript" | "JavaScript" | "Python" | "Cpp"; description: string;
+  model: { providerId: string; id: string; displayName: string };
+  status: "drafting" | "ready" | "failed" | "cancelled"; phase?: "loading" | "thinking" | "writing" | "checking";
+  attempt: number; maxAttempts: number; tokens?: number;
+  specPath: string; flowPath: string; spec?: string; flow?: string; flowEdited?: boolean; tests: Record<string, string>;
+  diagnostics: Diagnostic[]; clauses: string[]; valid: boolean; error?: string;
+  usage: { inputTokens: number; outputTokens: number; calls: number }; createdAt: string; updatedAt: string;
+}
+/** The models a draft may be written with: installed ones, and cloud ones where the project allows them. */
+export interface DraftModels {
+  local: { providerId: string; id: string; displayName: string; sizeBytes?: number }[];
+  cloud: { providerId: string; providerName: string; models: string[] }[];
+  cloudAllowed: boolean;
 }

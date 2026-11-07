@@ -36,6 +36,10 @@ const ATTEMPTS = 4;
 /** The context a local model is loaded with for a draft, as for a run. */
 const DRAFT_CONTEXT = 16_384;
 const MAX_ANSWER_TOKENS = 8000;
+/** A local model whose chat template thinks gets this much room to think before it writes; without a
+ * budget a small model thinks until the token limit and writes nothing. */
+const THINKING = 1024;
+const BUDGET_MESSAGE = "\n\nTime is up. I will now write the contract and the tests.\n";
 const stamp = () => new Date().toISOString();
 const draftId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new SynthesisError("Invalid draft identifier.", 404); return id; };
 const text = (value: unknown, field: string, max = MAX_SOURCE_BYTES) => {
@@ -210,9 +214,18 @@ export class SynthesisDrafts {
         const room = window ? window - promptTokens - 64 : Infinity;
         if (room < 1500) throw new SynthesisError(`The draft's prompt takes about ${promptTokens.toLocaleString("en")} of ${model.displayName}'s ${window!.toLocaleString("en")} context tokens: choose a model that can load with a larger context, or a cloud model.`);
         let savedAt = 0;
+        const note = (changes: Partial<SynthesisDraft>) => {
+          Object.assign(record, changes);
+          if (Date.now() - savedAt > 1000) { savedAt = Date.now(); record.updatedAt = stamp(); void this.persist(record).catch(() => undefined); }
+        };
         const response = await this.host.services.llm.generateText({usagePurpose: "synthesis-draft", model: model.id, signal, systemPrompt: base.system, prompt,
-          maxTokens: Math.min(MAX_ANSWER_TOKENS, room), temperature: 0.2, timeoutMs: 10 * 60_000, holder: `Synthesis · draft of ${record.name}`,
-          onGenerated: tokens => { record.tokens = tokens; if (Date.now() - savedAt > 1000) { savedAt = Date.now(); void this.persist(record).catch(() => undefined); } }}, model.providerId);
+          maxTokens: Math.min(MAX_ANSWER_TOKENS + (local ? THINKING : 0), room), temperature: 0.2,
+          // A slow local model (on battery, a large one) may need long for 9k tokens: the token limit bounds it.
+          timeoutMs: (local ? 30 : 10) * 60_000, holder: `Synthesis · draft of ${record.name}`,
+          ...(local ? {localReasoningBudget: THINKING, localReasoningBudgetMessage: BUDGET_MESSAGE} : {}),
+          // Progress (which also streams a local answer, so its tokens are counted as they come).
+          onProgress: event => { if (event.phase === "thinking" && record.phase !== "thinking") note({phase: "thinking"}); else if ((event.phase === "generating" || event.phase === "responding") && record.phase !== "writing") note({phase: "writing"}); },
+          onGenerated: tokens => note({tokens})}, model.providerId);
         signal.throwIfAborted();
         record.usage.calls++; record.usage.inputTokens += response.usage?.inputTokens ?? 0; record.usage.outputTokens += response.usage?.outputTokens ?? 0;
         const answer = response.text.trim();

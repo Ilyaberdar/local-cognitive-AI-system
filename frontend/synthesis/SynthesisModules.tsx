@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type Ref } from "react";
 import { statusLabel } from "./SynthesisActivity";
 import { SynthesisIcon } from "./SynthesisIcon";
-import type { SynthesisModule, SynthesisRun } from "./types";
+import type { SynthesisDraft, SynthesisModule, SynthesisRun } from "./types";
 
 const going = (run: SynthesisRun) => run.status === "running" || run.status === "queued";
 const when = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -9,8 +9,10 @@ const folderOf = (specPath?: string) => !specPath ? "" : specPath.replace(/\/[^/
 
 /** The project's modules and the chosen module's runs, in a panel beside the module (as Diagnostics
  * is). Deleting runs is this computer's: a paired server's screen shows the history only. */
-export function SynthesisModules({ modules, hidden, moduleId, runs, runId, busy, loading, canDelete, focus, newModule, onSelect, onHide, onRestore, onCreate, onSelectRun, onDeleteRun, onClearRuns, onClose }: {
+export function SynthesisModules({ modules, hidden, moduleId, runs, runId, busy, loading, canDelete, focus, newModule, onSelect, onHide, onRestore, onCreate, onSelectRun, onDeleteRun, onClearRuns, onClose, drafts = [], draftId = "", onOpenDraft }: {
   modules: SynthesisModule[]; hidden: SynthesisModule[]; moduleId: string; runs: SynthesisRun[]; runId: string;
+  /** Modules a model drafted here and nobody saved or discarded yet. */
+  drafts?: SynthesisDraft[]; draftId?: string; onOpenDraft?: (id: string) => void;
   busy: boolean; loading: boolean; canDelete: boolean; newModule: Ref<HTMLButtonElement>;
   /** Opened by the person now (not shown again with the screen): its title takes the focus. */
   focus?: boolean;
@@ -47,13 +49,19 @@ export function SynthesisModules({ modules, hidden, moduleId, runs, runId, busy,
     </header>
     <div className="synthesis-panel__body">
       <div className="synthesis-module-list">{modules.map(item => <div className="synthesis-module-row" key={item.id}>
-        <button type="button" disabled={busy} aria-pressed={item.id === moduleId} className={`synthesis-module${item.id === moduleId ? " is-selected" : ""}`} onClick={() => onSelect(item.id)}>
+        <button type="button" disabled={busy} aria-pressed={!draftId && item.id === moduleId} className={`synthesis-module${!draftId && item.id === moduleId ? " is-selected" : ""}`} onClick={() => onSelect(item.id)}>
           <span className={`synthesis-status-dot ${item.valid ? "is-valid" : "is-invalid"}`} />
           <span><strong>{item.name}</strong><small>{item.valid ? "Contract ready" : "Needs attention"}</small>{item.specPath ? <small className="synthesis-module-path" title={item.specPath}>{folderOf(item.specPath)}</small> : null}</span>
         </button>
         <button type="button" className="synthesis-module-remove" disabled={busy} aria-label={`Remove ${item.name} from view`} title="Remove from view · Files stay on disk" onClick={() => onHide(item.id)}><SynthesisIcon name="close" /></button>
       </div>)}
-        {!modules.length ? <p className="synthesis-empty">{loading ? "Discovering modules…" : hidden.length ? "All modules are hidden. Restore one below." : "No DSL modules found in this project."}</p> : null}</div>
+        {!modules.length ? <p className="synthesis-empty">{loading ? "Discovering modules…" : hidden.length ? "All modules are hidden. Restore one below." : "No DSL modules found in this project."}</p> : null}
+        {drafts.map(item => <div className="synthesis-module-row" key={item.id}>
+          <button type="button" disabled={busy} aria-pressed={item.id === draftId} className={`synthesis-module${item.id === draftId ? " is-selected" : ""}`} onClick={() => onOpenDraft?.(item.id)}>
+            <span className={`synthesis-status-dot ${item.status === "drafting" ? "is-running" : item.valid ? "is-valid" : "is-invalid"}`} />
+            <span><strong>{item.name}</strong><small className="synthesis-draft-badge">{item.status === "drafting" ? "Draft · being written" : item.status === "failed" ? "Draft · no contract" : "Draft · not saved"}</small><small className="synthesis-module-path" title={item.specPath}>{folderOf(item.specPath)}</small></span>
+          </button>
+        </div>)}</div>
       {hidden.length ? <details className="synthesis-hidden-modules"><summary>Hidden modules <span>{hidden.length}</span></summary><p>Files remain in your project.</p>{hidden.map(item =>
         <button key={item.id} type="button" disabled={busy} aria-label={`Restore ${item.name}`} onClick={() => onRestore(item.id)}><span>{item.name}</span><SynthesisIcon name="plus" /></button>)}</details> : null}
       <button ref={newModule} type="button" className="synthesis-new-module" disabled={busy || loading} onClick={onCreate}><SynthesisIcon name="plus" />New module</button>

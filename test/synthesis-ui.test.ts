@@ -431,6 +431,10 @@ test("on a server the screen reaches Synthesis through its transport, with no ed
     assert.deepEqual(fetched, [], "this computer's API is not asked");
     assert.ok(asked.includes("GET /projects/p1/modules") && asked.includes("GET /projects/p1/runs"));
     assert.equal(dom.window.localStorage.getItem("lcai.synthesis.project.v1:host-1"), "p1", "this server's view is kept apart");
+    assert.equal(asked.some(item => item.includes("/drafts")), false, "drafts are this computer's");
+    ([...dom.window.document.querySelectorAll("button")].find((item: any) => item.textContent === "New module") as any).click();
+    await until(() => Boolean(dom.window.document.querySelector("dialog[open]")), "creation dialog");
+    assert.equal(text().includes("Describe it to a model"), false, "a server's module starts from a template");
   } finally { handle.unmount(); dom.window.close(); }
 });
 
@@ -1092,5 +1096,73 @@ test("a run deleted elsewhere leaves the history quietly; Shift+Tab moves a line
     await until(() => editor.value.includes("\ntarget {}"), "the line moved back");
     assert.equal(editor.selectionStart, editor.selectionEnd, "a caret, not a selected line");
     assert.equal(editor.selectionStart, editor.value.indexOf("target") + 3);
+  } finally { ui.close(); }
+});
+
+test("a module described to a model: the draft is written, read in place of a module, checked after an edit, and saved as a new module", async () => {
+  const existing = {...moduleEntry(), specPath: "Synthesis/Calculator/Calculator.lcspec"};
+  const spec = `module Adder version "1" {\n    description = "[C1] add(a, b) returns a + b.";\n}\n`;
+  const draftBase = {id: "11111111-1111-4111-8111-111111111111", projectId: "p1", name: "Adder", directory: "Synthesis", output: "generated/Adder", language: "Python",
+    description: "Adds two numbers and refuses anything that is not a number.", model: {providerId: "llamacpp", id: "qwen-27b", displayName: "Qwen 27B"},
+    maxAttempts: 4, specPath: "Synthesis/Adder/Adder.lcspec", flowPath: "Synthesis/Adder/Adder.lcflow", tests: {}, diagnostics: [], clauses: [], valid: false,
+    usage: {inputTokens: 0, outputTokens: 0, calls: 0}, createdAt: "2026-11-07T10:00:00.000Z", updatedAt: "2026-11-07T10:00:00.000Z"};
+  const ready = {...draftBase, status: "ready", attempt: 2, spec, flow: "implement Adder using \"contract-v1\" { }\n", tests: {"tests/test_add.py": "import unittest\n# [C1]\n"},
+    clauses: ["C1"], valid: true};
+  const created = {...moduleEntry("Adder"), id: "Adder", specPath: "Synthesis/Adder/Adder.lcspec"};
+  let posted: any, put: any, polls = 0, saved = false;
+  const ui = harness((path, options) => {
+    if (path.endsWith("/runs")) return [];
+    if (path.endsWith("/projects/p1/drafts") && options.method === "POST") { posted = JSON.parse(String(options.body)); return {...draftBase, status: "drafting", phase: "writing", attempt: 1, tokens: 120}; }
+    if (path.endsWith("/projects/p1/drafts")) return {drafts: []};
+    if (path.endsWith("/draft-models")) return {local: [{providerId: "llamacpp", id: "qwen-27b", displayName: "Qwen 27B", sizeBytes: 16e9}], cloud: [{providerId: "deepseek", providerName: "DeepSeek", models: ["deepseek-flash"]}], cloudAllowed: false};
+    if (path.endsWith(`/drafts/${draftBase.id}`) && options.method === "PUT") { put = JSON.parse(String(options.body)); return {...ready, spec: put.spec, attempt: 2}; }
+    if (path.endsWith(`/drafts/${draftBase.id}`)) { polls++; return ready; }
+    if (path.endsWith(`/drafts/${draftBase.id}/save`)) { saved = true; return created; }
+    if (path.endsWith("/modules")) return {modules: saved ? [existing, created] : [existing]};
+    if (path.endsWith("/modules/Calculator")) return existing;
+    if (path.endsWith("/modules/Adder")) return created;
+    throw new Error(`Unexpected request ${path}`);
+  });
+  try {
+    const doc = ui.dom.window.document;
+    await until(() => ui.text().includes("module Calculator"), "initial module");
+    ui.click("New module");
+    await until(() => Boolean(doc.querySelector("dialog[open]")), "creation dialog");
+    ui.click("Describe it to a model");
+    await until(() => doc.getElementById("synthesis-module-model")?.value === "llamacpp|qwen-27b", "the largest local model is chosen");
+    const cloud = [...doc.querySelectorAll("#synthesis-module-model option")].find((item: any) => item.value === "deepseek|deepseek-flash") as any;
+    assert.equal(cloud.disabled, true, "a cloud model waits for the project's consent");
+    assert.match(doc.querySelector("#synthesis-module-model optgroup[label*='DeepSeek']").getAttribute("label"), /Cloud models are off for this project/);
+    input(ui, "synthesis-module-name", "Adder");
+    textarea(ui, "synthesis-module-description", "Adds two numbers and refuses anything that is not a number.");
+    const language = doc.getElementById("synthesis-module-language");
+    language.value = "Python"; language.dispatchEvent(new ui.dom.window.Event("change", {bubbles: true}));
+    await until(() => ui.text().includes("Synthesis/Adder/tests/…"), "the files a draft becomes");
+    ui.click("Write a draft");
+    await until(() => !doc.querySelector("dialog") && ui.text().includes("Qwen 27B is writing the contract and tests · answer 1 of 4 · 120 tokens"), "the draft is shown while it is written");
+    assert.deepEqual(posted, {name: "Adder", directory: "Synthesis", language: "Python", description: "Adds two numbers and refuses anything that is not a number.", model: {providerId: "llamacpp", id: "qwen-27b"}});
+    assert.match(doc.querySelector(".synthesis-badge").textContent, /Draft/);
+    assert.equal(doc.querySelector(".synthesis-run").disabled, true, "a draft never runs");
+
+    await until(() => ui.text().includes("Written by Qwen 27B in 2 answers"), "the finished draft", 5000);
+    assert.ok(polls >= 1);
+    assert.ok(ui.text().includes("1 numbered clause · each checked"));
+    assert.ok(doc.querySelector("textarea.synthesis-editor__input").value.includes('description = "[C1] add(a, b) returns a + b."'));
+    assert.match(doc.querySelector(".synthesis-module.is-selected").textContent, /Adder.*Draft · not saved/);
+    ui.click("Tests · 1");
+    await until(() => doc.querySelector("textarea.synthesis-editor__input")?.value.includes("import unittest"), "the tests");
+    ui.click("Contract");
+    await until(() => doc.querySelector("textarea.synthesis-editor__input")?.value.startsWith("module Adder"), "the contract again");
+    const editor = doc.querySelector("textarea.synthesis-editor__input");
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor, spec.replace("a + b", "the sum"));
+    editor.dispatchEvent(new ui.dom.window.Event("input", {bubbles: true}));
+    ui.click("Check");
+    // The check is done when its button reads Check again (with nothing left to check).
+    await until(() => Boolean(put) && [...doc.querySelectorAll("button")].some((item: any) => item.textContent === "Check" && item.disabled), "the edit is checked");
+    assert.match(put.spec, /the sum/);
+    ui.click("Save module");
+    await until(() => ui.text().includes("Adder created at Synthesis/Adder/Adder.lcspec"), "saved as a module");
+    assert.equal(doc.querySelector(".synthesis-badge.status-draft"), null);
+    assert.equal(ui.text().includes("Draft · not saved"), false);
   } finally { ui.close(); }
 });

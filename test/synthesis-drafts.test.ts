@@ -54,6 +54,8 @@ async function draftFixture(t: TestContext, answers: Array<string | ((request: L
       generateText: async (request: LLMRequest, provider?: string): Promise<LLMResponse> => {
         requests.push({...request, provider});
         const next = answers[Math.min(requests.length, answers.length) - 1]!;
+        // As a local stream reports itself: thinking, then the answer.
+        request.onProgress?.({phase: "thinking", model: request.model ?? ""}); request.onProgress?.({phase: "responding", model: request.model ?? ""});
         const text = typeof next === "string" ? next : await next(request);
         return {provider: provider ?? "llamacpp", model: request.model ?? "", text, usage: {inputTokens: 1000, outputTokens: 300}};
       }
@@ -113,6 +115,9 @@ test("a draft is checked and sent back with its problems until it holds, then ru
   assert.deepEqual(draft.diagnostics, []);
   assert.deepEqual(Object.keys(draft.tests), ["tests/add.test.ts"]);
   assert.deepEqual(f.loaded, ["qwen3.8-27b-q4"], "a local model is loaded before it is asked");
+  assert.equal(f.requests[0]!.localReasoningBudget, 1024, "a local model thinks within a budget, then writes");
+  assert.equal(f.requests[0]!.maxTokens, 9024);
+  assert.equal(typeof f.requests[0]!.onProgress, "function", "progress streams the answer");
   assert.deepEqual(draft.usage, {inputTokens: 2000, outputTokens: 600, calls: 2});
   assert.deepEqual(f.requests.map(request => [request.usagePurpose, request.model, request.provider]), [["synthesis-draft", "qwen3.8-27b-q4", "llamacpp"], ["synthesis-draft", "qwen3.8-27b-q4", "llamacpp"]]);
   // The second request carries the first answer's problems with their fixes.
@@ -172,6 +177,7 @@ test("a cloud model drafts only in a project that allows cloud models, and is of
   assert.equal(draft.valid, true, JSON.stringify(draft.diagnostics));
   assert.deepEqual(f.loaded, [], "a cloud model is not loaded");
   assert.equal(f.requests[0]!.provider, "deepseek");
+  assert.equal(f.requests[0]!.localReasoningBudget, undefined, "a cloud model thinks as its provider lets it");
   assert.match(draft.flow!, /policy = "cloud-files-v1";\n\n {4}developer = await model\("deepseek-flash", provider = "deepseek"\);/);
 });
 

@@ -455,3 +455,27 @@ html[data-theme="light"] .synthesis-json__number, html[data-theme="light"] .synt
   .synthesis-agents__list { border-bottom: 1px solid var(--line); }
   :is(.synthesis-changes, .synthesis-agents__split) > .synthesis-split { display: none; }
 }
+/* New module: from a template, or a draft a model writes from a description. */
+.synthesis-create-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1); }
+.synthesis-create-mode button { min-height: 30px; border-color: transparent; border-radius: 7px; background: transparent; color: var(--muted); font-size: var(--text-caption); }
+.synthesis-create-mode button[aria-checked="true"] { background: var(--control-active); color: var(--text); }
+.synthesis-create-dialog textarea { box-sizing: border-box; width: 100%; min-height: 110px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--control-bg); font: inherit; line-height: 1.5; resize: vertical; }
+.synthesis-create-dialog textarea:focus-visible { outline: 2px solid var(--accent-border); outline-offset: -2px; }
+.synthesis-create-field--spaced { margin-top: 17px; }
+/* A draft a model writes: its state in a line, then the contract, flow and tests as a module's. */
+.synthesis-draft__status { display: flex; align-items: flex-start; gap: 8px; flex-shrink: 0; padding: 10px 4px; border-bottom: 1px solid var(--line); color: var(--text); font-size: var(--text-caption); line-height: 1.5; }
+.synthesis-draft__status .synthesis-icon { width: 14px; height: 14px; flex: 0 0 14px; margin-top: 2px; color: var(--success, var(--text)); }
+.synthesis-draft__status.is-problem .synthesis-icon { color: var(--warning); }
+.synthesis-draft__spinner { width: 12px; height: 12px; flex: 0 0 12px; margin-top: 3px; border: 2px solid var(--line-strong); border-top-color: var(--text); border-radius: 50%; animation: synthesis-draft-spin .8s linear infinite; }
+html[data-motion="off"] .synthesis-draft__spinner { animation: none; }
+@keyframes synthesis-draft-spin { to { transform: rotate(360deg); } }
+.synthesis-draft__problem { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 26px; padding: 3px 8px; color: var(--text); font-size: calc(11px * var(--font-scale, 1)); overflow-wrap: anywhere; }
+.synthesis-draft__problem .synthesis-icon { width: 13px; height: 13px; flex: 0 0 13px; color: var(--danger); }
+.synthesis-draft__problem.is-warning .synthesis-icon { color: var(--warning); }
+.synthesis-draft__problem > span { color: var(--muted); white-space: nowrap; }
+.synthesis-confirm--inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 3px 3px 3px 9px; }
+.synthesis-confirm--inline span { color: var(--text); }
+.synthesis-module-list .synthesis-draft-badge, .synthesis-badge.status-draft { color: var(--muted); }
+.synthesis-status-dot.is-running { color: var(--accent, var(--text)); animation: synthesis-draft-pulse 1.2s ease-in-out infinite; }
+html[data-motion="off"] .synthesis-status-dot.is-running { animation: none; }
+@keyframes synthesis-draft-pulse { 50% { opacity: .35; } }

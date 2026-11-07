@@ -7,10 +7,11 @@ import { diagnosticSummary, SynthesisDiagnostics } from "./SynthesisDiagnostics"
 import { SynthesisModules } from "./SynthesisModules";
 import { SynthesisIcon } from "./SynthesisIcon";
 import { NewModuleDialog } from "./NewModuleDialog";
+import { SynthesisDraftView } from "./SynthesisDraftView";
 import { WebTargetsDialog } from "./WebTargetsDialog";
 import { normalizeLines, SourceEditor, SourcePreview, type SourceProblem } from "./SourceEditor";
 import { usePaneSplit, usePaneWidth } from "./usePaneSplit";
-import type { CandidateDiff, RunSources, SynthesisModule, SynthesisRun, SynthesisWorkspaceProps } from "./types";
+import type { CandidateDiff, RunSources, SynthesisDraft, SynthesisModule, SynthesisRun, SynthesisWorkspaceProps } from "./types";
 
 const activeStatuses = new Set(["running", "queued"]);
 const recoverableStatuses = new Set(["interrupted", "blocked", "unresolved", "cancelled", "needs_review"]);
@@ -72,6 +73,10 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   const [panels, setPanels] = useState(() => storedPanels(storageKey));
   const [focusPanel, setFocusPanel] = useState<Panel | null>(null);
   const [creatingModule, setCreatingModule] = useState(false);
+  /** Modules a model drafted on this computer, and the one open in place of a module. */
+  const [moduleDrafts, setModuleDrafts] = useState<SynthesisDraft[]>([]);
+  const [draftId, setDraftId] = useState("");
+  const openDraft = draftId ? moduleDrafts.find(item => item.id === draftId) : undefined;
   /** Edits of a module's contract and flow not saved yet, by project, module and file. */
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   /** A save the file refused: it was changed elsewhere since the editor read it. */
@@ -170,7 +175,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   useEffect(() => {
     try { if (projectId) localStorage.setItem(projectKey(storageKey), projectId); } catch { /* Storage may be unavailable. */ }
     setModules([]); setModuleId(""); setModule(null); setRuns([]); setRunId(""); setRun(null); setDiff(null); setError(""); setNotice("");
-    setCreatingModule(false); setEditingWebTargets(false);
+    setCreatingModule(false); setEditingWebTargets(false); setModuleDrafts([]); setDraftId("");
   }, [projectId]);
   // The first read of a project shows it is discovering; Refresh keeps the screen as it is and only
   // turns its icon, long enough to be seen.
@@ -199,6 +204,18 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     return () => controller.abort();
   }, [projectId, active, revision]);
   const refresh = () => { setRefreshing(true); setRevision(current => current + 1); };
+  // Drafts are this computer's (a server's screen has none); a host that cannot list them shows none.
+  useEffect(() => {
+    if (!active || !projectId || remote) return;
+    const controller = new AbortController();
+    request<{ drafts?: SynthesisDraft[] }>(`/projects/${encode(projectId)}/drafts`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted && Array.isArray(result?.drafts)) setModuleDrafts(result.drafts); })
+      .catch(() => { /* No drafts to show. */ });
+    return () => controller.abort();
+  }, [projectId, active, remote, revision]);
+  const draftChanged = (next: SynthesisDraft) => setModuleDrafts(current => current.some(item => item.id === next.id) ? current.map(item => item.id === next.id ? next : item) : [next, ...current]);
+  const draftStarted = (started: SynthesisDraft) => { draftChanged(started); setDraftId(started.id); setCreatingModule(false); };
+  const draftDone = (id: string) => { setModuleDrafts(current => current.filter(item => item.id !== id)); setDraftId(current => current === id ? "" : current); };
 
   // Runs started elsewhere (another window, a paired device, MCP) join the history while it is open;
   // a run's own poll below keeps the selected one current.
@@ -354,6 +371,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
   };
 
   const closeNewModule = () => { setCreatingModule(false); newModuleTrigger.current?.focus(); };
+  const draftSaved = (created: SynthesisModule) => { draftDone(draftId); moduleCreated(created); };
   const moduleCreated = (created: SynthesisModule) => {
     setModules(current => [...current.filter(item => item.id !== created.id), created]); restoreModule(created.id); setTab("contract");
     setRevision(current => current + 1); setNotice(`${created.name} created at ${created.specPath}. ${remote ? `Edit its contract and flow on ${remote.hostName}, then Refresh.` : "Define its contract and flow here or in your editor."}`);
@@ -428,8 +446,9 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     setNotice("Verified candidate applied to the project."); setRevision(current => current + 1);
   });
 
-  const title = module?.name ?? (!project ? "Synthesis" : moduleId ? "Loading module…" : "Your first synthesis");
-  const subtitle = !project ? "" : !module ? "Create a module or save matching .lcspec and .lcflow files in your project, then Refresh."
+  const title = openDraft ? openDraft.name : module?.name ?? (!project ? "Synthesis" : moduleId ? "Loading module…" : "Your first synthesis");
+  const subtitle = !project ? "" : openDraft ? `A draft: Save module writes it to ${openDraft.specPath.replace(/\/[^/]+$/, "")}. The project has none of its files before.`
+    : !module ? "Create a module or save matching .lcspec and .lcflow files in your project, then Refresh."
     : remote ? `The source is edited on ${remote.hostName}. Refresh to see saved changes.` : "Edit the contract and flow here, or in your IDE and Refresh. Saving checks them.";
   const fileConflict = conflict?.key === draftKey(sourceFile) ? conflict : null;
   const sourceView = () => {
@@ -456,7 +475,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     <header className="synthesis-toolbar">
       <div className="synthesis-toolbar__heading">
         {project ? <span className="synthesis-eyebrow">Synthesis · {project.name}</span> : null}
-        <div className="synthesis-title"><h2>{title}</h2>{run && module ? <span className={`synthesis-badge status-${run.status}`}>{runLabel(run)}</span> : null}</div>
+        <div className="synthesis-title"><h2>{title}</h2>{openDraft ? <span className="synthesis-badge status-draft">Draft</span> : run && module ? <span className={`synthesis-badge status-${run.status}`}>{runLabel(run)}</span> : null}</div>
         {subtitle ? <p>{subtitle}</p> : null}
       </div>
       <div className="synthesis-toolbar__actions">
@@ -465,7 +484,7 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
         <button ref={triggers.modules} type="button" className="synthesis-panel-toggle" disabled={!project} aria-label={`Modules: ${visibleModules.length}`} aria-expanded={panels.includes("modules") && Boolean(project)} aria-controls="synthesis-modules" onClick={() => togglePanel("modules")}><SynthesisIcon name="modules" /><span>Modules</span><span className="synthesis-count">{visibleModules.length}</span></button>
         <button ref={triggers.diagnostics} type="button" className="synthesis-panel-toggle synthesis-diagnostics-toggle" disabled={!project} aria-label={`Project diagnostics: ${diagnostics.label}`} aria-expanded={panels.includes("diagnostics") && Boolean(project)} aria-controls="synthesis-diagnostics" onClick={() => togglePanel("diagnostics")}><SynthesisIcon name="diagnostics" /><span>Diagnostics</span><span className={`synthesis-status-dot status-${diagnostics.tone}`} /></button>
         {running ? <button type="button" className="synthesis-stop" disabled={Boolean(busy)} onClick={() => runAction("cancel")}>{busy === "cancel" ? "Stopping…" : "Stop"}</button>
-          : <button type="button" className="synthesis-run" disabled={!(module?.valid || unsaved) || Boolean(busy) || loading} onClick={startRun}><SynthesisIcon name="play" />{busy === "run" ? "Starting…" : "Run synthesis"}</button>}
+          : <button type="button" className="synthesis-run" disabled={Boolean(openDraft) || !(module?.valid || unsaved) || Boolean(busy) || loading} onClick={startRun}><SynthesisIcon name="play" />{busy === "run" ? "Starting…" : "Run synthesis"}</button>}
       </div>
     </header>
     {error ? <div className="synthesis-message synthesis-message--error" role="alert">{error}<button type="button" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div> : null}
@@ -473,7 +492,8 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
     {!project ? <div className="synthesis-welcome"><span className="synthesis-welcome__symbol" aria-hidden="true">⌘</span><h2>Build from a contract</h2><p>Connect a project to discover its .lcspec and .lcflow files. Edit them here or in your IDE, then run and follow each step here.</p>{onCreateProject ? <button type="button" onClick={onCreateProject}>Add project</button> : <p>Add a project from the sidebar to begin.</p>}</div>
       : <div ref={layout} className={`synthesis-layout${side === "open" ? " is-side-open" : ""}`} data-resizing={sideWidth.resizing || undefined}
         style={{ "--synthesis-side-width": `${sideWidth.value}px` } as CSSProperties}>
-        <main className="synthesis-main-pane">
+        {openDraft ? <SynthesisDraftView draft={openDraft} request={request} onChanged={draftChanged} onSaved={draftSaved} onDiscarded={draftDone} />
+        : <main className="synthesis-main-pane">
           <div className="synthesis-tabs" role="tablist" aria-label="Module views">{([['contract', 'Contract'], ['flow', 'Flow'], ...(run?.agents ? [['agents', `Agents · ${run.agents.total}`]] : []), ['changes', 'Changes']] as Array<[SourceTab, string]>).map(([id, label]) =>
             <button role="tab" type="button" key={id} id={`synthesis-tab-${id}`} aria-selected={tab === id} aria-controls="synthesis-source-panel" disabled={!module && !run} onClick={() => { setTab(id); setReveal(undefined); }}>{label}{(id === "contract" && dirty("spec")) || (id === "flow" && dirty("flow")) ? <span className="synthesis-dirty" title="Unsaved changes">•</span> : null}</button>)}
             {sourceTab && module && !remote ? <button type="button" className="synthesis-open-source" disabled={Boolean(busy)} onClick={() => open(tab === "contract" ? "spec" : "flow")}>Open project .{tab === "contract" ? "lcspec" : "lcflow"} ↗</button> : null}
@@ -497,21 +517,22 @@ export function SynthesisWorkspace({ projects, colorMode = "dark", active = true
           {run?.error ? <div className="synthesis-message synthesis-message--error">{run.error}</div> : null}
           {run && recoverableStatuses.has(run.status) ? <div className="synthesis-recovery"><span>Start a new run from this frozen snapshot. The existing run and its history stay available.</span><button type="button" disabled={Boolean(busy)} onClick={() => runAction("resume")}>{busy === "resume" ? "Restarting…" : "Restart from snapshot"}</button></div> : null}
           </SynthesisOutput>
-        </main>
+        </main>}
         {side !== "closed" ? <div className="synthesis-side" ref={sideColumn} data-resizing={sideSplit.resizing || undefined}
           style={shownPanels.length > 1 ? { gridTemplateRows: `minmax(140px, ${sideSplit.value}fr) 9px minmax(140px, ${100 - sideSplit.value}fr)` } : undefined}>
           <div {...sideWidth.handle} className="synthesis-side__resize" aria-label="Resize the side panels" title="Drag to resize · Double-click to reset" />
           {shownPanels.map((panel, index) => <Fragment key={panel}>
             {index ? <div {...sideSplit.handle} className="synthesis-split synthesis-split--row" aria-label="Resize the side panels' heights" title="Drag to resize · Double-click to reset" /> : null}
             {panel === "modules" ? <SynthesisModules modules={visibleModules} hidden={removedModules} moduleId={moduleId} runs={moduleRuns} runId={runId} busy={Boolean(busy)} loading={loading}
-              canDelete={!remote} focus={focusPanel === "modules"} newModule={newModuleTrigger} onSelect={setModuleId} onHide={hideModule} onRestore={restoreModule} onCreate={() => setCreatingModule(true)}
+              canDelete={!remote} focus={focusPanel === "modules"} newModule={newModuleTrigger} onSelect={id => { setDraftId(""); setModuleId(id); }} onHide={hideModule}
+              drafts={moduleDrafts} draftId={draftId} onOpenDraft={setDraftId} onRestore={restoreModule} onCreate={() => setCreatingModule(true)}
               onSelectRun={item => { setRunId(item.id); setRun(item); }} onDeleteRun={deleteRun} onClearRuns={clearRuns} onClose={() => closePanel("modules")} />
               : <SynthesisDiagnostics module={module} run={run} busy={Boolean(busy)} focus={focusPanel === "diagnostics"} onReveal={showLine} onOpenSource={remote ? undefined : open} onClose={() => closePanel("diagnostics")} />}
           </Fragment>)}
         </div> : null}
       </div>}
     <footer className="synthesis-workspace-footer"><label htmlFor="synthesis-project">Workspace</label><select id="synthesis-project" value={projectId} disabled={Boolean(busy)} onChange={event => setProjectId(event.target.value)} aria-label="Synthesis workspace project"><option value="" disabled>Select project</option>{availableProjects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span title={project?.rootPath}>{project?.rootPath ?? "Choose a project to start"}</span>{project && remote && cloud !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server cloud-models ${cloud ? "deny" : "allow"} ${project.id}`}>Cloud models: {cloud ? "on" : "off"}</span> : null}{project && !remote && cloud !== undefined ? <label className="synthesis-cloud-toggle" title="Flows with a cloud provider send the contract, frozen files, visible tests and candidate files to it. Hidden tests stay here."><input type="checkbox" role="switch" className="synthesis-switch" checked={cloud} disabled={Boolean(busy)} onChange={event => toggleCloud(event.target.checked)} />Cloud models</label> : null}{project && remote && webTargets !== undefined ? <span className="synthesis-cloud-status" title={`Set on ${remote.hostName}: sudo local-cognitive-server web-targets ${webTargets.length ? `allow ${project.id} ${webTargets.join(" ")}` : `allow ${project.id} <url>`}`}>Web targets: {webTargets.length}</span> : null}{project && !remote && webTargets !== undefined ? <button type="button" className="synthesis-web-targets" disabled={Boolean(busy)} title="Web origins this project's agents may reach with the http right" onClick={() => setEditingWebTargets(true)}>Web targets: {webTargets.length}</button> : null}{onCreateProject ? <button type="button" disabled={Boolean(busy)} onClick={onCreateProject}>+ Project</button> : null}</footer>
-    {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} request={request} /> : null}
+    {creatingModule && project && active ? <NewModuleDialog key={projectId} project={project} modules={modules} onClose={closeNewModule} onCreated={moduleCreated} canDescribe={!remote} onDrafted={draftStarted} request={request} /> : null}
     {editingWebTargets && project && !remote && webTargets !== undefined ? <WebTargetsDialog key={projectId} project={project} targets={webTargets} onClose={() => setEditingWebTargets(false)} onSaved={webTargetsSaved} request={request} /> : null}
   </div>;
 }

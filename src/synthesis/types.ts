@@ -82,8 +82,8 @@ export interface SynthesisDraft {
   /** The model that writes the draft; the flow runs on it too unless the user edits the flow. */
   model: {providerId: string; id: string; displayName: string};
   status: "drafting" | "ready" | "failed" | "cancelled";
-  /** While drafting: loading the model, writing an answer, checking it. */
-  phase?: "loading" | "writing" | "checking";
+  /** While drafting: loading the model, thinking (a local model, bounded), writing an answer, checking it. */
+  phase?: "loading" | "thinking" | "writing" | "checking";
   attempt: number; maxAttempts: number; tokens?: number;
   /** Where Save writes the module, relative to the project. */
   specPath: string; flowPath: string;
